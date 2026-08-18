@@ -66,10 +66,12 @@ pub use video::DeviceVideo;
 pub mod list;
 pub use list::DeviceList;
 
-// All 17 of ticket 12's NewDevice variants now have real XML bindings.
-// Char's other three tags (console/parallel/channel) share
-// DeviceSerial's exact field set under a different tag — added when
-// needed, same pattern. Still ahead, not XML-binding work: the
-// NewDevice enum itself (ticket 12), per-driver default-resolution
-// methods (ticket 17), and the CLI's derive-macro-generated
-// option-string parsers (ticket 16).
+pub mod new_device;
+pub use new_device::{CharDevice, NewDevice};
+
+// All 17 of ticket 12's NewDevice variants now have real XML bindings,
+// and the enum itself is built (`new_device.rs`) — including all four
+// of Char's tags, needed once addhardware.py's hw-list showed Char
+// covers four distinct user-facing rows, not one. Still ahead:
+// per-driver default-resolution methods (ticket 17), and the CLI's
+// derive-macro-generated option-string parsers (ticket 16).
