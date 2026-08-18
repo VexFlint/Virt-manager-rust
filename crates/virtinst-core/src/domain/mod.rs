@@ -19,6 +19,9 @@ pub use pm::DomainPm;
 pub mod memtune;
 pub use memtune::DomainMemtune;
 
+pub mod resource;
+pub use resource::DomainResource;
+
 // TODO: the rest (cpu, os, features, seclabel, sysinfo, vcpus,
 // numatune, xmlnsqemu, ...). `features.py` in particular needs a new
 // macro capability first — most of its ~40 fields use libvirt's

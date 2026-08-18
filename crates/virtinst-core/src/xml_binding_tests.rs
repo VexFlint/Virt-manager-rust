@@ -11,7 +11,7 @@ use crate::devices::{
     DeviceList, DeviceNetwork, DevicePanic, DeviceRedirdev, DeviceRng, DeviceSerial,
     DeviceSmartcard, DeviceSound, DeviceTpm, DeviceVideo, DeviceVsock, DeviceWatchdog,
 };
-use crate::domain::{Clock, CurrentMemory, DomainMemtune, DomainPm};
+use crate::domain::{Clock, CurrentMemory, DomainMemtune, DomainPm, DomainResource};
 use crate::guest::Guest;
 use virtinst_xml::{parse_libvirt_xml, XmlBound};
 
@@ -212,6 +212,28 @@ fn memtune_reads_four_flat_int_text_fields() {
     assert_eq!(memtune.soft_limit, Some(1_048_576));
     assert_eq!(memtune.swap_hard_limit, Some(2_097_152));
     assert_eq!(memtune.min_guarantee, Some(524_288));
+}
+
+#[test]
+fn resource_reads_text_child_and_nested_attribute() {
+    let doc = parse_libvirt_xml(
+        r#"<resource>
+             <partition>/machine/production</partition>
+             <fibrechannel appid="example.com:app1"/>
+           </resource>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let resource = DomainResource::from_element(&doc, el);
+    assert_eq!(
+        resource.partition,
+        Some("/machine/production".to_string())
+    );
+    assert_eq!(
+        resource.fibrechannel_appid,
+        Some("example.com:app1".to_string())
+    );
 }
 
 #[test]
