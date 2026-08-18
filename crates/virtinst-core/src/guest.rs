@@ -15,24 +15,45 @@
 //!   byte-exact preservation of untouched XML, including foreign
 //!   `xmlns:qemu` elements.
 //!
-//! `description`/`title` are the first real fields on this struct — a
-//! `path` + `text` binding (`<domain><description>…</description>` is a
-//! child element's text content, not an attribute on `<domain>` itself)
-//! against the most natural real home for it. The rest — devices,
-//! per-domain-subsystem structs, `<devices>`/`<name>`/etc. — follows the
-//! same pattern as each of those gets implemented.
+//! `description`/`title` were the first real fields; `name`/`uuid`/
+//! `domain_type`/`memory`/`max_memory`/`max_memory_slots` round out
+//! Guest's own flat scalars (upstream's `./name`, `./uuid`, `./@type`,
+//! `./memory`, `./maxMemory`, `./maxMemory/@slots` — all plain
+//! self/child bindings, no new macro capability needed: `text` reuses
+//! the same `XmlAttrValue` conversion as `attribute`, so `Option<u32>`
+//! text fields already worked, just hadn't been exercised yet).
+//!
+//! Still TODO: `devices: DeviceList` and the domain-subsystem structs
+//! (`Clock`, `CurrentMemory`, and the other ~16 files under
+//! `domain/*.py` — cpu, os, features, seclabel, etc.) as fields here,
+//! once each gets its own struct.
 
 use virtinst_xml::XmlBound;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, XmlBound)]
 #[xml(tag = "domain")]
 pub struct Guest {
+    #[xml(attribute = "type")]
+    pub domain_type: Option<String>,
+
+    #[xml(path = "name", text)]
+    pub name: Option<String>,
+
+    #[xml(path = "uuid", text)]
+    pub uuid: Option<String>,
+
     #[xml(path = "description", text)]
     pub description: Option<String>,
 
     #[xml(path = "title", text)]
     pub title: Option<String>,
-    // TODO: name (text), uuid (text), devices: DeviceList, and the
-    // domain-subsystem structs (Clock, CurrentMemory, ...) as each
-    // gets its own struct.
+
+    #[xml(path = "memory", text)]
+    pub memory: Option<u32>,
+
+    #[xml(path = "maxMemory", text)]
+    pub max_memory: Option<u32>,
+
+    #[xml(path = "maxMemory", attribute = "slots")]
+    pub max_memory_slots: Option<u32>,
 }

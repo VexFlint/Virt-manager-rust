@@ -17,9 +17,12 @@ use virtinst_xml::{parse_libvirt_xml, XmlBound};
 
 const FIXTURE: &str = r#"<domain type="qemu">
   <name>test-vm</name>
+  <uuid>12345678-1234-1234-1234-123456789abc</uuid>
   <title>My Test VM</title>
   <description>A VM used for testing.</description>
+  <memory>2097152</memory>
   <currentMemory unit="KiB">1048576</currentMemory>
+  <maxMemory unit="KiB" slots="4">4194304</maxMemory>
   <clock offset="utc"/>
   <devices>
     <disk type="file" device="disk">
@@ -755,6 +758,25 @@ fn guest_reads_description_and_title_via_path_plus_text() {
         guest.description,
         Some("A VM used for testing.".to_string())
     );
+}
+
+#[test]
+fn guest_reads_name_uuid_type_and_memory_scalars() {
+    let doc = parse_libvirt_xml(FIXTURE).expect("fixture parses");
+    let root = doc.root_element().expect("root element");
+
+    let guest = Guest::from_element(&doc, root);
+    assert_eq!(guest.domain_type, Some("qemu".to_string()));
+    assert_eq!(guest.name, Some("test-vm".to_string()));
+    assert_eq!(
+        guest.uuid,
+        Some("12345678-1234-1234-1234-123456789abc".to_string())
+    );
+    // memory/maxMemory are both plain <element>text</element> ints,
+    // distinct from currentMemory's own unit-attribute + text pair.
+    assert_eq!(guest.memory, Some(2_097_152));
+    assert_eq!(guest.max_memory, Some(4_194_304));
+    assert_eq!(guest.max_memory_slots, Some(4));
 }
 
 #[test]
