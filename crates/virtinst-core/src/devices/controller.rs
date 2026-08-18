@@ -6,21 +6,20 @@
 //!
 //! This is the type ticket 12 named directly — a new `DeviceDisk`
 //! needing virtio-scsi implicitly wants a companion `DeviceController`,
-//! folded into that variant's data rather than a bolted-on side-channel
-//! (`DiskConfig { companion_controller: Option<ControllerConfig> }`).
-//! That `NewDevice`-enum-level wiring is still future work; this struct
-//! is what such a field would reference once it exists.
+//! folded directly into `NewDevice::Disk`'s `companion_controller`
+//! field, exactly as ticket 12 resolved (see `devices::new_device`).
 //!
 //! `target/@hotplug` uses libvirt's `on`/`off` boolean spelling, not
-//! `yes`/`no` — not modeled yet, see `virtinst_xml`'s `Option<u32>` doc
-//! comment for why that's a flagged gap rather than a silent one.
+//! `yes`/`no` — `Option<OnOff>` (`virtinst_xml`), added once
+//! `domain::DomainKeyWrap` made it a real gap rather than a
+//! speculative one.
 
-use virtinst_xml::XmlBound;
+use virtinst_xml::{OnOff, XmlBound};
 
 /// ```xml
 /// <controller type="scsi" index="0" model="virtio-scsi">
 ///   <driver queues="4"/>
-///   <target chassis="0"/>
+///   <target chassis="0" hotplug="on"/>
 /// </controller>
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq, XmlBound)]
@@ -40,4 +39,7 @@ pub struct DeviceController {
 
     #[xml(path = "target", attribute = "chassis")]
     pub target_chassis: Option<u32>,
+
+    #[xml(path = "target", attribute = "hotplug")]
+    pub target_hotplug: Option<OnOff>,
 }

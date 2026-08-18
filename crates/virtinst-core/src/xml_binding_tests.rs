@@ -13,7 +13,7 @@ use crate::devices::{
 };
 use crate::domain::{Clock, CurrentMemory, DomainMemtune, DomainPm, DomainResource, DomainVcpus};
 use crate::guest::Guest;
-use virtinst_xml::{parse_libvirt_xml, XmlBound};
+use virtinst_xml::{parse_libvirt_xml, OnOff, XmlBound};
 
 const FIXTURE: &str = r#"<domain type="qemu">
   <name>test-vm</name>
@@ -706,6 +706,27 @@ fn integer_attributes_read_and_edit_correctly() {
     assert!(!out.contains(r#"index="0""#));
     // driver_queues was never set — write_to must not invent <driver>.
     assert!(!out.contains("<driver"));
+}
+
+#[test]
+fn onoff_attribute_uses_on_off_not_yes_no() {
+    let mut doc = parse_libvirt_xml(
+        r#"<controller type="usb" index="0"><target hotplug="on"/></controller>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let mut controller = DeviceController::from_element(&doc, el);
+    assert_eq!(controller.target_hotplug, Some(OnOff(true)));
+
+    controller.target_hotplug = Some(OnOff(false));
+    controller.write_to(&mut doc, el);
+
+    let out = doc.write_str().expect("serializes");
+    assert!(out.contains(r#"hotplug="off""#));
+    // Distinct wire spelling from Option<bool>'s yes/no.
+    assert!(!out.contains("yes"));
+    assert!(!out.contains(r#"hotplug="no""#));
 }
 
 #[test]

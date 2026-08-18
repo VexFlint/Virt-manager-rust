@@ -84,20 +84,31 @@ impl XmlAttrValue for Option<bool> {
 /// `<controller index="0"/>`, `<graphics port="5900"/>`, etc. Unparsable
 /// or absent both read as `None`; not distinguished, same as every
 /// other field kind treats "couldn't get a value" here.
-///
-/// **Known gap, not yet needed:** libvirt XML also has an `on`/`off`
-/// boolean spelling (`is_onoff` in upstream, distinct from the
-/// `yes`/`no` spelling `bool`/`Option<bool>` handle here — e.g.
-/// `<controller><target hotplug="on"/></controller>`). No struct has
-/// needed it yet; add an `OnOff` wrapper type the same shape as this
-/// one when one does, rather than overloading `bool` to guess which
-/// spelling a given field wants.
 impl XmlAttrValue for Option<u32> {
     fn from_attr(s: Option<&str>) -> Self {
         s.and_then(|s| s.parse().ok())
     }
     fn to_attr(&self) -> Option<String> {
         self.map(|n| n.to_string())
+    }
+}
+
+/// libvirt XML's other boolean spelling: `on`/`off` (`is_onoff` in
+/// upstream), distinct from `yes`/`no` (`bool`/`Option<bool>` above) —
+/// e.g. `<cipher state="on"/>` (`domain/keywrap.py`), `<cpu
+/// migratable="on"/>` (`domain/cpu.py`). A newtype rather than
+/// overloading `bool` to guess which spelling a given field wants;
+/// `Option<OnOff>` is the shape that actually gets used (every
+/// `is_onoff` attribute found so far is optional in upstream too).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OnOff(pub bool);
+
+impl XmlAttrValue for Option<OnOff> {
+    fn from_attr(s: Option<&str>) -> Self {
+        s.map(|s| OnOff(s == "on"))
+    }
+    fn to_attr(&self) -> Option<String> {
+        self.map(|OnOff(b)| if b { "on" } else { "off" }.to_string())
     }
 }
 
