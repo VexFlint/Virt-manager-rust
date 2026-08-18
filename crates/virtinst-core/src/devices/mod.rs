@@ -36,8 +36,8 @@ pub use filesystem::DeviceFilesystem;
 pub mod hostdev;
 pub use hostdev::DeviceHostdev;
 
-pub mod serial;
-pub use serial::DeviceSerial;
+pub mod char;
+pub use char::{DeviceChannel, DeviceConsole, DeviceParallel, DeviceSerial};
 
 pub mod tpm;
 pub use tpm::DeviceTpm;
