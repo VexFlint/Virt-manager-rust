@@ -11,7 +11,7 @@ use crate::devices::{
     DeviceList, DeviceNetwork, DevicePanic, DeviceRedirdev, DeviceRng, DeviceSerial,
     DeviceSmartcard, DeviceSound, DeviceTpm, DeviceVideo, DeviceVsock, DeviceWatchdog,
 };
-use crate::domain::{Clock, CurrentMemory, DomainMemtune, DomainPm, DomainResource};
+use crate::domain::{Clock, CurrentMemory, DomainMemtune, DomainPm, DomainResource, DomainVcpus};
 use crate::guest::Guest;
 use virtinst_xml::{parse_libvirt_xml, XmlBound};
 
@@ -234,6 +234,28 @@ fn resource_reads_text_child_and_nested_attribute() {
         resource.fibrechannel_appid,
         Some("example.com:app1".to_string())
     );
+}
+
+#[test]
+fn vcpus_list_reads_each_entrys_attributes() {
+    let doc = parse_libvirt_xml(
+        r#"<vcpus>
+             <vcpu id="0" enabled="yes" hotpluggable="no" order="1"/>
+             <vcpu id="1" enabled="yes" hotpluggable="yes" order="2"/>
+           </vcpus>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let vcpus = DomainVcpus::from_element(&doc, el);
+    assert_eq!(vcpus.vcpu.len(), 2);
+    assert_eq!(vcpus.vcpu[0].id, Some(0));
+    assert_eq!(vcpus.vcpu[0].enabled, Some(true));
+    assert_eq!(vcpus.vcpu[0].hotpluggable, Some(false));
+    assert_eq!(vcpus.vcpu[0].order, Some(1));
+    assert_eq!(vcpus.vcpu[1].id, Some(1));
+    assert_eq!(vcpus.vcpu[1].hotpluggable, Some(true));
+    assert_eq!(vcpus.vcpu[1].order, Some(2));
 }
 
 #[test]

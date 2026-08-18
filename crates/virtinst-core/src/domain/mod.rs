@@ -22,7 +22,10 @@ pub use memtune::DomainMemtune;
 pub mod resource;
 pub use resource::DomainResource;
 
-// TODO: the rest (cpu, os, features, seclabel, sysinfo, vcpus,
+pub mod vcpus;
+pub use vcpus::{DomainVcpu, DomainVcpus};
+
+// TODO: the rest (cpu, os, features, seclabel, sysinfo,
 // numatune, xmlnsqemu, ...). `features.py` in particular needs a new
 // macro capability first — most of its ~40 fields use libvirt's
 // on/off boolean spelling (is_onoff), not yes/no (Option<bool>'s
