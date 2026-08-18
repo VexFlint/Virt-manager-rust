@@ -11,7 +11,7 @@ use crate::devices::{
     DeviceList, DeviceNetwork, DevicePanic, DeviceRedirdev, DeviceRng, DeviceSerial,
     DeviceSmartcard, DeviceSound, DeviceTpm, DeviceVideo, DeviceVsock, DeviceWatchdog,
 };
-use crate::domain::{Clock, CurrentMemory};
+use crate::domain::{Clock, CurrentMemory, DomainPm};
 use crate::guest::Guest;
 use virtinst_xml::{parse_libvirt_xml, XmlBound};
 
@@ -166,6 +166,32 @@ fn clock_binds_a_flat_attribute() {
 
     let clock = Clock::from_element(&doc, clock_el);
     assert_eq!(clock.offset, Some("utc".to_string()));
+}
+
+#[test]
+fn pm_reads_yesno_attributes_on_two_separate_nested_elements() {
+    let doc = parse_libvirt_xml(
+        r#"<pm>
+             <suspend-to-mem enabled="no"/>
+             <suspend-to-disk enabled="yes"/>
+           </pm>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let pm = DomainPm::from_element(&doc, el);
+    assert_eq!(pm.suspend_to_mem, Some(false));
+    assert_eq!(pm.suspend_to_disk, Some(true));
+}
+
+#[test]
+fn pm_missing_elements_read_as_none() {
+    let doc = parse_libvirt_xml(r#"<pm/>"#).expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let pm = DomainPm::from_element(&doc, el);
+    assert_eq!(pm.suspend_to_mem, None);
+    assert_eq!(pm.suspend_to_disk, None);
 }
 
 #[test]
