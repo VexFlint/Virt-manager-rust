@@ -11,7 +11,7 @@ use crate::devices::{
     DeviceList, DeviceNetwork, DevicePanic, DeviceRedirdev, DeviceRng, DeviceSerial,
     DeviceSmartcard, DeviceSound, DeviceTpm, DeviceVideo, DeviceVsock, DeviceWatchdog,
 };
-use crate::domain::{Clock, CurrentMemory, DomainPm};
+use crate::domain::{Clock, CurrentMemory, DomainMemtune, DomainPm};
 use crate::guest::Guest;
 use virtinst_xml::{parse_libvirt_xml, XmlBound};
 
@@ -192,6 +192,26 @@ fn pm_missing_elements_read_as_none() {
     let pm = DomainPm::from_element(&doc, el);
     assert_eq!(pm.suspend_to_mem, None);
     assert_eq!(pm.suspend_to_disk, None);
+}
+
+#[test]
+fn memtune_reads_four_flat_int_text_fields() {
+    let doc = parse_libvirt_xml(
+        r#"<memtune>
+             <hard_limit>1048576</hard_limit>
+             <soft_limit>1048576</soft_limit>
+             <swap_hard_limit>2097152</swap_hard_limit>
+             <min_guarantee>524288</min_guarantee>
+           </memtune>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let memtune = DomainMemtune::from_element(&doc, el);
+    assert_eq!(memtune.hard_limit, Some(1_048_576));
+    assert_eq!(memtune.soft_limit, Some(1_048_576));
+    assert_eq!(memtune.swap_hard_limit, Some(2_097_152));
+    assert_eq!(memtune.min_guarantee, Some(524_288));
 }
 
 #[test]

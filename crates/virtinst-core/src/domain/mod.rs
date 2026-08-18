@@ -16,5 +16,11 @@ pub use memory::CurrentMemory;
 pub mod pm;
 pub use pm::DomainPm;
 
+pub mod memtune;
+pub use memtune::DomainMemtune;
+
 // TODO: the rest (cpu, os, features, seclabel, sysinfo, vcpus,
-// numatune, memtune, xmlnsqemu, ...).
+// numatune, xmlnsqemu, ...). `features.py` in particular needs a new
+// macro capability first — most of its ~40 fields use libvirt's
+// on/off boolean spelling (is_onoff), not yes/no (Option<bool>'s
+// current mapping) — flagged, not silently modeled wrong.
