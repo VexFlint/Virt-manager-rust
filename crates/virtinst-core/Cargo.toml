@@ -14,6 +14,7 @@ virtinst-xml = { version = "0.1.0", path = "../virtinst-xml" }
 # Rust libvirt bindings (ticket 02). Needs libvirt-dev at build time
 # (pkg-config: `libvirt`) — installed on this machine 2026-08-19.
 virt = "0.4"
+uuid = { version = "1.20.0", features = ["v4"] }
 #
 # gir-generated, not yet vendored/generated (tickets 04, 09, 17):
 #   - libvirt-glib event-loop + Connection/Domain signals

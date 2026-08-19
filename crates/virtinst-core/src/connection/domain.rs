@@ -87,8 +87,53 @@ impl Domain {
         Ok(Domain { inner })
     }
 
+    /// Defines a **brand-new** domain from XML — plain
+    /// `virConnectDefineXML`, no existing domain involved. An
+    /// associated function taking `&Connection` rather than a
+    /// `Domain` method, same shape as `lookup_by_name`: there's
+    /// nothing to call this *on* yet, it's what makes the `Domain`.
+    /// Backs `virt-clone` (ticket 16's `Cloner`, `crate::cloner`) —
+    /// upstream's clone path ultimately reaches the same
+    /// `conn.defineXML(xml)` once there's no OS-install step in the
+    /// way (`--preserve-data` has none).
+    pub fn define_new(conn: &Connection, xml: &str) -> Result<Domain, LibvirtError> {
+        let inner = LibvirtDomain::define_xml(conn.as_connect(), xml)?;
+        Ok(Domain { inner })
+    }
+
+    /// The domain's persistent name — used to report success after a
+    /// clone/edit without the caller needing to hang onto the name
+    /// string it passed in separately.
+    pub fn name(&self) -> Result<String, LibvirtError> {
+        self.inner.get_name()
+    }
+
+    /// Removes the domain's persistent config — `virDomainUndefine`.
+    /// Nothing in `virt-clone` calls this yet (it never undefines what
+    /// it creates); exists for tests to clean up a domain they
+    /// defined, and generally useful enough not to gate behind
+    /// `#[cfg(test)]`.
+    pub fn undefine(&self) -> Result<(), LibvirtError> {
+        self.inner.undefine()
+    }
+
     pub fn is_active(&self) -> Result<bool, LibvirtError> {
         self.inner.is_active()
+    }
+
+    /// Starts a defined-but-inactive domain — `virDomainCreate`.
+    pub fn start(&self) -> Result<(), LibvirtError> {
+        self.inner.create().map(|_| ())
+    }
+
+    /// Forcibly stops a running domain — `virDomainDestroy`. Not
+    /// `virt-clone`'s job (upstream's `Cloner` itself requires the
+    /// source domain already be shut off, never stops one); exists so
+    /// tests can satisfy that same requirement against `test:///`'s
+    /// always-running default domain without a second, differently-
+    /// shaped fixture domain.
+    pub fn destroy(&self) -> Result<(), LibvirtError> {
+        self.inner.destroy()
     }
 
     /// The domain's persistent (`VIR_DOMAIN_XML_INACTIVE`) config as
@@ -160,20 +205,7 @@ impl Domain {
 mod tests {
     use super::*;
     use crate::devices::{DeviceDisk, DeviceRng};
-    use std::sync::Mutex;
-
-    /// `test:///default`'s `"test"` domain is one shared, process-wide
-    /// object — every test below that calls `add_device`/
-    /// `edit_inactive_xml` on it does a fetch-inactive-XML /
-    /// mutate / define cycle, and `cargo test`'s default parallelism
-    /// runs these tests concurrently. Two such cycles interleaved on
-    /// the same domain can lose one side's change (confirmed
-    /// empirically: this file's tests failed intermittently, ~20% of
-    /// runs, with `edit_inactive_xml` unable to find a watchdog another
-    /// test's `add_device` call had raced away). Not a flaw in
-    /// `edit_inactive_xml` itself — a real domain isn't touched by two
-    /// callers at once — just this shared test fixture. Serialize.
-    static TEST_DOMAIN_LOCK: Mutex<()> = Mutex::new(());
+    use crate::test_support::TEST_DOMAIN_LOCK;
 
     /// Real libvirt calls against the `test` domain libvirt's builtin
     /// `test:///default` driver always defines and starts running -
