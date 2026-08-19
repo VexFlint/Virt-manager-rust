@@ -11,11 +11,14 @@ repository.workspace = true
 # virtinst-xml re-exports edit_xml's Document/Element (ticket 06) — no
 # need for a direct edit-xml dependency alongside it.
 virtinst-xml = { version = "0.1.0", path = "../virtinst-xml" }
-# virt = "*"          # libvirt bindings (ticket 02) — pin once needed.
+# Rust libvirt bindings (ticket 02). Needs libvirt-dev at build time
+# (pkg-config: `libvirt`) — installed on this machine 2026-08-19.
+virt = "0.4"
 #
 # gir-generated, not yet vendored/generated (tickets 04, 09, 17):
 #   - libvirt-glib event-loop + Connection/Domain signals
 #   - libosinfo OS database
 # These need a `gir` codegen pass against the system .gir files
-# (confirmed present: gir1.2-libvirt-glib-1.0, and libosinfo once that
-# package is installed) before they're addable as path/git dependencies.
+# (confirmed present: libvirt-glib-1.0-dev, and libosinfo once that
+# package is installed) — plus the `gir` codegen tool itself, which
+# isn't an apt package (build from github.com/gtk-rs/gir).

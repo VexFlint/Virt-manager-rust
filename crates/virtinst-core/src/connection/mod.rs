@@ -16,21 +16,32 @@
 pub mod uri;
 pub use uri::Uri;
 
-// TODO: pub struct Connection { inner: virt::connect::Connect, ... }
+#[allow(clippy::module_inception)]
+mod connection;
+pub use connection::Connection;
+
 // TODO: pub struct Domain { ... attach_device(), add_device() (ticket 12) }
 // TODO: libvirt-glib event-loop registration (ticket 09) — LibvirtGLib::init()
 // + event_register() equivalent, once the gir binding exists.
 //
-// All three TODOs above are blocked, not just unstarted: this machine
-// has libvirt0 (the runtime lib) and libvirt-clients installed, but not
-// libvirt-dev (`pkg-config --exists libvirt` fails, no libvirt.h found
-// anywhere) — the `virt` crate needs that to build at all. Similarly
-// gir1.2-libvirt-glib-1.0 only ships the compiled .typelib for runtime
-// introspection; the .gir XML source `gir` codegen needs isn't present
-// (no libvirt-glib-1.0-dev-equivalent package installed). Neither is
-// something to install unilaterally — surfaced for Vex to decide.
+// `Domain` needs a live `Connection` (done, 2026-08-19) to actually
+// exercise attach_device()/add_device() against, so it's the natural
+// next slice, not blocked by anything external anymore.
 //
-// What *is* done and unblocked: `uri` — URI parsing plus the
-// driver-detection predicates ticket 17 found feeding the per-driver
-// device-default chains (`is_qemu()`/`is_xen()`/`is_lxc()`/etc.). Pure
-// string parsing, no libvirt connection needed, fully covered by tests.
+// libvirt-glib event registration is still blocked, but only on
+// tooling now, not missing packages: libvirt-dev and
+// libvirt-glib-1.0-dev were installed 2026-08-19 (`pkg-config --exists
+// libvirt`/`libvirt-glib-1.0` both succeed, the real .gir XML sources
+// are present under /usr/share/gir-1.0/), which is what unblocked
+// `Connection` itself. What's still missing is the `gir` codegen tool
+// that turns those .gir files into Rust bindings — not an apt package,
+// needs building from github.com/gtk-rs/gir. Surfaced for Vex to
+// decide before spending a session on that build-tooling detour.
+//
+// `Connection` (this module's `connection.rs`) is done: open/close, the
+// parsed `Uri`, `is_alive()` — real libvirt calls, verified against the
+// builtin `test:///` driver (no daemon needed). Capabilities caching,
+// domain/pool/vol/nodedev list caching, and the openAuth credential
+// callback are deliberately not ported yet — see `connection.rs`'s own
+// doc comment for the concrete reasons each is deferred, not just a
+// generic "TODO".
