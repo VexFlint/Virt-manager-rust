@@ -83,6 +83,34 @@ for *editing existing* documents; there's no existing document on the
 create path for it to preserve. The DOM path belongs to edit-surface
 tickets (virt-xml, host/network/pool edit dialogs) when those are opened.
 
+> **Amendment (2026-08-20, `virt-install --import`, ticket 16):** "direct
+> struct construction, fresh serialization" turned out not to mean
+> `to_xml_string(&guest)` — that call only ever serializes `Guest`'s flat
+> attribute/text fields. `devices`, `vcpulist`, and every other
+> `#[xml(nested)]`/`#[xml(list)]` field are **read-only by design**
+> (`virtinst-xml`'s `nested_read`/`list_read` — the round-trip
+> preservation guarantee this ticket's own DOM paragraph above describes
+> requires it: no "absent" state distinguishable from "present but
+> empty", so `write_to` can never invent an empty `<devices>`/`<vcpu>`
+> on a document that never had one). Calling `to_xml_string` on a real
+> `Guest` silently drops `<os>`/`<vcpu>`/`<devices>` entirely — libvirt
+> rejects the result outright (no `<os>` = unbootable). Never caught
+> earlier because the only `to_xml_string` test used `DeviceRng`, an
+> all-flat-fields struct.
+>
+> The actual fresh-creation path (`virt-install --import`, and later
+> the real Create VM wizard) has to build the domain XML via direct
+> `edit_xml::Document`/`Element` construction — the exact same
+> primitives `cloner.rs` already uses for its DOM surgery, applied here
+> to a *fresh* document instead of an edited one — not through
+> `Guest`'s derive-macro `write_to` at all. `virtinst-xml`'s macro
+> itself is not being changed to support this (that would reopen ticket
+> 03's guarantee); this is a "build via DOM either way" amendment, not
+> a macro fix. See `xml_binding_tests.rs`'s
+> `to_xml_string_on_guest_omits_nested_and_list_fields` for the pinned
+> gap and `virt-install`'s `--import` implementation for the DOM-
+> construction pattern in practice.
+
 **Explicitly out of scope, deferred elsewhere:**
 - Async OS-detection gate (`_start_detect_os_if_needed`): spun out as
   **ticket 09** (async/background-task model) — cross-cutting (the

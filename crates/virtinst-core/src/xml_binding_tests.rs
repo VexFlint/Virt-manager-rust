@@ -1396,6 +1396,49 @@ fn to_xml_string_serializes_a_fresh_struct_with_no_existing_document() {
     assert_eq!(reread, rng);
 }
 
+/// Pins a real gap, found while building `virt-install --import`
+/// (amendment to ticket 08, 2026-08-20): `to_xml_string(&Guest)` is
+/// **not** a usable "fresh creation" path for a whole domain, despite
+/// ticket 08's original wording ("direct struct construction, fresh
+/// serialization"). `Guest::devices`/`vcpulist`/etc. are
+/// `#[xml(nested)]`/`#[xml(list)]` — read-only by design, the same
+/// preservation guarantee `guest_write_to_leaves_nested_fields_
+/// completely_untouched` (above) pins for the *edit* path bites here
+/// too: `write_to` never invents `<os>`/`<vcpu>`/`<devices>` even on a
+/// document that never had any of them. libvirt would reject this XML
+/// outright (no `<os>` = unbootable) — this only ever went unnoticed
+/// because the one existing `to_xml_string` test used an all-flat-
+/// fields struct (`DeviceRng`, directly above). Real fresh-domain
+/// construction has to go through direct `Document`/`Element`
+/// construction instead (`cloner.rs`'s pattern, applied to a fresh
+/// document), not through `Guest`'s derive-macro `write_to` at all.
+#[test]
+fn to_xml_string_on_guest_omits_nested_and_list_fields() {
+    let guest = Guest {
+        name: Some("imported-guest".into()),
+        memory: Some(2097152),
+        devices: DeviceList {
+            disks: vec![DeviceDisk {
+                source_file: Some("/var/lib/libvirt/images/imported.qcow2".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let xml = virtinst_xml::to_xml_string(&guest).expect("serializes");
+
+    // The flat fields this crate actually models on Guest are there...
+    assert!(xml.contains("imported-guest"));
+    // ...but everything nested/list is silently gone, even though the
+    // struct itself has real data in it.
+    assert!(!xml.contains("<devices"));
+    assert!(!xml.contains("imported.qcow2"));
+    assert!(!xml.contains("<os"));
+    assert!(!xml.contains("<vcpu"));
+}
+
 #[test]
 fn attribute_and_text_bind_to_the_same_element() {
     let doc = parse_libvirt_xml(FIXTURE).expect("fixture parses");
