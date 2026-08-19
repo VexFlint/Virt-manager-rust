@@ -160,12 +160,27 @@ impl Domain {
 mod tests {
     use super::*;
     use crate::devices::{DeviceDisk, DeviceRng};
+    use std::sync::Mutex;
+
+    /// `test:///default`'s `"test"` domain is one shared, process-wide
+    /// object — every test below that calls `add_device`/
+    /// `edit_inactive_xml` on it does a fetch-inactive-XML /
+    /// mutate / define cycle, and `cargo test`'s default parallelism
+    /// runs these tests concurrently. Two such cycles interleaved on
+    /// the same domain can lose one side's change (confirmed
+    /// empirically: this file's tests failed intermittently, ~20% of
+    /// runs, with `edit_inactive_xml` unable to find a watchdog another
+    /// test's `add_device` call had raced away). Not a flaw in
+    /// `edit_inactive_xml` itself — a real domain isn't touched by two
+    /// callers at once — just this shared test fixture. Serialize.
+    static TEST_DOMAIN_LOCK: Mutex<()> = Mutex::new(());
 
     /// Real libvirt calls against the `test` domain libvirt's builtin
     /// `test:///default` driver always defines and starts running -
     /// same no-daemon guarantee `connection.rs`'s own tests rely on.
     #[test]
     fn attach_device_hotplugs_a_disk_onto_the_running_test_domain() {
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let conn = Connection::open("test:///default").expect("test:/// driver always opens");
         let domain = Domain::lookup_by_name(&conn, "test").expect("the default test domain");
         assert!(
@@ -188,6 +203,7 @@ mod tests {
 
     #[test]
     fn add_device_persists_to_the_inactive_config() {
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let conn = Connection::open("test:///default").expect("test:/// driver always opens");
         let domain = Domain::lookup_by_name(&conn, "test").expect("the default test domain");
 
@@ -220,6 +236,7 @@ mod tests {
     fn edit_inactive_xml_mutates_one_attribute_and_leaves_the_rest_alone() {
         use crate::devices::DeviceWatchdog;
 
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let conn = Connection::open("test:///default").expect("test:/// driver always opens");
         let domain = Domain::lookup_by_name(&conn, "test").expect("the default test domain");
 
@@ -259,5 +276,23 @@ mod tests {
         assert_eq!(watchdog.attribute(&doc, "action"), Some("poweroff"));
         // ...but the untouched one is exactly as it was.
         assert_eq!(watchdog.attribute(&doc, "model"), Some("i6300esb"));
+
+        // `test:///default`'s "test" domain persists across tests within
+        // one test binary run — clean up what this test added so a
+        // later test (or a later run of this one) doesn't inherit a
+        // leftover watchdog. Same trap `virtinst-cli`'s equivalent test
+        // hit for real (confirmed empirically: without this, it saw 2
+        // watchdogs after adding 1).
+        use virtinst_xml::list_remove;
+        domain
+            .edit_inactive_xml(&conn, |doc, root| {
+                let devices = virtinst_xml::resolve_path(doc, root, &["devices"])
+                    .ok_or_else(|| "no <devices> element".to_string())?;
+                for el in devices.find_all(doc, "watchdog") {
+                    list_remove(doc, el).map_err(|e| e.to_string())?;
+                }
+                Ok(())
+            })
+            .expect("test cleanup succeeds");
     }
 }
