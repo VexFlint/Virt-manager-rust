@@ -12,7 +12,9 @@
 //! `#[xml(nested)]`.
 
 pub mod import;
+pub mod iso;
 pub use import::build_import_document;
+pub use iso::build_iso_document;
 
 /// One of upstream's 7 install-method sub-flows (`createvm.py`'s
 /// `INSTALL_PAGE_*` constants — checked directly against
@@ -126,6 +128,19 @@ impl InstallMethod {
     /// left for a separate sizing/creation page to do. The container
     /// variants skip it because containers don't have a disk in this
     /// sense at all.
+    ///
+    /// `Iso { .. }` returns `true` regardless of `live` — upstream
+    /// derives `livecd` *from* the storage page's own outcome
+    /// (`_validate_storage_page`: `livecd = not storage_enabled`), so
+    /// by the time `live` has a value the storage page has already run;
+    /// this method is only ever asked *before* that, when deciding
+    /// whether to show the page at all. `Iso { live: true, .. }`
+    /// reaching this method with a concrete `live` value only happens
+    /// on the CLI's `--livecd` path (no wizard page-flow involved),
+    /// where the field is a caller-supplied input rather than a
+    /// storage-page-derived output — a real, deliberate difference in
+    /// how the two callers populate the same variant, not a bug in
+    /// this method.
     pub fn wants_storage_page(&self) -> bool {
         matches!(
             self,

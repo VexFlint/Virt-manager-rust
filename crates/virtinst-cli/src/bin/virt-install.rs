@@ -4,15 +4,23 @@
 //! no wizard equivalent, closer in shape to `virt-xml --edit` than to
 //! Create VM (ticket 16).
 //!
-//! This slice is `--import` only — upstream's simplest install method:
-//! no media fetch, no OS detection, no `Installer`-class media/kernel
-//! wiring, an existing disk becomes the VM's disk as-is
-//! (`InstallMethod::Import`). The domain XML is built via
-//! `virtinst_core::install::build_import_document` (direct DOM
-//! construction — see the amendment on ticket 08 for why `Guest::
-//! to_xml_string()` can't do this). Every other `InstallMethod`
-//! variant, `--unattended`/`--cloud-init`, and `--reinstall` are
-//! undeclared rather than stubbed.
+//! Two `InstallMethod` variants are wired up so far:
+//! - `--import` — upstream's simplest install method: no media fetch, no
+//!   OS detection, no `Installer`-class media/kernel wiring, an existing
+//!   disk becomes the VM's disk as-is (`InstallMethod::Import`).
+//! - `--cdrom --livecd` — `InstallMethod::Iso { live: true, .. }`: boot
+//!   straight into CD media with no persistent disk. Plain `--cdrom`
+//!   (install onto a new persistent disk, `live: false`) isn't
+//!   implemented yet — it needs the two-phase `createXML`(boot=cdrom)/
+//!   `defineXML`(boot=hd) dance documented on `iso::build_iso_document`,
+//!   which nothing in this crate does yet.
+//!
+//! The domain XML for both is built via direct DOM construction
+//! (`virtinst_core::install::{build_import_document, build_iso_document}`
+//! — see the amendment on ticket 08 for why `Guest::to_xml_string()`
+//! can't do this). Every other `InstallMethod` variant,
+//! `--unattended`/`--cloud-init`, and `--reinstall` are undeclared rather
+//! than stubbed.
 //!
 //! Matches upstream's actual default sequence
 //! (`Installer._create_guest`, `doboot=True`, not `--transient`): two
@@ -23,15 +31,29 @@
 use clap::Parser;
 use virtinst_core::capabilities::DomainCapabilities;
 use virtinst_core::connection::{Connection, Domain};
-use virtinst_core::install::build_import_document;
+use virtinst_core::install::{build_import_document, build_iso_document};
 
 #[derive(Parser)]
 #[command(name = "virt-install")]
 struct Args {
-    /// Build a guest around an existing disk image — the only install
-    /// method implemented so far.
+    /// Build a guest around an existing disk image (`InstallMethod::
+    /// Import`).
     #[arg(long)]
     import: bool,
+
+    /// Path to install/boot media (`InstallMethod::Iso`). Only
+    /// meaningful combined with `--livecd` so far — plain `--cdrom`
+    /// (install onto a new persistent disk) needs the two-phase
+    /// boot-then-redefine dance `iso::build_iso_document` doesn't do
+    /// yet.
+    #[arg(long)]
+    cdrom: Option<String>,
+
+    /// Boot straight into `--cdrom`'s media with no persistent disk
+    /// attached at all (`InstallMethod::Iso { live: true, .. }`).
+    /// Required alongside `--cdrom` for now, see its doc comment.
+    #[arg(long)]
+    livecd: bool,
 
     /// Name for the new guest.
     #[arg(short, long)]
@@ -49,13 +71,14 @@ struct Args {
     #[arg(long, default_value_t = 1)]
     vcpus: u32,
 
-    /// Path to the existing disk image to import. Upstream's `--disk`
-    /// is a full `path=...,bus=...` optstring (`ParserDisk`); this is
-    /// a bare path only — the equivalent of upstream's positional
-    /// `--disk /path/to/img` form (`remove_first="path"`), not the
-    /// general option-string syntax.
+    /// Path to the existing disk image to import. Required with
+    /// `--import`, ignored otherwise. Upstream's `--disk` is a full
+    /// `path=...,bus=...` optstring (`ParserDisk`); this is a bare path
+    /// only — the equivalent of upstream's positional `--disk
+    /// /path/to/img` form (`remove_first="path"`), not the general
+    /// option-string syntax.
     #[arg(long)]
-    disk: String,
+    disk: Option<String>,
 
     /// Connect to a non-default hypervisor.
     #[arg(short, long, default_value = "qemu:///system")]
@@ -64,11 +87,6 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-
-    if !args.import {
-        eprintln!("virt-install: only --import is implemented so far");
-        std::process::exit(1);
-    }
 
     let conn = Connection::open(&args.connect).unwrap_or_else(|e| {
         eprintln!("virt-install: failed to connect to {}: {e}", args.connect);
@@ -95,14 +113,43 @@ fn main() {
         eprintln!("virt-install: --memory {} MiB overflows", args.memory);
         std::process::exit(1);
     });
-    let doc = build_import_document(
-        &args.name,
-        memory_kib,
-        args.vcpus,
-        &args.disk,
-        &domain_type,
-        &arch,
-    );
+
+    let doc = if args.import {
+        let disk = args.disk.unwrap_or_else(|| {
+            eprintln!("virt-install: --import requires --disk");
+            std::process::exit(1);
+        });
+        build_import_document(
+            &args.name,
+            memory_kib,
+            args.vcpus,
+            &disk,
+            &domain_type,
+            &arch,
+        )
+    } else if let Some(media) = args.cdrom {
+        if !args.livecd {
+            eprintln!(
+                "virt-install: --cdrom requires --livecd for now (installing onto a new \
+                 persistent disk isn't implemented yet)"
+            );
+            std::process::exit(1);
+        }
+        build_iso_document(
+            &args.name,
+            memory_kib,
+            args.vcpus,
+            &media,
+            &domain_type,
+            &arch,
+        )
+    } else {
+        eprintln!(
+            "virt-install: specify --import or --cdrom --livecd (only methods implemented so far)"
+        );
+        std::process::exit(1);
+    };
+
     let xml = doc.write_str().unwrap_or_else(|e| {
         eprintln!("virt-install: failed to serialize the guest's XML: {e}");
         std::process::exit(1);
