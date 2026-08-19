@@ -90,3 +90,45 @@ pub(super) fn push_boot_dev(doc: &mut Document, os: Element, dev: &str) {
     os.push_child(doc, boot_el)
         .expect("a freshly-created detached element always attaches cleanly");
 }
+
+/// Pushes `<on_reboot>destroy</on_reboot>` onto `root` — upstream's
+/// `_alter_bootconfig`'s very first line (`guest.on_reboot = "destroy"`),
+/// applied *only* to the initial (`createXML`) document in a two-phase
+/// install. This is the actual mechanism that makes two-phase installs
+/// work: libvirt's own default is `restart`, so without this override
+/// the transient instance would reboot straight back into the install
+/// media/bootdev forever instead of yielding to the already-`defineXML`-
+/// ed final config once the install's reboot happens. Missing entirely
+/// from the first two-phase commit (`iso.rs`'s `Iso { live: false }`) —
+/// no test caught it because `test:///` never actually boots anything,
+/// so nothing here exercises the behavior this element controls, only
+/// its presence in the XML.
+pub(super) fn push_on_reboot_destroy(doc: &mut Document, root: Element) {
+    push_text_child(doc, root, "on_reboot", "destroy");
+}
+
+/// `<disk type="file" device="disk"><source file=.../><target dev="vda"
+/// bus="virtio"/></disk>`, pushed onto `devices_el` — the fixed-defaults
+/// persistent disk shape shared by `import.rs`, `iso.rs`'s two-phase
+/// case, and `manual.rs` (real driver/OS-aware bus selection isn't
+/// ported, see `import.rs`'s doc comment for the gap). Moved here once
+/// `iso.rs` and `manual.rs` became the second and third copies.
+pub(super) fn push_virtio_disk(doc: &mut Document, devices_el: Element, path: &str) {
+    let disk_el = Element::new(doc, "disk");
+    disk_el.set_attribute(doc, "type", "file");
+    disk_el.set_attribute(doc, "device", "disk");
+    let source_el = Element::new(doc, "source");
+    source_el.set_attribute(doc, "file", path);
+    disk_el
+        .push_child(doc, source_el)
+        .expect("a freshly-created detached element always attaches cleanly");
+    let target_el = Element::new(doc, "target");
+    target_el.set_attribute(doc, "dev", "vda");
+    target_el.set_attribute(doc, "bus", "virtio");
+    disk_el
+        .push_child(doc, target_el)
+        .expect("a freshly-created detached element always attaches cleanly");
+    devices_el
+        .push_child(doc, disk_el)
+        .expect("a freshly-created detached element always attaches cleanly");
+}

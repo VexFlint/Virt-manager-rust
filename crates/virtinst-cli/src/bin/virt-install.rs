@@ -4,7 +4,7 @@
 //! no wizard equivalent, closer in shape to `virt-xml --edit` than to
 //! Create VM (ticket 16).
 //!
-//! Four `InstallMethod` variants are wired up so far:
+//! Five `InstallMethod` shapes are wired up so far:
 //! - `--import` — upstream's simplest install method: no media fetch, no
 //!   OS detection, no `Installer`-class media/kernel wiring, an existing
 //!   disk becomes the VM's disk as-is (`InstallMethod::Import`).
@@ -17,19 +17,22 @@
 //! - `--boot <dev>` — `InstallMethod::Manual { boot_dev: Some(dev) }`,
 //!   the single-phase case (`options.boot_was_set` forces
 //!   `no_install = True` upstream when `--boot` is the only install
-//!   method given). `--pxe` isn't implemented — with a disk present it
-//!   needs the same two-phase shape as `--cdrom` without `--livecd` (not
-//!   a missing primitive anymore, see `iso::build_iso_two_phase_documents`'s
-//!   doc comment — just not built for `Manual` yet); with no disk, both
-//!   phases would agree and two-phase would be vacuous, see `manual.rs`'s
-//!   own header for exactly which case is which.
+//!   method given).
+//! - `--pxe` (optionally with `--disk <path>`) — also `InstallMethod::
+//!   Manual { boot_dev: Some("network") }`, but always two-phase
+//!   (`manual::build_manual_two_phase_documents`) regardless of whether
+//!   a disk was given — `requires_postboot_xml_changes()` only checks
+//!   `install_bootdev` truthiness, not disk presence; with no disk the
+//!   two phases just end up identical (see `manual.rs`'s header for the
+//!   exact derivation of both cases).
 //!
-//! The domain XML for all four is built via direct DOM construction
+//! The domain XML for all five is built via direct DOM construction
 //! (`virtinst_core::install::{build_import_document, build_iso_document,
-//! build_iso_two_phase_documents, build_manual_document}` — see the
-//! amendment on ticket 08 for why `Guest::to_xml_string()` can't do
-//! this). Every other `InstallMethod` variant, `--unattended`/
-//! `--cloud-init`, and `--reinstall` are undeclared rather than stubbed.
+//! build_iso_two_phase_documents, build_manual_document,
+//! build_manual_two_phase_documents}` — see the amendment on ticket 08
+//! for why `Guest::to_xml_string()` can't do this). Every other
+//! `InstallMethod` variant, `--unattended`/`--cloud-init`, and
+//! `--reinstall` are undeclared rather than stubbed.
 //!
 //! Matches upstream's actual default sequence (`Installer._create_guest`,
 //! `doboot=True`, not `--transient`): two separate libvirt calls,
@@ -47,7 +50,8 @@ use clap::Parser;
 use virtinst_core::capabilities::DomainCapabilities;
 use virtinst_core::connection::{Connection, Domain};
 use virtinst_core::install::{
-    build_import_document, build_iso_document, build_iso_two_phase_documents, build_manual_document,
+    build_import_document, build_iso_document, build_iso_two_phase_documents,
+    build_manual_document, build_manual_two_phase_documents,
 };
 
 #[derive(Parser)]
@@ -76,6 +80,13 @@ struct Args {
     /// this is narrower — boot-device selection only.
     #[arg(long)]
     boot: Option<String>,
+
+    /// Boot from the network (`InstallMethod::Manual { boot_dev:
+    /// Some("network") }`), always two-phase — see this binary's own doc
+    /// comment. `--disk` is optional here (a pure network-boot appliance
+    /// is a real invocation), unlike plain `--cdrom`.
+    #[arg(long)]
+    pxe: bool,
 
     /// Name for the new guest.
     #[arg(short, long)]
@@ -190,6 +201,17 @@ fn main() {
             );
             (write(initial), write(final_doc))
         }
+    } else if args.pxe {
+        let (initial, final_doc) = build_manual_two_phase_documents(
+            &args.name,
+            memory_kib,
+            args.vcpus,
+            "network",
+            args.disk.as_deref(),
+            &domain_type,
+            &arch,
+        );
+        (write(initial), write(final_doc))
     } else if let Some(boot_dev) = args.boot {
         let xml = write(build_manual_document(
             &args.name,
@@ -203,8 +225,8 @@ fn main() {
         (xml.clone(), xml)
     } else {
         eprintln!(
-            "virt-install: specify --import, --cdrom, or --boot (only methods implemented \
-             so far)"
+            "virt-install: specify --import, --cdrom, --pxe, or --boot (only methods \
+             implemented so far)"
         );
         std::process::exit(1);
     };

@@ -17,7 +17,7 @@ pub mod iso;
 pub mod manual;
 pub use import::build_import_document;
 pub use iso::{build_iso_document, build_iso_two_phase_documents};
-pub use manual::build_manual_document;
+pub use manual::{build_manual_document, build_manual_two_phase_documents};
 
 /// One of upstream's 7 install-method sub-flows (`createvm.py`'s
 /// `INSTALL_PAGE_*` constants — checked directly against

@@ -25,6 +25,17 @@
 //!   (`_remove_install_cdrom_media`: `disk.set_source_path(None)` — an
 //!   empty drive, not a removed device), persistent disk unchanged.
 //!
+//! **The initial document also gets `<on_reboot>destroy</on_reboot>`**
+//! (`_alter_bootconfig`'s first line, `guest.on_reboot = "destroy"`) —
+//! this is the actual mechanism that makes two-phase installs work.
+//! libvirt's own default is `restart`; without this override the
+//! transient instance would reboot straight back into the cdrom-booting
+//! initial config forever once install finishes, instead of yielding to
+//! the already-persisted final config. Missing from this module's first
+//! version of `build_iso_two_phase_documents` — no test caught it
+//! because `test:///` never actually boots anything, only the XML's
+//! presence/absence is checkable here.
+//!
 //! **One deliberate divergence from upstream, not a bug**: upstream's
 //! *initial* boot order for a plain `--cdrom` (no `--pxe`) actually
 //! comes out empty (`_alter_bootconfig`'s `bootdev = self._install_
@@ -65,7 +76,9 @@
 use uuid::Uuid;
 use virtinst_xml::{Document, Element};
 
-use super::domain_skeleton::{build_domain_skeleton, push_boot_dev};
+use super::domain_skeleton::{
+    build_domain_skeleton, push_boot_dev, push_on_reboot_destroy, push_virtio_disk,
+};
 
 /// `name`/`memory_kib`/`vcpus`/`domain_type`/`arch` — see
 /// `build_import_document`'s doc comment, identical rationale. `media` is
@@ -135,6 +148,7 @@ pub fn build_iso_two_phase_documents(
         "cdrom",
         Some(media),
         disk_path,
+        true,
     );
     let final_doc = build_iso_phase_document(
         name,
@@ -146,14 +160,17 @@ pub fn build_iso_two_phase_documents(
         "hd",
         None,
         disk_path,
+        false,
     );
     (initial, final_doc)
 }
 
 /// Shared shape for one phase of the two-phase document pair: same
-/// skeleton, same two devices (cdrom + persistent disk), differing only
-/// in `boot_dev` and whether the cdrom has media inserted
-/// (`cdrom_source: Option<&str>`).
+/// skeleton, same two devices (cdrom + persistent disk), differing in
+/// `boot_dev`, whether the cdrom has media inserted (`cdrom_source:
+/// Option<&str>`), and `is_initial` (`<on_reboot>destroy</on_reboot>` —
+/// see this module's own doc comment for why only the initial document
+/// gets it).
 #[allow(clippy::too_many_arguments)]
 fn build_iso_phase_document(
     name: &str,
@@ -165,9 +182,13 @@ fn build_iso_phase_document(
     boot_dev: &str,
     cdrom_source: Option<&str>,
     disk_path: &str,
+    is_initial: bool,
 ) -> Document {
     let (mut doc, root, os_el) =
         build_domain_skeleton(name, memory_kib, vcpus, uuid, domain_type, arch);
+    if is_initial {
+        push_on_reboot_destroy(&mut doc, root);
+    }
     push_boot_dev(&mut doc, os_el, boot_dev);
 
     let devices_el = Element::new(&mut doc, "devices");
@@ -203,29 +224,6 @@ fn push_cdrom_disk(doc: &mut Document, devices_el: Element, media: Option<&str>)
     let readonly_el = Element::new(doc, "readonly");
     disk_el
         .push_child(doc, readonly_el)
-        .expect("a freshly-created detached element always attaches cleanly");
-    devices_el
-        .push_child(doc, disk_el)
-        .expect("a freshly-created detached element always attaches cleanly");
-}
-
-/// `<disk type="file" device="disk"><source file=.../><target dev="vda"
-/// bus="virtio"/></disk>` — same fixed defaults as `import.rs`'s disk
-/// element (see its doc comment's bus-selection gap).
-fn push_virtio_disk(doc: &mut Document, devices_el: Element, path: &str) {
-    let disk_el = Element::new(doc, "disk");
-    disk_el.set_attribute(doc, "type", "file");
-    disk_el.set_attribute(doc, "device", "disk");
-    let source_el = Element::new(doc, "source");
-    source_el.set_attribute(doc, "file", path);
-    disk_el
-        .push_child(doc, source_el)
-        .expect("a freshly-created detached element always attaches cleanly");
-    let target_el = Element::new(doc, "target");
-    target_el.set_attribute(doc, "dev", "vda");
-    target_el.set_attribute(doc, "bus", "virtio");
-    disk_el
-        .push_child(doc, target_el)
         .expect("a freshly-created detached element always attaches cleanly");
     devices_el
         .push_child(doc, disk_el)
@@ -373,6 +371,20 @@ mod tests {
         );
         assert!(Uuid::parse_str(&initial_uuid).is_ok());
 
+        // The actual mechanism that makes two-phase work: only the
+        // initial document tells libvirt not to reboot back into itself
+        // once the install's reboot happens.
+        assert_eq!(
+            initial_root
+                .find(&initial, "on_reboot")
+                .map(|el| el.text_content(&initial)),
+            Some("destroy".to_string())
+        );
+        assert!(
+            final_root.find(&final_doc, "on_reboot").is_none(),
+            "the final document doesn't touch on_reboot, libvirt's default (restart) stands"
+        );
+
         let initial_os = initial_root.find(&initial, "os").unwrap();
         assert_eq!(
             initial_os
@@ -480,6 +492,11 @@ mod tests {
             !live_xml.contains("boot dev='hd'"),
             "the running instance's boot order has no hd entry yet"
         );
+        assert!(
+            live_xml.contains("<on_reboot>destroy</on_reboot>"),
+            "the running instance won't reboot back into the install media — the actual \
+             mechanism that makes two-phase work, not just a different boot order"
+        );
         // Holds because this document's initial boot order is a single
         // `[cdrom]` entry, not `[cdrom, hd]` — if `--pxe --disk`'s
         // two-phase case is ever built reusing `_build_boot_order`'s
@@ -498,6 +515,10 @@ mod tests {
         assert!(
             !inactive_xml.contains("boot dev='cdrom'"),
             "the persisted config's boot order has no cdrom entry"
+        );
+        assert!(
+            !inactive_xml.contains("<on_reboot>destroy</on_reboot>"),
+            "the persisted config doesn't carry the initial-only on_reboot override"
         );
 
         running

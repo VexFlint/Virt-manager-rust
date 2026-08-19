@@ -1,29 +1,35 @@
-//! Builds a fresh domain `Document` for `InstallMethod::Manual { boot_dev:
-//! Some(_) }` — specifically the CLI's bare `--boot <dev>` invocation
-//! (`virtinstall.py`'s `build_installer`: when `--boot` is the *only*
-//! install-method flag given, `options.boot_was_set` sets `no_install =
-//! True`), the single-phase case.
+//! Builds fresh domain `Document`s for `InstallMethod::Manual { boot_dev:
+//! Some(_) }` — both the CLI's bare `--boot <dev>` single-phase case
+//! (`build_manual_document`) and `--pxe`'s two-phase case
+//! (`build_manual_two_phase_documents`).
 //!
-//! **Not built: the two-phase case**, reached by `--pxe`
-//! (`install_bootdev = "network"`, `no_install` left unset). Grounded
-//! directly in `install/installer.py`'s `requires_postboot_xml_changes`:
-//! `if self._no_install: return False` short-circuits `--boot` to
-//! single-phase, but falls through to
-//! `bool(self._cdrom or self._install_bootdev or self._treemedia)` for
-//! `--pxe`, which is `True`. Two-phase means a *different* `<boot>`
-//! entry in the `createXML` call (`_alter_bootconfig`, sets bootorder to
-//! `[install_bootdev, maybe "hd"]` unconditionally) than the
-//! `defineXML` call (`_get_postinstall_bootdev` — with `install_bootdev`
-//! set **and a disk present**, this resolves back to `"hd"`, overriding
-//! the "network" the CLI asked for, since the postinstall boot should
-//! favor the now-installed disk; with no disk, both phases agree on
-//! `"network"` and the distinction is vacuous for that specific case
-//! even though `requires_postboot_xml_changes()` still reports `True`).
-//! This crate's `create_new`/
-//! `define_new` are both single-shot against one XML string, same gap
-//! already flagged on `iso::build_iso_document`'s `live: false`. Two
-//! features now blocked on the same missing primitive — the signal that
-//! two-phase create/define is the next slice, not a coincidence.
+//! `--boot <dev>` alone is upstream's single-phase path: `virtinstall.py`'s
+//! `build_installer` sets `no_install = True` when `--boot` is the only
+//! install-method flag given (`options.boot_was_set`), and `install/
+//! installer.py`'s `requires_postboot_xml_changes`'s `if self._no_install:
+//! return False` short-circuits before the `install_bootdev` check ever
+//! runs.
+//!
+//! `--pxe` (`install_bootdev = "network"`, `no_install` left unset) always
+//! goes through the two-phase path, grounded directly in
+//! `_alter_bootconfig`/`_get_postinstall_bootdev`:
+//! - **initial** (`createXML`): `_alter_bootconfig` sets bootorder to
+//!   `_build_boot_order(guest, "network")` unconditionally — `[network]`,
+//!   or `[network, hd]` if a disk is present (same "always keep the disk
+//!   bootable" rule `build_manual_document` already implements).
+//! - **final** (`defineXML`): `_get_postinstall_bootdev` — with
+//!   `install_bootdev` set **and a disk present**, resolves to `"hd"`
+//!   (`_build_boot_order(guest, "hd")` = `[hd]`, the disk-loop finds `hd`
+//!   already there so nothing else gets appended); with no disk, resolves
+//!   back to `install_bootdev` unchanged (`"network"`), so initial and
+//!   final agree — two-phase still runs (`requires_postboot_xml_changes()`
+//!   only checks `_install_bootdev` truthiness, not disk presence), it's
+//!   just vacuous: both documents describe the same boot order, only the
+//!   UUID-sharing machinery is doing real work.
+//! - The initial document also gets `<on_reboot>destroy</on_reboot>`
+//!   (`_alter_bootconfig`'s first line) — the actual mechanism, not the
+//!   boot order alone, that lets the persisted config take over once
+//!   install finishes. See `push_on_reboot_destroy`'s doc comment.
 //!
 //! `InstallMethod::Manual { boot_dev: None }` (the wizard's bare "Manual
 //! install" radio button) isn't built here either — it has no CLI
@@ -32,11 +38,22 @@
 //! `virtinstall.py`'s CLI-flag branching), so there'd be nothing to call
 //! it from. Shipping an unreachable function is worse than not building
 //! it — deferred until the real Create VM wizard exists.
+//!
+//! **Real gap, sharper here than `import.rs`'s bus-selection one**:
+//! `--pxe`'s document has no `<interface>` device at all — this crate
+//! adds no default devices, and upstream's own `guest.set_defaults()`
+//! (which always adds a NIC) isn't ported. A domain built this way can't
+//! actually network-boot; it's inert, not merely non-optimal. Upstream
+//! also gates `--pxe` on `supports_pxe(guest)`
+//! (`virtinstall.py:379`) — unvalidated here, consistent with every
+//! other field in this module.
 
 use uuid::Uuid;
-use virtinst_xml::{Document, Element};
+use virtinst_xml::Document;
 
-use super::domain_skeleton::{build_domain_skeleton, push_boot_dev};
+use super::domain_skeleton::{
+    build_domain_skeleton, push_boot_dev, push_on_reboot_destroy, push_virtio_disk,
+};
 
 /// `name`/`memory_kib`/`vcpus`/`domain_type`/`arch` — see
 /// `build_import_document`'s doc comment, identical rationale. `boot_dev`
@@ -74,14 +91,93 @@ pub fn build_manual_document(
     domain_type: &str,
     arch: &str,
 ) -> Document {
-    let (mut doc, root, os_el) = build_domain_skeleton(
+    build_manual_phase_document(
         name,
         memory_kib,
         vcpus,
         &Uuid::new_v4().to_string(),
         domain_type,
         arch,
+        boot_dev,
+        disk_path,
+        false,
+    )
+}
+
+/// `InstallMethod::Manual { boot_dev: Some(_) }` via `--pxe` — the
+/// two-phase case. See this module's own header for the exact
+/// `createXML`/`defineXML` bootorder derivation and why it still runs
+/// (with the same UUID-sharing machinery `iso::build_iso_two_phase_
+/// documents` uses) even when a disk-less invocation makes the two
+/// phases' content identical.
+///
+/// Returns `(initial, final)` — pass `initial`'s XML to `Domain::
+/// create_new` and `final`'s to `Domain::define_new`, in that order.
+pub fn build_manual_two_phase_documents(
+    name: &str,
+    memory_kib: u64,
+    vcpus: u32,
+    boot_dev: &str,
+    disk_path: Option<&str>,
+    domain_type: &str,
+    arch: &str,
+) -> (Document, Document) {
+    let uuid = Uuid::new_v4().to_string();
+
+    let initial = build_manual_phase_document(
+        name,
+        memory_kib,
+        vcpus,
+        &uuid,
+        domain_type,
+        arch,
+        boot_dev,
+        disk_path,
+        true,
     );
+
+    // _get_postinstall_bootdev: a present disk always wins back to "hd"
+    // for the postinstall boot; with no disk, the install_bootdev the
+    // caller asked for stands.
+    let final_boot_dev = if disk_path.is_some() { "hd" } else { boot_dev };
+    let final_doc = build_manual_phase_document(
+        name,
+        memory_kib,
+        vcpus,
+        &uuid,
+        domain_type,
+        arch,
+        final_boot_dev,
+        disk_path,
+        false,
+    );
+
+    (initial, final_doc)
+}
+
+/// `is_initial` gates `<on_reboot>destroy</on_reboot>` — see
+/// `push_on_reboot_destroy`'s doc comment for why only the initial
+/// document of a two-phase pair gets it; `build_manual_document`'s
+/// single-phase call always passes `false` since upstream's
+/// `_alter_bootconfig` (the only place that sets it) never runs at all
+/// outside `requires_postboot_xml_changes()`'s two-phase path.
+#[allow(clippy::too_many_arguments)]
+fn build_manual_phase_document(
+    name: &str,
+    memory_kib: u64,
+    vcpus: u32,
+    uuid: &str,
+    domain_type: &str,
+    arch: &str,
+    boot_dev: &str,
+    disk_path: Option<&str>,
+    is_initial: bool,
+) -> Document {
+    let (mut doc, root, os_el) =
+        build_domain_skeleton(name, memory_kib, vcpus, uuid, domain_type, arch);
+    if is_initial {
+        push_on_reboot_destroy(&mut doc, root);
+    }
     push_boot_dev(&mut doc, os_el, boot_dev);
 
     let Some(disk_path) = disk_path else {
@@ -92,24 +188,8 @@ pub fn build_manual_document(
         push_boot_dev(&mut doc, os_el, "hd");
     }
 
-    let devices_el = Element::new(&mut doc, "devices");
-    let disk_el = Element::new(&mut doc, "disk");
-    disk_el.set_attribute(&mut doc, "type", "file");
-    disk_el.set_attribute(&mut doc, "device", "disk");
-    let source_el = Element::new(&mut doc, "source");
-    source_el.set_attribute(&mut doc, "file", disk_path);
-    disk_el
-        .push_child(&mut doc, source_el)
-        .expect("a freshly-created detached element always attaches cleanly");
-    let target_el = Element::new(&mut doc, "target");
-    target_el.set_attribute(&mut doc, "dev", "vda");
-    target_el.set_attribute(&mut doc, "bus", "virtio");
-    disk_el
-        .push_child(&mut doc, target_el)
-        .expect("a freshly-created detached element always attaches cleanly");
-    devices_el
-        .push_child(&mut doc, disk_el)
-        .expect("a freshly-created detached element always attaches cleanly");
+    let devices_el = virtinst_xml::Element::new(&mut doc, "devices");
+    push_virtio_disk(&mut doc, devices_el, disk_path);
     root.push_child(&mut doc, devices_el)
         .expect("a freshly-created detached element always attaches cleanly");
 
@@ -119,6 +199,7 @@ pub fn build_manual_document(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
     #[test]
     fn no_disk_means_a_single_boot_entry_and_no_devices() {
@@ -269,6 +350,182 @@ mod tests {
             .destroy()
             .expect("cleanup: destroy the transient instance");
         let still_defined = Domain::lookup_by_name(&conn, "manual-end-to-end")
+            .expect("persistent config survives destroying the running instance");
+        assert!(!still_defined.is_active().expect("query succeeds"));
+
+        persisted
+            .undefine()
+            .expect("cleanup: undefine the persistent config");
+    }
+
+    #[test]
+    fn two_phase_with_a_disk_narrows_from_network_hd_down_to_hd_alone() {
+        let (initial, final_doc) = build_manual_two_phase_documents(
+            "pxe-two-phase",
+            2097152,
+            2,
+            "network",
+            Some("/var/lib/libvirt/images/disk.qcow2"),
+            "qemu",
+            "x86_64",
+        );
+
+        let initial_root = initial.root_element().unwrap();
+        let final_root = final_doc.root_element().unwrap();
+
+        let initial_uuid = initial_root
+            .find(&initial, "uuid")
+            .unwrap()
+            .text_content(&initial);
+        let final_uuid = final_root
+            .find(&final_doc, "uuid")
+            .unwrap()
+            .text_content(&final_doc);
+        assert_eq!(initial_uuid, final_uuid);
+        assert!(Uuid::parse_str(&initial_uuid).is_ok());
+
+        assert_eq!(
+            initial_root
+                .find(&initial, "on_reboot")
+                .map(|el| el.text_content(&initial)),
+            Some("destroy".to_string()),
+            "only the initial document overrides on_reboot"
+        );
+        assert!(final_root.find(&final_doc, "on_reboot").is_none());
+
+        let initial_boots = initial_root
+            .find(&initial, "os")
+            .unwrap()
+            .find_all(&initial, "boot");
+        assert_eq!(initial_boots.len(), 2, "network first, hd as fallback");
+        assert_eq!(initial_boots[0].attribute(&initial, "dev"), Some("network"));
+        assert_eq!(initial_boots[1].attribute(&initial, "dev"), Some("hd"));
+
+        let final_boots = final_root
+            .find(&final_doc, "os")
+            .unwrap()
+            .find_all(&final_doc, "boot");
+        assert_eq!(
+            final_boots.len(),
+            1,
+            "postinstall boot favors the now-installed disk"
+        );
+        assert_eq!(final_boots[0].attribute(&final_doc, "dev"), Some("hd"));
+    }
+
+    #[test]
+    fn two_phase_with_no_disk_has_identical_boot_orders_but_still_runs() {
+        // "Vacuous" only describes the boot order (_get_postinstall_
+        // bootdev falls back to install_bootdev unchanged with no disk
+        // to override it to "hd") — the two documents are never fully
+        // identical, since on_reboot is still initial-only.
+        let (initial, final_doc) = build_manual_two_phase_documents(
+            "pxe-no-disk",
+            1048576,
+            1,
+            "network",
+            None,
+            "test",
+            "i686",
+        );
+
+        let initial_root = initial.root_element().unwrap();
+        let final_root = final_doc.root_element().unwrap();
+
+        let initial_uuid = initial_root
+            .find(&initial, "uuid")
+            .unwrap()
+            .text_content(&initial);
+        let final_uuid = final_root
+            .find(&final_doc, "uuid")
+            .unwrap()
+            .text_content(&final_doc);
+        assert_eq!(initial_uuid, final_uuid);
+
+        assert_eq!(
+            initial_root
+                .find(&initial, "on_reboot")
+                .map(|el| el.text_content(&initial)),
+            Some("destroy".to_string())
+        );
+        assert!(final_root.find(&final_doc, "on_reboot").is_none());
+
+        for (doc, root) in [(&initial, &initial_root), (&final_doc, &final_root)] {
+            let boots = root.find(doc, "os").unwrap().find_all(doc, "boot");
+            assert_eq!(boots.len(), 1);
+            assert_eq!(boots[0].attribute(doc, "dev"), Some("network"));
+        }
+    }
+
+    /// Real end-to-end proof that `--pxe --disk`'s two-phase sequence
+    /// actually happens: the running instance boots `[network, hd]`,
+    /// the persisted config narrows to `[hd]` alone — same shape and
+    /// same rationale as `iso.rs`'s two-phase test (`live_xml()` before
+    /// `define_new` runs, `inactive_xml()` after).
+    #[test]
+    fn two_phase_install_creates_transient_network_boot_then_persists_hd_boot() {
+        use crate::capabilities::DomainCapabilities;
+        use crate::connection::{Connection, Domain};
+        use crate::test_support::TEST_DOMAIN_LOCK;
+
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        let caps = DomainCapabilities::fetch(&conn, None, None, None, None)
+            .expect("domcaps fetch succeeds");
+        let domain_type = caps.domain.expect("test driver reports a domain type");
+        let arch = caps.arch.expect("test driver reports a default arch");
+
+        let (initial, final_doc) = build_manual_two_phase_documents(
+            "pxe-two-phase-end-to-end",
+            1048576,
+            1,
+            "network",
+            Some("/guest/pxe-two-phase-end-to-end.img"),
+            &domain_type,
+            &arch,
+        );
+        let initial_xml = initial.write_str().expect("serializes");
+        let final_xml = final_doc.write_str().expect("serializes");
+        assert_ne!(initial_xml, final_xml);
+
+        let running = Domain::create_new(&conn, &initial_xml).expect("transient create succeeds");
+        assert!(running.is_active().expect("query succeeds"));
+        let live_xml = running.live_xml().expect("fetch live XML");
+        assert!(
+            live_xml.contains("boot dev='network'"),
+            "the running instance's boot order starts with network"
+        );
+        assert!(
+            live_xml.contains("boot dev='hd'"),
+            "the running instance still keeps hd as a fallback"
+        );
+        assert!(
+            live_xml.contains("<on_reboot>destroy</on_reboot>"),
+            "the running instance won't reboot back into the install boot order"
+        );
+
+        let persisted = Domain::define_new(&conn, &final_xml).expect("define succeeds");
+        let refetched = Domain::lookup_by_name(&conn, "pxe-two-phase-end-to-end")
+            .expect("the domain is findable by the name we gave it");
+        let inactive_xml = refetched.inactive_xml().expect("fetch inactive XML");
+        assert!(
+            inactive_xml.contains("boot dev='hd'"),
+            "the persisted config boots from hd"
+        );
+        assert!(
+            !inactive_xml.contains("boot dev='network'"),
+            "the persisted config's boot order has no network entry"
+        );
+        assert!(
+            !inactive_xml.contains("<on_reboot>destroy</on_reboot>"),
+            "the persisted config doesn't carry the initial-only on_reboot override"
+        );
+
+        running
+            .destroy()
+            .expect("cleanup: destroy the transient instance");
+        let still_defined = Domain::lookup_by_name(&conn, "pxe-two-phase-end-to-end")
             .expect("persistent config survives destroying the running instance");
         assert!(!still_defined.is_active().expect("query succeeds"));
 
