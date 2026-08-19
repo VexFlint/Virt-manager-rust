@@ -159,6 +159,18 @@ impl Domain {
         self.inner.get_xml_desc(sys::VIR_DOMAIN_XML_INACTIVE)
     }
 
+    /// The domain's currently-running config as raw XML —
+    /// `virDomainGetXMLDesc` with no flags, which for an active domain
+    /// reflects the live/in-memory state rather than the persistent one
+    /// (`inactive_xml`'s job). Exists for tests that need to confirm
+    /// `Domain::create_new` was actually handed the XML it looks like it
+    /// was — `iso.rs`'s two-phase test is the first consumer, checking
+    /// the transient instance really booted from cdrom rather than
+    /// `defineXML`'s hd-booting config.
+    pub fn live_xml(&self) -> Result<String, LibvirtError> {
+        self.inner.get_xml_desc(0)
+    }
+
     /// Live hotplug — upstream's `attach_device()`. A no-op, not an
     /// error, when the domain isn't running.
     pub fn attach_device<T: XmlBound>(&self, device: &T) -> Result<(), DomainError> {

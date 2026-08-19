@@ -4,40 +4,51 @@
 //! no wizard equivalent, closer in shape to `virt-xml --edit` than to
 //! Create VM (ticket 16).
 //!
-//! Three `InstallMethod` variants are wired up so far:
+//! Four `InstallMethod` variants are wired up so far:
 //! - `--import` — upstream's simplest install method: no media fetch, no
 //!   OS detection, no `Installer`-class media/kernel wiring, an existing
 //!   disk becomes the VM's disk as-is (`InstallMethod::Import`).
 //! - `--cdrom --livecd` — `InstallMethod::Iso { live: true, .. }`: boot
-//!   straight into CD media with no persistent disk. Plain `--cdrom`
-//!   (install onto a new persistent disk, `live: false`) isn't
-//!   implemented yet — it needs the two-phase `createXML`(boot=cdrom)/
-//!   `defineXML`(boot=hd) dance documented on `iso::build_iso_document`,
-//!   which nothing in this crate does yet.
+//!   straight into CD media with no persistent disk.
+//! - `--cdrom --disk <path>` (no `--livecd`) — `InstallMethod::Iso {
+//!   live: false, .. }`: install from CD onto a new persistent disk, the
+//!   two-phase case (`iso::build_iso_two_phase_documents`) — `createXML`
+//!   gets a *different* document than `defineXML`.
 //! - `--boot <dev>` — `InstallMethod::Manual { boot_dev: Some(dev) }`,
 //!   the single-phase case (`options.boot_was_set` forces
 //!   `no_install = True` upstream when `--boot` is the only install
-//!   method given). `--pxe` isn't implemented — it needs the same
-//!   two-phase dance as `--cdrom` without `--livecd`, see
-//!   `manual::build_manual_document`'s doc comment.
+//!   method given). `--pxe` isn't implemented — with a disk present it
+//!   needs the same two-phase shape as `--cdrom` without `--livecd` (not
+//!   a missing primitive anymore, see `iso::build_iso_two_phase_documents`'s
+//!   doc comment — just not built for `Manual` yet); with no disk, both
+//!   phases would agree and two-phase would be vacuous, see `manual.rs`'s
+//!   own header for exactly which case is which.
 //!
-//! The domain XML for all three is built via direct DOM construction
+//! The domain XML for all four is built via direct DOM construction
 //! (`virtinst_core::install::{build_import_document, build_iso_document,
-//! build_manual_document}` — see the amendment on ticket 08 for why
-//! `Guest::to_xml_string()` can't do this). Every other `InstallMethod`
-//! variant, `--unattended`/`--cloud-init`, and `--reinstall` are
-//! undeclared rather than stubbed.
+//! build_iso_two_phase_documents, build_manual_document}` — see the
+//! amendment on ticket 08 for why `Guest::to_xml_string()` can't do
+//! this). Every other `InstallMethod` variant, `--unattended`/
+//! `--cloud-init`, and `--reinstall` are undeclared rather than stubbed.
 //!
-//! Matches upstream's actual default sequence
-//! (`Installer._create_guest`, `doboot=True`, not `--transient`): two
-//! separate libvirt calls against the *same* XML — `createXML` (start
-//! it running now) then `defineXML` (persist it) — not one call with
-//! both effects.
+//! Matches upstream's actual default sequence (`Installer._create_guest`,
+//! `doboot=True`, not `--transient`): two separate libvirt calls,
+//! `createXML` (start it running now) then `defineXML` (persist it) —
+//! not one call with both effects. For the single-phase methods these
+//! two calls get identical XML; for `Iso { live: false }` they don't
+//! (see above) — **this was never a missing primitive at the
+//! `Domain::create_new`/`define_new` layer**, both always took their own
+//! independent `xml: &str`. Two prior commits' doc comments claimed
+//! otherwise ("both are single-shot against one XML string") — that was
+//! wrong, caught while grounding this one; the actual gap was builder-
+//! side (nothing produced a document *pair* sharing a UUID).
 
 use clap::Parser;
 use virtinst_core::capabilities::DomainCapabilities;
 use virtinst_core::connection::{Connection, Domain};
-use virtinst_core::install::{build_import_document, build_iso_document, build_manual_document};
+use virtinst_core::install::{
+    build_import_document, build_iso_document, build_iso_two_phase_documents, build_manual_document,
+};
 
 #[derive(Parser)]
 #[command(name = "virt-install")]
@@ -47,17 +58,15 @@ struct Args {
     #[arg(long)]
     import: bool,
 
-    /// Path to install/boot media (`InstallMethod::Iso`). Only
-    /// meaningful combined with `--livecd` so far — plain `--cdrom`
-    /// (install onto a new persistent disk) needs the two-phase
-    /// boot-then-redefine dance `iso::build_iso_document` doesn't do
-    /// yet.
+    /// Path to install/boot media (`InstallMethod::Iso`). Combined with
+    /// `--livecd`: boot straight into the media, no persistent disk.
+    /// Combined with `--disk`: install onto that disk, two-phase
+    /// (`live: false`). One of the two is required alongside `--cdrom`.
     #[arg(long)]
     cdrom: Option<String>,
 
     /// Boot straight into `--cdrom`'s media with no persistent disk
     /// attached at all (`InstallMethod::Iso { live: true, .. }`).
-    /// Required alongside `--cdrom` for now, see its doc comment.
     #[arg(long)]
     livecd: bool,
 
@@ -84,11 +93,12 @@ struct Args {
     #[arg(long, default_value_t = 1)]
     vcpus: u32,
 
-    /// Path to a disk image. Required with `--import`; optional with
-    /// `--boot` (a disk isn't mandatory there — e.g. a pure `--boot
-    /// network` appliance); ignored otherwise. Upstream's `--disk` is a
-    /// full `path=...,bus=...` optstring (`ParserDisk`); this is a bare
-    /// path only — the equivalent of upstream's positional `--disk
+    /// Path to a disk image. Required with `--import`; required with
+    /// `--cdrom` unless `--livecd` is also given; optional with `--boot`
+    /// (a disk isn't mandatory there — e.g. a pure `--boot network`
+    /// appliance); ignored otherwise. Upstream's `--disk` is a full
+    /// `path=...,bus=...` optstring (`ParserDisk`); this is a bare path
+    /// only — the equivalent of upstream's positional `--disk
     /// /path/to/img` form (`remove_first="path"`), not the general
     /// option-string syntax.
     #[arg(long)]
@@ -128,37 +138,60 @@ fn main() {
         std::process::exit(1);
     });
 
-    let doc = if args.import {
+    let write = |doc: virtinst_xml::Document| {
+        doc.write_str().unwrap_or_else(|e| {
+            eprintln!("virt-install: failed to serialize the guest's XML: {e}");
+            std::process::exit(1);
+        })
+    };
+
+    // (initial, final) — identical XML for every single-phase method;
+    // genuinely different XML for `Iso { live: false }`. See this
+    // binary's own doc comment for why this was never a `Domain::
+    // create_new`/`define_new` limitation, only a builder-side gap.
+    let (initial_xml, final_xml) = if args.import {
         let disk = args.disk.unwrap_or_else(|| {
             eprintln!("virt-install: --import requires --disk");
             std::process::exit(1);
         });
-        build_import_document(
+        let xml = write(build_import_document(
             &args.name,
             memory_kib,
             args.vcpus,
             &disk,
             &domain_type,
             &arch,
-        )
+        ));
+        (xml.clone(), xml)
     } else if let Some(media) = args.cdrom {
-        if !args.livecd {
-            eprintln!(
-                "virt-install: --cdrom requires --livecd for now (installing onto a new \
-                 persistent disk isn't implemented yet)"
+        if args.livecd {
+            let xml = write(build_iso_document(
+                &args.name,
+                memory_kib,
+                args.vcpus,
+                &media,
+                &domain_type,
+                &arch,
+            ));
+            (xml.clone(), xml)
+        } else {
+            let disk = args.disk.unwrap_or_else(|| {
+                eprintln!("virt-install: --cdrom without --livecd requires --disk");
+                std::process::exit(1);
+            });
+            let (initial, final_doc) = build_iso_two_phase_documents(
+                &args.name,
+                memory_kib,
+                args.vcpus,
+                &media,
+                &disk,
+                &domain_type,
+                &arch,
             );
-            std::process::exit(1);
+            (write(initial), write(final_doc))
         }
-        build_iso_document(
-            &args.name,
-            memory_kib,
-            args.vcpus,
-            &media,
-            &domain_type,
-            &arch,
-        )
     } else if let Some(boot_dev) = args.boot {
-        build_manual_document(
+        let xml = write(build_manual_document(
             &args.name,
             memory_kib,
             args.vcpus,
@@ -166,27 +199,23 @@ fn main() {
             args.disk.as_deref(),
             &domain_type,
             &arch,
-        )
+        ));
+        (xml.clone(), xml)
     } else {
         eprintln!(
-            "virt-install: specify --import, --cdrom --livecd, or --boot (only methods \
-             implemented so far)"
+            "virt-install: specify --import, --cdrom, or --boot (only methods implemented \
+             so far)"
         );
         std::process::exit(1);
     };
 
-    let xml = doc.write_str().unwrap_or_else(|e| {
-        eprintln!("virt-install: failed to serialize the guest's XML: {e}");
-        std::process::exit(1);
-    });
-
     println!("\nStarting install...");
 
-    if let Err(e) = Domain::create_new(&conn, &xml) {
+    if let Err(e) = Domain::create_new(&conn, &initial_xml) {
         eprintln!("virt-install: failed to start the domain: {e}");
         std::process::exit(1);
     }
-    if let Err(e) = Domain::define_new(&conn, &xml) {
+    if let Err(e) = Domain::define_new(&conn, &final_xml) {
         eprintln!("virt-install: failed to persist the domain: {e}");
         std::process::exit(1);
     }

@@ -35,6 +35,7 @@
 //!   `1`, since `OsInfo` isn't built yet either (still blocked on the
 //!   `gir` codegen tool, same as libvirt-glib events).
 
+use uuid::Uuid;
 use virtinst_xml::{Document, Element};
 
 use super::domain_skeleton::{build_domain_skeleton, push_boot_dev};
@@ -69,7 +70,14 @@ pub fn build_import_document(
     domain_type: &str,
     arch: &str,
 ) -> Document {
-    let (mut doc, root, os_el) = build_domain_skeleton(name, memory_kib, vcpus, domain_type, arch);
+    let (mut doc, root, os_el) = build_domain_skeleton(
+        name,
+        memory_kib,
+        vcpus,
+        &Uuid::new_v4().to_string(),
+        domain_type,
+        arch,
+    );
     push_boot_dev(&mut doc, os_el, "hd");
 
     let devices_el = Element::new(&mut doc, "devices");
@@ -99,7 +107,6 @@ pub fn build_import_document(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
 
     #[test]
     fn builds_a_complete_bootable_domain() {

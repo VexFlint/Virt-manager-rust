@@ -33,6 +33,7 @@
 //! it from. Shipping an unreachable function is worse than not building
 //! it — deferred until the real Create VM wizard exists.
 
+use uuid::Uuid;
 use virtinst_xml::{Document, Element};
 
 use super::domain_skeleton::{build_domain_skeleton, push_boot_dev};
@@ -73,7 +74,14 @@ pub fn build_manual_document(
     domain_type: &str,
     arch: &str,
 ) -> Document {
-    let (mut doc, root, os_el) = build_domain_skeleton(name, memory_kib, vcpus, domain_type, arch);
+    let (mut doc, root, os_el) = build_domain_skeleton(
+        name,
+        memory_kib,
+        vcpus,
+        &Uuid::new_v4().to_string(),
+        domain_type,
+        arch,
+    );
     push_boot_dev(&mut doc, os_el, boot_dev);
 
     let Some(disk_path) = disk_path else {
@@ -111,7 +119,6 @@ pub fn build_manual_document(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
 
     #[test]
     fn no_disk_means_a_single_boot_entry_and_no_devices() {

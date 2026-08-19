@@ -11,7 +11,6 @@
 //! construction, not `Guest::to_xml_string()` — see any of the three
 //! callers' doc comments for the full rationale.
 
-use uuid::Uuid;
 use virtinst_xml::{Document, Element};
 
 /// Builds `<domain type=domain_type><name/><uuid/><memory/>
@@ -21,16 +20,24 @@ use virtinst_xml::{Document, Element};
 /// per install method, see `Iso::live`/`Manual`, that it isn't shared
 /// here) and their own `<devices>` onto `root`.
 ///
-/// Always stamps an explicit `<uuid>` via `Uuid::new_v4()` rather than
-/// leaving it for libvirt to invent — required because `virt-install`'s
-/// default sequence calls `Domain::create_new` then `Domain::define_new`
-/// against the *same* XML, and two separate libvirt-generated UUIDs
-/// collide on the second call (hit for real, see `import.rs`'s doc
-/// comment for the exact error).
+/// `uuid` is caller-supplied rather than generated here — required
+/// because `virt-install`'s default sequence calls `Domain::create_new`
+/// then `Domain::define_new`, and for a two-phase install (`Iso { live:
+/// false }`) those two calls need two *different* XML documents that
+/// still describe the same domain, i.e. the same UUID stamped into both.
+/// A single `Uuid::new_v4()` inside this function couldn't do that — the
+/// caller generates one and passes it to both `build_domain_skeleton`
+/// calls (see `iso::build_iso_two_phase_documents`). Callers that only
+/// ever build one document (`import`, `manual`, single-phase `iso`) just
+/// generate one `Uuid::new_v4()` and pass it through same as before.
+/// Without a fixed UUID at all, each libvirt call invents its own and
+/// the second call fails outright ("domain already exists with uuid
+/// ..." — hit this for real, see `import.rs`'s doc comment).
 pub(super) fn build_domain_skeleton(
     name: &str,
     memory_kib: u64,
     vcpus: u32,
+    uuid: &str,
     domain_type: &str,
     arch: &str,
 ) -> (Document, Element, Element) {
@@ -41,7 +48,7 @@ pub(super) fn build_domain_skeleton(
         .expect("a freshly-created detached element always attaches cleanly");
 
     push_text_child(&mut doc, root, "name", name);
-    push_text_child(&mut doc, root, "uuid", &Uuid::new_v4().to_string());
+    push_text_child(&mut doc, root, "uuid", uuid);
 
     let mem_el = Element::new_with_text(&mut doc, "memory", &memory_kib.to_string());
     mem_el.set_attribute(&mut doc, "unit", "KiB");
