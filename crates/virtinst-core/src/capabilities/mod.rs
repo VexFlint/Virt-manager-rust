@@ -7,4 +7,20 @@
 //! edited or serialized back — none of the DOM's preservation machinery
 //! earns its keep on a read-only, cached path.
 
-// TODO: pub struct DomCaps { ... } — plain XML→struct parse, no DOM.
+pub mod domcaps;
+pub use domcaps::{
+    CapabilitiesError, CapsBlock, CapsEnum, DomainCapabilities, DomainCapabilitiesDevices,
+};
+
+// TODO: host capabilities (upstream's capabilities.py — separate from
+// domcapabilities.py, general host info rather than per-driver device
+// defaults) — not started, ticket 17's own need was specifically
+// DomainCapabilities.
+//
+// TODO: DomainCapabilities' os/cpu/features blocks — see domcaps.rs's
+// doc comment for why those are a different shape and deliberately not
+// built yet.
+//
+// TODO: caching per-Guest (upstream's lookup_capsinfo()) — nothing
+// calls DomainCapabilities::fetch repeatedly yet to make caching worth
+// building ahead of a real caller.
