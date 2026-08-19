@@ -11,10 +11,13 @@
 //! for a second/real consumer" rule this project has followed since
 //! `#[xml(nested)]`.
 
+mod domain_skeleton;
 pub mod import;
 pub mod iso;
+pub mod manual;
 pub use import::build_import_document;
 pub use iso::build_iso_document;
+pub use manual::build_manual_document;
 
 /// One of upstream's 7 install-method sub-flows (`createvm.py`'s
 /// `INSTALL_PAGE_*` constants — checked directly against

@@ -10,7 +10,11 @@
 //! document instead of an edited one. `Guest::to_xml_string()` cannot
 //! do this — it only serializes `Guest`'s flat fields, silently
 //! dropping `<os>`/`<vcpu>`/`<devices>` (pinned by `xml_binding_tests`'
-//! `to_xml_string_on_guest_omits_nested_and_list_fields`).
+//! `to_xml_string_on_guest_omits_nested_and_list_fields`). The shared
+//! `<name>`/`<uuid>`/`<memory>`/`<currentMemory>`/`<vcpu>`/`<os><type
+//! arch>` skeleton common to every install method lives in
+//! `domain_skeleton.rs`, extracted once `iso.rs` and this became two
+//! identical copies.
 //!
 //! **Real simplifications, flagged rather than built:**
 //! - The disk is given fixed defaults (`type="file"`, `device="disk"`,
@@ -31,8 +35,9 @@
 //!   `1`, since `OsInfo` isn't built yet either (still blocked on the
 //!   `gir` codegen tool, same as libvirt-glib events).
 
-use uuid::Uuid;
 use virtinst_xml::{Document, Element};
+
+use super::domain_skeleton::{build_domain_skeleton, push_boot_dev};
 
 /// `name`/`memory_kib`/`vcpus` are the wizard's Name/Memory pages'
 /// worth of data — not `InstallMethod`'s job to carry (ticket 08 keeps
@@ -64,40 +69,8 @@ pub fn build_import_document(
     domain_type: &str,
     arch: &str,
 ) -> Document {
-    let mut doc = Document::new();
-    let root = Element::new(&mut doc, "domain");
-    root.set_attribute(&mut doc, "type", domain_type);
-    doc.push_root_node(root)
-        .expect("a freshly-created detached element always attaches cleanly");
-
-    push_text_child(&mut doc, root, "name", name);
-    push_text_child(&mut doc, root, "uuid", &Uuid::new_v4().to_string());
-
-    let mem_el = Element::new_with_text(&mut doc, "memory", &memory_kib.to_string());
-    mem_el.set_attribute(&mut doc, "unit", "KiB");
-    root.push_child(&mut doc, mem_el)
-        .expect("a freshly-created detached element always attaches cleanly");
-
-    let curmem_el = Element::new_with_text(&mut doc, "currentMemory", &memory_kib.to_string());
-    curmem_el.set_attribute(&mut doc, "unit", "KiB");
-    root.push_child(&mut doc, curmem_el)
-        .expect("a freshly-created detached element always attaches cleanly");
-
-    push_text_child(&mut doc, root, "vcpu", &vcpus.to_string());
-
-    let os_el = Element::new(&mut doc, "os");
-    let type_el = Element::new_with_text(&mut doc, "type", "hvm");
-    type_el.set_attribute(&mut doc, "arch", arch);
-    os_el
-        .push_child(&mut doc, type_el)
-        .expect("a freshly-created detached element always attaches cleanly");
-    let boot_el = Element::new(&mut doc, "boot");
-    boot_el.set_attribute(&mut doc, "dev", "hd");
-    os_el
-        .push_child(&mut doc, boot_el)
-        .expect("a freshly-created detached element always attaches cleanly");
-    root.push_child(&mut doc, os_el)
-        .expect("a freshly-created detached element always attaches cleanly");
+    let (mut doc, root, os_el) = build_domain_skeleton(name, memory_kib, vcpus, domain_type, arch);
+    push_boot_dev(&mut doc, os_el, "hd");
 
     let devices_el = Element::new(&mut doc, "devices");
     let disk_el = Element::new(&mut doc, "disk");
@@ -123,16 +96,10 @@ pub fn build_import_document(
     doc
 }
 
-fn push_text_child(doc: &mut Document, parent: Element, tag: &str, text: &str) {
-    let el = Element::new_with_text(doc, tag, text);
-    parent
-        .push_child(doc, el)
-        .expect("a freshly-created detached element always attaches cleanly");
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
     #[test]
     fn builds_a_complete_bootable_domain() {

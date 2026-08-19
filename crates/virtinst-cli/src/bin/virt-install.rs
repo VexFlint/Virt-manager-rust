@@ -4,7 +4,7 @@
 //! no wizard equivalent, closer in shape to `virt-xml --edit` than to
 //! Create VM (ticket 16).
 //!
-//! Two `InstallMethod` variants are wired up so far:
+//! Three `InstallMethod` variants are wired up so far:
 //! - `--import` — upstream's simplest install method: no media fetch, no
 //!   OS detection, no `Installer`-class media/kernel wiring, an existing
 //!   disk becomes the VM's disk as-is (`InstallMethod::Import`).
@@ -14,13 +14,19 @@
 //!   implemented yet — it needs the two-phase `createXML`(boot=cdrom)/
 //!   `defineXML`(boot=hd) dance documented on `iso::build_iso_document`,
 //!   which nothing in this crate does yet.
+//! - `--boot <dev>` — `InstallMethod::Manual { boot_dev: Some(dev) }`,
+//!   the single-phase case (`options.boot_was_set` forces
+//!   `no_install = True` upstream when `--boot` is the only install
+//!   method given). `--pxe` isn't implemented — it needs the same
+//!   two-phase dance as `--cdrom` without `--livecd`, see
+//!   `manual::build_manual_document`'s doc comment.
 //!
-//! The domain XML for both is built via direct DOM construction
-//! (`virtinst_core::install::{build_import_document, build_iso_document}`
-//! — see the amendment on ticket 08 for why `Guest::to_xml_string()`
-//! can't do this). Every other `InstallMethod` variant,
-//! `--unattended`/`--cloud-init`, and `--reinstall` are undeclared rather
-//! than stubbed.
+//! The domain XML for all three is built via direct DOM construction
+//! (`virtinst_core::install::{build_import_document, build_iso_document,
+//! build_manual_document}` — see the amendment on ticket 08 for why
+//! `Guest::to_xml_string()` can't do this). Every other `InstallMethod`
+//! variant, `--unattended`/`--cloud-init`, and `--reinstall` are
+//! undeclared rather than stubbed.
 //!
 //! Matches upstream's actual default sequence
 //! (`Installer._create_guest`, `doboot=True`, not `--transient`): two
@@ -31,7 +37,7 @@
 use clap::Parser;
 use virtinst_core::capabilities::DomainCapabilities;
 use virtinst_core::connection::{Connection, Domain};
-use virtinst_core::install::{build_import_document, build_iso_document};
+use virtinst_core::install::{build_import_document, build_iso_document, build_manual_document};
 
 #[derive(Parser)]
 #[command(name = "virt-install")]
@@ -55,6 +61,13 @@ struct Args {
     #[arg(long)]
     livecd: bool,
 
+    /// Force a specific boot device rather than fetching/attaching
+    /// install media (`InstallMethod::Manual { boot_dev: Some(dev) }`).
+    /// Upstream's `--boot` also configures firmware/loader/machine type;
+    /// this is narrower — boot-device selection only.
+    #[arg(long)]
+    boot: Option<String>,
+
     /// Name for the new guest.
     #[arg(short, long)]
     name: String,
@@ -71,10 +84,11 @@ struct Args {
     #[arg(long, default_value_t = 1)]
     vcpus: u32,
 
-    /// Path to the existing disk image to import. Required with
-    /// `--import`, ignored otherwise. Upstream's `--disk` is a full
-    /// `path=...,bus=...` optstring (`ParserDisk`); this is a bare path
-    /// only — the equivalent of upstream's positional `--disk
+    /// Path to a disk image. Required with `--import`; optional with
+    /// `--boot` (a disk isn't mandatory there — e.g. a pure `--boot
+    /// network` appliance); ignored otherwise. Upstream's `--disk` is a
+    /// full `path=...,bus=...` optstring (`ParserDisk`); this is a bare
+    /// path only — the equivalent of upstream's positional `--disk
     /// /path/to/img` form (`remove_first="path"`), not the general
     /// option-string syntax.
     #[arg(long)]
@@ -143,9 +157,20 @@ fn main() {
             &domain_type,
             &arch,
         )
+    } else if let Some(boot_dev) = args.boot {
+        build_manual_document(
+            &args.name,
+            memory_kib,
+            args.vcpus,
+            &boot_dev,
+            args.disk.as_deref(),
+            &domain_type,
+            &arch,
+        )
     } else {
         eprintln!(
-            "virt-install: specify --import or --cdrom --livecd (only methods implemented so far)"
+            "virt-install: specify --import, --cdrom --livecd, or --boot (only methods \
+             implemented so far)"
         );
         std::process::exit(1);
     };
