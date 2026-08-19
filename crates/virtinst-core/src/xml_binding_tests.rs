@@ -14,8 +14,8 @@ use crate::devices::{
 use crate::domain::{
     Cachetune, Clock, CurrentMemory, DomainBlkiotune, DomainCpu, DomainCputune, DomainFeatures,
     DomainIdmap, DomainKeyWrap, DomainLaunchSecurity, DomainMemoryBacking, DomainMemtune,
-    DomainNumatune, DomainOs, DomainPm, DomainResource, DomainSeclabel, DomainSysinfo, DomainVcpus,
-    DomainXmlnsQemu, Memorytune,
+    DomainMetadata, DomainNumatune, DomainOs, DomainPm, DomainResource, DomainSeclabel,
+    DomainSysinfo, DomainVcpus, DomainXmlnsQemu, Memorytune,
 };
 use crate::guest::Guest;
 use virtinst_xml::{parse_libvirt_xml, OnOff, XmlBound};
@@ -367,6 +367,40 @@ fn xmlnsqemu_reads_args_and_envs_by_stripped_local_name() {
     assert_eq!(cmdline.envs.len(), 1);
     assert_eq!(cmdline.envs[0].name, Some("DISPLAY".to_string()));
     assert_eq!(cmdline.envs[0].value, Some(":0".to_string()));
+}
+
+#[test]
+fn metadata_reads_nested_libosinfo_by_stripped_local_name() {
+    // First real exercise of #[xml(nested)]: <libosinfo:libosinfo> is
+    // a single is_single=True child, not a list, and its own nested
+    // <libosinfo:os id="..."/> uses the same stripped-local-name
+    // matching xmlnsqemu.rs already established (find() ignores the
+    // namespace prefix) - "libosinfo"/"os", not "libosinfo:libosinfo"/
+    // "libosinfo:os".
+    let doc = parse_libvirt_xml(
+        r#"<metadata>
+             <libosinfo:libosinfo>
+               <libosinfo:os id="http://fedoraproject.org/fedora/40"/>
+             </libosinfo:libosinfo>
+           </metadata>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let metadata = DomainMetadata::from_element(&doc, el);
+    assert_eq!(
+        metadata.libosinfo.os_id,
+        Some("http://fedoraproject.org/fedora/40".to_string())
+    );
+}
+
+#[test]
+fn metadata_missing_libosinfo_reads_as_default_not_a_panic() {
+    let doc = parse_libvirt_xml(r#"<metadata/>"#).expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let metadata = DomainMetadata::from_element(&doc, el);
+    assert_eq!(metadata.libosinfo.os_id, None);
 }
 
 #[test]

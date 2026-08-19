@@ -156,7 +156,11 @@ pub fn resolve_or_create_path(
 /// its ancestors — even if removing it leaves an intermediate container
 /// empty, that container is left alone, since other fields may still
 /// depend on it existing or add to it later.
-pub fn remove_path_if_present(doc: &mut Document, current: Element, segments: &[&str]) -> Result<()> {
+pub fn remove_path_if_present(
+    doc: &mut Document,
+    current: Element,
+    segments: &[&str],
+) -> Result<()> {
     if let Some(target) = resolve_path(doc, current, segments) {
         target.detach(doc)?;
     }
@@ -184,6 +188,30 @@ pub fn list_read<T: XmlBound>(doc: &Document, container: Element, path: &[&str])
             .collect(),
         None => Vec::new(),
     }
+}
+
+/// Reads exactly one `T` at `path` + `T::TAG` under `container` —
+/// upstream's `is_single=True` `XMLChildProperty`, backing
+/// `#[xml(nested)]`. Missing element reads as `T::default()`, same
+/// "absent reads as the empty state" rule every other field kind
+/// already follows.
+///
+/// **Read-only, like [`list_read`], for the same reason:** a bare `T`
+/// field has no "absent" state distinguishable from "present with all
+/// fields at their defaults", so a write arm would have to either
+/// unconditionally create the child element on every `write_to` call —
+/// inventing `<clock/>`/`<cpu/>`/etc. on documents that never had one,
+/// wrecking the round-trip preservation guarantee — or reimplement
+/// whole-struct diffing, which ticket 06 already rejected. Mutating a
+/// nested struct goes through `find()`-ing its element directly and
+/// calling that struct's own `write_to`, exactly how every leaf struct
+/// in this crate already gets edited.
+pub fn nested_read<T: XmlBound + Default>(doc: &Document, container: Element, path: &[&str]) -> T {
+    let mut full_path: Vec<&str> = path.to_vec();
+    full_path.push(T::TAG);
+    resolve_path(doc, container, &full_path)
+        .map(|el| T::from_element(doc, el))
+        .unwrap_or_default()
 }
 
 /// Appends one new `T` as a child of `container` (creating `path` under

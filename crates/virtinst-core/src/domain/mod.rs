@@ -70,4 +70,7 @@ pub use os::{DomainOs, OsBootDevice, OsFirmwareFeature, OsInitArg, OsInitEnv};
 pub mod features;
 pub use features::DomainFeatures;
 
+pub mod metadata;
+pub use metadata::{DomainMetadata, MetadataLibosinfo};
+
 // Every domain/*.py file now has a Rust struct.

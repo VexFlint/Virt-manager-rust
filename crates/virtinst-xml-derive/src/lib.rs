@@ -3,7 +3,7 @@
 //! (ticket 06's "typed structs bound to XPaths via a derive macro,
 //! operating over a mutable order-preserving DOM" decision).
 //!
-//! Four field kinds:
+//! Five field kinds:
 //!
 //! ```ignore
 //! #[derive(XmlBound)]
@@ -60,10 +60,20 @@
 //! `virtinst_xml::list_add`/`list_remove` against specific elements
 //! instead — see that module's docs for why a whole-Vec reconcile-on-
 //! write was deliberately not built.
+//!
+//! **`nested`** is `list`'s singular counterpart — upstream's
+//! `is_single=True` `XMLChildProperty` (`struct Guest { #[xml(nested)]
+//! clock: Clock, ... }`, `Clock: XmlBound + Default`). Also **read-only**,
+//! same reasoning: a bare `T` can't distinguish "absent" from
+//! "present but all-default", so `write_to` never invents the child
+//! element. See `virtinst_xml::nested_read`'s docs for the exact same
+//! argument `list` already established.
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, Data, DeriveInput, Fields, GenericArgument, LitStr, PathArguments, Type};
+use syn::{
+    parse_macro_input, Data, DeriveInput, Fields, GenericArgument, LitStr, PathArguments, Type,
+};
 
 #[proc_macro_derive(XmlBound, attributes(xml))]
 pub fn derive_xml_bound(input: TokenStream) -> TokenStream {
@@ -79,6 +89,7 @@ enum FieldKind {
     Text,
     Present,
     List { item_ty: Type },
+    Nested { item_ty: Type },
 }
 
 impl FieldKind {
@@ -88,6 +99,7 @@ impl FieldKind {
             FieldKind::Text => "text",
             FieldKind::Present => "present",
             FieldKind::List { .. } => "list",
+            FieldKind::Nested { .. } => "nested",
         }
     }
 }
@@ -144,6 +156,9 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
             FieldKind::List { item_ty } => quote! {
                 #ident: ::virtinst_xml::list_read::<#item_ty>(__doc, __el, &[#(#segs),*])
             },
+            FieldKind::Nested { item_ty } => quote! {
+                #ident: ::virtinst_xml::nested_read::<#item_ty>(__doc, __el, &[#(#segs),*])
+            },
         }
     });
 
@@ -171,9 +186,9 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                         .expect("removing a plain child element cannot fail");
                 }
             }),
-            // list fields are read-only through XmlBound — see the
-            // crate-level docs for why. No code generated here at all.
-            FieldKind::List { .. } => None,
+            // list/nested fields are read-only through XmlBound — see
+            // the crate-level docs for why. No code generated here.
+            FieldKind::List { .. } | FieldKind::Nested { .. } => None,
         }
     });
 
@@ -232,6 +247,7 @@ fn field_binding(field: &syn::Field) -> syn::Result<FieldBinding> {
     let mut path = String::new();
     let mut attribute = None;
     let mut is_list = false;
+    let mut is_nested = false;
     let mut is_text = false;
     let mut is_present = false;
 
@@ -251,6 +267,9 @@ fn field_binding(field: &syn::Field) -> syn::Result<FieldBinding> {
             } else if meta.path.is_ident("list") {
                 is_list = true;
                 Ok(())
+            } else if meta.path.is_ident("nested") {
+                is_nested = true;
+                Ok(())
             } else if meta.path.is_ident("text") {
                 is_text = true;
                 Ok(())
@@ -260,7 +279,7 @@ fn field_binding(field: &syn::Field) -> syn::Result<FieldBinding> {
             } else {
                 Err(meta.error(
                     "expected `attribute = \"...\"`, `text`, `present`, `list`, \
-                     and/or `path = \"...\"`",
+                     `nested`, and/or `path = \"...\"`",
                 ))
             }
         })?;
@@ -291,13 +310,19 @@ fn field_binding(field: &syn::Field) -> syn::Result<FieldBinding> {
         })?;
         kinds.push(FieldKind::List { item_ty });
     }
+    if is_nested {
+        kinds.push(FieldKind::Nested {
+            item_ty: field.ty.clone(),
+        });
+    }
 
     let kind = match kinds.len() {
         0 => {
             return Err(syn::Error::new_spanned(
                 &ident,
                 "field needs one of #[xml(attribute = \"...\")], #[xml(text)], \
-                 #[xml(present)], or #[xml(list)] (optionally with `path = \"...\"`)",
+                 #[xml(present)], #[xml(list)], or #[xml(nested)] (optionally with \
+                 `path = \"...\"`)",
             ));
         }
         1 => kinds.pop().unwrap(),
