@@ -109,18 +109,21 @@ fn disk_edit_preserves_everything_else() {
     // nested-element attribute groups (driver/source/target) and the
     // presence-based readonly/shareable/transient markers.
     let mut disk = DeviceDisk::from_element(&doc, disk_el);
-    assert_eq!(disk, DeviceDisk {
-        disk_type: Some("file".into()),
-        device: Some("disk".into()),
-        driver_name: Some("qemu".into()),
-        driver_type: Some("qcow2".into()),
-        source_file: Some("/old/path.qcow2".into()),
-        target_dev: Some("vda".into()),
-        target_bus: Some("virtio".into()),
-        read_only: false,
-        shareable: true,
-        transient: false,
-    });
+    assert_eq!(
+        disk,
+        DeviceDisk {
+            disk_type: Some("file".into()),
+            device: Some("disk".into()),
+            driver_name: Some("qemu".into()),
+            driver_type: Some("qcow2".into()),
+            source_file: Some("/old/path.qcow2".into()),
+            target_dev: Some("vda".into()),
+            target_bus: Some("virtio".into()),
+            read_only: false,
+            shareable: true,
+            transient: false,
+        }
+    );
 
     // Edit exactly one field.
     disk.source_file = Some("/new/path.qcow2".into());
@@ -146,7 +149,10 @@ fn disk_edit_preserves_everything_else() {
     // bare `!out.contains("<readonly")` would (correctly) fail without
     // this actually being a bug in this disk's own write_to.
     let after = DeviceDisk::from_element(&doc, disk_el);
-    assert!(after.shareable, "write_to must preserve an untouched `present` field, not just create/remove on change");
+    assert!(
+        after.shareable,
+        "write_to must preserve an untouched `present` field, not just create/remove on change"
+    );
     assert!(!after.read_only);
     assert!(!after.transient);
 
@@ -226,10 +232,7 @@ fn resource_reads_text_child_and_nested_attribute() {
     let el = doc.root_element().expect("root element");
 
     let resource = DomainResource::from_element(&doc, el);
-    assert_eq!(
-        resource.partition,
-        Some("/machine/production".to_string())
-    );
+    assert_eq!(resource.partition, Some("/machine/production".to_string()));
     assert_eq!(
         resource.fibrechannel_appid,
         Some("example.com:app1".to_string())
@@ -276,8 +279,8 @@ fn missing_optional_field_reads_as_none_not_a_panic() {
 
 #[test]
 fn writing_an_absent_field_creates_only_the_needed_path() {
-    let mut doc = parse_libvirt_xml(r#"<disk type="file" device="disk"/>"#)
-        .expect("fixture parses");
+    let mut doc =
+        parse_libvirt_xml(r#"<disk type="file" device="disk"/>"#).expect("fixture parses");
     let disk_el = doc.root_element().expect("root element");
 
     let disk = DeviceDisk {
@@ -314,7 +317,10 @@ fn list_read_collects_every_repeated_element() {
     // other's (`disks` still reads exactly 2, not 3, with the
     // <interface> mixed in among the <disk> siblings).
     assert_eq!(devices.interfaces.len(), 1);
-    assert_eq!(devices.interfaces[0].macaddr, Some("52:54:00:12:34:56".into()));
+    assert_eq!(
+        devices.interfaces[0].macaddr,
+        Some("52:54:00:12:34:56".into())
+    );
     assert_eq!(devices.interfaces[0].source_network, Some("default".into()));
     assert_eq!(devices.interfaces[0].model, Some("virtio".into()));
 
@@ -339,7 +345,10 @@ fn list_read_collects_every_repeated_element() {
     assert_eq!(devices.sounds[0].audio_id, Some("1".into()));
 
     assert_eq!(devices.filesystems.len(), 1);
-    assert_eq!(devices.filesystems[0].source_dir, Some("/host/share".into()));
+    assert_eq!(
+        devices.filesystems[0].source_dir,
+        Some("/host/share".into())
+    );
     assert_eq!(devices.filesystems[0].target_dir, Some("/mnt/share".into()));
     assert!(devices.filesystems[0].readonly);
 
@@ -355,7 +364,10 @@ fn list_read_collects_every_repeated_element() {
     assert_eq!(devices.serials[0].char_type, Some("pty".into()));
     assert_eq!(devices.serials[0].target_type, Some("isa-serial".into()));
     assert_eq!(devices.serials[0].target_port, Some(0));
-    assert_eq!(devices.serials[0].target_model_name, Some("isa-serial".into()));
+    assert_eq!(
+        devices.serials[0].target_model_name,
+        Some("isa-serial".into())
+    );
 
     assert_eq!(devices.tpms.len(), 1);
     assert_eq!(devices.tpms[0].model, Some("tpm-crb".into()));
@@ -437,8 +449,8 @@ fn video_reads_acceleration_two_segments_under_model() {
 
 #[test]
 fn redirdev_stub_case_has_no_source_at_all() {
-    let doc = parse_libvirt_xml(r#"<redirdev bus="usb" type="spicevmc"/>"#)
-        .expect("fixture parses");
+    let doc =
+        parse_libvirt_xml(r#"<redirdev bus="usb" type="spicevmc"/>"#).expect("fixture parses");
     let el = doc.root_element().expect("root element");
 
     let redirdev = DeviceRedirdev::from_element(&doc, el);
@@ -522,9 +534,10 @@ fn rng_edits_nested_text_without_disturbing_the_sibling_attribute() {
     // CurrentMemory where both were on self — the interesting case is
     // whether editing one leaves the other (on the same nested element)
     // alone.
-    let mut doc =
-        parse_libvirt_xml(r#"<rng model="virtio"><backend model="random">/dev/urandom</backend></rng>"#)
-            .expect("fixture parses");
+    let mut doc = parse_libvirt_xml(
+        r#"<rng model="virtio"><backend model="random">/dev/urandom</backend></rng>"#,
+    )
+    .expect("fixture parses");
     let el = doc.root_element().expect("root element");
 
     let mut rng = DeviceRng::from_element(&doc, el);
@@ -688,10 +701,8 @@ fn input_reads_nested_source_fields() {
 
 #[test]
 fn integer_attributes_read_and_edit_correctly() {
-    let mut doc = parse_libvirt_xml(
-        r#"<controller type="scsi" index="0" model="virtio-scsi"/>"#,
-    )
-    .expect("fixture parses");
+    let mut doc = parse_libvirt_xml(r#"<controller type="scsi" index="0" model="virtio-scsi"/>"#)
+        .expect("fixture parses");
     let el = doc.root_element().expect("root element");
 
     let mut controller = DeviceController::from_element(&doc, el);
@@ -749,8 +760,8 @@ fn graphics_reads_self_attributes_and_one_nested_spice_attribute() {
 fn optional_bool_stays_absent_instead_of_defaulting_to_false() {
     // No autoport attribute at all — must read as None, not Some(false),
     // and writing the struct straight back must NOT invent one.
-    let mut doc = parse_libvirt_xml(r#"<graphics type="vnc" port="5900"/>"#)
-        .expect("fixture parses");
+    let mut doc =
+        parse_libvirt_xml(r#"<graphics type="vnc" port="5900"/>"#).expect("fixture parses");
     let el = doc.root_element().expect("root element");
 
     let gfx = DeviceGraphics::from_element(&doc, el);
@@ -766,10 +777,9 @@ fn network_reads_distinct_source_fields_for_bridge_vs_network_type() {
     // source_network and source_bridge both bind under the same
     // <source> path but different attributes — only the one actually
     // present in the XML should come back Some.
-    let doc = parse_libvirt_xml(
-        r#"<interface type="bridge"><source bridge="virbr0"/></interface>"#,
-    )
-    .expect("fixture parses");
+    let doc =
+        parse_libvirt_xml(r#"<interface type="bridge"><source bridge="virbr0"/></interface>"#)
+            .expect("fixture parses");
     let el = doc.root_element().expect("root element");
 
     let iface = DeviceNetwork::from_element(&doc, el);
