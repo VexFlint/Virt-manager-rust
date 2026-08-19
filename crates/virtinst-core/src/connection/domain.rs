@@ -16,6 +16,12 @@
 //!   `_redefine_xmlobj()`'s `_define()` call exactly — this is the
 //!   DOM-level append ticket 06 built for precisely this, not a
 //!   reparse-every-field round trip.
+//! - **`edit_inactive_xml`**: the general fetch/parse/mutate/define
+//!   shape `add_device` above is one instance of — pulled out once
+//!   `virt-xml --edit` (ticket 16) needed the same three steps
+//!   (fetch inactive XML, mutate the parsed DOM in place, define) but
+//!   with a caller-supplied mutation instead of always "append this
+//!   device". `add_device` is now built on top of it.
 //!
 //! **Not this module's job**: `addhardware.py`'s actual `_add_device`
 //! sequencing — attach-then-add-persistent ordering, the confirm-and-
@@ -29,16 +35,21 @@ use crate::connection::Connection;
 use virt::domain::Domain as LibvirtDomain;
 use virt::error::Error as LibvirtError;
 use virt::sys;
-use virtinst_xml::{list_add, parse_libvirt_xml, to_xml_string, EditXMLError, XmlBound};
+use virtinst_xml::{
+    list_add, parse_libvirt_xml, to_xml_string, Document, EditXMLError, Element, XmlBound,
+};
 
 /// Either half of this module's work can fail for a different reason —
-/// a real libvirt call, or parsing/serializing the XML in between. One
-/// small enum rather than reaching for an error-handling crate for two
+/// a real libvirt call, or parsing/serializing the XML in between — plus
+/// a third for `edit_inactive_xml`'s caller-supplied mutation rejecting
+/// its own input (e.g. `--edit 5` when there are only 2 watchdogs). One
+/// small enum rather than reaching for an error-handling crate for three
 /// variants.
 #[derive(Debug)]
 pub enum DomainError {
     Libvirt(LibvirtError),
     Xml(EditXMLError),
+    Edit(String),
 }
 
 impl std::fmt::Display for DomainError {
@@ -46,6 +57,7 @@ impl std::fmt::Display for DomainError {
         match self {
             DomainError::Libvirt(e) => write!(f, "{e}"),
             DomainError::Xml(e) => write!(f, "{e}"),
+            DomainError::Edit(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -79,6 +91,14 @@ impl Domain {
         self.inner.is_active()
     }
 
+    /// The domain's persistent (`VIR_DOMAIN_XML_INACTIVE`) config as
+    /// raw XML — what `edit_inactive_xml` fetches internally, exposed
+    /// for callers that just need to read it (`--print-xml`, tests
+    /// confirming a define actually landed).
+    pub fn inactive_xml(&self) -> Result<String, LibvirtError> {
+        self.inner.get_xml_desc(sys::VIR_DOMAIN_XML_INACTIVE)
+    }
+
     /// Live hotplug — upstream's `attach_device()`. A no-op, not an
     /// error, when the domain isn't running.
     pub fn attach_device<T: XmlBound>(&self, device: &T) -> Result<(), DomainError> {
@@ -92,11 +112,35 @@ impl Domain {
 
     /// Persistent config update — upstream's `add_device()`. Always
     /// runs, live or not: fetches the inactive XML, appends the
-    /// device, redefines.
+    /// device, redefines. Now a thin call onto [`Self::edit_inactive_xml`].
     pub fn add_device<T: XmlBound>(
         &self,
         conn: &Connection,
         device: &T,
+    ) -> Result<(), DomainError> {
+        self.edit_inactive_xml(conn, |doc, root| {
+            list_add(doc, root, &["devices"], device);
+            Ok(())
+        })
+    }
+
+    /// Fetch the domain's *inactive* XML, parse it into a DOM, hand the
+    /// document and its root `<domain>` element to `edit` to mutate in
+    /// place, then `virDomainDefineXML` the result. The general shape
+    /// `add_device` is one instance of, and `virt-xml --edit` (ticket
+    /// 16) needs directly: locate an existing element (by index/`all`/
+    /// selector), mutate only the attributes a `--watchdog`-style
+    /// optstring actually named, leave everything else in the document
+    /// untouched.
+    ///
+    /// If `edit` returns `Err`, nothing is defined — the caller's own
+    /// rejection of its input (a bad `--edit` index, an unmatched
+    /// selector) must not still write a half-applied document back to
+    /// libvirt.
+    pub fn edit_inactive_xml(
+        &self,
+        conn: &Connection,
+        edit: impl FnOnce(&mut Document, Element) -> Result<(), String>,
     ) -> Result<(), DomainError> {
         let inactive_xml = self.inner.get_xml_desc(sys::VIR_DOMAIN_XML_INACTIVE)?;
         let mut doc = parse_libvirt_xml(&inactive_xml)?;
@@ -104,7 +148,7 @@ impl Domain {
             .root_element()
             .expect("libvirt's own XMLDesc output always has a root element");
 
-        list_add(&mut doc, root, &["devices"], device);
+        edit(&mut doc, root).map_err(DomainError::Edit)?;
 
         let new_xml = doc.write_str()?;
         LibvirtDomain::define_xml(conn.as_connect(), &new_xml)?;
@@ -159,15 +203,61 @@ mod tests {
 
         // Re-fetch and confirm it actually landed in the persistent
         // config, not just that the call returned Ok.
-        let inactive_xml = domain
-            .inner
-            .get_xml_desc(sys::VIR_DOMAIN_XML_INACTIVE)
-            .expect("fetch inactive XML");
+        let inactive_xml = domain.inactive_xml().expect("fetch inactive XML");
         // libvirt's own XMLDesc serializer single-quotes attributes
         // (unlike this crate's writer) - assert on tag/content, not
         // quote style.
         assert!(inactive_xml.contains("<rng"));
         assert!(inactive_xml.contains("virtio"));
         assert!(inactive_xml.contains("/dev/urandom"));
+    }
+
+    /// `virt-xml --edit`'s core promise, proven against a real domain:
+    /// editing one attribute leaves every other attribute on that same
+    /// element — including ones this crate doesn't even model —
+    /// completely untouched.
+    #[test]
+    fn edit_inactive_xml_mutates_one_attribute_and_leaves_the_rest_alone() {
+        use crate::devices::DeviceWatchdog;
+
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        let domain = Domain::lookup_by_name(&conn, "test").expect("the default test domain");
+
+        let watchdog = DeviceWatchdog {
+            model: Some("i6300esb".into()),
+            action: Some("reset".into()),
+        };
+        domain
+            .add_device(&conn, &watchdog)
+            .expect("adding the watchdog succeeds");
+
+        domain
+            .edit_inactive_xml(&conn, |doc, root| {
+                let devices = virtinst_xml::resolve_path(doc, root, &["devices"])
+                    .ok_or_else(|| "no <devices> element".to_string())?;
+                let el = devices
+                    .find_all(doc, "watchdog")
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| "no watchdog element".to_string())?;
+                el.set_attribute(doc, "action", "poweroff");
+                Ok(())
+            })
+            .expect("editing the existing watchdog succeeds");
+
+        // Re-parse and check the watchdog element's own attributes
+        // directly, not a whole-document substring scan — `test:///`'s
+        // default domain XML has plenty of unrelated text ("restart"
+        // in `<on_reboot>`, etc.) that a bare `!contains("reset")`
+        // could pass against for the wrong reason.
+        let inactive_xml = domain.inactive_xml().expect("fetch inactive XML");
+        let doc = virtinst_xml::parse_libvirt_xml(&inactive_xml).expect("re-parses");
+        let root = doc.root_element().unwrap();
+        let devices = virtinst_xml::resolve_path(&doc, root, &["devices"]).unwrap();
+        let watchdog = devices.find_all(&doc, "watchdog")[0];
+        // The edited attribute changed...
+        assert_eq!(watchdog.attribute(&doc, "action"), Some("poweroff"));
+        // ...but the untouched one is exactly as it was.
+        assert_eq!(watchdog.attribute(&doc, "model"), Some("i6300esb"));
     }
 }

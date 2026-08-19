@@ -16,6 +16,7 @@
 //! consumer before generalizing the same way.
 
 use virtinst_core::devices::DeviceWatchdog;
+use virtinst_xml::{resolve_path, Document, Element};
 
 /// Upstream's `parse_optstr_tuples`: split `"model=itco,action=none"`
 /// into an ordered list of `(cliname, value)` tuples — `"model=itco,path=foo,model=bar"`
@@ -82,6 +83,91 @@ pub fn watchdog_from_optstr(optstr: &str) -> DeviceWatchdog {
         }
     }
     dev
+}
+
+/// `virt-xml --edit`'s target-selection logic — upstream's
+/// `_find_objects_to_edit`. Given the domain's root `<domain>` element
+/// and the `--edit` flag's own value (`selector`), returns the existing
+/// `<watchdog>` element(s) to mutate.
+///
+/// `selector` is never a true absence here: `--edit` with no value at
+/// all is upstream's `editval is None` case (defaults to index `1`,
+/// the first object) — the CLI layer maps a bare `--edit` to the
+/// literal string `"1"` before calling this, via clap's
+/// `default_missing_value`, so this function only ever sees a real
+/// string.
+///
+/// Handles the index form (`"1"`, `"-1"`) and `"all"`, matching
+/// upstream's index math exactly: 1-based from the front, negative
+/// counts from the back, `0` is always invalid. **Not yet ported**:
+/// upstream's third form, a bare selector string matched against an
+/// existing device's own fields (e.g. `--edit action=reset` finding
+/// the watchdog that already has `action="reset"`,
+/// `lookup_child_from_option_string`) — flagged rather than built,
+/// no second selector-string consumer yet to generalize from.
+pub fn select_watchdog_elements(
+    doc: &Document,
+    domain_root: Element,
+    selector: &str,
+) -> Result<Vec<Element>, String> {
+    let all: Vec<Element> = match resolve_path(doc, domain_root, &["devices"]) {
+        Some(devices) => devices.find_all(doc, "watchdog"),
+        None => Vec::new(),
+    };
+
+    if selector == "all" {
+        if all.is_empty() {
+            return Err("No watchdog objects found in the XML".to_string());
+        }
+        return Ok(all);
+    }
+
+    let idx: i64 = selector.parse().map_err(|_| {
+        format!(
+            "'--edit {selector}' isn't a number or 'all' — matching an existing \
+             device by its own field values (e.g. 'action=reset') isn't supported yet"
+        )
+    })?;
+    if idx == 0 {
+        return Err(format!("Invalid --edit option '{selector}'"));
+    }
+    if all.len() < idx.unsigned_abs() as usize {
+        return Err(format!(
+            "'--edit {selector}' requested but there are only {} watchdog object(s) in the XML",
+            all.len()
+        ));
+    }
+    let zero_based = if idx > 0 {
+        (idx - 1) as usize
+    } else {
+        (all.len() as i64 + idx) as usize
+    };
+    Ok(vec![all[zero_based]])
+}
+
+/// Applies a `--watchdog` optstring's named attributes directly onto an
+/// *existing* element — the surgical half of `--edit` that
+/// [`watchdog_from_optstr`]'s fresh-struct-then-`write_to` approach
+/// can't be reused for. Upstream re-parses the optstring against the
+/// existing Python device object (`cli.run_parser(..., editinst=...)`),
+/// mutating only the fields the optstring actually named and leaving
+/// every other field as it already was; a fresh
+/// `DeviceWatchdog::write_to` would instead write `None` for every
+/// field the optstring *didn't* name, clearing them. Setting only the
+/// named attributes on the real `Element` gets the same "leave
+/// everything else alone" result, and for free extends it to
+/// attributes this crate doesn't even model.
+pub fn apply_watchdog_optstr(doc: &mut Document, el: Element, optstr: &str) {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, &["model"]);
+
+    for (cliname, val) in tuples {
+        let Some(val) = val else { continue };
+        match cliname.as_str() {
+            "model" | "action" => el.set_attribute(doc, cliname, val),
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -172,5 +258,201 @@ mod tests {
         assert!(xml.ends_with("/>"));
         assert!(xml.contains(r#"model="itco""#));
         assert!(xml.contains(r#"action="none""#));
+    }
+
+    /// Two watchdogs (an artificial domain — real ones have at most
+    /// one — chosen deliberately so index/`all` selection has more
+    /// than a single trivial case to prove out).
+    const TWO_WATCHDOGS_FIXTURE: &str = r#"<domain>
+  <devices>
+    <watchdog model="i6300esb" action="reset"/>
+    <watchdog model="ib700" action="none"/>
+  </devices>
+</domain>"#;
+
+    fn parse_fixture(xml: &str) -> Document {
+        virtinst_xml::parse_libvirt_xml(xml).expect("fixture parses")
+    }
+
+    #[test]
+    fn select_defaults_to_the_first_watchdog() {
+        let doc = parse_fixture(TWO_WATCHDOGS_FIXTURE);
+        let root = doc.root_element().unwrap();
+        let els = select_watchdog_elements(&doc, root, "1").unwrap();
+        assert_eq!(els.len(), 1);
+        assert_eq!(els[0].attribute(&doc, "model"), Some("i6300esb"));
+    }
+
+    #[test]
+    fn select_by_positive_index() {
+        let doc = parse_fixture(TWO_WATCHDOGS_FIXTURE);
+        let root = doc.root_element().unwrap();
+        let els = select_watchdog_elements(&doc, root, "2").unwrap();
+        assert_eq!(els.len(), 1);
+        assert_eq!(els[0].attribute(&doc, "model"), Some("ib700"));
+    }
+
+    #[test]
+    fn select_by_negative_index_counts_from_the_end() {
+        let doc = parse_fixture(TWO_WATCHDOGS_FIXTURE);
+        let root = doc.root_element().unwrap();
+        let els = select_watchdog_elements(&doc, root, "-1").unwrap();
+        assert_eq!(els.len(), 1);
+        assert_eq!(els[0].attribute(&doc, "model"), Some("ib700"));
+    }
+
+    /// The boundary case where `-N == -len`: exercises the exact
+    /// `all.len() < idx.unsigned_abs()` check and the
+    /// `all.len() as i64 + idx` arithmetic together, not just `-1`.
+    #[test]
+    fn select_by_negative_index_at_the_far_boundary() {
+        let doc = parse_fixture(TWO_WATCHDOGS_FIXTURE);
+        let root = doc.root_element().unwrap();
+        let els = select_watchdog_elements(&doc, root, "-2").unwrap();
+        assert_eq!(els.len(), 1);
+        assert_eq!(els[0].attribute(&doc, "model"), Some("i6300esb"));
+    }
+
+    #[test]
+    fn select_negative_index_past_the_start_is_an_error() {
+        let doc = parse_fixture(TWO_WATCHDOGS_FIXTURE);
+        let root = doc.root_element().unwrap();
+        assert!(select_watchdog_elements(&doc, root, "-3").is_err());
+    }
+
+    #[test]
+    fn select_all_returns_every_watchdog() {
+        let doc = parse_fixture(TWO_WATCHDOGS_FIXTURE);
+        let root = doc.root_element().unwrap();
+        let els = select_watchdog_elements(&doc, root, "all").unwrap();
+        assert_eq!(els.len(), 2);
+    }
+
+    #[test]
+    fn select_index_zero_is_invalid() {
+        let doc = parse_fixture(TWO_WATCHDOGS_FIXTURE);
+        let root = doc.root_element().unwrap();
+        assert!(select_watchdog_elements(&doc, root, "0").is_err());
+    }
+
+    #[test]
+    fn select_out_of_range_index_is_an_error() {
+        let doc = parse_fixture(TWO_WATCHDOGS_FIXTURE);
+        let root = doc.root_element().unwrap();
+        assert!(select_watchdog_elements(&doc, root, "5").is_err());
+    }
+
+    #[test]
+    fn select_unmatched_selector_string_is_an_error() {
+        let doc = parse_fixture(TWO_WATCHDOGS_FIXTURE);
+        let root = doc.root_element().unwrap();
+        assert!(select_watchdog_elements(&doc, root, "action=reset").is_err());
+    }
+
+    #[test]
+    fn apply_optstr_mutates_only_the_named_attribute() {
+        let mut doc = parse_fixture(TWO_WATCHDOGS_FIXTURE);
+        let root = doc.root_element().unwrap();
+        let el = select_watchdog_elements(&doc, root, "1").unwrap()[0];
+
+        apply_watchdog_optstr(&mut doc, el, "action=poweroff");
+
+        // The named attribute changed...
+        assert_eq!(el.attribute(&doc, "action"), Some("poweroff"));
+        // ...the untouched one on the same element didn't...
+        assert_eq!(el.attribute(&doc, "model"), Some("i6300esb"));
+        // ...and the second watchdog wasn't touched at all.
+        let els = select_watchdog_elements(&doc, root, "2").unwrap();
+        assert_eq!(els[0].attribute(&doc, "action"), Some("none"));
+        assert_eq!(els[0].attribute(&doc, "model"), Some("ib700"));
+    }
+
+    /// Real end-to-end proof of `virt-xml --edit`'s exact call chain
+    /// (`Domain::edit_inactive_xml` + this crate's own
+    /// `select_watchdog_elements`/`apply_watchdog_optstr`, not core's
+    /// simpler inlined equivalent in `connection::domain`'s own test)
+    /// against a live `test:///default` domain — the same guarantee
+    /// `connection::domain`'s tests already proved for the underlying
+    /// primitive, now proved for this crate's own selection/apply
+    /// logic specifically.
+    #[test]
+    fn edit_against_a_real_domain_uses_this_crates_own_select_and_apply() {
+        use virtinst_core::connection::{Connection, Domain};
+        use virtinst_core::devices::DeviceWatchdog;
+
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        let domain = Domain::lookup_by_name(&conn, "test").expect("the default test domain");
+
+        let watchdog = DeviceWatchdog {
+            model: Some("i6300esb".into()),
+            action: Some("reset".into()),
+        };
+        domain
+            .add_device(&conn, &watchdog)
+            .expect("seeding a watchdog to edit succeeds");
+
+        domain
+            .edit_inactive_xml(&conn, |doc, root| {
+                let els = select_watchdog_elements(doc, root, "1")?;
+                for el in els {
+                    apply_watchdog_optstr(doc, el, "action=poweroff");
+                }
+                Ok(())
+            })
+            .expect("editing via this crate's own selector/apply succeeds");
+
+        // Re-parse and check the watchdog element's own attributes
+        // directly rather than scanning the whole document for
+        // substrings — `test:///`'s domain XML has enough unrelated
+        // text that a bare `contains`/`!contains` pair can pass for
+        // the wrong reason.
+        let inactive_xml = domain.inactive_xml().expect("fetch inactive XML");
+        let doc = virtinst_xml::parse_libvirt_xml(&inactive_xml).expect("re-parses");
+        let root = doc.root_element().unwrap();
+        let watchdog = select_watchdog_elements(&doc, root, "1").unwrap()[0];
+        assert_eq!(watchdog.attribute(&doc, "action"), Some("poweroff"));
+        assert_eq!(watchdog.attribute(&doc, "model"), Some("i6300esb"));
+    }
+
+    /// Ticket 03's actual acceptance bar: editing one watchdog attribute
+    /// must not disturb a completely foreign `<qemu:commandline>` block
+    /// elsewhere in the document — content this crate doesn't model at
+    /// all, not just an attribute it happens to leave alone. Content-level
+    /// preservation (children, attributes, text all still there), not
+    /// byte-for-byte — see `watchdog_build_xml_output_matches_expected_shape`'s
+    /// doc comment for why exact serialized order isn't a guarantee this
+    /// crate's `edit_xml` dependency currently provides.
+    #[test]
+    fn edit_leaves_a_foreign_qemu_commandline_block_completely_untouched() {
+        const FIXTURE: &str = r#"<domain type="test" xmlns:qemu="http://libvirt.org/schemas/domain/qemu/1.0">
+  <name>foo</name>
+  <devices>
+    <watchdog model="i6300esb" action="reset"/>
+  </devices>
+  <qemu:commandline>
+    <qemu:arg value="-foo"/>
+    <qemu:arg value="bar"/>
+  </qemu:commandline>
+</domain>"#;
+
+        let mut doc = parse_fixture(FIXTURE);
+        let root = doc.root_element().unwrap();
+        let el = select_watchdog_elements(&doc, root, "1").unwrap()[0];
+        apply_watchdog_optstr(&mut doc, el, "action=poweroff");
+
+        let written = doc.write_str().expect("serializes");
+        let doc2 = virtinst_xml::parse_libvirt_xml(&written).expect("re-parses");
+        let root2 = doc2.root_element().unwrap();
+
+        let commandline = root2.find_all(&doc2, "commandline");
+        assert_eq!(commandline.len(), 1, "the foreign block itself survived");
+        let args = commandline[0].find_all(&doc2, "arg");
+        assert_eq!(args.len(), 2, "both its children survived");
+        assert_eq!(args[0].attribute(&doc2, "value"), Some("-foo"));
+        assert_eq!(args[1].attribute(&doc2, "value"), Some("bar"));
+
+        // And the actual edit still landed.
+        let watchdog2 = select_watchdog_elements(&doc2, root2, "1").unwrap()[0];
+        assert_eq!(watchdog2.attribute(&doc2, "action"), Some("poweroff"));
     }
 }
