@@ -101,6 +101,21 @@ impl Domain {
         Ok(Domain { inner })
     }
 
+    /// Starts a **brand-new, transient** domain from XML —
+    /// `virDomainCreateXML`, no flags. Same "makes the `Domain`,
+    /// nothing to call it on yet" shape as `define_new`. Transient
+    /// means exactly what upstream's own `conn.createXML` doc says:
+    /// gone if destroyed, gone if the host restarts — `define_new`
+    /// alongside it is what makes a domain persist. Backs
+    /// `virt-install`'s default (non-`--transient`, `doboot`) case,
+    /// which upstream's `_create_guest` does as *two* separate calls
+    /// (`createXML` then `defineXML`), not one — same shape as
+    /// `Domain::attach_device` + `Domain::add_device`.
+    pub fn create_new(conn: &Connection, xml: &str) -> Result<Domain, LibvirtError> {
+        let inner = LibvirtDomain::create_xml(conn.as_connect(), xml, 0)?;
+        Ok(Domain { inner })
+    }
+
     /// The domain's persistent name — used to report success after a
     /// clone/edit without the caller needing to hang onto the name
     /// string it passed in separately.

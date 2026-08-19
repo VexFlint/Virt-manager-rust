@@ -11,6 +11,9 @@
 //! for a second/real consumer" rule this project has followed since
 //! `#[xml(nested)]`.
 
+pub mod import;
+pub use import::build_import_document;
+
 /// One of upstream's 7 install-method sub-flows (`createvm.py`'s
 /// `INSTALL_PAGE_*` constants — checked directly against
 /// `_validate_install_page`'s actual per-branch required fields, not
