@@ -11,10 +11,12 @@
 //! for a second/real consumer" rule this project has followed since
 //! `#[xml(nested)]`.
 
+pub mod container;
 mod domain_skeleton;
 pub mod import;
 pub mod iso;
 pub mod manual;
+pub use container::build_container_os_document;
 pub use import::build_import_document;
 pub use iso::{build_iso_document, build_iso_two_phase_documents};
 pub use manual::{build_manual_document, build_manual_two_phase_documents};

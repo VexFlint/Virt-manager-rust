@@ -4,7 +4,7 @@
 //! no wizard equivalent, closer in shape to `virt-xml --edit` than to
 //! Create VM (ticket 16).
 //!
-//! Five `InstallMethod` shapes are wired up so far:
+//! Six `InstallMethod` shapes are wired up so far:
 //! - `--import` — upstream's simplest install method: no media fetch, no
 //!   OS detection, no `Installer`-class media/kernel wiring, an existing
 //!   disk becomes the VM's disk as-is (`InstallMethod::Import`).
@@ -25,14 +25,20 @@
 //!   `install_bootdev` truthiness, not disk presence; with no disk the
 //!   two phases just end up identical (see `manual.rs`'s header for the
 //!   exact derivation of both cases).
+//! - `--container --filesystem <dir>` — `InstallMethod::ContainerOs {
+//!   source: dir, bootstrap: None }`. `ContainerApp` (`--boot init=...`)
+//!   isn't built — needs optstring parsing `--boot` doesn't do, see
+//!   `container.rs`'s header. `bootstrap: Some(_)` (fetch/populate the
+//!   directory from a registry first) isn't built either — needs real
+//!   network fetching, same shape of gap as `Url`.
 //!
-//! The domain XML for all five is built via direct DOM construction
+//! The domain XML for all six is built via direct DOM construction
 //! (`virtinst_core::install::{build_import_document, build_iso_document,
 //! build_iso_two_phase_documents, build_manual_document,
-//! build_manual_two_phase_documents}` — see the amendment on ticket 08
-//! for why `Guest::to_xml_string()` can't do this). Every other
-//! `InstallMethod` variant, `--unattended`/`--cloud-init`, and
-//! `--reinstall` are undeclared rather than stubbed.
+//! build_manual_two_phase_documents, build_container_os_document}` — see
+//! the amendment on ticket 08 for why `Guest::to_xml_string()` can't do
+//! this). Every other `InstallMethod` variant, `--unattended`/
+//! `--cloud-init`, and `--reinstall` are undeclared rather than stubbed.
 //!
 //! Matches upstream's actual default sequence (`Installer._create_guest`,
 //! `doboot=True`, not `--transient`): two separate libvirt calls,
@@ -50,8 +56,8 @@ use clap::Parser;
 use virtinst_core::capabilities::DomainCapabilities;
 use virtinst_core::connection::{Connection, Domain};
 use virtinst_core::install::{
-    build_import_document, build_iso_document, build_iso_two_phase_documents,
-    build_manual_document, build_manual_two_phase_documents,
+    build_container_os_document, build_import_document, build_iso_document,
+    build_iso_two_phase_documents, build_manual_document, build_manual_two_phase_documents,
 };
 
 #[derive(Parser)]
@@ -87,6 +93,23 @@ struct Args {
     /// is a real invocation), unlike plain `--cdrom`.
     #[arg(long)]
     pxe: bool,
+
+    /// Build a container guest. Upstream's `--container` is a general
+    /// os-type flag (`--hvm`/`--paravirt`'s sibling), not itself an
+    /// install method — combined with `--filesystem` here
+    /// (`InstallMethod::ContainerOs`); combined with `--boot init=...`
+    /// upstream (`ContainerApp`, not built, see this binary's own doc
+    /// comment).
+    #[arg(long)]
+    container: bool,
+
+    /// Existing directory to use as the container's root filesystem
+    /// (`InstallMethod::ContainerOs::source`). Required with
+    /// `--container`; ignored otherwise. Upstream's `--filesystem` is a
+    /// full `source=...,target=...` optstring (`ParserFilesystem`);
+    /// this is a bare path only, same posture as `--disk`.
+    #[arg(long)]
+    filesystem: Option<String>,
 
     /// Name for the new guest.
     #[arg(short, long)]
@@ -223,10 +246,24 @@ fn main() {
             &arch,
         ));
         (xml.clone(), xml)
+    } else if args.container {
+        let filesystem = args.filesystem.unwrap_or_else(|| {
+            eprintln!("virt-install: --container requires --filesystem");
+            std::process::exit(1);
+        });
+        let xml = write(build_container_os_document(
+            &args.name,
+            memory_kib,
+            args.vcpus,
+            &filesystem,
+            &domain_type,
+            &arch,
+        ));
+        (xml.clone(), xml)
     } else {
         eprintln!(
-            "virt-install: specify --import, --cdrom, --pxe, or --boot (only methods \
-             implemented so far)"
+            "virt-install: specify --import, --cdrom, --pxe, --boot, or --container \
+             (only methods implemented so far)"
         );
         std::process::exit(1);
     };

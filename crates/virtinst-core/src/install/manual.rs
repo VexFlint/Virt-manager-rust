@@ -188,7 +188,7 @@ fn build_manual_phase_document(
     is_initial: bool,
 ) -> Document {
     let (mut doc, root, os_el) =
-        build_domain_skeleton(name, memory_kib, vcpus, uuid, domain_type, arch);
+        build_domain_skeleton(name, memory_kib, vcpus, uuid, domain_type, "hvm", arch);
     if is_initial {
         push_on_reboot_destroy(&mut doc, root);
     }

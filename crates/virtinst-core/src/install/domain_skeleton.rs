@@ -19,11 +19,19 @@
 use virtinst_xml::{Document, Element};
 
 /// Builds `<domain type=domain_type><name/><uuid/><memory/>
-/// <currentMemory/><vcpu/><os><type arch=arch>hvm</type></os></domain>`
+/// <currentMemory/><vcpu/><os><type arch=arch>os_type</type></os></domain>`
 /// and returns the open document plus its `<os>` element — callers push
 /// their own `<boot>` entries onto `os` (bootdev handling differs enough
 /// per install method, see `Iso::live`/`Manual`, that it isn't shared
-/// here) and their own `<devices>` onto `root`.
+/// here — container guests skip `<boot>` entirely, see `container.rs`)
+/// and their own `<devices>` onto `root`.
+///
+/// `os_type` is `<os><type>`'s text content — `"hvm"` for every install
+/// method except containers (`"exe"`, `DomainOs.is_container()`'s check).
+/// `arch` is still always passed through from `DomainCapabilities` even
+/// for containers — confirmed directly in `guest.py`'s `set_capabilities_
+/// defaults`: `self.os.arch = capsinfo.arch` runs unconditionally, no
+/// container exception, so this isn't guessed.
 ///
 /// `uuid` is caller-supplied rather than generated here — required
 /// because `virt-install`'s default sequence calls `Domain::create_new`
@@ -44,6 +52,7 @@ pub(super) fn build_domain_skeleton(
     vcpus: u32,
     uuid: &str,
     domain_type: &str,
+    os_type: &str,
     arch: &str,
 ) -> (Document, Element, Element) {
     let mut doc = Document::new();
@@ -68,7 +77,7 @@ pub(super) fn build_domain_skeleton(
     push_text_child(&mut doc, root, "vcpu", &vcpus.to_string());
 
     let os_el = Element::new(&mut doc, "os");
-    let type_el = Element::new_with_text(&mut doc, "type", "hvm");
+    let type_el = Element::new_with_text(&mut doc, "type", os_type);
     type_el.set_attribute(&mut doc, "arch", arch);
     os_el
         .push_child(&mut doc, type_el)

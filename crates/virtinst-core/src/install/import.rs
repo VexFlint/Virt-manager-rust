@@ -80,6 +80,7 @@ pub fn build_import_document(
         vcpus,
         &Uuid::new_v4().to_string(),
         domain_type,
+        "hvm",
         arch,
     );
     push_boot_dev(&mut doc, os_el, "hd");
