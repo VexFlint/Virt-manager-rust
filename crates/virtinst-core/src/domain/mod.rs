@@ -58,9 +58,13 @@ pub use cputune::{
     CputuneVcpuPin, CputuneVcpuSched, DomainCputune, Memorytune, MemorytuneNode,
 };
 
-// TODO: cpu, os, features. `features.py` needs the just-added
-// Option<OnOff> for most of its ~40 fields but is otherwise flat;
-// `os.py`/`cpu.py` are both large multi-level trees (deep NUMA nesting,
-// computed `bootorder` property, `do_abspath` semantics) that deserve
-// their own dedicated pass rather than being rushed alongside this
-// batch.
+pub mod cpu;
+pub use cpu::{
+    CpuFeature, CpuNumaBandwidth, CpuNumaCell, CpuNumaCellCache, CpuNumaCellSibling,
+    CpuNumaLatency, DomainCpu,
+};
+
+// TODO: os, features. `features.py` needs the just-added Option<OnOff>
+// for most of its ~40 fields but is otherwise flat; `os.py` is a large
+// multi-level tree (computed `bootorder` property, `do_abspath`
+// semantics) that deserves its own dedicated pass.

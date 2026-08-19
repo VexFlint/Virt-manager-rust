@@ -12,9 +12,10 @@ use crate::devices::{
     DeviceSmartcard, DeviceSound, DeviceTpm, DeviceVideo, DeviceVsock, DeviceWatchdog,
 };
 use crate::domain::{
-    Cachetune, Clock, CurrentMemory, DomainBlkiotune, DomainCputune, DomainIdmap, DomainKeyWrap,
-    DomainLaunchSecurity, DomainMemoryBacking, DomainMemtune, DomainNumatune, DomainPm,
-    DomainResource, DomainSeclabel, DomainSysinfo, DomainVcpus, DomainXmlnsQemu, Memorytune,
+    Cachetune, Clock, CurrentMemory, DomainBlkiotune, DomainCpu, DomainCputune, DomainIdmap,
+    DomainKeyWrap, DomainLaunchSecurity, DomainMemoryBacking, DomainMemtune, DomainNumatune,
+    DomainPm, DomainResource, DomainSeclabel, DomainSysinfo, DomainVcpus, DomainXmlnsQemu,
+    Memorytune,
 };
 use crate::guest::Guest;
 use virtinst_xml::{parse_libvirt_xml, OnOff, XmlBound};
@@ -496,6 +497,96 @@ fn cputune_reads_scalars_pins_and_nested_cachetune_list() {
     let memorytune: &Memorytune = &cputune.memorytunes[0];
     assert_eq!(memorytune.nodes.len(), 1);
     assert_eq!(memorytune.nodes[0].bandwidth, Some(60));
+}
+
+#[test]
+fn cpu_flattens_is_single_topology_cache_and_maxphysaddr() {
+    // topology/cache/maxphysaddr are all is_single=True upstream -
+    // flattened directly onto DomainCpu rather than nested structs
+    // (this crate has no "nested single struct" field kind). Note
+    // <cpu><cache> here is a different element from <numa><cell><cache>
+    // below, despite the identical upstream class-naming convention.
+    let doc = parse_libvirt_xml(
+        r#"<cpu mode="host-model" match="exact" migratable="on">
+             <model fallback="allow" vendor_id="GenuineIntel">Skylake-Client</model>
+             <vendor>Intel</vendor>
+             <topology sockets="1" dies="1" cores="4" threads="2"/>
+             <cache level="3" mode="emulate"/>
+             <maxphysaddr mode="passthrough" bits="42"/>
+             <feature policy="require" name="vmx"/>
+             <feature policy="disable" name="rdrand"/>
+           </cpu>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let cpu = DomainCpu::from_element(&doc, el);
+    assert_eq!(cpu.mode, Some("host-model".to_string()));
+    assert_eq!(cpu.cpu_match, Some("exact".to_string()));
+    assert_eq!(cpu.migratable, Some(OnOff(true)));
+    assert_eq!(cpu.model, Some("Skylake-Client".to_string()));
+    assert_eq!(cpu.model_fallback, Some("allow".to_string()));
+    assert_eq!(cpu.vendor, Some("Intel".to_string()));
+
+    assert_eq!(cpu.topology_sockets, Some(1));
+    assert_eq!(cpu.topology_cores, Some(4));
+    assert_eq!(cpu.topology_threads, Some(2));
+
+    assert_eq!(cpu.cache_level, Some(3));
+    assert_eq!(cpu.cache_mode, Some("emulate".to_string()));
+
+    assert_eq!(cpu.maxphysaddr_mode, Some("passthrough".to_string()));
+    assert_eq!(cpu.maxphysaddr_bits, Some(42));
+
+    assert_eq!(cpu.features.len(), 2);
+    assert_eq!(cpu.features[0].name, Some("vmx".to_string()));
+    assert_eq!(cpu.features[1].policy, Some("disable".to_string()));
+}
+
+#[test]
+fn cpu_numa_cells_and_interconnects_use_the_real_nesting_not_the_docstrings() {
+    // Grounded in DomainCpu's actual XMLChildProperty calls: cells are
+    // direct children of <numa>, while latencies/bandwidths are under
+    // <numa><interconnects> as *siblings* of <cell>, not nested inside
+    // one - despite what the upstream class doc-comments imply.
+    let doc = parse_libvirt_xml(
+        r#"<cpu>
+             <numa>
+               <cell id="0" cpus="0-3" memory="4194304" unit="KiB" discard="yes">
+                 <distances>
+                   <sibling id="0" value="10"/>
+                   <sibling id="1" value="21"/>
+                 </distances>
+                 <cache level="1" associativity="direct" policy="both">
+                   <size value="32" unit="KiB"/>
+                   <line value="64" unit="B"/>
+                 </cache>
+               </cell>
+               <interconnects>
+                 <latency initiator="0" target="0" type="access" value="10"/>
+                 <bandwidth initiator="0" target="0" type="access" value="100" unit="MiB"/>
+               </interconnects>
+             </numa>
+           </cpu>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let cpu = DomainCpu::from_element(&doc, el);
+    assert_eq!(cpu.cells.len(), 1);
+    let cell = &cpu.cells[0];
+    assert_eq!(cell.id, Some(0));
+    assert_eq!(cell.discard, Some(true));
+    assert_eq!(cell.siblings.len(), 2);
+    assert_eq!(cell.siblings[1].value, Some(21));
+    assert_eq!(cell.caches.len(), 1);
+    assert_eq!(cell.caches[0].size_value, Some(32));
+    assert_eq!(cell.caches[0].line_unit, Some("B".to_string()));
+
+    assert_eq!(cpu.latencies.len(), 1);
+    assert_eq!(cpu.latencies[0].value, Some(10));
+    assert_eq!(cpu.bandwidths.len(), 1);
+    assert_eq!(cpu.bandwidths[0].unit, Some("MiB".to_string()));
 }
 
 #[test]
