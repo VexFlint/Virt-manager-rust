@@ -14,8 +14,8 @@ use crate::devices::{
 use crate::domain::{
     Cachetune, Clock, CurrentMemory, DomainBlkiotune, DomainCpu, DomainCputune, DomainIdmap,
     DomainKeyWrap, DomainLaunchSecurity, DomainMemoryBacking, DomainMemtune, DomainNumatune,
-    DomainPm, DomainResource, DomainSeclabel, DomainSysinfo, DomainVcpus, DomainXmlnsQemu,
-    Memorytune,
+    DomainOs, DomainPm, DomainResource, DomainSeclabel, DomainSysinfo, DomainVcpus,
+    DomainXmlnsQemu, Memorytune,
 };
 use crate::guest::Guest;
 use virtinst_xml::{parse_libvirt_xml, OnOff, XmlBound};
@@ -587,6 +587,99 @@ fn cpu_numa_cells_and_interconnects_use_the_real_nesting_not_the_docstrings() {
     assert_eq!(cpu.latencies[0].value, Some(10));
     assert_eq!(cpu.bandwidths.len(), 1);
     assert_eq!(cpu.bandwidths[0].unit, Some("MiB".to_string()));
+}
+
+#[test]
+fn os_reads_uefi_boot_with_bootdev_list_and_firmware_features() {
+    let doc = parse_libvirt_xml(
+        r#"<os firmware="efi">
+             <type arch="x86_64" machine="q35">hvm</type>
+             <loader readonly="yes" type="pflash" secure="no">/OVMF_CODE.fd</loader>
+             <nvram template="/OVMF_VARS.fd"/>
+             <boot dev="hd"/>
+             <boot dev="cdrom"/>
+             <bootmenu enable="yes" timeout="3000"/>
+             <firmware>
+               <feature enabled="no" name="enrolled-keys"/>
+               <feature enabled="yes" name="secure-boot"/>
+             </firmware>
+           </os>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let os = DomainOs::from_element(&doc, el);
+    assert_eq!(os.firmware, Some("efi".to_string()));
+    assert_eq!(os.os_type, Some("hvm".to_string()));
+    assert_eq!(os.arch, Some("x86_64".to_string()));
+    assert_eq!(os.machine, Some("q35".to_string()));
+    assert_eq!(os.loader, Some("/OVMF_CODE.fd".to_string()));
+    assert_eq!(os.loader_ro, Some(true));
+    assert_eq!(os.loader_secure, Some(false));
+    assert_eq!(os.nvram_template, Some("/OVMF_VARS.fd".to_string()));
+
+    assert_eq!(os.bootdevs.len(), 2);
+    assert_eq!(os.bootdevs[0].dev, Some("hd".to_string()));
+    assert_eq!(os.bootdevs[1].dev, Some("cdrom".to_string()));
+    assert_eq!(os.bootmenu_enable, Some(true));
+    assert_eq!(os.bootmenu_timeout, Some(3000));
+
+    // firmware_features nests under <firmware> - a path + list combo,
+    // same shape DomainMemoryBacking's <hugepages><page> already proved.
+    assert_eq!(os.firmware_features.len(), 2);
+    assert_eq!(
+        os.firmware_features[0].name,
+        Some("enrolled-keys".to_string())
+    );
+    assert_eq!(os.firmware_features[1].enabled, Some(true));
+}
+
+#[test]
+fn os_reads_direct_kernel_boot_fields() {
+    let doc = parse_libvirt_xml(
+        r#"<os>
+             <type>hvm</type>
+             <kernel>/boot/vmlinuz</kernel>
+             <initrd>/boot/initrd.img</initrd>
+             <cmdline>console=ttyS0</cmdline>
+             <dtb>/boot/board.dtb</dtb>
+           </os>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let os = DomainOs::from_element(&doc, el);
+    assert_eq!(os.kernel, Some("/boot/vmlinuz".to_string()));
+    assert_eq!(os.initrd, Some("/boot/initrd.img".to_string()));
+    assert_eq!(os.kernel_args, Some("console=ttyS0".to_string()));
+    assert_eq!(os.dtb, Some("/boot/board.dtb".to_string()));
+    // Not a container boot - initargs/initenvs stay empty.
+    assert!(os.initargs.is_empty());
+}
+
+#[test]
+fn os_reads_container_init_argv_and_env_lists() {
+    let doc = parse_libvirt_xml(
+        r#"<os>
+             <type>exe</type>
+             <init>/bin/sh</init>
+             <initarg>-c</initarg>
+             <initarg>echo hi</initarg>
+             <initenv name="TERM">xterm</initenv>
+           </os>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let os = DomainOs::from_element(&doc, el);
+    assert_eq!(os.os_type, Some("exe".to_string()));
+    assert_eq!(os.init, Some("/bin/sh".to_string()));
+    assert_eq!(os.initargs.len(), 2);
+    assert_eq!(os.initargs[0].val, Some("-c".to_string()));
+    assert_eq!(os.initargs[1].val, Some("echo hi".to_string()));
+    assert_eq!(os.initenvs.len(), 1);
+    assert_eq!(os.initenvs[0].name, Some("TERM".to_string()));
+    assert_eq!(os.initenvs[0].value, Some("xterm".to_string()));
 }
 
 #[test]

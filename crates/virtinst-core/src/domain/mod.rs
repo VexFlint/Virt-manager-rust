@@ -64,7 +64,9 @@ pub use cpu::{
     CpuNumaLatency, DomainCpu,
 };
 
-// TODO: os, features. `features.py` needs the just-added Option<OnOff>
-// for most of its ~40 fields but is otherwise flat; `os.py` is a large
-// multi-level tree (computed `bootorder` property, `do_abspath`
-// semantics) that deserves its own dedicated pass.
+pub mod os;
+pub use os::{DomainOs, OsBootDevice, OsFirmwareFeature, OsInitArg, OsInitEnv};
+
+// TODO: features.py — needs the already-added Option<OnOff> for most
+// of its ~40 fields but is otherwise flat, same shape as everything
+// else in domain/.
