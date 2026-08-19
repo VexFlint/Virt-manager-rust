@@ -8,7 +8,7 @@
 //! approach necessary in the first place (ticket 03's acceptance bar).
 
 pub mod clock;
-pub use clock::Clock;
+pub use clock::{Clock, ClockTimer};
 
 pub mod memory;
 pub use memory::CurrentMemory;

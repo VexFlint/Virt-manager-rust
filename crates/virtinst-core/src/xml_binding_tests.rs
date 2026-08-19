@@ -177,6 +177,33 @@ fn clock_binds_a_flat_attribute() {
 
     let clock = Clock::from_element(&doc, clock_el);
     assert_eq!(clock.offset, Some("utc".to_string()));
+    // FIXTURE's <clock> has no <timer> children.
+    assert!(clock.timers.is_empty());
+}
+
+#[test]
+fn clock_reads_timer_list_with_nested_catchup_attributes() {
+    // Found missing while surveying guest.py for Guest's wiring -
+    // upstream's _ClockTimer, closed here.
+    let doc = parse_libvirt_xml(
+        r#"<clock offset="utc">
+             <timer name="rtc" tickpolicy="catchup">
+               <catchup threshold="123" slew="120" limit="10000"/>
+             </timer>
+             <timer name="pit" tickpolicy="delay"/>
+           </clock>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let clock = Clock::from_element(&doc, el);
+    assert_eq!(clock.timers.len(), 2);
+    assert_eq!(clock.timers[0].name, Some("rtc".to_string()));
+    assert_eq!(clock.timers[0].tickpolicy, Some("catchup".to_string()));
+    assert_eq!(clock.timers[0].threshold, Some(123));
+    assert_eq!(clock.timers[0].slew, Some(120));
+    assert_eq!(clock.timers[1].name, Some("pit".to_string()));
+    assert_eq!(clock.timers[1].threshold, None);
 }
 
 #[test]
@@ -1401,6 +1428,54 @@ fn guest_reads_name_uuid_type_and_memory_scalars() {
     assert_eq!(guest.memory, Some(2_097_152));
     assert_eq!(guest.max_memory, Some(4_194_304));
     assert_eq!(guest.max_memory_slots, Some(4));
+}
+
+#[test]
+fn guest_reads_nested_devices_and_domain_subsystem_fields() {
+    // The actual new capability: Guest::from_element populates every
+    // #[xml(nested)]/#[xml(list)] field, agreeing with what each
+    // standalone struct's own test already proves element-by-element.
+    let doc = parse_libvirt_xml(FIXTURE).expect("fixture parses");
+    let root = doc.root_element().expect("root element");
+
+    let guest = Guest::from_element(&doc, root);
+    assert_eq!(guest.devices.disks.len(), 2);
+    assert_eq!(
+        guest.devices.disks[0].source_file,
+        Some("/old/path.qcow2".into())
+    );
+    assert_eq!(guest.devices.interfaces.len(), 1);
+    assert_eq!(guest.clock.offset, Some("utc".to_string()));
+    assert_eq!(guest.current_memory, Some(1_048_576));
+
+    // Fields with no corresponding element in FIXTURE default to the
+    // struct's own empty/default state, not a panic.
+    assert!(guest.seclabels.is_empty());
+    assert_eq!(guest.cpu, crate::domain::DomainCpu::default());
+    assert_eq!(guest.os.os_type, None);
+}
+
+#[test]
+fn guest_write_to_leaves_nested_fields_completely_untouched() {
+    // nested/list fields generate no write code at all (same as list
+    // already does) - the entire point being Guest::write_to can never
+    // invent an empty <clock/>/<cpu/>/etc. on a document that never had
+    // one. Proven directly: parse, read, write back unmodified, and the
+    // serialized output must be byte-identical to before the write -
+    // ticket 03's acceptance bar applied to the aggregate type itself.
+    let mut doc = parse_libvirt_xml(FIXTURE).expect("fixture parses");
+    let root = doc.root_element().expect("root element");
+
+    let guest = Guest::from_element(&doc, root);
+    let before = doc.write_str().expect("serializes");
+
+    guest.write_to(&mut doc, root);
+    let after = doc.write_str().expect("serializes");
+
+    assert_eq!(
+        before, after,
+        "write_to must be a no-op when nothing on Guest was changed"
+    );
 }
 
 #[test]
