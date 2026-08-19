@@ -12,30 +12,33 @@
 //! `watchdog_build_xml_output_matches_expected_shape`'s doc comment in
 //! `virtinst-cli` for where that was found.
 //!
-//! This slice covers `--build-xml --watchdog <optstr>` and
-//! `--edit [SELECTOR] --watchdog <optstr>` against a real domain.
-//! `--add-device`/`--remove-device` and every device besides
-//! `--watchdog` aren't built yet — see `virtinst_cli`'s doc comment for
-//! why `--watchdog` specifically. Only the flags this slice actually
+//! This slice covers `--build-xml`/`--edit`/`--add-device`/
+//! `--remove-device`, all `--watchdog`-only — see `virtinst_cli`'s doc
+//! comment for why that one device. Only the flags this slice actually
 //! implements are declared; an unimplemented flag that parses is worse
 //! than an absent one.
 //!
-//! `--edit`'s output contract is also deliberately narrower than
-//! upstream for now: this always defines the change (upstream's
-//! default when a domain is given and no `--print-xml`/`--no-define`
-//! is passed) — the `--print-xml`/`--print-diff`/confirm-prompt paths
-//! aren't ported yet.
+//! `--add-device`/`--edit`'s output contract is also deliberately
+//! narrower than upstream for now: this always defines the change
+//! (upstream's default when a domain is given and no
+//! `--print-xml`/`--no-define` is passed), with no `--update` (live
+//! hotplug alongside the persistent define) support yet — upstream
+//! itself only hotplugs when `--update` is explicitly passed, so a
+//! running domain being edited/added-to here still behaves like
+//! upstream's own default, just without the opt-in extra.
 
 use clap::Parser;
-use virtinst_cli::{apply_watchdog_optstr, select_watchdog_elements, watchdog_from_optstr};
+use virtinst_cli::{
+    apply_watchdog_optstr, remove_watchdog_elements, select_watchdog_elements, watchdog_from_optstr,
+};
 use virtinst_core::connection::{Connection, Domain};
 use virtinst_xml::to_xml_string;
 
 #[derive(Parser)]
 #[command(name = "virt-xml")]
 struct Args {
-    /// Domain name — required for --edit, unused (and not required)
-    /// for --build-xml.
+    /// Domain name — required for --edit/--add-device/--remove-device,
+    /// unused (and not required) for --build-xml.
     domain: Option<String>,
 
     /// Connect to a non-default hypervisor.
@@ -53,7 +56,18 @@ struct Args {
     #[arg(long, num_args = 0..=1, default_missing_value = "1")]
     edit: Option<String>,
 
-    /// Watchdog device options, e.g. "model=itco,action=none".
+    /// Add the device described by --watchdog.
+    #[arg(long)]
+    add_device: bool,
+
+    /// Remove the device(s) --watchdog selects (index/`-N`/`all`, same
+    /// selector syntax as --edit).
+    #[arg(long)]
+    remove_device: bool,
+
+    /// Watchdog device options for --build-xml/--edit/--add-device
+    /// (e.g. "model=itco,action=none"), or the selector for
+    /// --remove-device (e.g. "1", "all").
     #[arg(long)]
     watchdog: Option<String>,
 }
@@ -65,14 +79,45 @@ fn main() {
         run_build_xml(&args);
         return;
     }
-
     if let Some(selector) = args.edit.clone() {
         run_edit(&args, &selector);
         return;
     }
+    if args.add_device {
+        run_add_device(&args);
+        return;
+    }
+    if args.remove_device {
+        run_remove_device(&args);
+        return;
+    }
 
-    eprintln!("virt-xml: only --build-xml and --edit are implemented so far");
+    eprintln!(
+        "virt-xml: only --build-xml, --edit, --add-device, and --remove-device are implemented so far"
+    );
     std::process::exit(1);
+}
+
+/// Opens `--connect`'s URI and looks up `domain` — the boilerplate every
+/// action but `--build-xml` needs. Exits the process on any failure
+/// (bad URI, no such domain, no domain name given at all) rather than
+/// threading a `Result` through `main`, matching this binary's existing
+/// error-reporting style.
+fn connect_and_lookup(args: &Args) -> (Connection, Domain, String) {
+    let Some(domain_name) = &args.domain else {
+        eprintln!("virt-xml: a domain name is required");
+        std::process::exit(1);
+    };
+
+    let conn = Connection::open(&args.connect).unwrap_or_else(|e| {
+        eprintln!("virt-xml: failed to connect to {}: {e}", args.connect);
+        std::process::exit(1);
+    });
+    let domain = Domain::lookup_by_name(&conn, domain_name).unwrap_or_else(|e| {
+        eprintln!("virt-xml: failed to find domain '{domain_name}': {e}");
+        std::process::exit(1);
+    });
+    (conn, domain, domain_name.clone())
 }
 
 fn run_build_xml(args: &Args) {
@@ -95,19 +140,7 @@ fn run_edit(args: &Args, selector: &str) {
         );
         std::process::exit(1);
     };
-    let Some(domain_name) = &args.domain else {
-        eprintln!("virt-xml --edit: a domain name is required");
-        std::process::exit(1);
-    };
-
-    let conn = Connection::open(&args.connect).unwrap_or_else(|e| {
-        eprintln!("virt-xml: failed to connect to {}: {e}", args.connect);
-        std::process::exit(1);
-    });
-    let domain = Domain::lookup_by_name(&conn, domain_name).unwrap_or_else(|e| {
-        eprintln!("virt-xml: failed to find domain '{domain_name}': {e}");
-        std::process::exit(1);
-    });
+    let (conn, domain, domain_name) = connect_and_lookup(args);
 
     let result = domain.edit_inactive_xml(&conn, |doc, root| {
         let els = select_watchdog_elements(doc, root, selector)?;
@@ -116,7 +149,41 @@ fn run_edit(args: &Args, selector: &str) {
         }
         Ok(())
     });
+    report(&domain_name, result);
+}
 
+fn run_add_device(args: &Args) {
+    let Some(optstr) = &args.watchdog else {
+        eprintln!(
+            "virt-xml --add-device: no device option given (only --watchdog is implemented so far)"
+        );
+        std::process::exit(1);
+    };
+    let (conn, domain, domain_name) = connect_and_lookup(args);
+
+    let dev = watchdog_from_optstr(optstr);
+    let result = domain.add_device(&conn, &dev);
+    report(&domain_name, result);
+}
+
+fn run_remove_device(args: &Args) {
+    let Some(selector) = &args.watchdog else {
+        eprintln!(
+            "virt-xml --remove-device: no selector given (only --watchdog is implemented so far)"
+        );
+        std::process::exit(1);
+    };
+    let (conn, domain, domain_name) = connect_and_lookup(args);
+
+    let result = domain.edit_inactive_xml(&conn, |doc, root| {
+        remove_watchdog_elements(doc, root, selector)?;
+        Ok(())
+    });
+    report(&domain_name, result);
+}
+
+/// Both actions above end the same way: define succeeded or it didn't.
+fn report<E: std::fmt::Display>(domain_name: &str, result: Result<(), E>) {
     match result {
         Ok(()) => println!("Domain '{domain_name}' defined successfully."),
         Err(e) => {

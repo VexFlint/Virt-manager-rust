@@ -14,9 +14,18 @@
 //! kinds after more than one struct needed the same shape (see
 //! `virtinst-xml-derive`'s history) — this waits for a second real
 //! consumer before generalizing the same way.
+//!
+//! **Known gap**: upstream registers `--watchdog` (and every device
+//! flag) with argparse's `action="append"` — `--watchdog X --watchdog
+//! Y` in one invocation builds *two* devices (`cli.run_parser` loops
+//! over the whole list). The CLI surface here only accepts one
+//! `--watchdog` per invocation (last one wins, via clap's normal
+//! single-valued `Option<String>`). Not hit by anything built so far;
+//! revisit if a real use needs multiple devices of the same type added
+//! in one call.
 
 use virtinst_core::devices::DeviceWatchdog;
-use virtinst_xml::{resolve_path, Document, Element};
+use virtinst_xml::{list_remove, resolve_path, Document, Element};
 
 /// Upstream's `parse_optstr_tuples`: split `"model=itco,action=none"`
 /// into an ordered list of `(cliname, value)` tuples — `"model=itco,path=foo,model=bar"`
@@ -85,21 +94,29 @@ pub fn watchdog_from_optstr(optstr: &str) -> DeviceWatchdog {
     dev
 }
 
-/// `virt-xml --edit`'s target-selection logic — upstream's
-/// `_find_objects_to_edit`. Given the domain's root `<domain>` element
-/// and the `--edit` flag's own value (`selector`), returns the existing
-/// `<watchdog>` element(s) to mutate.
+/// Target-selection logic shared by `--edit` *and* `--remove-device` —
+/// upstream's `_find_objects_to_edit(guest, action_name, editval,
+/// parserclass)` backs `action_edit` and `action_remove_device` both.
+/// Given the domain's root `<domain>` element and a selector string,
+/// returns the existing `<watchdog>` element(s) to act on.
 ///
 /// `selector` is never a true absence here: `--edit` with no value at
 /// all is upstream's `editval is None` case (defaults to index `1`,
 /// the first object) — the CLI layer maps a bare `--edit` to the
 /// literal string `"1"` before calling this, via clap's
 /// `default_missing_value`, so this function only ever sees a real
-/// string.
+/// string. `--remove-device` has no bare form upstream (its selector
+/// always comes from `--watchdog`'s own value), so that path never
+/// hits the default at all.
 ///
 /// Handles the index form (`"1"`, `"-1"`) and `"all"`, matching
 /// upstream's index math exactly: 1-based from the front, negative
-/// counts from the back, `0` is always invalid. **Not yet ported**:
+/// counts from the back, `0` is always invalid. Error text below says
+/// "--edit" even on the `--remove-device` path — matching upstream
+/// exactly: `_find_objects_to_edit`'s own index/bounds `fail()` calls
+/// hardcode `"--edit"` regardless of `action_name` too, only the
+/// selector-string branch's message actually varies by action. Not a
+/// gap introduced here. **Not yet ported**:
 /// upstream's third form, a bare selector string matched against an
 /// existing device's own fields (e.g. `--edit action=reset` finding
 /// the watchdog that already has `action="reset"`,
@@ -170,9 +187,45 @@ pub fn apply_watchdog_optstr(doc: &mut Document, el: Element, optstr: &str) {
     }
 }
 
+/// `--remove-device`'s watchdog path — upstream's `action_remove_device`:
+/// the exact same [`select_watchdog_elements`] `--edit` uses (upstream
+/// reuses `_find_objects_to_edit` for both), then one
+/// `guest.remove_device(dev)` per match instead of a mutation. Note
+/// `selector` here is `--watchdog`'s own value, not a `model=`/`action=`
+/// optstring — upstream's `--remove-device --watchdog 1` passes `"1"`
+/// straight through as the selector (`action.parservalue[-1]` in
+/// `virtxml.py`), the device flag's value slot means something
+/// different depending on which action flag is active. Returns how
+/// many elements were removed, for a caller that wants to report it.
+pub fn remove_watchdog_elements(
+    doc: &mut Document,
+    domain_root: Element,
+    selector: &str,
+) -> Result<usize, String> {
+    let els = select_watchdog_elements(doc, domain_root, selector)?;
+    let count = els.len();
+    for el in els {
+        list_remove(doc, el).map_err(|e| e.to_string())?;
+    }
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// `test:///default`'s `"test"` domain is one shared, process-wide
+    /// object — the two real-libvirt tests below both do a
+    /// fetch-inactive-XML / mutate / define cycle against it, and
+    /// `cargo test`'s default parallelism runs them concurrently.
+    /// `virtinst-core`'s own equivalent tests hit this for real
+    /// (~20% failure rate, one test's `add_device` racing away
+    /// another's), which is where this lock's doc comment lives in
+    /// full — same fixture, same fix, applied here too rather than
+    /// relying on this crate's smaller set of racers not yet having
+    /// been unlucky.
+    static TEST_DOMAIN_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn tuples_split_on_comma_and_equals() {
@@ -367,6 +420,62 @@ mod tests {
         assert_eq!(els[0].attribute(&doc, "model"), Some("ib700"));
     }
 
+    #[test]
+    fn remove_by_index_deletes_only_that_one_element() {
+        let mut doc = parse_fixture(TWO_WATCHDOGS_FIXTURE);
+        let root = doc.root_element().unwrap();
+
+        let removed = remove_watchdog_elements(&mut doc, root, "1").unwrap();
+        assert_eq!(removed, 1);
+
+        let remaining = select_watchdog_elements(&doc, root, "all").unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].attribute(&doc, "model"), Some("ib700"));
+    }
+
+    #[test]
+    fn remove_all_deletes_every_watchdog() {
+        let mut doc = parse_fixture(TWO_WATCHDOGS_FIXTURE);
+        let root = doc.root_element().unwrap();
+
+        let removed = remove_watchdog_elements(&mut doc, root, "all").unwrap();
+        assert_eq!(removed, 2);
+
+        assert!(select_watchdog_elements(&doc, root, "all").is_err());
+    }
+
+    #[test]
+    fn remove_out_of_range_index_is_an_error_and_removes_nothing() {
+        let mut doc = parse_fixture(TWO_WATCHDOGS_FIXTURE);
+        let root = doc.root_element().unwrap();
+
+        assert!(remove_watchdog_elements(&mut doc, root, "5").is_err());
+        // Nothing removed — both still there.
+        assert_eq!(
+            select_watchdog_elements(&doc, root, "all").unwrap().len(),
+            2
+        );
+    }
+
+    /// The selector form users hit first among the deferred ones —
+    /// upstream's own `--remove-device` help text uses a field-match
+    /// example (`--remove-device --disk /some/path`). Not supported
+    /// yet ([`select_watchdog_elements`]'s doc comment), but it must
+    /// be *rejected*, not silently treated as "remove nothing" or
+    /// "remove everything" — and rejecting it must not remove anything
+    /// either, since the parse failure happens before any mutation.
+    #[test]
+    fn remove_by_field_match_selector_is_rejected_not_silently_ignored() {
+        let mut doc = parse_fixture(TWO_WATCHDOGS_FIXTURE);
+        let root = doc.root_element().unwrap();
+
+        assert!(remove_watchdog_elements(&mut doc, root, "model=ib700").is_err());
+        assert_eq!(
+            select_watchdog_elements(&doc, root, "all").unwrap().len(),
+            2
+        );
+    }
+
     /// Real end-to-end proof of `virt-xml --edit`'s exact call chain
     /// (`Domain::edit_inactive_xml` + this crate's own
     /// `select_watchdog_elements`/`apply_watchdog_optstr`, not core's
@@ -380,6 +489,7 @@ mod tests {
         use virtinst_core::connection::{Connection, Domain};
         use virtinst_core::devices::DeviceWatchdog;
 
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let conn = Connection::open("test:///default").expect("test:/// driver always opens");
         let domain = Domain::lookup_by_name(&conn, "test").expect("the default test domain");
 
@@ -412,6 +522,19 @@ mod tests {
         let watchdog = select_watchdog_elements(&doc, root, "1").unwrap()[0];
         assert_eq!(watchdog.attribute(&doc, "action"), Some("poweroff"));
         assert_eq!(watchdog.attribute(&doc, "model"), Some("i6300esb"));
+
+        // `test:///default`'s "test" domain persists across tests within
+        // one test binary run (only a fresh process resets it) — clean
+        // up what this test added so `add_then_remove_device_against_a_
+        // real_domain`'s own "exactly one watchdog after one add" isn't
+        // thrown off by a leftover from this one. Confirmed empirically:
+        // without this, that test saw 2 watchdogs after adding 1.
+        domain
+            .edit_inactive_xml(&conn, |doc, root| {
+                remove_watchdog_elements(doc, root, "all")?;
+                Ok(())
+            })
+            .expect("test cleanup succeeds");
     }
 
     /// Ticket 03's actual acceptance bar: editing one watchdog attribute
@@ -454,5 +577,53 @@ mod tests {
         // And the actual edit still landed.
         let watchdog2 = select_watchdog_elements(&doc2, root2, "1").unwrap()[0];
         assert_eq!(watchdog2.attribute(&doc2, "action"), Some("poweroff"));
+    }
+
+    /// Real end-to-end proof of `--add-device`/`--remove-device`'s exact
+    /// call chains against a live `test:///default` domain:
+    /// `watchdog_from_optstr` + `Domain::add_device` (the same
+    /// `add_device` `--build-xml`/`--edit`'s own tests already exercise
+    /// — `--add-device` doesn't need anything new from core, just a
+    /// fresh struct instead of a mutation), then
+    /// `remove_watchdog_elements` through `Domain::edit_inactive_xml`
+    /// to take it back out.
+    #[test]
+    fn add_then_remove_device_against_a_real_domain() {
+        use virtinst_core::connection::{Connection, Domain};
+
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        let domain = Domain::lookup_by_name(&conn, "test").expect("the default test domain");
+
+        // --add-device --watchdog model=i6300esb,action=reset
+        let dev = watchdog_from_optstr("model=i6300esb,action=reset");
+        domain
+            .add_device(&conn, &dev)
+            .expect("add-device's exact call chain succeeds");
+
+        let after_add = domain.inactive_xml().expect("fetch inactive XML");
+        let doc = virtinst_xml::parse_libvirt_xml(&after_add).expect("re-parses");
+        let root = doc.root_element().unwrap();
+        assert_eq!(
+            select_watchdog_elements(&doc, root, "all").unwrap().len(),
+            1,
+            "the watchdog actually landed in the persistent config"
+        );
+
+        // --remove-device --watchdog 1
+        domain
+            .edit_inactive_xml(&conn, |doc, root| {
+                remove_watchdog_elements(doc, root, "1")?;
+                Ok(())
+            })
+            .expect("remove-device's exact call chain succeeds");
+
+        let after_remove = domain.inactive_xml().expect("fetch inactive XML");
+        let doc = virtinst_xml::parse_libvirt_xml(&after_remove).expect("re-parses");
+        let root = doc.root_element().unwrap();
+        assert!(
+            select_watchdog_elements(&doc, root, "all").is_err(),
+            "the watchdog is actually gone from the persistent config"
+        );
     }
 }
