@@ -20,5 +20,6 @@ name = "virt-xml"
 path = "src/bin/virt-xml.rs"
 
 [dependencies]
+clap = { version = "4.5.61", features = ["derive"] }
 virtinst-core = { path = "../virtinst-core" }
-# clap = "*"   # argument parsing — pin once a toolchain is available to check current version.
+virtinst-xml = { version = "0.1.0", path = "../virtinst-xml" }
