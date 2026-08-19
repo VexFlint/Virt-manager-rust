@@ -67,6 +67,7 @@ pub use cpu::{
 pub mod os;
 pub use os::{DomainOs, OsBootDevice, OsFirmwareFeature, OsInitArg, OsInitEnv};
 
-// TODO: features.py — needs the already-added Option<OnOff> for most
-// of its ~40 fields but is otherwise flat, same shape as everything
-// else in domain/.
+pub mod features;
+pub use features::DomainFeatures;
+
+// Every domain/*.py file now has a Rust struct.

@@ -12,9 +12,9 @@ use crate::devices::{
     DeviceSmartcard, DeviceSound, DeviceTpm, DeviceVideo, DeviceVsock, DeviceWatchdog,
 };
 use crate::domain::{
-    Cachetune, Clock, CurrentMemory, DomainBlkiotune, DomainCpu, DomainCputune, DomainIdmap,
-    DomainKeyWrap, DomainLaunchSecurity, DomainMemoryBacking, DomainMemtune, DomainNumatune,
-    DomainOs, DomainPm, DomainResource, DomainSeclabel, DomainSysinfo, DomainVcpus,
+    Cachetune, Clock, CurrentMemory, DomainBlkiotune, DomainCpu, DomainCputune, DomainFeatures,
+    DomainIdmap, DomainKeyWrap, DomainLaunchSecurity, DomainMemoryBacking, DomainMemtune,
+    DomainNumatune, DomainOs, DomainPm, DomainResource, DomainSeclabel, DomainSysinfo, DomainVcpus,
     DomainXmlnsQemu, Memorytune,
 };
 use crate::guest::Guest;
@@ -680,6 +680,54 @@ fn os_reads_container_init_argv_and_env_lists() {
     assert_eq!(os.initenvs.len(), 1);
     assert_eq!(os.initenvs[0].name, Some("TERM".to_string()));
     assert_eq!(os.initenvs[0].value, Some("xterm".to_string()));
+}
+
+#[test]
+fn features_reads_present_bools_and_onoff_attributes_at_multiple_depths() {
+    let doc = parse_libvirt_xml(
+        r#"<features>
+             <acpi/>
+             <apic eoi="on"/>
+             <hyperv>
+               <relaxed state="on"/>
+               <spinlocks state="on" retries="8191"/>
+               <stimer state="on">
+                 <direct state="off"/>
+               </stimer>
+             </hyperv>
+             <kvm>
+               <hidden state="on"/>
+             </kvm>
+             <vmport state="off"/>
+             <smm state="on"/>
+           </features>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let features = DomainFeatures::from_element(&doc, el);
+    // present-bound bools
+    assert!(features.acpi);
+    assert!(features.apic);
+    assert!(!features.pae);
+
+    // apic's own presence and its @eoi attribute are independent
+    // fields on the same element - proven pattern, but worth pinning.
+    assert_eq!(features.eoi, Some(OnOff(true)));
+
+    // one-segment, two-segment, and three-segment OnOff paths
+    assert_eq!(features.hyperv_relaxed, Some(OnOff(true)));
+    assert_eq!(features.hyperv_spinlocks, Some(OnOff(true)));
+    assert_eq!(features.hyperv_spinlocks_retries, Some(8191));
+    assert_eq!(features.hyperv_stimer, Some(OnOff(true)));
+    assert_eq!(features.hyperv_stimer_direct, Some(OnOff(false)));
+    assert_eq!(features.kvm_hidden, Some(OnOff(true)));
+
+    assert_eq!(features.vmport, Some(OnOff(false)));
+    assert_eq!(features.smm, Some(OnOff(true)));
+    // Untouched fields stay absent, not defaulted.
+    assert_eq!(features.pmu, None);
+    assert_eq!(features.hyperv_vapic, None);
 }
 
 #[test]
