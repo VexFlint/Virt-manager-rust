@@ -25,8 +25,42 @@ pub use resource::DomainResource;
 pub mod vcpus;
 pub use vcpus::{DomainVcpu, DomainVcpus};
 
-// TODO: the rest (cpu, os, features, seclabel, sysinfo,
-// numatune, xmlnsqemu, ...). `features.py` in particular needs a new
-// macro capability first — most of its ~40 fields use libvirt's
-// on/off boolean spelling (is_onoff), not yes/no (Option<bool>'s
-// current mapping) — flagged, not silently modeled wrong.
+pub mod keywrap;
+pub use keywrap::{DomainKeyWrap, KeyWrapCipher};
+
+pub mod idmap;
+pub use idmap::DomainIdmap;
+
+pub mod blkiotune;
+pub use blkiotune::{BlkiotuneDevice, DomainBlkiotune};
+
+pub mod numatune;
+pub use numatune::{DomainNumatune, NumatuneMemnode};
+
+pub mod xmlnsqemu;
+pub use xmlnsqemu::{DomainXmlnsQemu, XmlnsQemuArg, XmlnsQemuEnv};
+
+pub mod memorybacking;
+pub use memorybacking::{DomainMemoryBacking, HugepagesPage};
+
+pub mod launch_security;
+pub use launch_security::DomainLaunchSecurity;
+
+pub mod seclabel;
+pub use seclabel::DomainSeclabel;
+
+pub mod sysinfo;
+pub use sysinfo::{DomainSysinfo, SysinfoEntry};
+
+pub mod cputune;
+pub use cputune::{
+    Cachetune, CachetuneCache, CachetuneMonitor, CputuneIothreadPin, CputuneIothreadSched,
+    CputuneVcpuPin, CputuneVcpuSched, DomainCputune, Memorytune, MemorytuneNode,
+};
+
+// TODO: cpu, os, features. `features.py` needs the just-added
+// Option<OnOff> for most of its ~40 fields but is otherwise flat;
+// `os.py`/`cpu.py` are both large multi-level trees (deep NUMA nesting,
+// computed `bootorder` property, `do_abspath` semantics) that deserve
+// their own dedicated pass rather than being rushed alongside this
+// batch.

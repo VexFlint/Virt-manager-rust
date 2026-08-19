@@ -11,7 +11,11 @@ use crate::devices::{
     DeviceList, DeviceNetwork, DevicePanic, DeviceRedirdev, DeviceRng, DeviceSerial,
     DeviceSmartcard, DeviceSound, DeviceTpm, DeviceVideo, DeviceVsock, DeviceWatchdog,
 };
-use crate::domain::{Clock, CurrentMemory, DomainMemtune, DomainPm, DomainResource, DomainVcpus};
+use crate::domain::{
+    Cachetune, Clock, CurrentMemory, DomainBlkiotune, DomainCputune, DomainIdmap, DomainKeyWrap,
+    DomainLaunchSecurity, DomainMemoryBacking, DomainMemtune, DomainNumatune, DomainPm,
+    DomainResource, DomainSeclabel, DomainSysinfo, DomainVcpus, DomainXmlnsQemu, Memorytune,
+};
 use crate::guest::Guest;
 use virtinst_xml::{parse_libvirt_xml, OnOff, XmlBound};
 
@@ -259,6 +263,239 @@ fn vcpus_list_reads_each_entrys_attributes() {
     assert_eq!(vcpus.vcpu[1].id, Some(1));
     assert_eq!(vcpus.vcpu[1].hotpluggable, Some(true));
     assert_eq!(vcpus.vcpu[1].order, Some(2));
+}
+
+#[test]
+fn keywrap_cipher_state_uses_onoff_not_yesno() {
+    let doc = parse_libvirt_xml(
+        r#"<keywrap>
+             <cipher name="aes" state="on"/>
+             <cipher name="dea" state="off"/>
+           </keywrap>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let keywrap = DomainKeyWrap::from_element(&doc, el);
+    assert_eq!(keywrap.cipher.len(), 2);
+    assert_eq!(keywrap.cipher[0].name, Some("aes".to_string()));
+    assert_eq!(keywrap.cipher[0].state, Some(OnOff(true)));
+    assert_eq!(keywrap.cipher[1].state, Some(OnOff(false)));
+}
+
+#[test]
+fn idmap_reads_six_flat_ints_across_two_nested_elements() {
+    let doc = parse_libvirt_xml(
+        r#"<idmap>
+             <uid start="0" target="1000" count="10"/>
+             <gid start="0" target="1000" count="10"/>
+           </idmap>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let idmap = DomainIdmap::from_element(&doc, el);
+    assert_eq!(idmap.uid_start, Some(0));
+    assert_eq!(idmap.uid_target, Some(1000));
+    assert_eq!(idmap.uid_count, Some(10));
+    assert_eq!(idmap.gid_start, Some(0));
+    assert_eq!(idmap.gid_target, Some(1000));
+    assert_eq!(idmap.gid_count, Some(10));
+}
+
+#[test]
+fn blkiotune_reads_top_level_weight_and_per_device_list() {
+    let doc = parse_libvirt_xml(
+        r#"<blkiotune>
+             <weight>500</weight>
+             <device>
+               <path>/dev/sda</path>
+               <weight>200</weight>
+               <read_bytes_sec>1000</read_bytes_sec>
+             </device>
+           </blkiotune>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let blkiotune = DomainBlkiotune::from_element(&doc, el);
+    assert_eq!(blkiotune.weight, Some(500));
+    assert_eq!(blkiotune.devices.len(), 1);
+    assert_eq!(blkiotune.devices[0].path, Some("/dev/sda".to_string()));
+    // Device-level weight really is a plain string upstream, not int.
+    assert_eq!(blkiotune.devices[0].weight, Some("200".to_string()));
+    assert_eq!(blkiotune.devices[0].read_bytes_sec, Some(1000));
+}
+
+#[test]
+fn numatune_reads_memory_attrs_and_memnode_list() {
+    let doc = parse_libvirt_xml(
+        r#"<numatune>
+             <memory mode="strict" nodeset="0-1" placement="static"/>
+             <memnode cellid="0" mode="strict" nodeset="1"/>
+           </numatune>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let numatune = DomainNumatune::from_element(&doc, el);
+    assert_eq!(numatune.memory_mode, Some("strict".to_string()));
+    assert_eq!(numatune.memory_nodeset, Some("0-1".to_string()));
+    assert_eq!(numatune.memory_placement, Some("static".to_string()));
+    assert_eq!(numatune.memnode.len(), 1);
+    assert_eq!(numatune.memnode[0].cellid, Some(0));
+    assert_eq!(numatune.memnode[0].nodeset, Some("1".to_string()));
+}
+
+#[test]
+fn xmlnsqemu_reads_args_and_envs_by_stripped_local_name() {
+    // No xmlns:qemu declaration needed for this crate's plain-string
+    // tag matching to work - see domain::xmlnsqemu's doc comment.
+    let doc = parse_libvirt_xml(
+        r#"<qemu:commandline>
+             <qemu:arg value="-device"/>
+             <qemu:env name="DISPLAY" value=":0"/>
+           </qemu:commandline>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let cmdline = DomainXmlnsQemu::from_element(&doc, el);
+    assert_eq!(cmdline.args.len(), 1);
+    assert_eq!(cmdline.args[0].value, Some("-device".to_string()));
+    assert_eq!(cmdline.envs.len(), 1);
+    assert_eq!(cmdline.envs[0].name, Some("DISPLAY".to_string()));
+    assert_eq!(cmdline.envs[0].value, Some(":0".to_string()));
+}
+
+#[test]
+fn memorybacking_reads_present_fields_and_nested_page_list() {
+    let doc = parse_libvirt_xml(
+        r#"<memoryBacking>
+             <hugepages>
+               <page size="1" unit="GiB" nodeset="0-1"/>
+             </hugepages>
+             <locked/>
+             <access mode="shared"/>
+           </memoryBacking>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let mb = DomainMemoryBacking::from_element(&doc, el);
+    assert!(mb.hugepages);
+    assert!(mb.locked);
+    assert!(!mb.nosharepages);
+    assert_eq!(mb.access_mode, Some("shared".to_string()));
+    // The list field's path resolves to <hugepages> before collecting
+    // <page> children - not siblings of <hugepages> itself.
+    assert_eq!(mb.pages.len(), 1);
+    assert_eq!(mb.pages[0].size, Some("1".to_string()));
+    assert_eq!(mb.pages[0].nodeset, Some("0-1".to_string()));
+}
+
+#[test]
+fn launch_security_reads_yesno_attrs_and_present_plus_sibling_attribute() {
+    let doc = parse_libvirt_xml(
+        r#"<launchSecurity type="sev" kernelHashes="yes">
+             <cbitpos>47</cbitpos>
+             <policy>0x0003</policy>
+             <quoteGenerationService path="/tmp/sock"/>
+           </launchSecurity>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let ls = DomainLaunchSecurity::from_element(&doc, el);
+    assert_eq!(ls.security_type, Some("sev".to_string()));
+    assert_eq!(ls.kernel_hashes, Some(true));
+    assert_eq!(ls.author_key, None);
+    assert_eq!(ls.cbitpos, Some(47));
+    assert_eq!(ls.policy, Some("0x0003".to_string()));
+    assert!(ls.quote_generation_service);
+    assert_eq!(ls.quote_generation_socket, Some("/tmp/sock".to_string()));
+}
+
+#[test]
+fn seclabel_reads_attrs_and_two_text_children() {
+    let doc = parse_libvirt_xml(
+        r#"<seclabel type="dynamic" model="selinux" relabel="yes">
+             <label>system_u:system_r:svirt_t:s0:c1,c2</label>
+             <baselabel>system_u:system_r:svirt_t:s0</baselabel>
+           </seclabel>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let seclabel = DomainSeclabel::from_element(&doc, el);
+    assert_eq!(seclabel.seclabel_type, Some("dynamic".to_string()));
+    assert_eq!(seclabel.model, Some("selinux".to_string()));
+    assert_eq!(seclabel.relabel, Some(true));
+    assert_eq!(
+        seclabel.label,
+        Some("system_u:system_r:svirt_t:s0:c1,c2".to_string())
+    );
+}
+
+#[test]
+fn sysinfo_reads_type_and_oemstrings_but_not_predicate_bound_bios_fields() {
+    let doc = parse_libvirt_xml(
+        r#"<sysinfo type="smbios">
+             <oemStrings>
+               <entry>str1</entry>
+             </oemStrings>
+             <bios>
+               <entry name="vendor">Seabios</entry>
+             </bios>
+           </sysinfo>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let sysinfo = DomainSysinfo::from_element(&doc, el);
+    assert_eq!(sysinfo.sysinfo_type, Some("smbios".to_string()));
+    assert_eq!(sysinfo.oem_strings.len(), 1);
+    assert_eq!(sysinfo.oem_strings[0].value, Some("str1".to_string()));
+    // Documented gap: <bios><entry> is predicate-filtered upstream
+    // (./bios/entry[@name='vendor']), unreachable by this crate's
+    // plain-tag-name resolver - not a bare <entry> child of <sysinfo>.
+    assert_eq!(sysinfo.entries.len(), 0);
+}
+
+#[test]
+fn cputune_reads_scalars_pins_and_nested_cachetune_list() {
+    let doc = parse_libvirt_xml(
+        r#"<cputune>
+             <shares>2048</shares>
+             <vcpupin vcpu="0" cpuset="0-3"/>
+             <emulatorpin cpuset="0-3"/>
+             <cachetune vcpus="0-3">
+               <cache id="0" level="3" type="both" size="3" unit="MiB"/>
+             </cachetune>
+             <memorytune vcpus="0-3">
+               <node id="0" bandwidth="60"/>
+             </memorytune>
+           </cputune>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let cputune = DomainCputune::from_element(&doc, el);
+    assert_eq!(cputune.shares, Some(2048));
+    assert_eq!(cputune.vcpupins.len(), 1);
+    assert_eq!(cputune.vcpupins[0].cpuset, Some("0-3".to_string()));
+    assert_eq!(cputune.emulatorpin_cpuset, Some("0-3".to_string()));
+
+    assert_eq!(cputune.cachetunes.len(), 1);
+    let cachetune: &Cachetune = &cputune.cachetunes[0];
+    assert_eq!(cachetune.vcpus, Some("0-3".to_string()));
+    assert_eq!(cachetune.caches.len(), 1);
+    assert_eq!(cachetune.caches[0].size, Some(3));
+
+    assert_eq!(cputune.memorytunes.len(), 1);
+    let memorytune: &Memorytune = &cputune.memorytunes[0];
+    assert_eq!(memorytune.nodes.len(), 1);
+    assert_eq!(memorytune.nodes[0].bandwidth, Some(60));
 }
 
 #[test]
