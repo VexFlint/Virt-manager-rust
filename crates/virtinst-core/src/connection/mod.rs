@@ -4,11 +4,13 @@
 //!
 //! Also where two other tickets' concrete findings land:
 //! - **Live + persistent duality** (ticket 10 deferred it, ticket 12
-//!   found the concrete shape): `Domain::attach_device()` attempts live
-//!   hotplug if the domain is active, degrading to persistent-only with
-//!   a confirm on failure; `Domain::add_device()` always also updates
-//!   the persistent config. Two explicit calls, not one
-//!   `AFFECT_LIVE|AFFECT_CONFIG` flag.
+//!   found the concrete shape, `domain.rs` now builds it): live hotplug
+//!   via `Domain::attach_device()` (a no-op if the domain isn't
+//!   running) and persistent-config update via `Domain::add_device()`
+//!   (always runs) — two explicit calls, not one
+//!   `AFFECT_LIVE|AFFECT_CONFIG` flag. The GUI-shell sequencing around
+//!   them (confirm-and-degrade-to-persistent-only on hotplug failure,
+//!   controller-first ordering) isn't — see `domain.rs`'s doc comment.
 //! - **Driver detection** (ticket 17): trivial URI-scheme-prefix checks
 //!   — `is_qemu()`/`is_xen()`/`is_lxc()`/`is_bhyve()`/`is_vz()` — feeding
 //!   the per-driver device-default chains in [`crate::devices`].
@@ -20,13 +22,11 @@ pub use uri::Uri;
 mod connection;
 pub use connection::Connection;
 
-// TODO: pub struct Domain { ... attach_device(), add_device() (ticket 12) }
+mod domain;
+pub use domain::{Domain, DomainError};
+
 // TODO: libvirt-glib event-loop registration (ticket 09) — LibvirtGLib::init()
 // + event_register() equivalent, once the gir binding exists.
-//
-// `Domain` needs a live `Connection` (done, 2026-08-19) to actually
-// exercise attach_device()/add_device() against, so it's the natural
-// next slice, not blocked by anything external anymore.
 //
 // libvirt-glib event registration is still blocked, but only on
 // tooling now, not missing packages: libvirt-dev and

@@ -2,7 +2,7 @@
 //! `virtinst-xml-derive` for the `#[derive(XmlBound)]` macro that
 //! generates code against the traits and helpers here.
 
-pub use edit_xml::{Document, EditXMLError, Element, ReadOptions, Result};
+pub use edit_xml::{Document, EditXMLError, Element, ReadOptions, Result, WriteOptions};
 pub use virtinst_xml_derive::XmlBound;
 
 /// `Document::parse_str`, but relaxed to not require an XML declaration
@@ -11,6 +11,23 @@ pub use virtinst_xml_derive::XmlBound;
 /// this crate is actually meant to read.
 pub fn parse_libvirt_xml(xml: &str) -> Result<Document> {
     Document::parse_str_with_opts(xml, ReadOptions::relaxed())
+}
+
+/// Serializes a fresh `T` to a standalone XML fragment — upstream's
+/// `dev.get_xml()`, the "fresh creation" path `guest.rs`'s doc comment
+/// already named (build the struct directly, no existing document to
+/// preserve or diff against). Backs calls like `virDomainAttachDevice`
+/// that take one device's XML on its own, not embedded in a document —
+/// no `<?xml ...?>` declaration, which would be invalid on a fragment.
+pub fn to_xml_string<T: XmlBound>(item: &T) -> Result<String> {
+    let mut doc = Document::new();
+    let el = Element::new(&mut doc, T::TAG);
+    doc.push_root_node(el)?;
+    item.write_to(&mut doc, el);
+    doc.write_str_with_opts(WriteOptions {
+        write_decl: false,
+        ..Default::default()
+    })
 }
 
 /// Implemented by every `#[derive(XmlBound)]` struct: read/write itself

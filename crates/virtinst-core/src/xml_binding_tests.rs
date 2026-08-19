@@ -1371,6 +1371,32 @@ fn list_remove_removes_only_the_targeted_element() {
 }
 
 #[test]
+fn to_xml_string_serializes_a_fresh_struct_with_no_existing_document() {
+    // The "fresh creation" path guest.rs's doc comment names - no
+    // existing document to parse/preserve, unlike every other test
+    // here which starts from FIXTURE. Backs Domain::attach_device()
+    // (connection::domain), which hands libvirt one device's XML on
+    // its own.
+    let rng = DeviceRng {
+        model: Some("virtio".into()),
+        backend_model: Some("random".into()),
+        backend_device: Some("/dev/urandom".into()),
+        ..Default::default()
+    };
+    let xml = virtinst_xml::to_xml_string(&rng).expect("serializes");
+
+    // No XML declaration - this is a fragment, not a standalone document.
+    assert!(!xml.starts_with("<?xml"));
+    assert!(xml.starts_with("<rng"));
+
+    // Round-trips back through the same struct.
+    let doc = parse_libvirt_xml(&xml).expect("fragment reparses");
+    let el = doc.root_element().expect("root element");
+    let reread = DeviceRng::from_element(&doc, el);
+    assert_eq!(reread, rng);
+}
+
+#[test]
 fn attribute_and_text_bind_to_the_same_element() {
     let doc = parse_libvirt_xml(FIXTURE).expect("fixture parses");
     let root = doc.root_element().expect("root element");

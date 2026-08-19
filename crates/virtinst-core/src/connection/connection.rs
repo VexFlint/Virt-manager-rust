@@ -71,6 +71,15 @@ impl Connection {
         self.inner.close()?;
         Ok(())
     }
+
+    /// The underlying `virt` handle — `Domain::lookup_by_name`/
+    /// `define_xml` both need a bare `&Connect`, and `Connect` is
+    /// cheaply `Clone` via ref-counting, so `Domain` borrows this
+    /// rather than holding its own clone (each clone needs its own
+    /// `close()`, a lifecycle this crate doesn't need to manage yet).
+    pub(crate) fn as_connect(&self) -> &Connect {
+        &self.inner
+    }
 }
 
 #[cfg(test)]
