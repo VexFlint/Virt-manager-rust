@@ -39,12 +39,14 @@
 //! it from. Shipping an unreachable function is worse than not building
 //! it — deferred until the real Create VM wizard exists.
 //!
-//! **Real gap, sharper here than `import.rs`'s bus-selection one**:
-//! `--pxe`'s document has no `<interface>` device at all — this crate
-//! adds no default devices, and upstream's own `guest.set_defaults()`
-//! (which always adds a NIC) isn't ported. A domain built this way can't
-//! actually network-boot; it's inert, not merely non-optimal. Upstream
-//! also gates `--pxe` on `supports_pxe(guest)`
+//! Every document built here also gets one default NIC
+//! (`domain_skeleton::push_default_nic`) — this was flagged as a real
+//! gap in an earlier version of this module (`--pxe` producing a domain
+//! that can't actually network-boot, sharper than `import.rs`'s bus-
+//! selection gap since it made a shipped feature inert rather than
+//! merely non-optimal) and fixed once grounded: it's upstream's own CLI
+//! default whenever `--network`/`--nonetworks` are absent, not specific
+//! to `--pxe`. Upstream also gates `--pxe` on `supports_pxe(guest)`
 //! (`virtinstall.py:379`) — unvalidated here, consistent with every
 //! other field in this module.
 
@@ -52,7 +54,8 @@ use uuid::Uuid;
 use virtinst_xml::Document;
 
 use super::domain_skeleton::{
-    build_domain_skeleton, push_boot_dev, push_on_reboot_destroy, push_virtio_disk,
+    build_domain_skeleton, push_boot_dev, push_default_nic, push_on_reboot_destroy,
+    push_virtio_disk,
 };
 
 /// `name`/`memory_kib`/`vcpus`/`domain_type`/`arch` — see
@@ -100,6 +103,7 @@ pub fn build_manual_document(
         arch,
         boot_dev,
         disk_path,
+        &crate::cloner::generate_mac(domain_type == "qemu"),
         false,
     )
 }
@@ -123,6 +127,9 @@ pub fn build_manual_two_phase_documents(
     arch: &str,
 ) -> (Document, Document) {
     let uuid = Uuid::new_v4().to_string();
+    // Same NIC, same MAC in both documents — same reason the UUID is
+    // shared, see `push_default_nic`'s doc comment.
+    let mac = crate::cloner::generate_mac(domain_type == "qemu");
 
     let initial = build_manual_phase_document(
         name,
@@ -133,6 +140,7 @@ pub fn build_manual_two_phase_documents(
         arch,
         boot_dev,
         disk_path,
+        &mac,
         true,
     );
 
@@ -149,6 +157,7 @@ pub fn build_manual_two_phase_documents(
         arch,
         final_boot_dev,
         disk_path,
+        &mac,
         false,
     );
 
@@ -160,7 +169,11 @@ pub fn build_manual_two_phase_documents(
 /// document of a two-phase pair gets it; `build_manual_document`'s
 /// single-phase call always passes `false` since upstream's
 /// `_alter_bootconfig` (the only place that sets it) never runs at all
-/// outside `requires_postboot_xml_changes()`'s two-phase path.
+/// outside `requires_postboot_xml_changes()`'s two-phase path. `devices_
+/// el` (and the default NIC on it) is always built now, even with no
+/// disk — a disk-less `Manual` document used to return before `<devices>`
+/// existed at all; that's no longer true since the NIC needs somewhere
+/// to attach.
 #[allow(clippy::too_many_arguments)]
 fn build_manual_phase_document(
     name: &str,
@@ -171,6 +184,7 @@ fn build_manual_phase_document(
     arch: &str,
     boot_dev: &str,
     disk_path: Option<&str>,
+    mac: &str,
     is_initial: bool,
 ) -> Document {
     let (mut doc, root, os_el) =
@@ -179,17 +193,15 @@ fn build_manual_phase_document(
         push_on_reboot_destroy(&mut doc, root);
     }
     push_boot_dev(&mut doc, os_el, boot_dev);
-
-    let Some(disk_path) = disk_path else {
-        return doc;
-    };
-
-    if boot_dev != "hd" {
+    if disk_path.is_some() && boot_dev != "hd" {
         push_boot_dev(&mut doc, os_el, "hd");
     }
 
     let devices_el = virtinst_xml::Element::new(&mut doc, "devices");
-    push_virtio_disk(&mut doc, devices_el, disk_path);
+    if let Some(disk_path) = disk_path {
+        push_virtio_disk(&mut doc, devices_el, disk_path);
+    }
+    push_default_nic(&mut doc, devices_el, mac);
     root.push_child(&mut doc, devices_el)
         .expect("a freshly-created detached element always attaches cleanly");
 
@@ -202,7 +214,7 @@ mod tests {
     use uuid::Uuid;
 
     #[test]
-    fn no_disk_means_a_single_boot_entry_and_no_devices() {
+    fn no_disk_means_a_single_boot_entry_and_only_the_default_nic() {
         let doc = build_manual_document("net-only", 1048576, 1, "network", None, "qemu", "x86_64");
         let root = doc.root_element().unwrap();
 
@@ -213,7 +225,10 @@ mod tests {
         assert_eq!(boots.len(), 1);
         assert_eq!(boots[0].attribute(&doc, "dev"), Some("network"));
 
-        assert!(root.find(&doc, "devices").is_none());
+        let devices = root.find(&doc, "devices").unwrap();
+        assert!(devices.find(&doc, "disk").is_none(), "no disk was given");
+        let iface = devices.find(&doc, "interface").unwrap();
+        assert_eq!(iface.attribute(&doc, "type"), Some("network"));
     }
 
     #[test]
@@ -242,6 +257,7 @@ mod tests {
             disk.find(&doc, "source").unwrap().attribute(&doc, "file"),
             Some("/var/lib/libvirt/images/x.qcow2")
         );
+        assert!(devices.find(&doc, "interface").is_some());
     }
 
     #[test]
@@ -411,6 +427,28 @@ mod tests {
             "postinstall boot favors the now-installed disk"
         );
         assert_eq!(final_boots[0].attribute(&final_doc, "dev"), Some("hd"));
+
+        let initial_mac = initial_root
+            .find(&initial, "devices")
+            .unwrap()
+            .find(&initial, "interface")
+            .unwrap()
+            .find(&initial, "mac")
+            .unwrap()
+            .attribute(&initial, "address")
+            .unwrap()
+            .to_string();
+        let final_mac = final_root
+            .find(&final_doc, "devices")
+            .unwrap()
+            .find(&final_doc, "interface")
+            .unwrap()
+            .find(&final_doc, "mac")
+            .unwrap()
+            .attribute(&final_doc, "address")
+            .unwrap()
+            .to_string();
+        assert_eq!(initial_mac, final_mac, "same NIC in both documents");
     }
 
     #[test]

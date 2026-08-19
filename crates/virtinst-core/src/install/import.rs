@@ -34,11 +34,15 @@
 //!   here just requires `--memory` and defaults `--vcpus` to a flat
 //!   `1`, since `OsInfo` isn't built yet either (still blocked on the
 //!   `gir` codegen tool, same as libvirt-glib events).
+//!
+//! Always gets one default NIC (`domain_skeleton::push_default_nic`) —
+//! upstream's own CLI default whenever `--network`/`--nonetworks` are
+//! both absent, not something specific to this install method.
 
 use uuid::Uuid;
 use virtinst_xml::{Document, Element};
 
-use super::domain_skeleton::{build_domain_skeleton, push_boot_dev};
+use super::domain_skeleton::{build_domain_skeleton, push_boot_dev, push_default_nic};
 
 /// `name`/`memory_kib`/`vcpus` are the wizard's Name/Memory pages'
 /// worth of data — not `InstallMethod`'s job to carry (ticket 08 keeps
@@ -98,6 +102,11 @@ pub fn build_import_document(
     devices_el
         .push_child(&mut doc, disk_el)
         .expect("a freshly-created detached element always attaches cleanly");
+    push_default_nic(
+        &mut doc,
+        devices_el,
+        &crate::cloner::generate_mac(domain_type == "qemu"),
+    );
     root.push_child(&mut doc, devices_el)
         .expect("a freshly-created detached element always attaches cleanly");
 
@@ -155,6 +164,51 @@ mod tests {
         let target = disk.find(&doc, "target").unwrap();
         assert_eq!(target.attribute(&doc, "dev"), Some("vda"));
         assert_eq!(target.attribute(&doc, "bus"), Some("virtio"));
+
+        let iface = devices.find(&doc, "interface").unwrap();
+        assert_eq!(iface.attribute(&doc, "type"), Some("network"));
+        assert_eq!(
+            iface
+                .find(&doc, "source")
+                .unwrap()
+                .attribute(&doc, "network"),
+            Some("default")
+        );
+        assert!(iface
+            .find(&doc, "mac")
+            .unwrap()
+            .attribute(&doc, "address")
+            .unwrap()
+            .starts_with("52:54:00:"));
+        assert_eq!(
+            iface.find(&doc, "model").unwrap().attribute(&doc, "type"),
+            Some("virtio")
+        );
+    }
+
+    #[test]
+    fn nic_oui_follows_domain_type_not_just_qemu() {
+        // `builds_a_complete_bootable_domain` only exercises
+        // `domain_type == "qemu"` (the `52:54:00` OUI branch) — this
+        // pins the other branch (`push_default_nic`'s `domain_type ==
+        // "qemu"` proxy for `cloner::generate_mac`'s `is_qemu`), so a
+        // broken proxy wouldn't go unnoticed.
+        let doc = build_import_document("x", 1048576, 1, "/tmp/x.img", "test", "i686");
+        let root = doc.root_element().unwrap();
+        let mac = root
+            .find(&doc, "devices")
+            .unwrap()
+            .find(&doc, "interface")
+            .unwrap()
+            .find(&doc, "mac")
+            .unwrap()
+            .attribute(&doc, "address")
+            .unwrap()
+            .to_string();
+        assert!(
+            mac.starts_with("00:16:3e:"),
+            "non-qemu domain_type should get the other OUI, got {mac}"
+        );
     }
 
     #[test]

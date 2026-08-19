@@ -10,6 +10,11 @@
 //! Per the ticket 08 amendment: direct `edit_xml::Document`/`Element`
 //! construction, not `Guest::to_xml_string()` — see any of the three
 //! callers' doc comments for the full rationale.
+//!
+//! Also home to the fixed-default device pushers shared across builders
+//! once a third caller needed them (`push_virtio_disk`,
+//! `push_default_nic`) and the two-phase-only elements
+//! (`push_on_reboot_destroy`).
 
 use virtinst_xml::{Document, Element};
 
@@ -130,5 +135,60 @@ pub(super) fn push_virtio_disk(doc: &mut Document, devices_el: Element, path: &s
         .expect("a freshly-created detached element always attaches cleanly");
     devices_el
         .push_child(doc, disk_el)
+        .expect("a freshly-created detached element always attaches cleanly");
+}
+
+/// `<interface type="network"><source network="default"/><mac
+/// address=mac/><model type="virtio"/></interface>`, pushed onto
+/// `devices_el` — upstream's own CLI default, not a `--pxe`-specific
+/// fix: `virtinstall.py`'s `convert_old_networks` synthesizes a single
+/// `"default"`-network entry whenever both `--network` and
+/// `--nonetworks` are absent, applied unconditionally before any
+/// install-method-specific logic runs. Every document this crate builds
+/// gets one, matching that. `--pxe` is just the one install method
+/// where omitting it makes the resulting domain outright inert (can't
+/// network-boot at all) rather than merely missing connectivity
+/// afterward — that's what prompted grounding this, but the fix is
+/// general.
+///
+/// `mac` is caller-supplied for the same reason `uuid` is: a two-phase
+/// pair's initial and final documents must describe the *same* device,
+/// not two independently-randomized MACs. Reuses `crate::cloner::
+/// generate_mac` (`52:54:00`/`00:16:3E` OUI by driver) rather than
+/// duplicating it — the exact same function this crate's `virt-clone`
+/// support already uses for the same reason. Every caller here derives
+/// `generate_mac`'s `is_qemu` from `domain_type == "qemu"` (the string
+/// already threaded through from `DomainCapabilities`); `cloner.rs`
+/// derives it from the connection itself. The two can disagree in
+/// principle — a `qemu+ssh://`-style connection whose domcaps happens to
+/// report something other than the literal string `"qemu"` would get
+/// the wrong OUI — not reachable through this crate's current CLI
+/// surface, but worth knowing if `push_default_nic` ever gets a second
+/// caller with a real `Connection` in hand. Model is a fixed `virtio`
+/// default (`DeviceInterface.default_model`: `hvm` + `guest.
+/// supports_virtionet()`, the common qemu/kvm x86 case) — the non-virtio
+/// fallback chain (`e1000`/`rtl8139`/`ne2k_pci`/`pcnet`, chosen via
+/// `guest.osinfo.supported_netmodels()`) needs `OsInfo`, unmodeled, same
+/// posture as this crate's disk-bus default.
+pub(super) fn push_default_nic(doc: &mut Document, devices_el: Element, mac: &str) {
+    let iface_el = Element::new(doc, "interface");
+    iface_el.set_attribute(doc, "type", "network");
+    let source_el = Element::new(doc, "source");
+    source_el.set_attribute(doc, "network", "default");
+    iface_el
+        .push_child(doc, source_el)
+        .expect("a freshly-created detached element always attaches cleanly");
+    let mac_el = Element::new(doc, "mac");
+    mac_el.set_attribute(doc, "address", mac);
+    iface_el
+        .push_child(doc, mac_el)
+        .expect("a freshly-created detached element always attaches cleanly");
+    let model_el = Element::new(doc, "model");
+    model_el.set_attribute(doc, "type", "virtio");
+    iface_el
+        .push_child(doc, model_el)
+        .expect("a freshly-created detached element always attaches cleanly");
+    devices_el
+        .push_child(doc, iface_el)
         .expect("a freshly-created detached element always attaches cleanly");
 }

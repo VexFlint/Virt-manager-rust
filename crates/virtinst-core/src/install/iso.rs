@@ -77,7 +77,8 @@ use uuid::Uuid;
 use virtinst_xml::{Document, Element};
 
 use super::domain_skeleton::{
-    build_domain_skeleton, push_boot_dev, push_on_reboot_destroy, push_virtio_disk,
+    build_domain_skeleton, push_boot_dev, push_default_nic, push_on_reboot_destroy,
+    push_virtio_disk,
 };
 
 /// `name`/`memory_kib`/`vcpus`/`domain_type`/`arch` — see
@@ -107,6 +108,11 @@ pub fn build_iso_document(
 
     let devices_el = Element::new(&mut doc, "devices");
     push_cdrom_disk(&mut doc, devices_el, Some(media));
+    push_default_nic(
+        &mut doc,
+        devices_el,
+        &crate::cloner::generate_mac(domain_type == "qemu"),
+    );
     root.push_child(&mut doc, devices_el)
         .expect("a freshly-created detached element always attaches cleanly");
 
@@ -137,6 +143,9 @@ pub fn build_iso_two_phase_documents(
     arch: &str,
 ) -> (Document, Document) {
     let uuid = Uuid::new_v4().to_string();
+    // Same device, same MAC in both documents — same reason the UUID is
+    // shared, see `push_default_nic`'s doc comment.
+    let mac = crate::cloner::generate_mac(domain_type == "qemu");
 
     let initial = build_iso_phase_document(
         name,
@@ -148,6 +157,7 @@ pub fn build_iso_two_phase_documents(
         "cdrom",
         Some(media),
         disk_path,
+        &mac,
         true,
     );
     let final_doc = build_iso_phase_document(
@@ -160,17 +170,18 @@ pub fn build_iso_two_phase_documents(
         "hd",
         None,
         disk_path,
+        &mac,
         false,
     );
     (initial, final_doc)
 }
 
 /// Shared shape for one phase of the two-phase document pair: same
-/// skeleton, same two devices (cdrom + persistent disk), differing in
-/// `boot_dev`, whether the cdrom has media inserted (`cdrom_source:
-/// Option<&str>`), and `is_initial` (`<on_reboot>destroy</on_reboot>` —
-/// see this module's own doc comment for why only the initial document
-/// gets it).
+/// skeleton, same three devices (cdrom + persistent disk + NIC),
+/// differing in `boot_dev`, whether the cdrom has media inserted
+/// (`cdrom_source: Option<&str>`), and `is_initial` (`<on_reboot>
+/// destroy</on_reboot>` — see this module's own doc comment for why
+/// only the initial document gets it).
 #[allow(clippy::too_many_arguments)]
 fn build_iso_phase_document(
     name: &str,
@@ -182,6 +193,7 @@ fn build_iso_phase_document(
     boot_dev: &str,
     cdrom_source: Option<&str>,
     disk_path: &str,
+    mac: &str,
     is_initial: bool,
 ) -> Document {
     let (mut doc, root, os_el) =
@@ -194,6 +206,7 @@ fn build_iso_phase_document(
     let devices_el = Element::new(&mut doc, "devices");
     push_cdrom_disk(&mut doc, devices_el, cdrom_source);
     push_virtio_disk(&mut doc, devices_el, disk_path);
+    push_default_nic(&mut doc, devices_el, mac);
     root.push_child(&mut doc, devices_el)
         .expect("a freshly-created detached element always attaches cleanly");
 
@@ -274,6 +287,16 @@ mod tests {
         assert_eq!(target.attribute(&doc, "dev"), Some("hda"));
         assert_eq!(target.attribute(&doc, "bus"), Some("ide"));
         assert!(disk.find(&doc, "readonly").is_some());
+
+        let iface = devices.find(&doc, "interface").unwrap();
+        assert_eq!(iface.attribute(&doc, "type"), Some("network"));
+        assert_eq!(
+            iface
+                .find(&doc, "source")
+                .unwrap()
+                .attribute(&doc, "network"),
+            Some("default")
+        );
     }
 
     #[test]
@@ -440,6 +463,26 @@ mod tests {
                 .attribute(&final_doc, "file"),
             Some("/var/lib/libvirt/images/disk.qcow2")
         );
+
+        // Same NIC, same MAC in both documents — same reason the disk
+        // and UUID are shared.
+        let initial_mac = initial_devices
+            .find(&initial, "interface")
+            .unwrap()
+            .find(&initial, "mac")
+            .unwrap()
+            .attribute(&initial, "address")
+            .unwrap()
+            .to_string();
+        let final_mac = final_devices
+            .find(&final_doc, "interface")
+            .unwrap()
+            .find(&final_doc, "mac")
+            .unwrap()
+            .attribute(&final_doc, "address")
+            .unwrap()
+            .to_string();
+        assert_eq!(initial_mac, final_mac);
     }
 
     /// Real end-to-end proof that two-phase create/define actually
