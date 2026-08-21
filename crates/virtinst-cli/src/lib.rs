@@ -6,26 +6,34 @@
 //!
 //! Also where the CLI option-string parser lives: upstream's
 //! `--disk path=/foo,bus=virtio` syntax, ported from `cli.py`'s
-//! `parse_optstr_tuples`/`_parse_optstr_to_dict`. This first slice is
-//! deliberately one device (`--watchdog`, the simplest `Parser*` class
-//! upstream has — no `aliases`, no `cb=`, no custom `_parse` override)
-//! parsed by hand in [`watchdog_from_optstr`], not yet a derive-macro
-//! extension. `#[xml(nested)]` and friends only became macro field
-//! kinds after more than one struct needed the same shape (see
-//! `virtinst-xml-derive`'s history) — this waits for a second real
-//! consumer before generalizing the same way.
+//! `parse_optstr_tuples`/`_parse_optstr_to_dict`. Per-device optstring
+//! mapping (`{device}_from_optstr`/`apply_{device}_optstr`) is still
+//! hand-written, not a derive-macro extension — `#[xml(nested)]` and
+//! friends only became macro field kinds after more than one *XML
+//! binding* struct needed the same shape, and the same trigger hasn't
+//! fired here yet: `--watchdog` and `--vsock` are different enough
+//! (flat self-attrs vs. dotted aliases into a nested element) that a
+//! shared macro would be guessing at the general shape from n=2, not
+//! discovering it.
 //!
-//! **Known gap**: upstream registers `--watchdog` (and every device
-//! flag) with argparse's `action="append"` — `--watchdog X --watchdog
-//! Y` in one invocation builds *two* devices (`cli.run_parser` loops
-//! over the whole list). The CLI surface here only accepts one
-//! `--watchdog` per invocation (last one wins, via clap's normal
-//! single-valued `Option<String>`). Not hit by anything built so far;
-//! revisit if a real use needs multiple devices of the same type added
-//! in one call.
+//! `select_elements`/`remove_elements` **are** generalized already
+//! (tag-parameterized) — that part had zero device-specific logic to
+//! begin with, so generalizing on the second consumer (`--vsock`) cost
+//! nothing and removed real duplication. `select_watchdog_elements`/
+//! `remove_watchdog_elements` are now thin wrappers, kept so existing
+//! call sites and tests didn't need to change.
+//!
+//! **Known gap**: upstream registers `--watchdog`/`--vsock` (and every
+//! device flag) with argparse's `action="append"` — `--watchdog X
+//! --watchdog Y` in one invocation builds *two* devices
+//! (`cli.run_parser` loops over the whole list). The CLI surface here
+//! only accepts one of each device flag per invocation (last one wins,
+//! via clap's normal single-valued `Option<String>`). Not hit by
+//! anything built so far; revisit if a real use needs multiple devices
+//! of the same type added in one call.
 
-use virtinst_core::devices::DeviceWatchdog;
-use virtinst_xml::{list_remove, resolve_path, Document, Element};
+use virtinst_core::devices::{DeviceVsock, DeviceWatchdog};
+use virtinst_xml::{list_remove, resolve_or_create_path, resolve_path, Document, Element};
 
 /// Upstream's `parse_optstr_tuples`: split `"model=itco,action=none"`
 /// into an ordered list of `(cliname, value)` tuples — `"model=itco,path=foo,model=bar"`
