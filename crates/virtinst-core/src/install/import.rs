@@ -361,10 +361,17 @@ mod tests {
             &capsinfo.os_type.unwrap(),
             &capsinfo.arch.unwrap(),
         );
-        let xml = doc.write_str().expect("serializes");
-        assert!(
-            xml.contains("<type arch=\"i686\">xen</type>"),
-            "the injected os_type must reach <os><type>, not a stray hardcoded \"hvm\": {xml}"
+        // Through the DOM, not a raw string match on the serialized
+        // XML — a string match couples this test to `virtinst_xml`'s
+        // writer's attribute ordering/quote style, neither of which
+        // this test is about.
+        let root = doc.root_element().unwrap();
+        let type_el = root.find(&doc, "os").unwrap().find(&doc, "type").unwrap();
+        assert_eq!(
+            type_el.text_content(&doc),
+            "xen",
+            "the injected os_type must reach <os><type>, not a stray hardcoded \"hvm\""
         );
+        assert_eq!(type_el.attribute(&doc, "arch"), Some("i686"));
     }
 }
