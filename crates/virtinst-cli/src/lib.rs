@@ -1468,15 +1468,18 @@ pub fn apply_redirdev_optstr(doc: &mut Document, el: Element, optstr: &str) -> R
                 }
             },
             "server" => {
-                if let Some(v) = required_value(&cliname, val)? {
-                    let (host, port) = parse_friendly_host(&v);
-                    if let Some(h) = host {
-                        apply_nested_attr(doc, el, &["source"], "host", Some(h));
-                    }
-                    if let Some(p) = port {
-                        parse_int("server", &p)?;
-                        apply_nested_attr(doc, el, &["source"], "service", Some(p));
-                    }
+                // Upstream's `_set_host_helper` sets `host` unconditionally
+                // (even to None, clearing it) but `service` only when a
+                // port was actually given — `server=` (explicit clear)
+                // must still clear an existing `source/@host`, not no-op.
+                let (host, port) = match required_value(&cliname, val)? {
+                    Some(v) => parse_friendly_host(&v),
+                    None => (None, None),
+                };
+                apply_nested_attr(doc, el, &["source"], "host", host);
+                if let Some(p) = port {
+                    parse_int("server", &p)?;
+                    apply_nested_attr(doc, el, &["source"], "service", Some(p));
                 }
             }
             _ => {}
@@ -3498,6 +3501,37 @@ mod tests {
         assert_eq!(source.attribute(&doc, "mode"), Some("connect"), "untouched");
         assert_eq!(source.attribute(&doc, "host"), Some("example.com"));
         assert_eq!(source.attribute(&doc, "service"), Some("12345"));
+    }
+
+    /// Regression: upstream's `_set_host_helper` (`devices/char.py`)
+    /// sets `host` *unconditionally* — even to `None`, clearing it —
+    /// while `service` is only ever touched when a port was actually
+    /// given. `--redirdev server=` (explicit empty value) must clear an
+    /// existing `source/@host` outright, not no-op — the same class of
+    /// clear-path gap `--filesystem mode=` had.
+    #[test]
+    fn edit_redirdev_server_empty_clears_host_but_leaves_service_untouched() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <redirdev bus="usb" type="tcp">
+      <source mode="connect" host="example.com" service="4000"/>
+    </redirdev>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "redirdev", "1").unwrap()[0];
+
+        apply_redirdev_optstr(&mut doc, el, "server=").unwrap();
+
+        let source = el.find(&doc, "source").unwrap();
+        assert_eq!(source.attribute(&doc, "host"), None, "host is cleared");
+        assert_eq!(
+            source.attribute(&doc, "service"),
+            Some("4000"),
+            "service untouched: upstream only ever sets it when a port is given"
+        );
     }
 
     /// Real end-to-end proof mirroring `add_then_remove_vsock_against_a_
