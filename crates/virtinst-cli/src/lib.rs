@@ -40,7 +40,8 @@
 //! of the same type added in one call.
 
 use virtinst_core::devices::{
-    DeviceDisk, DeviceMemballoon, DeviceSound, DeviceVideo, DeviceVsock, DeviceWatchdog,
+    DeviceController, DeviceDisk, DeviceMemballoon, DeviceSound, DeviceTpm, DeviceVideo,
+    DeviceVsock, DeviceWatchdog,
 };
 use virtinst_xml::{list_remove, resolve_or_create_path, resolve_path, Document, Element, OnOff};
 
@@ -287,6 +288,19 @@ fn field_loc(device: &str, cliname: &str) -> Option<FieldLoc> {
         ("video", "model.acceleration.accel3d") => {
             Some(Nested(&["model", "acceleration"], "accel3d"))
         }
+        ("controller", "type") => Some(SelfAttr("type")),
+        ("controller", "model") => Some(SelfAttr("model")),
+        ("controller", "index") => Some(SelfAttr("index")),
+        ("controller", "driver.queues") => Some(Nested(&["driver"], "queues")),
+        ("controller", "target.chassis") => Some(Nested(&["target"], "chassis")),
+        ("controller", "target.hotplug") => Some(Nested(&["target"], "hotplug")),
+        ("tpm", "model") => Some(SelfAttr("model")),
+        ("tpm", "type" | "backend.type") => Some(Nested(&["backend"], "type")),
+        ("tpm", "version" | "backend.version") => Some(Nested(&["backend"], "version")),
+        ("tpm", "path" | "backend.device.path") => Some(Nested(&["backend", "device"], "path")),
+        ("tpm", "persistent_state" | "backend.persistent_state") => {
+            Some(Nested(&["backend"], "persistent_state"))
+        }
         _ => None,
     }
 }
@@ -332,6 +346,7 @@ fn device_remove_first(device: &str) -> &'static [&'static str] {
         "watchdog" | "vsock" | "memballoon" | "sound" => &["model"],
         "video" => &["model.type"],
         "disk" => &["path"],
+        "controller" | "tpm" => &["type"],
         _ => panic!("device_remove_first: no remove_first entry for device '{device}'"),
     }
 }
@@ -1085,6 +1100,231 @@ fn check_int_or_clear(cliname: &str, val: Option<String>) -> Result<Option<Strin
         }
         None => Ok(None),
     }
+}
+
+/// `--controller` — upstream's real `ParserController` (`remove_first =
+/// "type"`, not `"model"` — `--controller usb3` means `type=usb3`, not
+/// a model). Covers exactly what `DeviceController` already models:
+/// `type`, `model`, `index` (`is_int`), `driver.queues` (`is_int`,
+/// nested), `target.chassis` (`is_int`, nested), `target.hotplug`
+/// (`is_onoff` CLI vocab landing on an `Option<OnOff>` field — no
+/// vocab-vs-XML-spelling mismatch to normalize here, unlike
+/// `--vsock`'s `cid.auto`: upstream's own `target/@hotplug` really is
+/// `is_onoff` at the XML level too). **Not modeled**: `master.startport`
+/// (aliased `master`), `maxGrantFrames`, `vectors`, `driver.iothread`,
+/// every other `target.*` field, `address` (upstream's own bespoke PCI
+/// address-string parser, `set_address_cb`), `num_pcie_root_ports`
+/// (mutates the *guest*, not this device), and the `usb2`/`usb3`
+/// special-case optstrings (`DeviceController::get_usb2_controllers`/
+/// `get_usb3_controller` — return more than one device, a different
+/// shape than every `{device}_from_optstr` here returns) — all flagged
+/// rather than built, same partial-slice discipline as `--disk`.
+pub fn controller_from_optstr(optstr: &str) -> Result<DeviceController, String> {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, device_remove_first("controller"));
+
+    let mut dev = DeviceController::default();
+    for (cliname, val) in tuples {
+        match cliname.as_str() {
+            "type" => dev.controller_type = required_value(&cliname, val)?,
+            "model" => dev.model = required_value(&cliname, val)?,
+            "index" => {
+                dev.index = match required_value(&cliname, val)? {
+                    Some(v) => Some(parse_int(&cliname, &v)?),
+                    None => None,
+                };
+            }
+            "driver.queues" => {
+                dev.driver_queues = match required_value(&cliname, val)? {
+                    Some(v) => Some(parse_int(&cliname, &v)?),
+                    None => None,
+                };
+            }
+            "target.chassis" => {
+                dev.target_chassis = match required_value(&cliname, val)? {
+                    Some(v) => Some(parse_int(&cliname, &v)?),
+                    None => None,
+                };
+            }
+            "target.hotplug" => {
+                dev.target_hotplug = match required_value(&cliname, val)? {
+                    Some(v) => Some(OnOff(parse_onoff(&cliname, &v)?)),
+                    None => None,
+                };
+            }
+            _ => {}
+        }
+    }
+    Ok(dev)
+}
+
+/// [`apply_watchdog_optstr`]'s controller counterpart. Pins
+/// `edit-simple-controller` against the restored upstream fixture:
+/// `--controller index=15,model=lsilogic` on `<controller type="scsi"
+/// index="0"/>` must produce `<controller type="scsi" index="15"
+/// model="lsilogic"/>` — `type` untouched, `model` newly added.
+pub fn apply_controller_optstr(
+    doc: &mut Document,
+    el: Element,
+    optstr: &str,
+) -> Result<(), String> {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, device_remove_first("controller"));
+
+    for (cliname, val) in tuples {
+        match cliname.as_str() {
+            "type" | "model" => match required_value(&cliname, val)? {
+                Some(v) => el.set_attribute(doc, cliname, v),
+                None => {
+                    el.mut_attributes(doc).remove(&cliname);
+                }
+            },
+            "index" => {
+                let checked = check_int_or_clear(&cliname, val)?;
+                match checked {
+                    Some(v) => el.set_attribute(doc, "index", v),
+                    None => {
+                        el.mut_attributes(doc).remove("index");
+                    }
+                }
+            }
+            "driver.queues" => {
+                let checked = check_int_or_clear(&cliname, val)?;
+                apply_nested_attr(doc, el, &["driver"], "queues", checked);
+            }
+            "target.chassis" => {
+                let checked = check_int_or_clear(&cliname, val)?;
+                apply_nested_attr(doc, el, &["target"], "chassis", checked);
+            }
+            "target.hotplug" => {
+                let normalized = match required_value(&cliname, val)? {
+                    Some(v) => Some(
+                        if parse_onoff(&cliname, &v)? {
+                            "on"
+                        } else {
+                            "off"
+                        }
+                        .to_string(),
+                    ),
+                    None => None,
+                };
+                apply_nested_attr(doc, el, &["target"], "hotplug", normalized);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// `--tpm` — upstream's real `ParserTPM` (`remove_first = "type"`,
+/// where `"type"` is itself an *alias* for `backend.type`, not a
+/// self-attribute — same non-flat `remove_first` shape `--video`'s
+/// `"model.type"` already established, just spelled as an alias instead
+/// of the dotted name directly). `backend.device.path` is the first
+/// **three-level** nested chain any `apply_*_optstr` has reached
+/// (`backend/device/@path`) — the exact case
+/// [`apply_nested_attr`]'s path-segment-slice fix (this commit range's
+/// bug fix, caught on `--video`'s two-level chain) has to keep working
+/// for. `backend.persistent_state` is `is_onoff` CLI vocab over an
+/// `is_yesno` XML attribute — the same normalize-before-write mismatch
+/// `--vsock cid.auto`/`--controller target.hotplug` already established
+/// (unlike `target.hotplug`, this one *does* need the yes/no
+/// normalization, not on/off).
+///
+/// **Known gap, not built**: clearing `backend.device.path` (this
+/// slice's own `edit-simple-tpm` fixture does exactly this) leaves an
+/// attributeless `<device/>` behind rather than pruning the now-empty
+/// element the way upstream's dynamic engine does — the same
+/// no-pruning divergence ticket 06 already accepted project-wide, now
+/// visible on a *nested* element instead of just an unset field.
+/// **Also not modeled**: `sha1`/`sha256`'s present-bool markers sit a
+/// third level deeper still (`backend/active_pcr_banks/sha1`) and
+/// `apply_present_bool` only resolves one level from `el` today; every
+/// other `backend.*`/`master.*` field `DeviceTpm` doesn't bind; and the
+/// old-style `--tpm /dev/tpm0` path-shorthand (`_parse`'s `type`-starts-
+/// with-`/`-means-`path` special case).
+pub fn tpm_from_optstr(optstr: &str) -> Result<DeviceTpm, String> {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, device_remove_first("tpm"));
+
+    let mut dev = DeviceTpm::default();
+    for (cliname, val) in tuples {
+        match cliname.as_str() {
+            "model" => dev.model = required_value(&cliname, val)?,
+            "type" | "backend.type" => dev.backend_type = required_value(&cliname, val)?,
+            "version" | "backend.version" => dev.version = required_value(&cliname, val)?,
+            "path" | "backend.device.path" => dev.device_path = required_value(&cliname, val)?,
+            "persistent_state" | "backend.persistent_state" => {
+                dev.persistent_state = match required_value(&cliname, val)? {
+                    Some(v) => Some(parse_onoff(&cliname, &v)?),
+                    None => None,
+                };
+            }
+            _ => {}
+        }
+    }
+    Ok(dev)
+}
+
+/// [`apply_watchdog_optstr`]'s tpm counterpart. Pins `edit-simple-tpm`
+/// against the restored upstream fixture (attribute-level facts only —
+/// see this function's own doc comment on `backend.device.path`'s
+/// no-pruning divergence): `--tpm
+/// backend.device.path=,backend.type=emulator,backend.version=2.0` on a
+/// `<backend type="passthrough"><device path="/dev/tzz"/></backend>`
+/// must produce `backend/@type="emulator"`, `backend/@version="2.0"`,
+/// and `backend/device/@path` gone.
+pub fn apply_tpm_optstr(doc: &mut Document, el: Element, optstr: &str) -> Result<(), String> {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, device_remove_first("tpm"));
+
+    for (cliname, val) in tuples {
+        match cliname.as_str() {
+            "model" => match required_value(&cliname, val)? {
+                Some(v) => el.set_attribute(doc, "model", v),
+                None => {
+                    el.mut_attributes(doc).remove("model");
+                }
+            },
+            "type" | "backend.type" => apply_nested_attr(
+                doc,
+                el,
+                &["backend"],
+                "type",
+                required_value(&cliname, val)?,
+            ),
+            "version" | "backend.version" => apply_nested_attr(
+                doc,
+                el,
+                &["backend"],
+                "version",
+                required_value(&cliname, val)?,
+            ),
+            "path" | "backend.device.path" => apply_nested_attr(
+                doc,
+                el,
+                &["backend", "device"],
+                "path",
+                required_value(&cliname, val)?,
+            ),
+            "persistent_state" | "backend.persistent_state" => {
+                let normalized = match required_value(&cliname, val)? {
+                    Some(v) => Some(
+                        if parse_onoff(&cliname, &v)? {
+                            "yes"
+                        } else {
+                            "no"
+                        }
+                        .to_string(),
+                    ),
+                    None => None,
+                };
+                apply_nested_attr(doc, el, &["backend"], "persistent_state", normalized);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// `--remove-device`'s path, for any device `tag` — upstream's
@@ -2702,6 +2942,31 @@ mod tests {
                     "model.acceleration.accel3d",
                 ],
             ),
+            (
+                "controller",
+                &[
+                    "type",
+                    "model",
+                    "index",
+                    "driver.queues",
+                    "target.chassis",
+                    "target.hotplug",
+                ],
+            ),
+            (
+                "tpm",
+                &[
+                    "model",
+                    "type",
+                    "backend.type",
+                    "version",
+                    "backend.version",
+                    "path",
+                    "backend.device.path",
+                    "persistent_state",
+                    "backend.persistent_state",
+                ],
+            ),
         ];
         for (device, clinames) in known {
             for cliname in *clinames {
@@ -2712,5 +2977,178 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `remove_first = "type"`, not `"model"` — `--controller usb3`
+    /// splices into `type=usb3`.
+    #[test]
+    fn controller_from_optstr_handles_the_positional_form() {
+        let dev = controller_from_optstr("usb3").unwrap();
+        assert_eq!(dev.controller_type.as_deref(), Some("usb3"));
+    }
+
+    #[test]
+    fn controller_from_optstr_parses_int_and_onoff_fields() {
+        let dev = controller_from_optstr(
+            "type=pci,index=0,driver.queues=4,target.chassis=1,target.hotplug=off",
+        )
+        .unwrap();
+        assert_eq!(dev.index, Some(0));
+        assert_eq!(dev.driver_queues, Some(4));
+        assert_eq!(dev.target_chassis, Some(1));
+        assert_eq!(dev.target_hotplug, Some(OnOff(false)));
+    }
+
+    /// Golden fixture, pinned against upstream's own
+    /// `tests/data/cli/compare/virt-xml-edit-simple-controller.xml`:
+    /// `virt-xml --edit --controller index=15,model=lsilogic` against
+    /// `<controller type="scsi" index="0"/>` must produce `<controller
+    /// type="scsi" index="15" model="lsilogic"/>` — `type` untouched.
+    #[test]
+    fn golden_edit_simple_controller() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <controller type="scsi" index="0"/>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "controller", "1").unwrap()[0];
+
+        apply_controller_optstr(&mut doc, el, "index=15,model=lsilogic").unwrap();
+
+        assert_eq!(el.attribute(&doc, "type"), Some("scsi"), "untouched");
+        assert_eq!(el.attribute(&doc, "index"), Some("15"));
+        assert_eq!(el.attribute(&doc, "model"), Some("lsilogic"));
+    }
+
+    /// Real end-to-end proof mirroring `add_then_remove_vsock_against_a_
+    /// real_domain`.
+    #[test]
+    fn add_then_remove_controller_against_a_real_domain() {
+        use virtinst_core::connection::{Connection, Domain};
+
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        let domain = Domain::lookup_by_name(&conn, "test").expect("the default test domain");
+
+        let before_xml = domain.inactive_xml().expect("fetch inactive XML");
+        let before_doc = virtinst_xml::parse_libvirt_xml(&before_xml).expect("re-parses");
+        let before_root = before_doc.root_element().unwrap();
+        let baseline = select_elements(&before_doc, before_root, "controller", "all")
+            .map(|els| els.len())
+            .unwrap_or(0);
+
+        let dev = controller_from_optstr("type=scsi,model=virtio-scsi,index=9").unwrap();
+        domain
+            .add_device(&conn, &dev)
+            .expect("add-device's exact call chain succeeds");
+
+        let after_add = domain.inactive_xml().expect("fetch inactive XML");
+        let doc = virtinst_xml::parse_libvirt_xml(&after_add).expect("re-parses");
+        let root = doc.root_element().unwrap();
+        assert_eq!(
+            select_elements(&doc, root, "controller", "all")
+                .unwrap()
+                .len(),
+            baseline + 1
+        );
+
+        domain
+            .edit_inactive_xml(&conn, |doc, root| {
+                remove_elements(doc, root, "controller", "-1")?;
+                Ok(())
+            })
+            .expect("remove-device's exact call chain succeeds");
+
+        let after_remove = domain.inactive_xml().expect("fetch inactive XML");
+        let doc = virtinst_xml::parse_libvirt_xml(&after_remove).expect("re-parses");
+        let root = doc.root_element().unwrap();
+        let remaining = select_elements(&doc, root, "controller", "all")
+            .map(|els| els.len())
+            .unwrap_or(0);
+        assert_eq!(remaining, baseline);
+    }
+
+    /// `remove_first = "type"` where `"type"` is itself an *alias* for
+    /// `backend.type` (a nested field, not a self-attribute) — the
+    /// dotted-key-via-alias shape, distinct from `--video`'s
+    /// dotted-key-via-literal-name (`model.type`).
+    #[test]
+    fn tpm_from_optstr_handles_the_positional_form_via_the_type_alias() {
+        let dev = tpm_from_optstr("passthrough").unwrap();
+        assert_eq!(dev.backend_type.as_deref(), Some("passthrough"));
+    }
+
+    /// Golden fixture, pinned against upstream's own
+    /// `tests/data/cli/compare/virt-xml-edit-simple-tpm.xml`:
+    /// `virt-xml --edit --tpm
+    /// backend.device.path=,backend.type=emulator,backend.version=2.0`
+    /// against `<backend type="passthrough"><device
+    /// path="/dev/tzz"/></backend>` must produce `backend/@type=
+    /// "emulator"`, `backend/@version="2.0"`, and `backend/device/@path`
+    /// gone — the first real fixture to exercise `apply_nested_attr`'s
+    /// three-level chain. Doesn't assert on whether `<device>` itself
+    /// still exists afterward — see `apply_tpm_optstr`'s own doc comment
+    /// on the known no-pruning divergence from upstream's exact byte
+    /// output there.
+    #[test]
+    fn golden_edit_simple_tpm() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <tpm model="tpm-tis">
+      <backend type="passthrough">
+        <device path="/dev/tzz"/>
+      </backend>
+    </tpm>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "tpm", "1").unwrap()[0];
+
+        apply_tpm_optstr(
+            &mut doc,
+            el,
+            "backend.device.path=,backend.type=emulator,backend.version=2.0",
+        )
+        .unwrap();
+
+        let backend = el.find(&doc, "backend").unwrap();
+        assert_eq!(backend.attribute(&doc, "type"), Some("emulator"));
+        assert_eq!(backend.attribute(&doc, "version"), Some("2.0"));
+        assert_eq!(
+            backend
+                .find(&doc, "device")
+                .and_then(|d| d.attribute(&doc, "path")),
+            None,
+            "the path attribute is gone, whether or not <device> itself still exists"
+        );
+    }
+
+    #[test]
+    fn tpm_persistent_state_normalizes_onoff_vocab_to_yesno_xml_spelling() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <tpm model="tpm-crb">
+      <backend type="emulator"/>
+    </tpm>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "tpm", "1").unwrap()[0];
+
+        apply_tpm_optstr(&mut doc, el, "persistent_state=on").unwrap();
+
+        let backend = el.find(&doc, "backend").unwrap();
+        assert_eq!(
+            backend.attribute(&doc, "persistent_state"),
+            Some("yes"),
+            "is_onoff CLI vocab, is_yesno XML spelling — must write \"yes\", not \"on\""
+        );
     }
 }
