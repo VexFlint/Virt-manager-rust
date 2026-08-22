@@ -191,6 +191,17 @@ all five match exactly, including the pinned error string
 (`remove-disk-path`) needs block-device `source.dev` handling, same
 already-documented gap `edit-simple-disk` has, not a new one.
 
+Extended again to 50 checks / 23 cases: `--controller`/`--tpm` (ninth
+and tenth devices, both structs already existed). Two real upstream
+fixtures covered (`edit-simple-controller` exactly;
+`edit-simple-tpm` on every attribute-level fact — the one documented
+divergence is `backend.device.path`'s clear leaving an attributeless
+`<device/>` behind instead of upstream's pruned-away result, the
+project's existing no-pruning stance, now hit on a nested element).
+`--tpm` is also the first fixture to actually exercise
+`apply_nested_attr`'s three-level chain fix in a real upstream-grounded
+case, not just a synthetic regression test.
+
 **Not yet done**: growing case/device coverage further (blocked on more
 devices having a `{device}_from_optstr`/`apply_{device}_optstr` pair at
 all, not on the harness itself — and for `--disk` specifically, on

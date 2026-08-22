@@ -353,6 +353,31 @@ echo "  cmd: --remove-device --video all"
 xml="$(run_virt_xml_action --remove-device --video all)"
 check_xpath "$xml" "count(//video)" "0" "both videos are gone"
 
+# --controller / --tpm cases. Both structs already existed in
+# virtinst-core; this is CLI optstring wiring only — see
+# controller_from_optstr/tpm_from_optstr's own doc comments in
+# virtinst-cli/src/lib.rs.
+
+echo
+echo "=== edit-simple-controller ==="
+echo "  upstream: tests/data/cli/compare/virt-xml-edit-simple-controller.xml"
+echo "  cmd: --controller index=15,model=lsilogic"
+xml="$(run_virt_xml --controller index=15,model=lsilogic)"
+check_xpath "$xml" "string(//controller[1]/@type)" "scsi" "type untouched"
+check_xpath "$xml" "string(//controller[1]/@index)" "15" "index changed to 15"
+check_xpath "$xml" "string(//controller[1]/@model)" "lsilogic" "model newly added"
+
+echo
+echo "=== edit-simple-tpm ==="
+echo "  upstream: tests/data/cli/compare/virt-xml-edit-simple-tpm.xml"
+echo "  cmd: --tpm backend.device.path=,backend.type=emulator,backend.version=2.0"
+echo "  (attribute-level facts only — see apply_tpm_optstr's doc comment on the"
+echo "   known no-pruning divergence for the now-attributeless <device/>)"
+xml="$(run_virt_xml --tpm backend.device.path=,backend.type=emulator,backend.version=2.0)"
+check_xpath "$xml" "string(//tpm/backend/@type)" "emulator" "backend type changed"
+check_xpath "$xml" "string(//tpm/backend/@version)" "2.0" "backend version newly added"
+check_xpath "$xml" "boolean(//tpm/backend/device/@path)" "false" "device path attribute is gone"
+
 echo
 echo "$pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]
