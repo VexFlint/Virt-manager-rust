@@ -150,11 +150,21 @@ fn run_build_xml(args: &Args) {
     let xml = match device {
         "watchdog" => to_xml_string(&watchdog_from_optstr(optstr))
             .expect("a freshly built DeviceWatchdog always serializes"),
-        "vsock" => to_xml_string(&vsock_from_optstr(optstr))
-            .expect("a freshly built DeviceVsock always serializes"),
+        "vsock" => {
+            let dev = vsock_from_optstr(optstr).unwrap_or_else(exit_on_err);
+            to_xml_string(&dev).expect("a freshly built DeviceVsock always serializes")
+        }
         _ => unreachable!(),
     };
     println!("{xml}");
+}
+
+/// Shared exit path for a device optstring's own parse errors (e.g.
+/// `--vsock cid.auto=bogus`) — distinct from [`report`], which handles
+/// the libvirt-define outcome after a successful parse.
+fn exit_on_err<T>(e: String) -> T {
+    eprintln!("virt-xml: {e}");
+    std::process::exit(1);
 }
 
 fn run_edit(args: &Args, selector: &str) {
@@ -166,7 +176,7 @@ fn run_edit(args: &Args, selector: &str) {
         for el in els {
             match device {
                 "watchdog" => apply_watchdog_optstr(doc, el, optstr),
-                "vsock" => apply_vsock_optstr(doc, el, optstr),
+                "vsock" => apply_vsock_optstr(doc, el, optstr)?,
                 _ => unreachable!(),
             }
         }
@@ -181,7 +191,10 @@ fn run_add_device(args: &Args) {
 
     let result = match device {
         "watchdog" => domain.add_device(&conn, &watchdog_from_optstr(optstr)),
-        "vsock" => domain.add_device(&conn, &vsock_from_optstr(optstr)),
+        "vsock" => domain.add_device(
+            &conn,
+            &vsock_from_optstr(optstr).unwrap_or_else(exit_on_err),
+        ),
         _ => unreachable!(),
     };
     report(&domain_name, result);

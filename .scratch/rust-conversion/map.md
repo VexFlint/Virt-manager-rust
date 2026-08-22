@@ -72,9 +72,12 @@ map's tickets are resolved.
 - [Per-driver device-default behavior](./issues/17-per-driver-device-defaults.md) — much more contained than it sounds: grepped the whole `devices`/`domain` tree and only 9 files branch on driver family at all, each an ordered per-*field* decision chain (driver family + guest OS/machine + live capability query), not a pervasive axis. No driver-strategy trait — a trait-per-driver would need one method per field anyway, more ceremony than upstream's already-reasonable structure. Direct port of the ordered-chain shape, typed instead of duck-typed. `DomainCapabilities` gets its own lightweight deserialize-only path, separate from ticket 06's DOM — it's read-only and cached, none of the order-preservation machinery does anything useful there.
 - [Packaging/release process](./issues/18-packaging-release-process.md) — GPLv2-or-later (matching upstream; the repo had no `LICENSE` file at all, a hard blocker — now fixed, standard FSF GPL-2 text copied in). Distribution: traditional `.deb`/`.rpm` packages only for now, Flatpak deliberately not pursued — its sandbox model is in real tension with what this app needs (`qemu:///system`, SSH keys, raw device access) and nothing's shown that's worth solving before the port exists. CI/build: x86_64 Linux only for v1, matching the already-locked Linux-only scope. Deliberately not decided: release cadence, actual CI pipeline contents, packaging metadata — none of that is designable before there's a `Cargo.toml` and working code.
 
+- [CLI golden-corpus comparison harness](./issues/19-cli-golden-corpus-harness.md) — upstream's own `tests/test_cli.py` corpus (ticket 03's acceptance bar) isn't uniformly reachable against a real libvirt driver: the majority of it (`URI-KVM-X86` alone is 36 of ~82 URI references) depends on a Python-level `libvirt.open()` interception (`MagicURI`) that injects fake capabilities/domcaps XML, which the real `virt` crate has no equivalent seam for. Starting against the `URI-TEST-FULL`/`URI-TEST-REMOTE` subset (real `test:///`, no injection needed) to get a harness and baseline running now; a `virtinst-core` capability-override layer for the KVM/x86 subset (36 more fixtures, highest-leverage slice) is scoped as necessary follow-up work, not a blocker.
+
 ## Not yet specified
 
 - Per-screen specs for the remaining 12 screens + 13 shared widgets ticket 07 located.
+- The `virtinst-core` capability-override layer ticket 19 scoped but didn't build (needed to reach the `URI-KVM-*`/`URI-QEMU-*` majority of the CLI golden corpus).
 
 ## Out of scope
 

@@ -33,9 +33,7 @@
 //! of the same type added in one call.
 
 use virtinst_core::devices::{DeviceVsock, DeviceWatchdog};
-use virtinst_xml::{
-    list_remove, resolve_or_create_path, resolve_path, Document, Element, XmlAttrValue,
-};
+use virtinst_xml::{list_remove, resolve_or_create_path, resolve_path, Document, Element};
 
 /// Upstream's `parse_optstr_tuples`: split `"model=itco,action=none"`
 /// into an ordered list of `(cliname, value)` tuples — `"model=itco,path=foo,model=bar"`
@@ -211,54 +209,73 @@ pub fn apply_watchdog_optstr(doc: &mut Document, el: Element, optstr: &str) {
     }
 }
 
-/// `--vsock` — upstream's `ParserVsock`. Unlike `--watchdog`, there's no
-/// positional/`remove_first` shorthand (`model=`/`cid.auto=`/
-/// `cid.address=` are always explicit), and the `cid.*` keys are dotted
-/// aliases landing on the nested `<cid>` element, not self-attributes
-/// (see `DeviceVsock`'s doc comment for the target shape). **Not
-/// re-verified against upstream `cli.py` directly** — the reference
-/// checkout this ticket cites (`/usr/share/virt-manager`) is gone from
-/// this machine after the wipe noted in the prior commit; the dotted
-/// keys are inferred from `DeviceVsock`'s own `#[xml(path = "cid", ...)]`
-/// shape instead, which the optstring has to target either way.
-/// `cid.auto` reuses `Option<bool>`'s own `yes`/`no` parsing
-/// ([`XmlAttrValue::from_attr`]) rather than a new bool convention.
-pub fn vsock_from_optstr(optstr: &str) -> DeviceVsock {
-    let tuples = parse_optstr_tuples(optstr);
+/// Upstream's `_on_off_convert`/`_raw_on_off_convert` — every
+/// `is_onoff=True` CLI argument (e.g. `ParserVsock`'s `cid.auto`) shares
+/// this vocabulary. Deliberately wider than an XML yes/no attribute's
+/// (`y`/`yes`/`1`/`true`/`t`/`on` and `n`/`no`/`0`/`false`/`f`/`off`,
+/// case-insensitive — confirmed against upstream's real
+/// `_raw_on_off_convert`), and unlike `virtinst_xml`'s `Option<bool>`
+/// XML-attribute impl (a plain `s == "yes"`) it **fails** on anything
+/// else rather than silently defaulting to `false` — matches
+/// `_on_off_convert`'s own `fail()` on unrecognized input.
+fn parse_onoff(key: &str, val: &str) -> Result<bool, String> {
+    match val.to_lowercase().as_str() {
+        "y" | "yes" | "1" | "true" | "t" | "on" => Ok(true),
+        "n" | "no" | "0" | "false" | "f" | "off" => Ok(false),
+        _ => Err(format!("{key} must be 'yes' or 'no'")),
+    }
+}
+
+/// `--vsock` — upstream's real `ParserVsock` (`/usr/share/virt-manager`,
+/// reinstalled after the machine wipe noted in the prior commit, so this
+/// is grounded in the actual class again, not inferred). `remove_first =
+/// "model"` — same positional shorthand as `--watchdog`, `--vsock
+/// default` means `model=default`. `cid.auto`/`cid.address` are dotted
+/// aliases (`aliases = {"cid.auto": "auto_cid", "cid.address": "cid"}`)
+/// landing on the nested `<cid>` element, not self-attributes. `cid.auto`
+/// is `is_onoff=True` — [`parse_onoff`], not a new convention.
+pub fn vsock_from_optstr(optstr: &str) -> Result<DeviceVsock, String> {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, &["model"]);
+
     let mut dev = DeviceVsock::default();
     for (cliname, val) in tuples {
         match cliname.as_str() {
             "model" => dev.model = val,
-            "cid.auto" => dev.auto_cid = Option::<bool>::from_attr(val.as_deref()),
+            "cid.auto" => {
+                if let Some(v) = val {
+                    dev.auto_cid = Some(parse_onoff("cid.auto", &v)?);
+                }
+            }
             "cid.address" => dev.cid = val.and_then(|v| v.parse().ok()),
             _ => {}
         }
     }
-    dev
+    Ok(dev)
 }
 
 /// [`apply_watchdog_optstr`]'s vsock counterpart — same "mutate only the
 /// named attributes on the existing element" approach, extended to
-/// reach through to the nested `<cid>` child for `cid.*` keys.
-/// [`resolve_or_create_path`] creates `<cid>` if the vsock element
-/// didn't have one yet (e.g. editing a `<vsock model="virtio"/>` with
-/// no cid set at all), without disturbing anything else on `el`.
-/// `cid.auto` is normalized through the same `Option<bool>` round-trip
-/// [`vsock_from_optstr`] uses, not written raw — otherwise the two entry
-/// points would disagree on non-canonical input (`cid.auto=true` would
-/// build `auto="no"` but edit would write the libvirt-invalid literal
-/// `auto="true"`).
-pub fn apply_vsock_optstr(doc: &mut Document, el: Element, optstr: &str) {
-    let tuples = parse_optstr_tuples(optstr);
+/// reach through to the nested `<cid>` child for `cid.*` keys and to
+/// [`vsock_from_optstr`]'s positional shorthand and `cid.auto` failure
+/// mode. [`resolve_or_create_path`] creates `<cid>` if the vsock element
+/// didn't have one yet (e.g. editing a `<vsock model="virtio"/>` with no
+/// cid set at all), without disturbing anything else on `el`.
+pub fn apply_vsock_optstr(doc: &mut Document, el: Element, optstr: &str) -> Result<(), String> {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, &["model"]);
+
     for (cliname, val) in tuples {
         let Some(val) = val else { continue };
         match cliname.as_str() {
             "model" => el.set_attribute(doc, "model", val),
             "cid.auto" => {
-                if let Some(normalized) = Option::<bool>::from_attr(Some(&val)).to_attr() {
-                    resolve_or_create_path(doc, el, &["cid"])
-                        .set_attribute(doc, "auto", normalized);
-                }
+                let normalized = if parse_onoff("cid.auto", &val)? {
+                    "yes"
+                } else {
+                    "no"
+                };
+                resolve_or_create_path(doc, el, &["cid"]).set_attribute(doc, "auto", normalized);
             }
             "cid.address" => {
                 resolve_or_create_path(doc, el, &["cid"]).set_attribute(doc, "address", val);
@@ -266,6 +283,7 @@ pub fn apply_vsock_optstr(doc: &mut Document, el: Element, optstr: &str) {
             _ => {}
         }
     }
+    Ok(())
 }
 
 /// `--remove-device`'s path, for any device `tag` — upstream's
@@ -722,15 +740,58 @@ mod tests {
 
     #[test]
     fn vsock_from_optstr_maps_model_and_dotted_cid_keys() {
-        let dev = vsock_from_optstr("model=virtio,cid.auto=no,cid.address=3");
+        let dev = vsock_from_optstr("model=virtio,cid.auto=no,cid.address=3").unwrap();
         assert_eq!(dev.model.as_deref(), Some("virtio"));
         assert_eq!(dev.auto_cid, Some(false));
         assert_eq!(dev.cid, Some(3));
     }
 
+    /// `remove_first = "model"` on the real `ParserVsock` — same
+    /// positional shorthand `--watchdog` has, confirmed against upstream
+    /// after the machine-wipe caveat on the original wip commit.
+    #[test]
+    fn vsock_from_optstr_handles_the_positional_form() {
+        let dev = vsock_from_optstr("virtio,cid.address=3").unwrap();
+        assert_eq!(dev.model.as_deref(), Some("virtio"));
+        assert_eq!(dev.cid, Some(3));
+    }
+
+    /// `is_onoff=True`'s wider vocabulary, not just the literal
+    /// `"yes"`/`"no"` an XML attribute round-trips through.
+    #[test]
+    fn vsock_from_optstr_cid_auto_accepts_the_full_onoff_vocabulary() {
+        for (input, expected) in [
+            ("yes", true),
+            ("y", true),
+            ("1", true),
+            ("true", true),
+            ("t", true),
+            ("on", true),
+            ("no", false),
+            ("n", false),
+            ("0", false),
+            ("false", false),
+            ("f", false),
+            ("off", false),
+            ("YES", true),
+            ("OFF", false),
+        ] {
+            let dev = vsock_from_optstr(&format!("cid.auto={input}")).unwrap();
+            assert_eq!(dev.auto_cid, Some(expected), "input was {input:?}");
+        }
+    }
+
+    /// Matches `_on_off_convert`'s own `fail()` — garbage input is
+    /// rejected, not silently coerced to `false` the way an XML
+    /// attribute's `Option<bool>` impl would.
+    #[test]
+    fn vsock_from_optstr_cid_auto_rejects_garbage() {
+        assert!(vsock_from_optstr("cid.auto=maybe").is_err());
+    }
+
     #[test]
     fn vsock_build_xml_output_matches_expected_shape() {
-        let dev = vsock_from_optstr("model=virtio,cid.auto=no,cid.address=3");
+        let dev = vsock_from_optstr("model=virtio,cid.auto=no,cid.address=3").unwrap();
         let xml = virtinst_xml::to_xml_string(&dev).unwrap();
         assert!(xml.starts_with("<vsock "));
         assert!(xml.contains(r#"model="virtio""#));
@@ -756,7 +817,7 @@ mod tests {
         let root = doc.root_element().unwrap();
         let el = select_elements(&doc, root, "vsock", "1").unwrap()[0];
 
-        apply_vsock_optstr(&mut doc, el, "cid.auto=no,cid.address=3");
+        apply_vsock_optstr(&mut doc, el, "cid.auto=no,cid.address=3").unwrap();
 
         let cid = el.find(&doc, "cid").expect("cid element was created");
         assert_eq!(cid.attribute(&doc, "auto"), Some("no"));
@@ -765,11 +826,12 @@ mod tests {
         assert_eq!(el.attribute(&doc, "model"), Some("virtio"));
     }
 
-    /// Pins the fix for a real divergence ultrareview caught: on
-    /// non-canonical `cid.auto` input (anything but the literal `"yes"`),
-    /// [`vsock_from_optstr`] and [`apply_vsock_optstr`] must write the
-    /// same normalized `yes`/`no`, not one normalized and the other raw
-    /// (raw would have written the libvirt-invalid `auto="true"` here).
+    /// Pins the fix for a real divergence ultrareview caught, now under
+    /// `is_onoff`'s real (wider) vocabulary: [`vsock_from_optstr`] and
+    /// [`apply_vsock_optstr`] must agree on non-canonical-but-valid
+    /// `cid.auto` input (`"true"` is truthy in this vocabulary, not
+    /// rejected and not silently coerced to `false` the way an XML
+    /// attribute's `Option<bool>` impl would read it).
     #[test]
     fn apply_vsock_optstr_normalizes_cid_auto_the_same_way_vsock_from_optstr_does() {
         let mut doc = parse_fixture(
@@ -782,11 +844,39 @@ mod tests {
         let root = doc.root_element().unwrap();
         let el = select_elements(&doc, root, "vsock", "1").unwrap()[0];
 
-        apply_vsock_optstr(&mut doc, el, "cid.auto=true");
+        apply_vsock_optstr(&mut doc, el, "cid.auto=true").unwrap();
 
         let cid = el.find(&doc, "cid").expect("cid element was created");
-        assert_eq!(cid.attribute(&doc, "auto"), Some("no"));
-        assert_eq!(vsock_from_optstr("cid.auto=true").auto_cid, Some(false));
+        assert_eq!(cid.attribute(&doc, "auto"), Some("yes"));
+        assert_eq!(
+            vsock_from_optstr("cid.auto=true").unwrap().auto_cid,
+            Some(true)
+        );
+    }
+
+    /// Matches `_on_off_convert`'s `fail()` on the edit path too, and
+    /// (like `remove_by_field_match_selector_is_rejected_not_silently_
+    /// ignored` for watchdog) confirms rejection doesn't leave a
+    /// half-applied mutation behind.
+    #[test]
+    fn apply_vsock_optstr_rejects_garbage_cid_auto_without_mutating_anything() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <vsock model="virtio"><cid auto="yes" address="7"/></vsock>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "vsock", "1").unwrap()[0];
+
+        assert!(apply_vsock_optstr(&mut doc, el, "cid.auto=maybe,cid.address=9").is_err());
+
+        // Nothing changed — including the address that came earlier in
+        // the same optstring, since cid.auto is what fails.
+        let cid = el.find(&doc, "cid").unwrap();
+        assert_eq!(cid.attribute(&doc, "auto"), Some("yes"));
+        assert_eq!(cid.attribute(&doc, "address"), Some("7"));
     }
 
     #[test]
@@ -801,7 +891,7 @@ mod tests {
         let root = doc.root_element().unwrap();
         let el = select_elements(&doc, root, "vsock", "1").unwrap()[0];
 
-        apply_vsock_optstr(&mut doc, el, "cid.address=3");
+        apply_vsock_optstr(&mut doc, el, "cid.address=3").unwrap();
 
         let cid = el.find(&doc, "cid").unwrap();
         assert_eq!(cid.attribute(&doc, "address"), Some("3"));
@@ -821,7 +911,7 @@ mod tests {
         let conn = Connection::open("test:///default").expect("test:/// driver always opens");
         let domain = Domain::lookup_by_name(&conn, "test").expect("the default test domain");
 
-        let dev = vsock_from_optstr("model=virtio,cid.auto=no,cid.address=3");
+        let dev = vsock_from_optstr("model=virtio,cid.auto=no,cid.address=3").unwrap();
         domain
             .add_device(&conn, &dev)
             .expect("add-device's exact call chain succeeds");
