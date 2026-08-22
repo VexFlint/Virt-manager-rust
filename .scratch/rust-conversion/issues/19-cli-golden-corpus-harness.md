@@ -137,10 +137,26 @@ instead — labeled as such in the harness output, same rigor as
 real_domain`/`add_then_remove_vsock_against_a_real_domain`, one level
 up through the real compiled binary.
 
-**Not yet done**: growing case coverage past 6 (blocked on more devices
-having a `{device}_from_optstr`/`apply_{device}_optstr` pair at all, not
-on the harness itself); extending to `virt-install`'s corpus (blocked on
-the capability-injection layer, still real future work — see above,
-this is *not* what the `testsuite.xml` finding resolved); `--print-diff`
-(needs a real diff algorithm, not built, flagged in `virt-xml.rs`'s own
-doc comment).
+Extended again to 25 checks / 9 cases: `--disk` now has a
+`disk_from_optstr`/`apply_disk_optstr` pair (deliberately a **partial**
+slice of upstream's real `ParserDisk` — by far the largest, most
+irregular device parser in `cli.py`, 40+ properties plus real
+storage-pool/volume creation; see that function's own doc comment for
+exactly which fields this slice covers). Two of the three new harness
+cases hit real upstream fixtures exactly (`add-disk-basic`,
+`remove-disk-index` — the latter needed no new logic at all, generic
+index-based `select_elements`/`remove_elements` already covered it);
+the third (`--edit`) is self-verified — `edit-simple-disk`/
+`edit-simple-disk-remove-path` both need block-device `source.dev`
+handling this slice doesn't model, so they're out of reach for now,
+correctly labeled as such in the harness rather than faked with a
+different optstring.
+
+**Not yet done**: growing case/device coverage further (blocked on more
+devices having a `{device}_from_optstr`/`apply_{device}_optstr` pair at
+all, not on the harness itself — and for `--disk` specifically, on
+extending past this session's partial slice); extending to
+`virt-install`'s corpus (blocked on the capability-injection layer,
+still real future work — see above, this is *not* what the
+`testsuite.xml` finding resolved); `--print-diff` (needs a real diff
+algorithm, not built, flagged in `virt-xml.rs`'s own doc comment).

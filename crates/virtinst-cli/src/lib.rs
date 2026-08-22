@@ -11,10 +11,17 @@
 //! hand-written, not a derive-macro extension — `#[xml(nested)]` and
 //! friends only became macro field kinds after more than one *XML
 //! binding* struct needed the same shape, and the same trigger hasn't
-//! fired here yet: `--watchdog` and `--vsock` are different enough
-//! (flat self-attrs vs. dotted aliases into a nested element) that a
-//! shared macro would be guessing at the general shape from n=2, not
-//! discovering it.
+//! fired here yet even at n=3 (`--watchdog`/`--vsock`/`--disk`): each
+//! adds a shape the others don't have (flat self-attrs; one dotted-alias
+//! nested element; several nested elements *plus*
+//! `#[xml(present)]`-bound existence-booleans *plus* a value-remapping
+//! alias like `perms`) — still guessing at the general shape from three
+//! points sampled from upstream's real ~57-parser distribution, not
+//! discovering it. `--disk` itself is also only a partial slice of
+//! upstream's real `ParserDisk` (see `disk_from_optstr`'s own doc
+//! comment) — the parts that would most inform a macro design
+//! (indexed `source.host[N]*`/`seclabel[N]*` sub-lists, real
+//! storage-pool/volume creation) aren't represented in it at all.
 //!
 //! `select_elements`/`remove_elements` **are** generalized already
 //! (tag-parameterized) — that part had zero device-specific logic to
@@ -32,7 +39,7 @@
 //! anything built so far; revisit if a real use needs multiple devices
 //! of the same type added in one call.
 
-use virtinst_core::devices::{DeviceVsock, DeviceWatchdog};
+use virtinst_core::devices::{DeviceDisk, DeviceVsock, DeviceWatchdog};
 use virtinst_xml::{list_remove, resolve_or_create_path, resolve_path, Document, Element};
 
 /// Upstream's `parse_optstr_tuples`: split `"model=itco,action=none"`
@@ -46,9 +53,11 @@ use virtinst_xml::{list_remove, resolve_or_create_path, resolve_path, Document, 
 /// (whitespace set to `","`), which also handles quoted values
 /// (`path="/my,path"`) and backslash escapes. This is a plain
 /// comma-split — a value containing a literal comma has no way to
-/// escape it here. Not hit by `--watchdog`'s plain `model`/`action`
-/// values; add real shlex-equivalent quoting if a device that needs it
-/// (e.g. `--disk`) is ported.
+/// escape it here. Still not hit: `--watchdog`'s `model`/`action` and
+/// this slice's `--disk` fields (`path`, `device`, `type`,
+/// `bus`/`target`, `driver.name`/`driver.type`) are all plain tokens in
+/// practice — real disk paths containing a literal comma are the
+/// actual upstream motivation for this, and remain a real gap here.
 pub fn parse_optstr_tuples(optstr: &str) -> Vec<(String, Option<String>)> {
     optstr
         .split(',')
@@ -313,18 +322,67 @@ pub fn vsock_from_optstr(optstr: &str) -> Result<DeviceVsock, String> {
     Ok(dev)
 }
 
+/// Sets or removes one attribute on a *nested* child element (`el`'s
+/// `path` child, e.g. `<cid>`/`<source>`/`<target>`/`<driver>`) — the
+/// dotted-key case every `apply_{device}_optstr` with a
+/// non-self-attribute field needs. `Some(v)` creates the child first if
+/// absent ([`resolve_or_create_path`]) then sets the attribute; `None`
+/// (the [`required_value`] "clear" case) removes the attribute *without*
+/// creating the child if it wasn't already there — clearing a field that
+/// was never set shouldn't leave a spurious empty `<cid/>`/`<source/>`
+/// behind. (An earlier version of `apply_vsock_optstr` used
+/// `resolve_or_create_path` unconditionally, including on the clear
+/// path — harmless in practice so far since every case exercised
+/// against a real domain already had the nested element, but a real gap
+/// this generalization fixes rather than repeats a third time for
+/// `--disk`.)
+fn apply_nested_attr(doc: &mut Document, el: Element, path: &str, attr: &str, val: Option<String>) {
+    match val {
+        Some(v) => {
+            resolve_or_create_path(doc, el, &[path]).set_attribute(doc, attr, v);
+        }
+        None => {
+            if let Some(nested) = el.find(doc, path) {
+                nested.mut_attributes(doc).remove(attr);
+            }
+        }
+    }
+}
+
+/// Creates or removes a `#[xml(present)]`-bound child element (e.g.
+/// `<readonly/>`/`<shareable/>`) — the existence-is-the-boolean field
+/// kind `--disk`'s `readonly`/`shareable`/`transient`/`perms` need,
+/// upstream's own `is_bool=True` (distinct from `is_onoff`'s yes/no
+/// *attribute* value, though the CLI-facing vocabulary a caller parses
+/// the string into is the same [`parse_onoff`]). No-ops when already in
+/// the requested state, so a redundant call doesn't disturb sibling
+/// content on either the parent or (if one already existed) the child.
+fn apply_present_bool(doc: &mut Document, el: Element, tag: &str, present: bool) {
+    match (el.find(doc, tag), present) {
+        (Some(existing), false) => {
+            existing
+                .detach(doc)
+                .expect("an element found under el detaches cleanly");
+        }
+        (None, true) => {
+            let child = Element::new(doc, tag);
+            el.push_child(doc, child)
+                .expect("a freshly-created detached element always attaches cleanly");
+        }
+        _ => {}
+    }
+}
+
 /// [`apply_watchdog_optstr`]'s vsock counterpart — same "mutate only the
 /// named attributes on the existing element" approach (including the
 /// shared `key=` → remove-the-attribute rule, via [`required_value`]),
 /// extended to reach through to the nested `<cid>` child for `cid.*`
-/// keys and to [`vsock_from_optstr`]'s positional shorthand and
-/// `cid.auto` failure mode. [`resolve_or_create_path`] creates `<cid>`
-/// if the vsock element didn't have one yet (e.g. editing a `<vsock
-/// model="virtio"/>` with no cid set at all), without disturbing
-/// anything else on `el`. Pins `edit-simple-vsock` against the restored
-/// upstream fixture — `cid.address=,cid.auto=on` on a domain with an
-/// existing `<cid auto="no" address="5"/>` must produce `<cid
-/// auto="yes"/>`, `address` gone entirely.
+/// keys (via [`apply_nested_attr`]) and to [`vsock_from_optstr`]'s
+/// positional shorthand and `cid.auto` failure mode. Pins
+/// `edit-simple-vsock` against the restored upstream fixture —
+/// `cid.address=,cid.auto=on` on a domain with an existing `<cid
+/// auto="no" address="5"/>` must produce `<cid auto="yes"/>`, `address`
+/// gone entirely.
 pub fn apply_vsock_optstr(doc: &mut Document, el: Element, optstr: &str) -> Result<(), String> {
     let mut tuples = parse_optstr_tuples(optstr);
     splice_remove_first(&mut tuples, &["model"]);
@@ -337,32 +395,196 @@ pub fn apply_vsock_optstr(doc: &mut Document, el: Element, optstr: &str) -> Resu
                     el.mut_attributes(doc).remove("model");
                 }
             },
-            "cid.auto" => match required_value(&cliname, val)? {
-                Some(v) => {
-                    let normalized = if parse_onoff("cid.auto", &v)? {
-                        "yes"
-                    } else {
-                        "no"
-                    };
-                    resolve_or_create_path(doc, el, &["cid"])
-                        .set_attribute(doc, "auto", normalized);
-                }
+            "cid.auto" => {
+                let normalized = match required_value(&cliname, val)? {
+                    Some(v) => Some(
+                        if parse_onoff("cid.auto", &v)? {
+                            "yes"
+                        } else {
+                            "no"
+                        }
+                        .to_string(),
+                    ),
+                    None => None,
+                };
+                apply_nested_attr(doc, el, "cid", "auto", normalized);
+            }
+            "cid.address" => {
+                let checked = match required_value(&cliname, val)? {
+                    Some(v) => {
+                        parse_int("cid.address", &v)?;
+                        Some(v)
+                    }
+                    None => None,
+                };
+                apply_nested_attr(doc, el, "cid", "address", checked);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// `--disk` — upstream's real `ParserDisk`
+/// (`/usr/share/virt-manager`/`~/DEV/virt-manager-upstream-reference`),
+/// by far the largest and most irregular device parser in `cli.py`: 40+
+/// distinct properties, indexed `source.host[0-9]*`/`seclabel[0-9]*`
+/// sub-lists, and real storage-pool/volume creation logic
+/// (`size`/`format`/`sparse`/`pool`/`vol`/`backing_store`) beyond
+/// declarative option mapping. **Deliberately a partial slice**,
+/// covering only what `DeviceDisk` (`virtinst-core`) already models:
+///
+/// - `path` (`remove_first`) — always `source.file`. Upstream's real
+///   `set_path_cb`/`set_source_path` is disk-type-aware (picks
+///   `source.file`/`source.dev`/`source.dir`/network source attrs
+///   depending on `type`); block/dir/network-type disks aren't modeled
+///   here at all, flagged rather than built.
+/// - `device`, `type` — `type` defaults to `"file"` and `device` to
+///   `"disk"` when neither is given, matching upstream's real
+///   `DeviceDisk.set_defaults`/`TYPE_FILE`/`DEVICE_DISK` constants
+///   (confirmed directly, not assumed) — required to match
+///   `add-disk-basic`'s exact golden output, which has both attributes
+///   present despite neither being in the optstring.
+/// - `bus`/`target.bus` and `target`/`target.dev` — both spellings of
+///   each accepted, matching upstream's own `_add_advertised_aliases`
+///   (`bus`) and `cls.aliases` (`target.dev`'s registered alternate
+///   spelling is literally `"target"`, confirmed by reading how
+///   `cls.aliases` gets consumed in `_virtcli_class_init_common`, not
+///   assumed from the dict's shape).
+/// - `driver.name`, `driver.type`.
+/// - `readonly`, `shareable`, `transient` — all `is_onoff` on the CLI
+///   side but `#[xml(present)]`-bound child elements on the XML side
+///   (existence is the boolean, not an attribute value) — the read
+///   [`apply_present_bool`] exists for.
+/// - `perms` (`ro`→readonly, `sh`→shareable, `rw`→no-op) matching
+///   upstream's `convert_perms` exactly, including its exact error text
+///   for anything else.
+///
+/// Not modeled at all: `size`/`format`/`sparse`/`pool`/`vol`/
+/// `backing_store`/`backing_format` (real storage-pool/volume creation —
+/// a separate, large feature; ticket 15's `storage` module isn't
+/// started), every `source.*`/`driver.*`/`iotune.*`/`blockio.*`/
+/// `geometry.*` field beyond the two `driver.*` ones above, the indexed
+/// `source.host[N]*`/`seclabel[N]*` sub-lists, `snapshot`/`sgio`/
+/// `rawio`/`serial`/`wwn`/`target.removable`/`target.rotation_rate`.
+pub fn disk_from_optstr(optstr: &str) -> Result<DeviceDisk, String> {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, &["path"]);
+
+    let mut dev = DeviceDisk::default();
+    for (cliname, val) in tuples {
+        match cliname.as_str() {
+            "path" => dev.source_file = required_value(&cliname, val)?,
+            "device" => dev.device = required_value(&cliname, val)?,
+            "type" => dev.disk_type = required_value(&cliname, val)?,
+            "bus" | "target.bus" => dev.target_bus = required_value(&cliname, val)?,
+            "target" | "target.dev" => dev.target_dev = required_value(&cliname, val)?,
+            "driver.name" => dev.driver_name = required_value(&cliname, val)?,
+            "driver.type" => dev.driver_type = required_value(&cliname, val)?,
+            "readonly" => dev.read_only = onoff_or_false("readonly", val)?,
+            "shareable" => dev.shareable = onoff_or_false("shareable", val)?,
+            "transient" => dev.transient = onoff_or_false("transient", val)?,
+            "perms" => match perms_flags(val)? {
+                Some(PermsFlag::ReadOnly) => dev.read_only = true,
+                Some(PermsFlag::Shareable) => dev.shareable = true,
+                None => {}
+            },
+            _ => {}
+        }
+    }
+    if dev.disk_type.is_none() {
+        dev.disk_type = Some("file".to_string());
+    }
+    if dev.device.is_none() {
+        dev.device = Some("disk".to_string());
+    }
+    Ok(dev)
+}
+
+/// Shared by [`disk_from_optstr`]/[`apply_disk_optstr`]'s `readonly`/
+/// `shareable`/`transient` arms: [`required_value`] then, if a value was
+/// actually given, [`parse_onoff`] — an explicit clear (`key=`) or an
+/// unset field both read as `false`, matching a `#[xml(present)]`
+/// field's own "absent means false" XML shape.
+fn onoff_or_false(key: &str, val: Option<String>) -> Result<bool, String> {
+    match required_value(key, val)? {
+        Some(v) => parse_onoff(key, &v),
+        None => Ok(false),
+    }
+}
+
+/// Which `#[xml(present)]` field upstream's `perms` value maps onto.
+enum PermsFlag {
+    ReadOnly,
+    Shareable,
+}
+
+/// Upstream's `convert_perms`: `ro`→readonly, `sh`→shareable, `rw`→no-op
+/// (`rw` is the default, nothing to set), anything else the exact same
+/// `fail()` text upstream uses. `None` (an empty/absent `perms=`) is
+/// also a no-op — upstream's own call site only invokes `convert_perms`
+/// at all when the optstring actually named `perms`.
+fn perms_flags(val: Option<String>) -> Result<Option<PermsFlag>, String> {
+    let Some(v) = required_value("perms", val)? else {
+        return Ok(None);
+    };
+    match v.as_str() {
+        "ro" => Ok(Some(PermsFlag::ReadOnly)),
+        "sh" => Ok(Some(PermsFlag::Shareable)),
+        "rw" => Ok(None),
+        other => Err(format!("Unknown 'perms' value '{other}'")),
+    }
+}
+
+/// [`apply_watchdog_optstr`]'s disk counterpart — same shape, extended
+/// with [`apply_nested_attr`] for the `source`/`target`/`driver`
+/// sub-elements and [`apply_present_bool`] for the three
+/// existence-is-the-boolean fields. Unlike [`disk_from_optstr`], no
+/// `type`/`device` defaulting — editing an existing disk must never
+/// invent attributes the optstring didn't name, same "leave everything
+/// else alone" rule every `apply_*_optstr` follows.
+pub fn apply_disk_optstr(doc: &mut Document, el: Element, optstr: &str) -> Result<(), String> {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, &["path"]);
+
+    for (cliname, val) in tuples {
+        match cliname.as_str() {
+            "path" => apply_nested_attr(doc, el, "source", "file", required_value(&cliname, val)?),
+            "device" => match required_value(&cliname, val)? {
+                Some(v) => el.set_attribute(doc, "device", v),
                 None => {
-                    resolve_or_create_path(doc, el, &["cid"])
-                        .mut_attributes(doc)
-                        .remove("auto");
+                    el.mut_attributes(doc).remove("device");
                 }
             },
-            "cid.address" => match required_value(&cliname, val)? {
-                Some(v) => {
-                    parse_int("cid.address", &v)?;
-                    resolve_or_create_path(doc, el, &["cid"]).set_attribute(doc, "address", v);
-                }
+            "type" => match required_value(&cliname, val)? {
+                Some(v) => el.set_attribute(doc, "type", v),
                 None => {
-                    resolve_or_create_path(doc, el, &["cid"])
-                        .mut_attributes(doc)
-                        .remove("address");
+                    el.mut_attributes(doc).remove("type");
                 }
+            },
+            "bus" | "target.bus" => {
+                apply_nested_attr(doc, el, "target", "bus", required_value(&cliname, val)?)
+            }
+            "target" | "target.dev" => {
+                apply_nested_attr(doc, el, "target", "dev", required_value(&cliname, val)?)
+            }
+            "driver.name" => {
+                apply_nested_attr(doc, el, "driver", "name", required_value(&cliname, val)?)
+            }
+            "driver.type" => {
+                apply_nested_attr(doc, el, "driver", "type", required_value(&cliname, val)?)
+            }
+            "readonly" => apply_present_bool(doc, el, "readonly", onoff_or_false("readonly", val)?),
+            "shareable" => {
+                apply_present_bool(doc, el, "shareable", onoff_or_false("shareable", val)?)
+            }
+            "transient" => {
+                apply_present_bool(doc, el, "transient", onoff_or_false("transient", val)?)
+            }
+            "perms" => match perms_flags(val)? {
+                Some(PermsFlag::ReadOnly) => apply_present_bool(doc, el, "readonly", true),
+                Some(PermsFlag::Shareable) => apply_present_bool(doc, el, "shareable", true),
+                None => {}
             },
             _ => {}
         }
@@ -981,6 +1203,26 @@ mod tests {
         assert_eq!(el.attribute(&doc, "model"), Some("virtio"));
     }
 
+    /// Pins [`apply_nested_attr`]'s clear-doesn't-create fix: clearing
+    /// `cid.address` on a vsock with no `<cid>` at all yet must not
+    /// spuriously create an empty one.
+    #[test]
+    fn apply_vsock_optstr_clearing_an_absent_nested_attr_creates_nothing() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <vsock model="virtio"/>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "vsock", "1").unwrap()[0];
+
+        apply_vsock_optstr(&mut doc, el, "cid.address=").unwrap();
+
+        assert!(el.find(&doc, "cid").is_none(), "no <cid> should exist");
+    }
+
     /// Pins the fix for a real divergence ultrareview caught, now under
     /// `is_onoff`'s real (wider) vocabulary: [`vsock_from_optstr`] and
     /// [`apply_vsock_optstr`] must agree on non-canonical-but-valid
@@ -1144,6 +1386,246 @@ mod tests {
         assert!(
             select_elements(&doc, root, "vsock", "all").is_err(),
             "the vsock is actually gone from the persistent config"
+        );
+    }
+
+    #[test]
+    fn disk_from_optstr_handles_the_positional_path_form() {
+        let dev = disk_from_optstr("/var/lib/libvirt/images/foo.qcow2").unwrap();
+        assert_eq!(
+            dev.source_file.as_deref(),
+            Some("/var/lib/libvirt/images/foo.qcow2")
+        );
+        // Defaults fill in even when nothing else was given.
+        assert_eq!(dev.disk_type.as_deref(), Some("file"));
+        assert_eq!(dev.device.as_deref(), Some("disk"));
+    }
+
+    /// Pins the fix for `add-disk-basic`'s exact golden output — `type`
+    /// and `device` are present even though the optstring never named
+    /// them.
+    #[test]
+    fn disk_from_optstr_defaults_type_and_device_when_unset() {
+        let dev = disk_from_optstr("path=/tmp/x,bus=virtio").unwrap();
+        assert_eq!(dev.disk_type.as_deref(), Some("file"));
+        assert_eq!(dev.device.as_deref(), Some("disk"));
+    }
+
+    /// An explicit `type=`/`device=` is never overridden by the default.
+    #[test]
+    fn disk_from_optstr_explicit_type_and_device_are_not_defaulted_over() {
+        let dev = disk_from_optstr("path=/tmp/x,type=block,device=cdrom").unwrap();
+        assert_eq!(dev.disk_type.as_deref(), Some("block"));
+        assert_eq!(dev.device.as_deref(), Some("cdrom"));
+    }
+
+    /// Both the dotted canonical cliname and upstream's registered
+    /// alternate spelling must work — `bus`/`target.bus` and
+    /// `target`/`target.dev` are two different alternate-spelling
+    /// mechanisms upstream uses (`_add_advertised_aliases` vs.
+    /// `cls.aliases`) with the exact same practical effect.
+    #[test]
+    fn disk_from_optstr_accepts_both_spellings_of_bus_and_target() {
+        let short = disk_from_optstr("path=/tmp/x,bus=virtio,target=vda").unwrap();
+        let long = disk_from_optstr("path=/tmp/x,target.bus=virtio,target.dev=vda").unwrap();
+        assert_eq!(short.target_bus, long.target_bus);
+        assert_eq!(short.target_dev, long.target_dev);
+        assert_eq!(short.target_bus.as_deref(), Some("virtio"));
+        assert_eq!(short.target_dev.as_deref(), Some("vda"));
+    }
+
+    #[test]
+    fn disk_from_optstr_maps_driver_fields() {
+        let dev = disk_from_optstr("path=/tmp/x,driver.name=qemu,driver.type=qcow2").unwrap();
+        assert_eq!(dev.driver_name.as_deref(), Some("qemu"));
+        assert_eq!(dev.driver_type.as_deref(), Some("qcow2"));
+    }
+
+    #[test]
+    fn disk_from_optstr_readonly_shareable_transient_are_onoff() {
+        let dev = disk_from_optstr("path=/tmp/x,readonly=on,shareable=yes,transient=1").unwrap();
+        assert!(dev.read_only);
+        assert!(dev.shareable);
+        assert!(dev.transient);
+
+        let dev = disk_from_optstr("path=/tmp/x").unwrap();
+        assert!(!dev.read_only);
+        assert!(!dev.shareable);
+        assert!(!dev.transient);
+    }
+
+    /// Upstream's `convert_perms` exactly: `ro`→readonly, `sh`→shareable,
+    /// `rw`→no-op (the default, nothing to set).
+    #[test]
+    fn disk_from_optstr_perms_maps_to_readonly_or_shareable() {
+        assert!(disk_from_optstr("path=/tmp/x,perms=ro").unwrap().read_only);
+        assert!(disk_from_optstr("path=/tmp/x,perms=sh").unwrap().shareable);
+        let rw = disk_from_optstr("path=/tmp/x,perms=rw").unwrap();
+        assert!(!rw.read_only && !rw.shareable);
+    }
+
+    #[test]
+    fn disk_from_optstr_perms_rejects_garbage() {
+        assert!(disk_from_optstr("path=/tmp/x,perms=bogus").is_err());
+    }
+
+    /// Golden fixture, adapted from upstream's own
+    /// `tests/data/cli/compare/virt-xml-add-disk-basic.xml`
+    /// (`~/DEV/virt-manager-upstream-reference`): `--add-device --disk
+    /// /pool-dir/testvol1.img,bus=virtio,target=vdf` must produce
+    /// `<disk type="file" device="disk"><source
+    /// file="/pool-dir/testvol1.img"/><target dev="vdf"
+    /// bus="virtio"/></disk>` — `type`/`device` present despite neither
+    /// being in the optstring.
+    #[test]
+    fn golden_add_disk_basic() {
+        let dev = disk_from_optstr("/pool-dir/testvol1.img,bus=virtio,target=vdf").unwrap();
+        let xml = virtinst_xml::to_xml_string(&dev).unwrap();
+        assert!(xml.starts_with("<disk "));
+        assert!(xml.contains(r#"type="file""#));
+        assert!(xml.contains(r#"device="disk""#));
+        assert!(xml.contains(r#"<source file="/pool-dir/testvol1.img"/>"#));
+        assert!(
+            xml.contains(r#"<target dev="vdf" bus="virtio"/>"#) || {
+                // attribute order on <target> isn't guaranteed (see
+                // watchdog_build_xml_output_matches_expected_shape's doc
+                // comment) — check both orders rather than pin one.
+                xml.contains(r#"<target bus="virtio" dev="vdf"/>"#)
+            }
+        );
+    }
+
+    const DISK_FIXTURE: &str = r#"<domain>
+  <devices>
+    <disk type="file" device="disk">
+      <driver name="qemu" type="qcow2"/>
+      <source file="/tmp/existing.qcow2"/>
+      <target dev="vda" bus="virtio"/>
+    </disk>
+  </devices>
+</domain>"#;
+
+    #[test]
+    fn apply_disk_optstr_mutates_only_the_named_nested_attribute() {
+        let mut doc = parse_fixture(DISK_FIXTURE);
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "disk", "1").unwrap()[0];
+
+        apply_disk_optstr(&mut doc, el, "target.bus=sata").unwrap();
+
+        let target = el.find(&doc, "target").unwrap();
+        assert_eq!(target.attribute(&doc, "bus"), Some("sata"));
+        // Untouched sibling attribute on the same nested element.
+        assert_eq!(target.attribute(&doc, "dev"), Some("vda"));
+        // Untouched sibling nested element.
+        let source = el.find(&doc, "source").unwrap();
+        assert_eq!(source.attribute(&doc, "file"), Some("/tmp/existing.qcow2"));
+    }
+
+    #[test]
+    fn apply_disk_optstr_clearing_path_removes_the_attribute_not_sets_empty() {
+        let mut doc = parse_fixture(DISK_FIXTURE);
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "disk", "1").unwrap()[0];
+
+        apply_disk_optstr(&mut doc, el, "path=").unwrap();
+
+        let source = el.find(&doc, "source").unwrap();
+        assert_eq!(source.attribute(&doc, "file"), None);
+    }
+
+    #[test]
+    fn apply_disk_optstr_readonly_toggles_the_present_child_element() {
+        let mut doc = parse_fixture(DISK_FIXTURE);
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "disk", "1").unwrap()[0];
+        assert!(el.find(&doc, "readonly").is_none());
+
+        apply_disk_optstr(&mut doc, el, "readonly=on").unwrap();
+        assert!(el.find(&doc, "readonly").is_some());
+
+        apply_disk_optstr(&mut doc, el, "readonly=off").unwrap();
+        assert!(el.find(&doc, "readonly").is_none());
+    }
+
+    #[test]
+    fn apply_disk_optstr_perms_ro_sets_readonly_present_element() {
+        let mut doc = parse_fixture(DISK_FIXTURE);
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "disk", "1").unwrap()[0];
+
+        apply_disk_optstr(&mut doc, el, "perms=ro").unwrap();
+
+        assert!(el.find(&doc, "readonly").is_some());
+        assert!(el.find(&doc, "shareable").is_none());
+    }
+
+    /// Real end-to-end proof mirroring `add_then_remove_vsock_against_a_
+    /// real_domain`, for disk instead of vsock — the device with the
+    /// most nested elements of the three this crate models. Unlike
+    /// watchdog/vsock, `test:///default`'s own "test" domain ships with
+    /// a disk of its own already (confirmed directly: `virsh -c
+    /// test:///default dumpxml test` has one `<disk>` before this test
+    /// ever runs) — so this checks the *count increased by exactly one*
+    /// and identifies the added disk by its distinctive `target
+    /// dev="vdz"` (removing by index "1" would risk removing the
+    /// pre-existing disk instead of the one this test added; "-1"
+    /// targets whichever one `list_add` most recently appended).
+    #[test]
+    fn add_then_remove_disk_against_a_real_domain() {
+        use virtinst_core::connection::{Connection, Domain};
+
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        let domain = Domain::lookup_by_name(&conn, "test").expect("the default test domain");
+
+        let before_xml = domain.inactive_xml().expect("fetch inactive XML");
+        let before_doc = virtinst_xml::parse_libvirt_xml(&before_xml).expect("re-parses");
+        let before_root = before_doc.root_element().unwrap();
+        let baseline = select_elements(&before_doc, before_root, "disk", "all")
+            .map(|els| els.len())
+            .unwrap_or(0);
+
+        let dev = disk_from_optstr("/tmp/harness-disk.qcow2,bus=virtio,target=vdz").unwrap();
+        domain
+            .add_device(&conn, &dev)
+            .expect("add-device's exact call chain succeeds");
+
+        let after_add = domain.inactive_xml().expect("fetch inactive XML");
+        let doc = virtinst_xml::parse_libvirt_xml(&after_add).expect("re-parses");
+        let root = doc.root_element().unwrap();
+        let disks = select_elements(&doc, root, "disk", "all").unwrap();
+        assert_eq!(
+            disks.len(),
+            baseline + 1,
+            "exactly one disk was added on top of whatever was already there"
+        );
+        let newest = select_elements(&doc, root, "disk", "-1").unwrap();
+        assert_eq!(
+            newest[0]
+                .find(&doc, "target")
+                .unwrap()
+                .attribute(&doc, "dev"),
+            Some("vdz"),
+            "the last disk is the one this test added"
+        );
+
+        domain
+            .edit_inactive_xml(&conn, |doc, root| {
+                remove_elements(doc, root, "disk", "-1")?;
+                Ok(())
+            })
+            .expect("remove-device's exact call chain succeeds");
+
+        let after_remove = domain.inactive_xml().expect("fetch inactive XML");
+        let doc = virtinst_xml::parse_libvirt_xml(&after_remove).expect("re-parses");
+        let root = doc.root_element().unwrap();
+        let remaining = select_elements(&doc, root, "disk", "all")
+            .map(|els| els.len())
+            .unwrap_or(0);
+        assert_eq!(
+            remaining, baseline,
+            "back to whatever disk count was there before this test"
         );
     }
 }

@@ -13,11 +13,14 @@
 //! `virtinst-cli` for where that was found.
 //!
 //! This slice covers `--build-xml`/`--edit`/`--add-device`/
-//! `--remove-device`, for `--watchdog`/`--vsock` — see `virtinst_cli`'s
-//! doc comment for why those two devices specifically, and why their
-//! optstring mapping is still hand-written rather than shared. Only the
-//! flags this slice actually implements are declared; an unimplemented
-//! flag that parses is worse than an absent one.
+//! `--remove-device`, for `--watchdog`/`--vsock`/`--disk` — see
+//! `virtinst_cli`'s doc comment for why those devices specifically
+//! (`--disk` is upstream's largest and most irregular parser; only a
+//! partial slice of it is ported — see `disk_from_optstr`'s own doc
+//! comment for exactly which fields), and why their optstring mapping
+//! is still hand-written rather than shared. Only the flags this slice
+//! actually implements are declared; an unimplemented flag that parses
+//! is worse than an absent one.
 //!
 //! `--add-device`/`--edit`'s output contract is also deliberately
 //! narrower than upstream for now: absent `--print-xml`, this always
@@ -49,8 +52,8 @@
 
 use clap::Parser;
 use virtinst_cli::{
-    apply_vsock_optstr, apply_watchdog_optstr, remove_elements, select_elements, vsock_from_optstr,
-    watchdog_from_optstr,
+    apply_disk_optstr, apply_vsock_optstr, apply_watchdog_optstr, disk_from_optstr,
+    remove_elements, select_elements, vsock_from_optstr, watchdog_from_optstr,
 };
 use virtinst_core::connection::{Connection, Domain};
 use virtinst_xml::{list_add, parse_libvirt_xml, to_xml_string, Document, Element};
@@ -83,11 +86,11 @@ struct Args {
     #[arg(long)]
     print_xml: bool,
 
-    /// Add the device described by --watchdog/--vsock.
+    /// Add the device described by --watchdog/--vsock/--disk.
     #[arg(long)]
     add_device: bool,
 
-    /// Remove the device(s) --watchdog/--vsock selects (index/`-N`/`all`,
+    /// Remove the device(s) --watchdog/--vsock/--disk selects (index/`-N`/`all`,
     /// same selector syntax as --edit).
     #[arg(long)]
     remove_device: bool,
@@ -103,6 +106,14 @@ struct Args {
     /// --remove-device (e.g. "1", "all").
     #[arg(long)]
     vsock: Option<String>,
+
+    /// Disk device options for --build-xml/--edit/--add-device (e.g.
+    /// "/path/to/img,bus=virtio,readonly=on"), or the selector for
+    /// --remove-device (e.g. "1", "all"). Partial slice of upstream's
+    /// real --disk — see disk_from_optstr's doc comment for exactly
+    /// which fields.
+    #[arg(long)]
+    disk: Option<String>,
 }
 
 fn main() {
@@ -132,10 +143,10 @@ fn main() {
 }
 
 /// Every action below needs exactly one device flag; this picks whichever
-/// of `--watchdog`/`--vsock` was given (fixed priority, not argv order —
-/// `--watchdog` wins if both were) and exits with the "nothing
-/// implemented for this action" message the caller supplies if neither
-/// was.
+/// of `--watchdog`/`--vsock`/`--disk` was given (fixed priority, not
+/// argv order — `--watchdog` wins if more than one were) and exits with
+/// the "nothing implemented for this action" message the caller
+/// supplies if none was.
 fn device_optstr<'a>(args: &'a Args, action: &str) -> (&'static str, &'a str) {
     if let Some(optstr) = &args.watchdog {
         return ("watchdog", optstr);
@@ -143,7 +154,12 @@ fn device_optstr<'a>(args: &'a Args, action: &str) -> (&'static str, &'a str) {
     if let Some(optstr) = &args.vsock {
         return ("vsock", optstr);
     }
-    eprintln!("virt-xml {action}: no device option given (--watchdog/--vsock implemented so far)");
+    if let Some(optstr) = &args.disk {
+        return ("disk", optstr);
+    }
+    eprintln!(
+        "virt-xml {action}: no device option given (--watchdog/--vsock/--disk implemented so far)"
+    );
     std::process::exit(1);
 }
 
@@ -180,6 +196,10 @@ fn run_build_xml(args: &Args) {
         "vsock" => {
             let dev = vsock_from_optstr(optstr).unwrap_or_else(exit_on_err);
             to_xml_string(&dev).expect("a freshly built DeviceVsock always serializes")
+        }
+        "disk" => {
+            let dev = disk_from_optstr(optstr).unwrap_or_else(exit_on_err);
+            to_xml_string(&dev).expect("a freshly built DeviceDisk always serializes")
         }
         _ => unreachable!(),
     };
@@ -269,6 +289,10 @@ fn run_print_xml_add_device(args: &Args, device: &str, optstr: &str) {
             let dev = vsock_from_optstr(optstr).unwrap_or_else(exit_on_err);
             list_add(&mut doc, root, &["devices"], &dev);
         }
+        "disk" => {
+            let dev = disk_from_optstr(optstr).unwrap_or_else(exit_on_err);
+            list_add(&mut doc, root, &["devices"], &dev);
+        }
         _ => unreachable!(),
     }
     print_doc(&doc);
@@ -305,6 +329,7 @@ fn apply_edit(
         match device {
             "watchdog" => apply_watchdog_optstr(doc, el, optstr)?,
             "vsock" => apply_vsock_optstr(doc, el, optstr)?,
+            "disk" => apply_disk_optstr(doc, el, optstr)?,
             _ => unreachable!(),
         }
     }
@@ -329,6 +354,7 @@ fn run_add_device(args: &Args) {
             &conn,
             &vsock_from_optstr(optstr).unwrap_or_else(exit_on_err),
         ),
+        "disk" => domain.add_device(&conn, &disk_from_optstr(optstr).unwrap_or_else(exit_on_err)),
         _ => unreachable!(),
     };
     report(&domain_name, result);

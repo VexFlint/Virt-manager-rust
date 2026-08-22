@@ -7,14 +7,18 @@
 # the result against upstream's tests/data/cli/compare/*.xml fixtures —
 # not the compare files themselves (those are unified diffs; matching
 # their exact text isn't the point), but the specific attribute changes
-# each one documents. Each --edit case below names the upstream compare
-# file it was checked against, so a diff you're chasing can be found
-# directly. upstream's own corpus has no --add-device/--remove-device
-# fixtures for watchdog/vsock at all (checked directly); those four
-# cases are self-verified against the real driver instead — labeled as
-# such at the point they're defined, same rigor as the analogous
-# virtinst-cli/src/lib.rs unit tests, one level up through the real
-# compiled binary instead of virtinst-core's library API directly.
+# each one documents. Each case below either names the upstream compare
+# file it was checked against (so a diff you're chasing can be found
+# directly), or is explicitly labeled self-verified when no real
+# upstream fixture exists for that device+action combination (checked
+# directly against tests/test_cli.py, not assumed) — same rigor as the
+# analogous virtinst-cli/src/lib.rs unit tests, one level up through the
+# real compiled binary instead of virtinst-core's library API directly.
+# --disk's cases are also bounded by disk_from_optstr/apply_disk_optstr
+# being only a partial slice of upstream's real (40+-field) ParserDisk —
+# see that function's own doc comment for exactly which fields, and why
+# a couple of real disk fixtures (edit-simple-disk and its sibling) are
+# out of this slice's reach even though they exist.
 #
 # Why this shape, not a straight upstream-diff-format comparison:
 #   - Most of upstream's corpus depends on a Python-level libvirt.open()
@@ -33,9 +37,10 @@
 #     the inspection happen in the one process invocation that can see
 #     both.
 #   - VIRTINST_TEST_PREDICTABLE=1 is set on every invocation on general
-#     principle (harmless no-op for the watchdog/vsock cases below, which
-#     never touch generate_uuid/generate_mac) — real once a case creates
-#     a fresh device/domain instead of editing an existing one.
+#     principle — harmless no-op for every case below (none of
+#     watchdog/vsock/disk touch generate_uuid/generate_mac; those are
+#     domain- and NIC-level, not per-device), real once a case builds a
+#     fresh domain or NIC instead of editing/adding an existing device.
 #
 # Adding a case: for --edit, copy one of the existing blocks, point it
 # at the real optstring + upstream compare-file name, and list the
@@ -170,6 +175,41 @@ echo "=== remove-device-vsock (self-verified, no upstream fixture for this devic
 echo "  cmd: --remove-device --vsock 1"
 xml="$(run_virt_xml_action --remove-device --vsock 1)"
 check_xpath "$xml" "count(//vsock)" "0" "the only vsock is gone"
+
+# --disk cases. disk_from_optstr/apply_disk_optstr (virtinst-cli/src/
+# lib.rs) are only a partial slice of upstream's real ParserDisk — see
+# that function's own doc comment for exactly which fields. The two
+# upstream fixtures below are within that slice's reach exactly;
+# edit-simple-disk/edit-simple-disk-remove-path aren't (both need
+# block-device source.dev handling this slice doesn't model), so the
+# --edit case here is self-verified instead, like the four cases above.
+
+echo
+echo "=== add-disk-basic ==="
+echo "  upstream: tests/data/cli/compare/virt-xml-add-disk-basic.xml"
+echo "  cmd: --add-device --disk /pool-dir/testvol1.img,bus=virtio,target=vdf"
+xml="$(run_virt_xml_action --add-device --disk /pool-dir/testvol1.img,bus=virtio,target=vdf)"
+check_xpath "$xml" "string(//disk[last()]/@type)" "file" "type defaulted to file"
+check_xpath "$xml" "string(//disk[last()]/@device)" "disk" "device defaulted to disk"
+check_xpath "$xml" "string(//disk[last()]/source/@file)" "/pool-dir/testvol1.img" "source path"
+check_xpath "$xml" "string(//disk[last()]/target/@dev)" "vdf" "target dev"
+check_xpath "$xml" "string(//disk[last()]/target/@bus)" "virtio" "target bus"
+
+echo
+echo "=== remove-disk-index ==="
+echo "  upstream: tests/data/cli/compare/virt-xml-remove-disk-index.xml"
+echo "  cmd: --remove-device --disk 3"
+xml="$(run_virt_xml_action --remove-device --disk 3)"
+check_xpath "$xml" "count(//disk)" "2" "the third disk is gone, two remain"
+check_xpath "$xml" "count(//disk/target[@dev='sda'])" "0" "the removed disk (target sda) is really gone"
+
+echo
+echo "=== edit-disk (self-verified, target real fields need block-device source.dev support) ==="
+echo "  cmd: --edit 1 --disk target.bus=sata"
+xml="$(run_virt_xml --disk target.bus=sata)"
+check_xpath "$xml" "string(//disk[1]/target/@bus)" "sata" "bus changed to sata"
+check_xpath "$xml" "string(//disk[1]/target/@dev)" "fda" "target dev untouched"
+check_xpath "$xml" "string(//disk[1]/@type)" "block" "disk type untouched"
 
 echo
 echo "$pass passed, $fail failed"
