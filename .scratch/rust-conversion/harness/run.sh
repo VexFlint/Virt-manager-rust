@@ -20,6 +20,11 @@
 # a couple of real disk fixtures (edit-simple-disk and its sibling) are
 # out of this slice's reach even though they exist.
 #
+# --memballoon has three real upstream fixtures, all covered, and no
+# add-device case: the real driver rejects a second <memballoon>
+# outright, matching upstream's own compare corpus having no
+# add-memballoon fixture either.
+#
 # Why this shape, not a straight upstream-diff-format comparison:
 #   - Most of upstream's corpus depends on a Python-level libvirt.open()
 #     interception (MagicURI) injecting fake per-arch capabilities XML,
@@ -210,6 +215,35 @@ xml="$(run_virt_xml --disk target.bus=sata)"
 check_xpath "$xml" "string(//disk[1]/target/@bus)" "sata" "bus changed to sata"
 check_xpath "$xml" "string(//disk[1]/target/@dev)" "fda" "target dev untouched"
 check_xpath "$xml" "string(//disk[1]/@type)" "block" "disk type untouched"
+
+# --memballoon cases. Sixth device, small field set (model/autodeflate/
+# stats.period/freePageReporting), three real upstream fixtures — see
+# virtinst-cli/src/lib.rs's memballoon_from_optstr/apply_memballoon_optstr
+# doc comments. No add-device case here: the real driver rejects a
+# second <memballoon> outright ("only a single memory balloon device is
+# supported"), matching upstream's own compare corpus having no
+# add-memballoon fixture at all.
+
+echo
+echo "=== edit-simple-memballoon ==="
+echo "  upstream: tests/data/cli/compare/virt-xml-edit-simple-memballoon.xml"
+echo "  cmd: --memballoon model=none"
+xml="$(run_virt_xml --memballoon model=none)"
+check_xpath "$xml" "string(//memballoon/@model)" "none" "model changed to none"
+
+echo
+echo "=== edit-disable-memballoon ==="
+echo "  upstream: tests/data/cli/compare/virt-xml-edit-disable-memballoon.xml"
+echo "  cmd: --memballoon none (positional shorthand, same result as above)"
+xml="$(run_virt_xml --memballoon none)"
+check_xpath "$xml" "string(//memballoon/@model)" "none" "model changed to none via positional form"
+
+echo
+echo "=== remove-memballoon ==="
+echo "  upstream: tests/data/cli/compare/virt-xml-remove-memballoon.xml"
+echo "  cmd: --remove-device --memballoon all"
+xml="$(run_virt_xml_action --remove-device --memballoon all)"
+check_xpath "$xml" "count(//memballoon)" "0" "the only memballoon is gone"
 
 echo
 echo "$pass passed, $fail failed"

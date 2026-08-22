@@ -152,6 +152,18 @@ handling this slice doesn't model, so they're out of reach for now,
 correctly labeled as such in the harness rather than faked with a
 different optstring.
 
+Extended again to 28 checks / 12 cases: `--memballoon` (sixth device,
+small field set — `model`/`autodeflate`/`stats.period`/
+`freePageReporting`) has all three of its real upstream fixtures
+covered exactly (`edit-simple-memballoon`, `edit-disable-memballoon`,
+`remove-memballoon`) — no self-verified case needed this time, unlike
+watchdog/vsock/disk. No add-device case either: found empirically
+while writing the real-domain test in `virtinst-cli` that the real
+`test://` driver rejects a second `<memballoon>` outright ("only a
+single memory balloon device is supported") — matches upstream's own
+compare corpus, which has no `add-memballoon` fixture either. A real
+hardware constraint, not a gap.
+
 **Not yet done**: growing case/device coverage further (blocked on more
 devices having a `{device}_from_optstr`/`apply_{device}_optstr` pair at
 all, not on the harness itself — and for `--disk` specifically, on
