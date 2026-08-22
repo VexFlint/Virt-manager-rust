@@ -39,8 +39,8 @@
 //! anything built so far; revisit if a real use needs multiple devices
 //! of the same type added in one call.
 
-use virtinst_core::devices::{DeviceDisk, DeviceVsock, DeviceWatchdog};
-use virtinst_xml::{list_remove, resolve_or_create_path, resolve_path, Document, Element};
+use virtinst_core::devices::{DeviceDisk, DeviceMemballoon, DeviceVsock, DeviceWatchdog};
+use virtinst_xml::{list_remove, resolve_or_create_path, resolve_path, Document, Element, OnOff};
 
 /// Upstream's `parse_optstr_tuples`: split `"model=itco,action=none"`
 /// into an ordered list of `(cliname, value)` tuples — `"model=itco,path=foo,model=bar"`
@@ -418,6 +418,95 @@ pub fn apply_vsock_optstr(doc: &mut Document, el: Element, optstr: &str) -> Resu
                     None => None,
                 };
                 apply_nested_attr(doc, el, "cid", "address", checked);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// `--memballoon` — upstream's real `ParserMemballoon` (`remove_first =
+/// "model"`, same positional shorthand as `--watchdog`/`--vsock`:
+/// `--memballoon none` means `model=none`). `autodeflate` and
+/// `freePageReporting` are both `is_onoff=True` ([`parse_onoff`]) *and*
+/// land on `Option<OnOff>` self-attributes (`DeviceMemballoon`) — unlike
+/// `--vsock cid.auto`, no CLI-vocabulary-vs-XML-spelling mismatch to
+/// normalize here, upstream's own XML property is `is_onoff` too, so the
+/// parsed bool goes straight into `OnOff`. `stats.period` is a dotted
+/// nested-element key like `--vsock cid.address`, `is_int=True`
+/// ([`parse_int`]).
+pub fn memballoon_from_optstr(optstr: &str) -> Result<DeviceMemballoon, String> {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, &["model"]);
+
+    let mut dev = DeviceMemballoon::default();
+    for (cliname, val) in tuples {
+        match cliname.as_str() {
+            "model" => dev.model = required_value(&cliname, val)?,
+            "autodeflate" => {
+                dev.autodeflate = match required_value(&cliname, val)? {
+                    Some(v) => Some(OnOff(parse_onoff("autodeflate", &v)?)),
+                    None => None,
+                };
+            }
+            "freePageReporting" => {
+                dev.free_page_reporting = match required_value(&cliname, val)? {
+                    Some(v) => Some(OnOff(parse_onoff("freePageReporting", &v)?)),
+                    None => None,
+                };
+            }
+            "stats.period" => {
+                dev.stats_period = match required_value(&cliname, val)? {
+                    Some(v) => Some(parse_int("stats.period", &v)?),
+                    None => None,
+                };
+            }
+            _ => {}
+        }
+    }
+    Ok(dev)
+}
+
+/// [`apply_watchdog_optstr`]'s memballoon counterpart. `autodeflate`/
+/// `freePageReporting` are self-attributes (unlike `--vsock`'s nested
+/// `cid.*`), so they're set/removed directly on `el` like `--watchdog`'s
+/// `model`/`action` — just through the shared on/off vocabulary first.
+/// `stats.period` still reaches through to a nested `<stats>` child via
+/// [`apply_nested_attr`], same shape as `cid.address`.
+pub fn apply_memballoon_optstr(
+    doc: &mut Document,
+    el: Element,
+    optstr: &str,
+) -> Result<(), String> {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, &["model"]);
+
+    for (cliname, val) in tuples {
+        match cliname.as_str() {
+            "model" => match required_value(&cliname, val)? {
+                Some(v) => el.set_attribute(doc, "model", v),
+                None => {
+                    el.mut_attributes(doc).remove("model");
+                }
+            },
+            "autodeflate" | "freePageReporting" => match required_value(&cliname, val)? {
+                Some(v) => {
+                    let on = parse_onoff(&cliname, &v)?;
+                    el.set_attribute(doc, cliname, if on { "on" } else { "off" });
+                }
+                None => {
+                    el.mut_attributes(doc).remove(&cliname);
+                }
+            },
+            "stats.period" => {
+                let checked = match required_value(&cliname, val)? {
+                    Some(v) => {
+                        parse_int("stats.period", &v)?;
+                        Some(v)
+                    }
+                    None => None,
+                };
+                apply_nested_attr(doc, el, "stats", "period", checked);
             }
             _ => {}
         }
@@ -1386,6 +1475,157 @@ mod tests {
         assert!(
             select_elements(&doc, root, "vsock", "all").is_err(),
             "the vsock is actually gone from the persistent config"
+        );
+    }
+
+    /// `remove_first = "model"` — `--memballoon none` means `model=none`,
+    /// same positional shorthand as `--watchdog`/`--vsock`.
+    #[test]
+    fn memballoon_from_optstr_handles_the_positional_form() {
+        let dev = memballoon_from_optstr("none").unwrap();
+        assert_eq!(dev.model.as_deref(), Some("none"));
+    }
+
+    #[test]
+    fn memballoon_from_optstr_parses_onoff_and_int_fields() {
+        let dev =
+            memballoon_from_optstr("autodeflate=on,freePageReporting=off,stats.period=10").unwrap();
+        assert_eq!(dev.autodeflate, Some(OnOff(true)));
+        assert_eq!(dev.free_page_reporting, Some(OnOff(false)));
+        assert_eq!(dev.stats_period, Some(10));
+    }
+
+    #[test]
+    fn memballoon_from_optstr_rejects_garbage_onoff() {
+        assert!(memballoon_from_optstr("autodeflate=maybe").is_err());
+    }
+
+    /// A bare key `splice_remove_first` didn't consume is a hard parse
+    /// error, same rule every other device shares — `default,action`
+    /// has an unconsumed bare `action` after `default` splices into
+    /// `model`.
+    #[test]
+    fn memballoon_from_optstr_rejects_a_second_bare_key() {
+        assert!(memballoon_from_optstr("default,autodeflate").is_err());
+    }
+
+    /// Golden fixture, pinned directly from upstream's own
+    /// `tests/data/cli/compare/virt-xml-edit-simple-memballoon.xml`:
+    /// `virt-xml --edit --memballoon model=none` against
+    /// `<memballoon model="virtio"/>` must produce `<memballoon
+    /// model="none"/>`.
+    #[test]
+    fn golden_edit_simple_memballoon() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <memballoon model="virtio"/>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "memballoon", "1").unwrap()[0];
+
+        apply_memballoon_optstr(&mut doc, el, "model=none").unwrap();
+
+        assert_eq!(el.attribute(&doc, "model"), Some("none"));
+    }
+
+    /// Same golden output, upstream's other route to it:
+    /// `tests/data/cli/compare/virt-xml-edit-disable-memballoon.xml`
+    /// is `virt-xml --edit --memballoon none` — the positional-shorthand
+    /// form (`remove_first = "model"`), not the explicit `model=none`
+    /// `golden_edit_simple_memballoon` already covers. Same underlying
+    /// mutation, different optstring shape reaching it.
+    #[test]
+    fn golden_edit_disable_memballoon() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <memballoon model="virtio"/>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "memballoon", "1").unwrap()[0];
+
+        apply_memballoon_optstr(&mut doc, el, "none").unwrap();
+
+        assert_eq!(el.attribute(&doc, "model"), Some("none"));
+    }
+
+    /// Real end-to-end proof, but shaped differently from every other
+    /// `add_then_remove_*_against_a_real_domain` test: the real `test://`
+    /// driver rejects a second `<memballoon>` outright (`internal error:
+    /// only a single memory balloon device is supported` — libvirt-level
+    /// validation, discovered empirically when this test first tried the
+    /// usual add-a-second/remove-it-by-`-1` shape). That's *why*
+    /// upstream's own compare corpus has no `add-memballoon` fixture at
+    /// all — a real hardware constraint, not a gap in this crate. So
+    /// this instead pins `remove-memballoon`'s actual shape
+    /// (`--remove-device --memballoon all` against a domain that already
+    /// has exactly one) directly against the stock "test" domain's own
+    /// pre-existing memballoon, then restores it afterward so later
+    /// tests sharing this domain still see one — the same "leave the
+    /// shared fixture domain as found" discipline
+    /// `add_then_remove_disk_against_a_real_domain` established via a
+    /// baseline count, here via a full snapshot-and-recreate since
+    /// removal must actually go to zero to match the fixture.
+    #[test]
+    fn remove_then_restore_memballoon_against_a_real_domain() {
+        use virtinst_core::connection::{Connection, Domain};
+
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        let domain = Domain::lookup_by_name(&conn, "test").expect("the default test domain");
+
+        let before_xml = domain.inactive_xml().expect("fetch inactive XML");
+        let before_doc = virtinst_xml::parse_libvirt_xml(&before_xml).expect("re-parses");
+        let before_root = before_doc.root_element().unwrap();
+        let existing = select_elements(&before_doc, before_root, "memballoon", "all")
+            .expect("the stock test domain ships with a memballoon");
+        assert_eq!(
+            existing.len(),
+            1,
+            "exactly one, matching the fixture's starting state"
+        );
+        let original_model = existing[0]
+            .attribute(&before_doc, "model")
+            .map(String::from);
+
+        domain
+            .edit_inactive_xml(&conn, |doc, root| {
+                remove_elements(doc, root, "memballoon", "all")?;
+                Ok(())
+            })
+            .expect("remove-device's exact call chain succeeds");
+
+        let after_remove = domain.inactive_xml().expect("fetch inactive XML");
+        let doc = virtinst_xml::parse_libvirt_xml(&after_remove).expect("re-parses");
+        let root = doc.root_element().unwrap();
+        assert!(
+            select_elements(&doc, root, "memballoon", "all").is_err(),
+            "the memballoon is actually gone, matching remove-memballoon's diff"
+        );
+
+        // Restore, so tests running later against this same shared
+        // domain still find one.
+        let restored = DeviceMemballoon {
+            model: original_model,
+            ..Default::default()
+        };
+        domain
+            .add_device(&conn, &restored)
+            .expect("restoring the pre-existing memballoon succeeds");
+        let after_restore = domain.inactive_xml().expect("fetch inactive XML");
+        let doc = virtinst_xml::parse_libvirt_xml(&after_restore).expect("re-parses");
+        let root = doc.root_element().unwrap();
+        assert_eq!(
+            select_elements(&doc, root, "memballoon", "all")
+                .unwrap()
+                .len(),
+            1,
+            "back to exactly one, as found"
         );
     }
 
