@@ -46,13 +46,14 @@ use super::domain_skeleton::{build_domain_skeleton, push_boot_dev, push_default_
 /// `name`/`memory_kib`/`vcpus` are the wizard's Name/Memory pages'
 /// worth of data — not `InstallMethod`'s job to carry (ticket 08 keeps
 /// them off the enum entirely, see its own doc comment). `domain_type`
-/// (`<domain type=...>`, e.g. `"qemu"`/`"test"`) and `arch`
-/// (`<os><type arch=...>`) come from the connection's own
-/// `DomainCapabilities` (`capabilities::domcaps`) rather than being
-/// guessed — upstream gets both from `guest.set_capabilities_defaults()`,
-/// and hardcoding either would be a real, connection-specific-shaped
-/// divergence (`test:///` defaults to `i686`, a real `qemu:///system`
-/// to `x86_64`).
+/// (`<domain type=...>`, e.g. `"qemu"`/`"test"`), `os_type` (`<os><type>`'s
+/// text content, e.g. `"hvm"`), and `arch` (`<os><type arch=...>`) come
+/// from the connection's own host `capabilities::Capabilities::
+/// guest_lookup` rather than being guessed — upstream gets all three
+/// (plus `loader`/`emulator`/`machine`, not modeled yet) from `guest.
+/// set_capabilities_defaults()`, and hardcoding any of them would be a
+/// real, connection-specific-shaped divergence (`test:///` defaults to
+/// `i686`, a real `qemu:///system` to `x86_64`).
 ///
 /// Always stamps an explicit `<uuid>` (via the same `generate_uuid()`
 /// approach `cloner.rs` uses, matching upstream's own hand-rolled
@@ -71,6 +72,7 @@ pub fn build_import_document(
     vcpus: u32,
     disk_path: &str,
     domain_type: &str,
+    os_type: &str,
     arch: &str,
 ) -> Document {
     let (mut doc, root, os_el) = build_domain_skeleton(
@@ -79,7 +81,7 @@ pub fn build_import_document(
         vcpus,
         &crate::cloner::generate_uuid(),
         domain_type,
-        "hvm",
+        os_type,
         arch,
     );
     push_boot_dev(&mut doc, os_el, "hd");
@@ -131,6 +133,7 @@ mod tests {
             2,
             "/var/lib/libvirt/images/imported.qcow2",
             "qemu",
+            "hvm",
             "x86_64",
         );
         let root = doc.root_element().unwrap();
@@ -199,7 +202,7 @@ mod tests {
         // pins the other branch (`push_default_nic`'s `domain_type ==
         // "qemu"` proxy for `cloner::generate_mac`'s `is_qemu`), so a
         // broken proxy wouldn't go unnoticed.
-        let doc = build_import_document("x", 1048576, 1, "/tmp/x.img", "test", "i686");
+        let doc = build_import_document("x", 1048576, 1, "/tmp/x.img", "test", "hvm", "i686");
         let root = doc.root_element().unwrap();
         let mac = root
             .find(&doc, "devices")
@@ -219,7 +222,7 @@ mod tests {
 
     #[test]
     fn serializes_and_reparses_cleanly() {
-        let doc = build_import_document("x", 1048576, 1, "/tmp/x.img", "test", "i686");
+        let doc = build_import_document("x", 1048576, 1, "/tmp/x.img", "test", "hvm", "i686");
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
         let root = reparsed.root_element().unwrap();
@@ -260,6 +263,7 @@ mod tests {
             1,
             "/guest/import-end-to-end.img",
             &domain_type,
+            "hvm",
             &arch,
         );
         let xml = doc.write_str().expect("serializes");
@@ -292,5 +296,75 @@ mod tests {
         persisted
             .undefine()
             .expect("cleanup: undefine the persistent config");
+    }
+
+    /// Closes the gap an advisor review flagged on ticket 20 piece (b):
+    /// every builder test above pins a literal `"hvm"` for `os_type`, so
+    /// none of them exercise the actual composition `virt-install.rs`
+    /// now runs — `Capabilities::fetch` → `guest_lookup` →
+    /// `capsinfo.os_type` → `build_import_document`. This test runs
+    /// that exact sequence with `VIRTINST_TEST_CAPS_FILE` pointed at a
+    /// fixture whose only guest reports `os_type=xen` (`test:///
+    /// default`'s real capabilities never do — every real capture in
+    /// this crate is `hvm`), so a `"hvm"` showing up in the output could
+    /// only mean the injected value was never actually threaded through
+    /// (e.g. a stray hardcoded literal reintroduced upstream of this
+    /// call, the same class of bug the advisor was checking for).
+    #[test]
+    fn capsinfo_os_type_actually_flows_into_the_built_document() {
+        use crate::capabilities::Capabilities;
+        use crate::connection::Connection;
+        use crate::test_support::TEST_DOMAIN_LOCK;
+
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let fixture = r#"<capabilities>
+  <host><cpu><arch>i686</arch></cpu></host>
+  <guest>
+    <os_type>xen</os_type>
+    <arch name='i686'>
+      <wordsize>32</wordsize>
+      <emulator>/usr/bin/test-hv</emulator>
+      <domain type='test'/>
+    </arch>
+  </guest>
+</capabilities>"#;
+        let fixture_path = std::env::temp_dir().join(format!(
+            "virtinst-core-test-caps-{}.xml",
+            std::process::id()
+        ));
+        std::fs::write(&fixture_path, fixture).expect("writes the fixture");
+        std::env::set_var("VIRTINST_TEST_CAPS_FILE", &fixture_path);
+
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        let host_caps =
+            Capabilities::fetch(&conn).expect("reads the injected fixture, not libvirt");
+        let capsinfo = host_caps
+            .guest_lookup(None, None, None, None)
+            .expect("the fixture's one guest matches");
+
+        std::env::remove_var("VIRTINST_TEST_CAPS_FILE");
+        std::fs::remove_file(&fixture_path).ok();
+
+        assert_eq!(
+            capsinfo.os_type.as_deref(),
+            Some("xen"),
+            "guest_lookup must read the injected fixture, not the real test:/// driver's hvm guest"
+        );
+
+        let doc = build_import_document(
+            "capsinfo-os-type-flow-check",
+            1048576,
+            1,
+            "/guest/whatever.img",
+            &capsinfo.hypervisor_type.unwrap(),
+            &capsinfo.os_type.unwrap(),
+            &capsinfo.arch.unwrap(),
+        );
+        let xml = doc.write_str().expect("serializes");
+        assert!(
+            xml.contains("<type arch=\"i686\">xen</type>"),
+            "the injected os_type must reach <os><type>, not a stray hardcoded \"hvm\": {xml}"
+        );
     }
 }

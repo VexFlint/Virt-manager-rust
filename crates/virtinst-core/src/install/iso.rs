@@ -80,7 +80,7 @@ use super::domain_skeleton::{
     push_virtio_disk,
 };
 
-/// `name`/`memory_kib`/`vcpus`/`domain_type`/`arch` — see
+/// `name`/`memory_kib`/`vcpus`/`domain_type`/`os_type`/`arch` — see
 /// `build_import_document`'s doc comment, identical rationale. `media` is
 /// `InstallMethod::Iso::media`, the path to the ISO/CD image.
 ///
@@ -93,6 +93,7 @@ pub fn build_iso_document(
     vcpus: u32,
     media: &str,
     domain_type: &str,
+    os_type: &str,
     arch: &str,
 ) -> Document {
     let (mut doc, root, os_el) = build_domain_skeleton(
@@ -101,7 +102,7 @@ pub fn build_iso_document(
         vcpus,
         &crate::cloner::generate_uuid(),
         domain_type,
-        "hvm",
+        os_type,
         arch,
     );
     push_boot_dev(&mut doc, os_el, "cdrom");
@@ -133,6 +134,7 @@ pub fn build_iso_document(
 /// `build_domain_skeleton` calls — required for the same reason a single
 /// document always needed one: two libvirt-generated UUIDs would collide
 /// on the second call.
+#[allow(clippy::too_many_arguments)]
 pub fn build_iso_two_phase_documents(
     name: &str,
     memory_kib: u64,
@@ -140,6 +142,7 @@ pub fn build_iso_two_phase_documents(
     media: &str,
     disk_path: &str,
     domain_type: &str,
+    os_type: &str,
     arch: &str,
 ) -> (Document, Document) {
     let uuid = crate::cloner::generate_uuid();
@@ -153,6 +156,7 @@ pub fn build_iso_two_phase_documents(
         vcpus,
         &uuid,
         domain_type,
+        os_type,
         arch,
         "cdrom",
         Some(media),
@@ -166,6 +170,7 @@ pub fn build_iso_two_phase_documents(
         vcpus,
         &uuid,
         domain_type,
+        os_type,
         arch,
         "hd",
         None,
@@ -189,6 +194,7 @@ fn build_iso_phase_document(
     vcpus: u32,
     uuid: &str,
     domain_type: &str,
+    os_type: &str,
     arch: &str,
     boot_dev: &str,
     cdrom_source: Option<&str>,
@@ -197,7 +203,7 @@ fn build_iso_phase_document(
     is_initial: bool,
 ) -> Document {
     let (mut doc, root, os_el) =
-        build_domain_skeleton(name, memory_kib, vcpus, uuid, domain_type, "hvm", arch);
+        build_domain_skeleton(name, memory_kib, vcpus, uuid, domain_type, os_type, arch);
     if is_initial {
         push_on_reboot_destroy(&mut doc, root);
     }
@@ -256,6 +262,7 @@ mod tests {
             2,
             "/var/lib/libvirt/images/rescue.iso",
             "qemu",
+            "hvm",
             "x86_64",
         );
         let root = doc.root_element().unwrap();
@@ -302,7 +309,7 @@ mod tests {
 
     #[test]
     fn serializes_and_reparses_cleanly() {
-        let doc = build_iso_document("x", 1048576, 1, "/tmp/x.iso", "test", "i686");
+        let doc = build_iso_document("x", 1048576, 1, "/tmp/x.iso", "test", "hvm", "i686");
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
         let root = reparsed.root_element().unwrap();
@@ -338,6 +345,7 @@ mod tests {
             1,
             "/guest/livecd-end-to-end.iso",
             &domain_type,
+            "hvm",
             &arch,
         );
         let xml = doc.write_str().expect("serializes");
@@ -375,6 +383,7 @@ mod tests {
             "/var/lib/libvirt/images/install.iso",
             "/var/lib/libvirt/images/disk.qcow2",
             "qemu",
+            "hvm",
             "x86_64",
         );
 
@@ -513,6 +522,7 @@ mod tests {
             "/guest/two-phase-end-to-end.iso",
             "/guest/two-phase-end-to-end.img",
             &domain_type,
+            "hvm",
             &arch,
         );
         let initial_xml = initial.write_str().expect("serializes");

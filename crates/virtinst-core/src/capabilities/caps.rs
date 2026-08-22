@@ -643,4 +643,79 @@ mod tests {
 
         assert!(matches!(result, Err(CapabilitiesError::Io(_))));
     }
+
+    /// A real `virsh -c qemu:///system capabilities` excerpt captured on
+    /// this machine (`virtqemud`, real KVM/x86_64, Skylake host), not
+    /// invented — same posture as `domcaps.rs`'s own `QEMU_DOMCAPS_
+    /// EXCERPT`. Trimmed to a handful of representative `<machine>`
+    /// entries per arch rather than the full ~250-line capture. Every
+    /// previous `guest_lookup` test in this file used `test:///
+    /// default`'s single-domain-per-guest shape; this exercises the
+    /// `kvm > xen > hvf > qemu` priority chain and the two-pass arch
+    /// fallback against real multi-domain, multi-machine data on the
+    /// default `--connect qemu:///system` shape every real user of this
+    /// binary takes.
+    const REAL_QEMU_SYSTEM_CAPS_EXCERPT: &str = r#"<capabilities>
+  <host>
+    <cpu>
+      <arch>x86_64</arch>
+      <model>Skylake-Client-v4</model>
+      <vendor>Intel</vendor>
+    </cpu>
+  </host>
+  <guest>
+    <os_type>hvm</os_type>
+    <arch name='i686'>
+      <wordsize>32</wordsize>
+      <emulator>/usr/bin/qemu-system-i386</emulator>
+      <machine maxCpus='255'>pc-i440fx-11.1</machine>
+      <machine canonical='pc-i440fx-11.1' maxCpus='255'>pc</machine>
+      <machine maxCpus='4096'>pc-q35-11.1</machine>
+      <machine canonical='pc-q35-11.1' maxCpus='4096'>q35</machine>
+      <domain type='qemu'/>
+      <domain type='kvm'/>
+    </arch>
+    <features>
+      <pae/>
+      <nonpae/>
+      <acpi default='on' toggle='yes'/>
+      <apic default='on' toggle='no'/>
+    </features>
+  </guest>
+  <guest>
+    <os_type>hvm</os_type>
+    <arch name='x86_64'>
+      <wordsize>64</wordsize>
+      <emulator>/usr/bin/qemu-system-x86_64</emulator>
+      <machine maxCpus='255'>pc-i440fx-11.1</machine>
+      <machine canonical='pc-i440fx-11.1' maxCpus='255'>pc</machine>
+      <machine maxCpus='4096'>pc-q35-11.1</machine>
+      <machine canonical='pc-q35-11.1' maxCpus='4096'>q35</machine>
+      <domain type='qemu'/>
+      <domain type='kvm'/>
+    </arch>
+    <features>
+      <acpi default='on' toggle='yes'/>
+      <apic default='on' toggle='no'/>
+    </features>
+  </guest>
+</capabilities>"#;
+
+    #[test]
+    fn guest_lookup_on_a_real_qemu_system_capture_prefers_kvm_x86_64() {
+        let caps = Capabilities::parse(REAL_QEMU_SYSTEM_CAPS_EXCERPT).expect("parses");
+        let info = caps
+            .guest_lookup(None, None, None, None)
+            .expect("real host always resolves a default guest");
+        // Host cpu.arch is x86_64, so the arch-fallback's first pass
+        // (host arch, not doc order) must pick the second `<guest>`
+        // over the first, even though both are `os_type=hvm` and the
+        // i686 guest comes first in the document.
+        assert_eq!(info.arch.as_deref(), Some("x86_64"));
+        assert_eq!(info.os_type.as_deref(), Some("hvm"));
+        // kvm beats qemu per the priority chain, even though qemu is
+        // listed first in the document.
+        assert_eq!(info.hypervisor_type.as_deref(), Some("kvm"));
+        assert!(info.machines.iter().any(|m| m == "q35"));
+    }
 }

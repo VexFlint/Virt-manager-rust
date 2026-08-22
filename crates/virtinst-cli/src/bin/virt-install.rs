@@ -53,7 +53,7 @@
 //! side (nothing produced a document *pair* sharing a UUID).
 
 use clap::Parser;
-use virtinst_core::capabilities::DomainCapabilities;
+use virtinst_core::capabilities::Capabilities;
 use virtinst_core::connection::{Connection, Domain};
 use virtinst_core::install::{
     build_container_os_document, build_import_document, build_iso_document,
@@ -151,21 +151,64 @@ fn main() {
         std::process::exit(1);
     });
 
-    // Upstream's `guest.set_capabilities_defaults()` — the connection's
-    // own default domain type/arch, not guessed (`test:///`'s is
-    // `i686`, a real `qemu:///system`'s is `x86_64`).
-    let caps = DomainCapabilities::fetch(&conn, None, None, None, None).unwrap_or_else(|e| {
-        eprintln!("virt-install: failed to fetch domain capabilities: {e}");
+    // Upstream's `guest.set_capabilities_defaults()`, via `conn.caps.
+    // guest_lookup()` — ticket 20's real hypervisor-type/arch/os_type
+    // selection algorithm (`capabilities.py`'s `_guestForOSType`/
+    // `_bestDomainType` priority chain: `kvm > xen > hvf > qemu`), not
+    // `getDomainCapabilities(None,None,None,None)`'s incidental
+    // default-param behavior — the two happened to agree for every
+    // fixture this crate's tests currently exercise (confirmed directly:
+    // `test:///default`'s own capture resolves to `hypervisor_type=
+    // "test"`, `arch="i686"` either way), but only `guest_lookup` is the
+    // real algorithm. No `--arch`/`--os-variant`/`--virt-type`/
+    // `--machine` CLI surface exists yet to override
+    // os_type/arch/type/machine, so every argument below is `None` —
+    // same shape as upstream's own no-flags-given case (a freshly
+    // constructed `Guest` starts with all four unset).
+    //
+    // `DomainCapabilities` itself isn't fetched here at all anymore:
+    // this binary's only past use of it was `.domain`/`.arch`, both now
+    // sourced from `capsinfo` instead. Upstream still fetches domcaps
+    // separately (`DomainCapabilities.build_from_guest`, keyed off the
+    // now-resolved emulator/arch/machine/type) for UEFI firmware lookup
+    // and device-support queries — real future work once this crate
+    // ports either, not dropped by oversight.
+    let host_caps = Capabilities::fetch(&conn).unwrap_or_else(|e| {
+        eprintln!("virt-install: failed to fetch host capabilities: {e}");
         std::process::exit(1);
     });
-    let domain_type = caps.domain.unwrap_or_else(|| {
+    let capsinfo = host_caps
+        .guest_lookup(None, None, None, None)
+        .unwrap_or_else(|e| {
+            eprintln!("virt-install: {e}");
+            std::process::exit(1);
+        });
+    let domain_type = capsinfo.hypervisor_type.unwrap_or_else(|| {
         eprintln!("virt-install: connection didn't report a default domain type");
         std::process::exit(1);
     });
-    let arch = caps.arch.unwrap_or_else(|| {
+    let arch = capsinfo.arch.unwrap_or_else(|| {
         eprintln!("virt-install: connection didn't report a default architecture");
         std::process::exit(1);
     });
+    // `set_capabilities_defaults`: `self.os.os_type = capsinfo.os_type`
+    // — threaded into every install method below except `--container`,
+    // which hardcodes `"exe"` itself (`build_container_os_document`'s
+    // own doc comment: `DomainOs.is_container()`'s own check, not
+    // something `guest_lookup` would report — no driver reachable from
+    // this crate advertises an `exe` guest type in its host capabilities
+    // XML, so filtering on it here would just fail the lookup). Resolved
+    // lazily, not eagerly: `<guest><os_type>` is a required element in
+    // every real driver's capabilities XML, so this can't actually fail
+    // in practice, but `--container` never touches the value at all —
+    // no reason to make that path's success depend on a field it
+    // doesn't use.
+    let require_os_type = || -> String {
+        capsinfo.os_type.clone().unwrap_or_else(|| {
+            eprintln!("virt-install: connection didn't report a default os_type");
+            std::process::exit(1);
+        })
+    };
 
     let memory_kib = args.memory.checked_mul(1024).unwrap_or_else(|| {
         eprintln!("virt-install: --memory {} MiB overflows", args.memory);
@@ -194,6 +237,7 @@ fn main() {
             args.vcpus,
             &disk,
             &domain_type,
+            &require_os_type(),
             &arch,
         ));
         (xml.clone(), xml)
@@ -205,6 +249,7 @@ fn main() {
                 args.vcpus,
                 &media,
                 &domain_type,
+                &require_os_type(),
                 &arch,
             ));
             (xml.clone(), xml)
@@ -220,6 +265,7 @@ fn main() {
                 &media,
                 &disk,
                 &domain_type,
+                &require_os_type(),
                 &arch,
             );
             (write(initial), write(final_doc))
@@ -232,6 +278,7 @@ fn main() {
             "network",
             args.disk.as_deref(),
             &domain_type,
+            &require_os_type(),
             &arch,
         );
         (write(initial), write(final_doc))
@@ -243,6 +290,7 @@ fn main() {
             &boot_dev,
             args.disk.as_deref(),
             &domain_type,
+            &require_os_type(),
             &arch,
         ));
         (xml.clone(), xml)

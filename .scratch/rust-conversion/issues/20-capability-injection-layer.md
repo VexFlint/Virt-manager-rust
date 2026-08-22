@@ -223,3 +223,124 @@ CPU/clock/PM/9-file driver-family defaulting beyond that, is the
 separate, larger undertaking this ticket's own "Decision" section
 already named. The injection layer is ready for it; nothing consumes
 it yet.
+
+## (b) started: `guest_lookup` wired into `virt-install`, minimal slice
+
+Traced upstream's real pipeline first (`guest.py`'s `lookup_capsinfo`/
+`set_capabilities_defaults`/`DomainCapabilities.build_from_guest`), not
+assumed: `guest_lookup` runs off *host* `Capabilities`
+(`self.conn.caps.guest_lookup(...)`), not `DomainCapabilities` — the
+crate's own `virt-install.rs` had been calling
+`DomainCapabilities::fetch(&conn, None, None, None, None)` directly and
+reading `.domain`/`.arch` off it, which happened to agree with
+`guest_lookup`'s real algorithm on every fixture this crate's tests
+reach (confirmed directly: `test:///default`'s real capture resolves to
+`hypervisor_type="test"`, `arch="i686"` either way — pinned by
+`caps.rs`'s `guest_lookup_finds_hvm_over_xen_by_default` test using the
+exact same capture `domcaps.rs`'s equivalent test already used), but
+only `guest_lookup` is the actual upstream algorithm rather than
+libvirt's incidental default-param behavior.
+
+**What changed**: `virt-install.rs` now fetches host `Capabilities`,
+calls `guest_lookup(None, None, None, None)` (no `--arch`/`--os-
+variant`/`--virt-type`/`--machine` CLI surface exists yet to override
+any of the four filters, matching upstream's own no-flags-given case —
+a freshly constructed `Guest` starts with all four unset), and reads
+`hypervisor_type`/`arch`/`os_type` off the resulting `CapsInfo` instead
+of `DomainCapabilities`. `os_type` is a new value threaded all the way
+through — `build_import_document`/`build_iso_document`/`build_iso_two_
+phase_documents`/`build_manual_document`/`build_manual_two_phase_
+documents` all gained an `os_type: &str` parameter, replacing each
+one's previously-hardcoded `"hvm"` literal passed to `build_domain_
+skeleton`. `DomainCapabilities::fetch` is no longer called anywhere in
+`virt-install.rs` at all — its only past consumer there was `.domain`/
+`.arch`, both now sourced from `capsinfo`; upstream still fetches
+domcaps separately (`build_from_guest`, keyed off the *resolved*
+emulator/arch/machine/type) for UEFI firmware lookup and device-support
+queries this crate hasn't ported, so this isn't a regression, just an
+honest "no current consumer" the way `domcaps.rs`/`caps.rs` already
+posture other unmodeled fields.
+
+**`--container` deliberately excluded from the `os_type` thread**:
+`build_container_os_document` keeps its own hardcoded `"exe"`, unchanged.
+Traced why before assuming it should also take a resolved `os_type`:
+upstream's `--container` sets `options.os_type = "exe"` *before*
+`lookup_capsinfo` runs, which then calls `guest_lookup(os_type="exe",
+...)` — the filter, not the output. That only works because a real LXC
+connection's host capabilities XML advertises an `exe` guest type; no
+driver reachable from this crate does (confirmed against the real
+`test:///default` capture used throughout this ticket — only `hvm`/
+`xen` guest entries exist), so filtering `guest_lookup` on `"exe"` here
+would just fail the lookup outright. Threading a plain, unfiltered
+`guest_lookup(None,...)` result's `os_type` into the container builder
+instead would be actively wrong (it would silently overwrite `"exe"`
+with whatever `hvm`/`xen` guest_lookup's default path picks) — so this
+one builder correctly stays exactly as it was.
+
+**The existing end-to-end tests only prove half of this — caught by
+advisor review, not assumed adequate.** Every pre-existing install-
+module end-to-end test now passes a literal `"hvm"` for the new
+`os_type` parameter, so they pin the *old* hardcoded value and prove
+nothing about the new `capsinfo.os_type → build_*_document` path
+`virt-install.rs` actually runs. Two gaps that review surfaced, both
+closed rather than left as caveats:
+
+1. **The composition itself was untested.** Added `capsinfo_os_type_
+   actually_flows_into_the_built_document` (`import.rs`) — runs
+   `virt-install.rs`'s exact sequence (`Capabilities::fetch` →
+   `guest_lookup` → `capsinfo.os_type` → `build_import_document`)
+   against `test:///default` with `VIRTINST_TEST_CAPS_FILE` pointed at
+   a fixture whose only guest reports `os_type=xen` (every real capture
+   used elsewhere in this crate is `hvm`, so a `"hvm"` in the output
+   could only mean a stray hardcoded literal survived upstream of the
+   call). Asserts the built document's `<os><type>` text is literally
+   `xen`, not `hvm`.
+2. **Every prior check used `test:///default`'s single-domain-per-guest
+   shape.** `--connect`'s real default is `qemu:///system`, and this
+   machine has a real, live KVM/x86_64 driver with multiple `<domain>`
+   entries and populated machine lists per guest — exactly the shape
+   `best_domain_type`'s `kvm > xen > hvf > qemu` priority chain and the
+   two-pass arch fallback exist to handle, untested until now. A live
+   connection attempt hit this environment's own polkit/DBus flakiness
+   (`qemu:///system` auth timing out non-interactively, unrelated to
+   this crate), so verified instead the same way `domcaps.rs`'s own
+   `QEMU_DOMCAPS_EXCERPT` does: captured `virsh -c qemu:///system
+   capabilities` on this machine (real KVM/Skylake host) and added
+   `guest_lookup_on_a_real_qemu_system_capture_prefers_kvm_x86_64`
+   (`caps.rs`) against a trimmed, real excerpt — confirms `guest_lookup`
+   resolves `kvm`/`hvm`/`x86_64` (not e.g. `qemu` or the wrong arch) on
+   real multi-domain, multi-machine production-shaped data, including
+   the arch-fallback correctly preferring the host's `x86_64` guest
+   over the i686 one that comes first in document order.
+
+The five pre-existing end-to-end tests still pass unchanged too (byte-
+identical prior output, now with an explicit `"hvm"` argument instead
+of a hardcoded literal) — real evidence the refactor didn't disturb
+existing behavior, just not evidence of the new path on its own, which
+is what the two additions above are for.
+
+**Still not done, explicitly out of scope for this slice**: `loader`/
+`emulator`/`machine` are not threaded anywhere — `set_capabilities_
+defaults` only sets them when unset AND (for `emulator`) not xenpv/not
+`vz`, guards this crate has no CLI surface to ever make false, and
+porting `Guest::get_recommended_machine` now would add a function
+verified to return `None` on every arch this crate can currently reach
+(`test:///`'s i686, a real `qemu:///system`'s x86_64 — `_qemu_machine()`
+has no x86 branch at all). CPU/clock/PM defaults and the 9-file
+driver-family device matrix remain entirely unstarted, per this
+ticket's own "Decision" section.
+
+**One more advisor finding, minor but real, also fixed**: `os_type`
+was originally resolved eagerly (unwrap-or-exit) before the install-
+method dispatch, so a missing `os_type` would hard-exit even on the
+`--container` branch, which never uses the value at all
+(`build_container_os_document` hardcodes `"exe"`). Changed to a
+`require_os_type()` closure resolved lazily at each of the five non-
+container call sites instead — `--container` no longer depends on a
+field it doesn't consume. Can't actually fire in practice (`<guest>
+<os_type>` is a required element in every real driver's capabilities
+XML), but there's no reason for that path's success to depend on it.
+
+**Verified**: 99/99 `virtinst-cli`, 136/136 `virtinst-core` (2 new: the
+composition test and the real-qemu-capture test), harness 61/61,
+`cargo fmt`/`clippy` clean workspace-wide.

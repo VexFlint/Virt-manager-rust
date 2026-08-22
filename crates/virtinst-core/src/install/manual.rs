@@ -57,7 +57,7 @@ use super::domain_skeleton::{
     push_virtio_disk,
 };
 
-/// `name`/`memory_kib`/`vcpus`/`domain_type`/`arch` — see
+/// `name`/`memory_kib`/`vcpus`/`domain_type`/`os_type`/`arch` — see
 /// `build_import_document`'s doc comment, identical rationale. `boot_dev`
 /// is libvirt's own `<os><boot dev=...>` string (`"network"`, `"hd"`,
 /// …), passed straight through unvalidated, matching
@@ -84,6 +84,7 @@ use super::domain_skeleton::{
 /// `--import --disk X` are genuinely the same domain, not a bug worth
 /// deduplicating away (the two CLI flags mean different things to a
 /// user even when they land on the same XML).
+#[allow(clippy::too_many_arguments)]
 pub fn build_manual_document(
     name: &str,
     memory_kib: u64,
@@ -91,6 +92,7 @@ pub fn build_manual_document(
     boot_dev: &str,
     disk_path: Option<&str>,
     domain_type: &str,
+    os_type: &str,
     arch: &str,
 ) -> Document {
     build_manual_phase_document(
@@ -99,6 +101,7 @@ pub fn build_manual_document(
         vcpus,
         &crate::cloner::generate_uuid(),
         domain_type,
+        os_type,
         arch,
         boot_dev,
         disk_path,
@@ -116,6 +119,7 @@ pub fn build_manual_document(
 ///
 /// Returns `(initial, final)` — pass `initial`'s XML to `Domain::
 /// create_new` and `final`'s to `Domain::define_new`, in that order.
+#[allow(clippy::too_many_arguments)]
 pub fn build_manual_two_phase_documents(
     name: &str,
     memory_kib: u64,
@@ -123,6 +127,7 @@ pub fn build_manual_two_phase_documents(
     boot_dev: &str,
     disk_path: Option<&str>,
     domain_type: &str,
+    os_type: &str,
     arch: &str,
 ) -> (Document, Document) {
     let uuid = crate::cloner::generate_uuid();
@@ -136,6 +141,7 @@ pub fn build_manual_two_phase_documents(
         vcpus,
         &uuid,
         domain_type,
+        os_type,
         arch,
         boot_dev,
         disk_path,
@@ -153,6 +159,7 @@ pub fn build_manual_two_phase_documents(
         vcpus,
         &uuid,
         domain_type,
+        os_type,
         arch,
         final_boot_dev,
         disk_path,
@@ -180,6 +187,7 @@ fn build_manual_phase_document(
     vcpus: u32,
     uuid: &str,
     domain_type: &str,
+    os_type: &str,
     arch: &str,
     boot_dev: &str,
     disk_path: Option<&str>,
@@ -187,7 +195,7 @@ fn build_manual_phase_document(
     is_initial: bool,
 ) -> Document {
     let (mut doc, root, os_el) =
-        build_domain_skeleton(name, memory_kib, vcpus, uuid, domain_type, "hvm", arch);
+        build_domain_skeleton(name, memory_kib, vcpus, uuid, domain_type, os_type, arch);
     if is_initial {
         push_on_reboot_destroy(&mut doc, root);
     }
@@ -214,7 +222,9 @@ mod tests {
 
     #[test]
     fn no_disk_means_a_single_boot_entry_and_only_the_default_nic() {
-        let doc = build_manual_document("net-only", 1048576, 1, "network", None, "qemu", "x86_64");
+        let doc = build_manual_document(
+            "net-only", 1048576, 1, "network", None, "qemu", "hvm", "x86_64",
+        );
         let root = doc.root_element().unwrap();
 
         assert!(Uuid::parse_str(&root.find(&doc, "uuid").unwrap().text_content(&doc)).is_ok());
@@ -239,6 +249,7 @@ mod tests {
             "network",
             Some("/var/lib/libvirt/images/x.qcow2"),
             "qemu",
+            "hvm",
             "x86_64",
         );
         let root = doc.root_element().unwrap();
@@ -270,6 +281,7 @@ mod tests {
             "hd",
             Some("/tmp/x.img"),
             "test",
+            "hvm",
             "i686",
         );
         let root = doc.root_element().unwrap();
@@ -286,6 +298,7 @@ mod tests {
             "network",
             Some("/tmp/x.img"),
             "test",
+            "hvm",
             "i686",
         );
         let xml = doc.write_str().expect("serializes");
@@ -331,6 +344,7 @@ mod tests {
             "network",
             Some("/guest/manual-end-to-end.img"),
             &domain_type,
+            "hvm",
             &arch,
         );
         let xml = doc.write_str().expect("serializes");
@@ -382,6 +396,7 @@ mod tests {
             "network",
             Some("/var/lib/libvirt/images/disk.qcow2"),
             "qemu",
+            "hvm",
             "x86_64",
         );
 
@@ -463,6 +478,7 @@ mod tests {
             "network",
             None,
             "test",
+            "hvm",
             "i686",
         );
 
@@ -520,6 +536,7 @@ mod tests {
             "network",
             Some("/guest/pxe-two-phase-end-to-end.img"),
             &domain_type,
+            "hvm",
             &arch,
         );
         let initial_xml = initial.write_str().expect("serializes");
