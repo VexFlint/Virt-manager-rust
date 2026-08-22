@@ -378,6 +378,30 @@ check_xpath "$xml" "string(//tpm/backend/@type)" "emulator" "backend type change
 check_xpath "$xml" "string(//tpm/backend/@version)" "2.0" "backend version newly added"
 check_xpath "$xml" "boolean(//tpm/backend/device/@path)" "false" "device path attribute is gone"
 
+# --smartcard / --redirdev cases. Both structs already existed in
+# virtinst-core; this is CLI optstring wiring only — see
+# smartcard_from_optstr/redirdev_from_optstr's own doc comments in
+# virtinst-cli/src/lib.rs.
+
+echo
+echo "=== edit-simple-smartcard ==="
+echo "  upstream: tests/data/cli/compare/virt-xml-edit-simple-smartcard.xml"
+echo "  cmd: --smartcard type=spicevmc"
+xml="$(run_virt_xml --smartcard type=spicevmc)"
+check_xpath "$xml" "string(//smartcard/@mode)" "host" "mode untouched"
+check_xpath "$xml" "string(//smartcard/@type)" "spicevmc" "type newly added"
+
+echo
+echo "=== edit-simple-redirdev ==="
+echo "  upstream: tests/data/cli/compare/virt-xml-edit-simple-redirdev.xml"
+echo "  cmd: --redirdev type=spicevmc,server=example.com:12345"
+xml="$(run_virt_xml --redirdev type=spicevmc,server=example.com:12345)"
+check_xpath "$xml" "string(//redirdev/@bus)" "usb" "bus untouched"
+check_xpath "$xml" "string(//redirdev/@type)" "spicevmc" "type changed"
+check_xpath "$xml" "string(//redirdev/source/@mode)" "connect" "source mode untouched"
+check_xpath "$xml" "string(//redirdev/source/@host)" "example.com" "source host changed"
+check_xpath "$xml" "string(//redirdev/source/@service)" "12345" "source service changed"
+
 echo
 echo "$pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]

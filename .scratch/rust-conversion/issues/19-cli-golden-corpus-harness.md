@@ -202,6 +202,15 @@ project's existing no-pruning stance, now hit on a nested element).
 `apply_nested_attr`'s three-level chain fix in a real upstream-grounded
 case, not just a synthetic regression test.
 
+Extended again to 57 checks / 25 cases: `--smartcard`/`--redirdev`
+(eleventh and twelfth devices, both structs already existed). Two more
+real upstream fixtures covered exactly (`edit-simple-smartcard`,
+`edit-simple-redirdev`). `--redirdev` also surfaced a real libvirt
+constraint while writing its real-domain test: the stock "test" domain
+has USB disabled, so `defineXML` rejects a `redirdev` outright until a
+`<controller type="usb"/>` exists — same class of discovery as
+memballoon's "only one" limit, not a gap in this crate.
+
 **Not yet done**: growing case/device coverage further (blocked on more
 devices having a `{device}_from_optstr`/`apply_{device}_optstr` pair at
 all, not on the harness itself — and for `--disk` specifically, on
