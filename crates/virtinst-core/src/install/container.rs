@@ -83,7 +83,7 @@ pub fn build_container_os_document(
         name,
         memory_kib,
         vcpus,
-        &uuid::Uuid::new_v4().to_string(),
+        &crate::cloner::generate_uuid(),
         domain_type,
         "exe",
         arch,

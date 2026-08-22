@@ -50,7 +50,6 @@
 //! (`virtinstall.py:379`) — unvalidated here, consistent with every
 //! other field in this module.
 
-use uuid::Uuid;
 use virtinst_xml::Document;
 
 use super::domain_skeleton::{
@@ -98,7 +97,7 @@ pub fn build_manual_document(
         name,
         memory_kib,
         vcpus,
-        &Uuid::new_v4().to_string(),
+        &crate::cloner::generate_uuid(),
         domain_type,
         arch,
         boot_dev,
@@ -126,7 +125,7 @@ pub fn build_manual_two_phase_documents(
     domain_type: &str,
     arch: &str,
 ) -> (Document, Document) {
-    let uuid = Uuid::new_v4().to_string();
+    let uuid = crate::cloner::generate_uuid();
     // Same NIC, same MAC in both documents — same reason the UUID is
     // shared, see `push_default_nic`'s doc comment.
     let mac = crate::cloner::generate_mac(domain_type == "qemu");

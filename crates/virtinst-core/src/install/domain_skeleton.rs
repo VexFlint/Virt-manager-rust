@@ -38,11 +38,11 @@ use virtinst_xml::{Document, Element};
 /// then `Domain::define_new`, and for a two-phase install (`Iso { live:
 /// false }`) those two calls need two *different* XML documents that
 /// still describe the same domain, i.e. the same UUID stamped into both.
-/// A single `Uuid::new_v4()` inside this function couldn't do that — the
+/// A single `generate_uuid()` inside this function couldn't do that — the
 /// caller generates one and passes it to both `build_domain_skeleton`
 /// calls (see `iso::build_iso_two_phase_documents`). Callers that only
 /// ever build one document (`import`, `manual`, single-phase `iso`) just
-/// generate one `Uuid::new_v4()` and pass it through same as before.
+/// generate one `generate_uuid()` and pass it through same as before.
 /// Without a fixed UUID at all, each libvirt call invents its own and
 /// the second call fails outright ("domain already exists with uuid
 /// ..." — hit this for real, see `import.rs`'s doc comment).

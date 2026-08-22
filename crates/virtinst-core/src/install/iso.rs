@@ -73,7 +73,6 @@
 //! parameter specifically so the two-phase case can stamp the *same*
 //! UUID into both documents — see its own doc comment.
 
-use uuid::Uuid;
 use virtinst_xml::{Document, Element};
 
 use super::domain_skeleton::{
@@ -100,7 +99,7 @@ pub fn build_iso_document(
         name,
         memory_kib,
         vcpus,
-        &Uuid::new_v4().to_string(),
+        &crate::cloner::generate_uuid(),
         domain_type,
         "hvm",
         arch,
@@ -130,7 +129,7 @@ pub fn build_iso_document(
 /// Returns `(initial, final)` — pass `initial`'s XML to `Domain::
 /// create_new` and `final`'s to `Domain::define_new`, in that order,
 /// matching upstream's `_create_guest`. Both documents share one
-/// `Uuid::new_v4()`, generated once here and threaded through both
+/// `generate_uuid()`, generated once here and threaded through both
 /// `build_domain_skeleton` calls — required for the same reason a single
 /// document always needed one: two libvirt-generated UUIDs would collide
 /// on the second call.
@@ -143,7 +142,7 @@ pub fn build_iso_two_phase_documents(
     domain_type: &str,
     arch: &str,
 ) -> (Document, Document) {
-    let uuid = Uuid::new_v4().to_string();
+    let uuid = crate::cloner::generate_uuid();
     // Same device, same MAC in both documents — same reason the UUID is
     // shared, see `push_default_nic`'s doc comment.
     let mac = crate::cloner::generate_mac(domain_type == "qemu");
@@ -247,6 +246,7 @@ fn push_cdrom_disk(doc: &mut Document, devices_el: Element, media: Option<&str>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
     #[test]
     fn builds_a_livecd_domain_with_no_persistent_disk() {

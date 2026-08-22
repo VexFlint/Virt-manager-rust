@@ -85,6 +85,19 @@ impl From<EditXMLError> for ClonerError {
     }
 }
 
+/// A fresh domain UUID — upstream's `Guest.generate_uuid(conn)`, minus
+/// the `conn`-collision check (nothing here queries an existing
+/// connection for name/UUID clashes yet, same gap `generate_mac`'s own
+/// doc comment already notes for MAC collisions). Centralizes what was
+/// 7 separate inline `Uuid::new_v4().to_string()` call sites across
+/// `cloner.rs` and every `install/*.rs` builder — pure dedup, chosen
+/// now because it's also the one place a future predictable-UUID test
+/// mode (upstream's own `fake_conn_predictable` hack) would need to
+/// hook into, same as `generate_mac` already is for MACs.
+pub fn generate_uuid() -> String {
+    Uuid::new_v4().to_string()
+}
+
 /// A random MAC in libvirt's own format — upstream's
 /// `DeviceInterface.generate_mac`, minus the connection-collision retry
 /// loop (see this module's doc comment for why).
@@ -127,7 +140,7 @@ pub fn build_clone_document(
         title_el.detach(&mut doc)?;
     }
 
-    set_text(&mut doc, root, "uuid", &Uuid::new_v4().to_string());
+    set_text(&mut doc, root, "uuid", &generate_uuid());
 
     let devices = root.find(&doc, "devices").ok_or(ClonerError::NoDevices)?;
 

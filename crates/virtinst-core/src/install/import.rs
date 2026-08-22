@@ -39,7 +39,6 @@
 //! upstream's own CLI default whenever `--network`/`--nonetworks` are
 //! both absent, not something specific to this install method.
 
-use uuid::Uuid;
 use virtinst_xml::{Document, Element};
 
 use super::domain_skeleton::{build_domain_skeleton, push_boot_dev, push_default_nic};
@@ -55,7 +54,7 @@ use super::domain_skeleton::{build_domain_skeleton, push_boot_dev, push_default_
 /// divergence (`test:///` defaults to `i686`, a real `qemu:///system`
 /// to `x86_64`).
 ///
-/// Always stamps an explicit `<uuid>` (via the same `uuid::Uuid::new_v4()`
+/// Always stamps an explicit `<uuid>` (via the same `generate_uuid()`
 /// approach `cloner.rs` uses, matching upstream's own hand-rolled
 /// UUIDv4 bit-twiddling) rather than leaving it for libvirt to invent.
 /// Required, not cosmetic: `virt-install`'s default sequence calls
@@ -78,7 +77,7 @@ pub fn build_import_document(
         name,
         memory_kib,
         vcpus,
-        &Uuid::new_v4().to_string(),
+        &crate::cloner::generate_uuid(),
         domain_type,
         "hvm",
         arch,
@@ -117,6 +116,7 @@ pub fn build_import_document(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
     #[test]
     fn builds_a_complete_bootable_domain() {
