@@ -13,10 +13,11 @@
 //! `virtinst-cli` for where that was found.
 //!
 //! This slice covers `--build-xml`/`--edit`/`--add-device`/
-//! `--remove-device`, all `--watchdog`-only — see `virtinst_cli`'s doc
-//! comment for why that one device. Only the flags this slice actually
-//! implements are declared; an unimplemented flag that parses is worse
-//! than an absent one.
+//! `--remove-device`, for `--watchdog`/`--vsock` — see `virtinst_cli`'s
+//! doc comment for why those two devices specifically, and why their
+//! optstring mapping is still hand-written rather than shared. Only the
+//! flags this slice actually implements are declared; an unimplemented
+//! flag that parses is worse than an absent one.
 //!
 //! `--add-device`/`--edit`'s output contract is also deliberately
 //! narrower than upstream for now: this always defines the change
@@ -29,7 +30,8 @@
 
 use clap::Parser;
 use virtinst_cli::{
-    apply_watchdog_optstr, remove_watchdog_elements, select_watchdog_elements, watchdog_from_optstr,
+    apply_vsock_optstr, apply_watchdog_optstr, remove_elements, select_elements, vsock_from_optstr,
+    watchdog_from_optstr,
 };
 use virtinst_core::connection::{Connection, Domain};
 use virtinst_xml::to_xml_string;
@@ -56,12 +58,12 @@ struct Args {
     #[arg(long, num_args = 0..=1, default_missing_value = "1")]
     edit: Option<String>,
 
-    /// Add the device described by --watchdog.
+    /// Add the device described by --watchdog/--vsock.
     #[arg(long)]
     add_device: bool,
 
-    /// Remove the device(s) --watchdog selects (index/`-N`/`all`, same
-    /// selector syntax as --edit).
+    /// Remove the device(s) --watchdog/--vsock selects (index/`-N`/`all`,
+    /// same selector syntax as --edit).
     #[arg(long)]
     remove_device: bool,
 
@@ -70,6 +72,12 @@ struct Args {
     /// --remove-device (e.g. "1", "all").
     #[arg(long)]
     watchdog: Option<String>,
+
+    /// Vsock device options for --build-xml/--edit/--add-device (e.g.
+    /// "cid.auto=no,cid.address=3"), or the selector for
+    /// --remove-device (e.g. "1", "all").
+    #[arg(long)]
+    vsock: Option<String>,
 }
 
 fn main() {
@@ -98,6 +106,22 @@ fn main() {
     std::process::exit(1);
 }
 
+/// Every action below needs exactly one device flag; this picks whichever
+/// of `--watchdog`/`--vsock` was given (fixed priority, not argv order —
+/// `--watchdog` wins if both were) and exits with the "nothing
+/// implemented for this action" message the caller supplies if neither
+/// was.
+fn device_optstr<'a>(args: &'a Args, action: &str) -> (&'static str, &'a str) {
+    if let Some(optstr) = &args.watchdog {
+        return ("watchdog", optstr);
+    }
+    if let Some(optstr) = &args.vsock {
+        return ("vsock", optstr);
+    }
+    eprintln!("virt-xml {action}: no device option given (--watchdog/--vsock implemented so far)");
+    std::process::exit(1);
+}
+
 /// Opens `--connect`'s URI and looks up `domain` — the boilerplate every
 /// action but `--build-xml` needs. Exits the process on any failure
 /// (bad URI, no such domain, no domain name given at all) rather than
@@ -121,31 +145,30 @@ fn connect_and_lookup(args: &Args) -> (Connection, Domain, String) {
 }
 
 fn run_build_xml(args: &Args) {
-    let Some(optstr) = &args.watchdog else {
-        eprintln!(
-            "virt-xml --build-xml: no device option given (only --watchdog is implemented so far)"
-        );
-        std::process::exit(1);
-    };
+    let (device, optstr) = device_optstr(args, "--build-xml");
 
-    let dev = watchdog_from_optstr(optstr);
-    let xml = to_xml_string(&dev).expect("a freshly built DeviceWatchdog always serializes");
+    let xml = match device {
+        "watchdog" => to_xml_string(&watchdog_from_optstr(optstr))
+            .expect("a freshly built DeviceWatchdog always serializes"),
+        "vsock" => to_xml_string(&vsock_from_optstr(optstr))
+            .expect("a freshly built DeviceVsock always serializes"),
+        _ => unreachable!(),
+    };
     println!("{xml}");
 }
 
 fn run_edit(args: &Args, selector: &str) {
-    let Some(optstr) = &args.watchdog else {
-        eprintln!(
-            "virt-xml --edit: no device option given (only --watchdog is implemented so far)"
-        );
-        std::process::exit(1);
-    };
+    let (device, optstr) = device_optstr(args, "--edit");
     let (conn, domain, domain_name) = connect_and_lookup(args);
 
     let result = domain.edit_inactive_xml(&conn, |doc, root| {
-        let els = select_watchdog_elements(doc, root, selector)?;
+        let els = select_elements(doc, root, device, selector)?;
         for el in els {
-            apply_watchdog_optstr(doc, el, optstr);
+            match device {
+                "watchdog" => apply_watchdog_optstr(doc, el, optstr),
+                "vsock" => apply_vsock_optstr(doc, el, optstr),
+                _ => unreachable!(),
+            }
         }
         Ok(())
     });
@@ -153,30 +176,23 @@ fn run_edit(args: &Args, selector: &str) {
 }
 
 fn run_add_device(args: &Args) {
-    let Some(optstr) = &args.watchdog else {
-        eprintln!(
-            "virt-xml --add-device: no device option given (only --watchdog is implemented so far)"
-        );
-        std::process::exit(1);
-    };
+    let (device, optstr) = device_optstr(args, "--add-device");
     let (conn, domain, domain_name) = connect_and_lookup(args);
 
-    let dev = watchdog_from_optstr(optstr);
-    let result = domain.add_device(&conn, &dev);
+    let result = match device {
+        "watchdog" => domain.add_device(&conn, &watchdog_from_optstr(optstr)),
+        "vsock" => domain.add_device(&conn, &vsock_from_optstr(optstr)),
+        _ => unreachable!(),
+    };
     report(&domain_name, result);
 }
 
 fn run_remove_device(args: &Args) {
-    let Some(selector) = &args.watchdog else {
-        eprintln!(
-            "virt-xml --remove-device: no selector given (only --watchdog is implemented so far)"
-        );
-        std::process::exit(1);
-    };
+    let (device, selector) = device_optstr(args, "--remove-device");
     let (conn, domain, domain_name) = connect_and_lookup(args);
 
     let result = domain.edit_inactive_xml(&conn, |doc, root| {
-        remove_watchdog_elements(doc, root, selector)?;
+        remove_elements(doc, root, device, selector)?;
         Ok(())
     });
     report(&domain_name, result);

@@ -33,7 +33,9 @@
 //! of the same type added in one call.
 
 use virtinst_core::devices::{DeviceVsock, DeviceWatchdog};
-use virtinst_xml::{list_remove, resolve_or_create_path, resolve_path, Document, Element};
+use virtinst_xml::{
+    list_remove, resolve_or_create_path, resolve_path, Document, Element, XmlAttrValue,
+};
 
 /// Upstream's `parse_optstr_tuples`: split `"model=itco,action=none"`
 /// into an ordered list of `(cliname, value)` tuples — `"model=itco,path=foo,model=bar"`
@@ -105,8 +107,11 @@ pub fn watchdog_from_optstr(optstr: &str) -> DeviceWatchdog {
 /// Target-selection logic shared by `--edit` *and* `--remove-device` —
 /// upstream's `_find_objects_to_edit(guest, action_name, editval,
 /// parserclass)` backs `action_edit` and `action_remove_device` both.
-/// Given the domain's root `<domain>` element and a selector string,
-/// returns the existing `<watchdog>` element(s) to act on.
+/// Given the domain's root `<domain>` element, a device `tag`
+/// (`"watchdog"`, `"vsock"`, ...), and a selector string, returns the
+/// existing `<tag>` element(s) to act on. Tag-parameterized rather than
+/// per-device — this half of the selection logic has zero device-specific
+/// behavior, unlike the optstring-mapping functions above/below it.
 ///
 /// `selector` is never a true absence here: `--edit` with no value at
 /// all is upstream's `editval is None` case (defaults to index `1`,
@@ -114,7 +119,7 @@ pub fn watchdog_from_optstr(optstr: &str) -> DeviceWatchdog {
 /// literal string `"1"` before calling this, via clap's
 /// `default_missing_value`, so this function only ever sees a real
 /// string. `--remove-device` has no bare form upstream (its selector
-/// always comes from `--watchdog`'s own value), so that path never
+/// always comes from the device flag's own value), so that path never
 /// hits the default at all.
 ///
 /// Handles the index form (`"1"`, `"-1"`) and `"all"`, matching
@@ -127,22 +132,23 @@ pub fn watchdog_from_optstr(optstr: &str) -> DeviceWatchdog {
 /// gap introduced here. **Not yet ported**:
 /// upstream's third form, a bare selector string matched against an
 /// existing device's own fields (e.g. `--edit action=reset` finding
-/// the watchdog that already has `action="reset"`,
+/// the device that already has `action="reset"`,
 /// `lookup_child_from_option_string`) — flagged rather than built,
 /// no second selector-string consumer yet to generalize from.
-pub fn select_watchdog_elements(
+pub fn select_elements(
     doc: &Document,
     domain_root: Element,
+    tag: &str,
     selector: &str,
 ) -> Result<Vec<Element>, String> {
     let all: Vec<Element> = match resolve_path(doc, domain_root, &["devices"]) {
-        Some(devices) => devices.find_all(doc, "watchdog"),
+        Some(devices) => devices.find_all(doc, tag),
         None => Vec::new(),
     };
 
     if selector == "all" {
         if all.is_empty() {
-            return Err("No watchdog objects found in the XML".to_string());
+            return Err(format!("No {tag} objects found in the XML"));
         }
         return Ok(all);
     }
@@ -158,7 +164,7 @@ pub fn select_watchdog_elements(
     }
     if all.len() < idx.unsigned_abs() as usize {
         return Err(format!(
-            "'--edit {selector}' requested but there are only {} watchdog object(s) in the XML",
+            "'--edit {selector}' requested but there are only {} {tag} object(s) in the XML",
             all.len()
         ));
     }
@@ -168,6 +174,16 @@ pub fn select_watchdog_elements(
         (all.len() as i64 + idx) as usize
     };
     Ok(vec![all[zero_based]])
+}
+
+/// Thin wrapper over [`select_elements`], kept so existing call sites
+/// and tests didn't need to change when `--vsock` generalized it.
+pub fn select_watchdog_elements(
+    doc: &Document,
+    domain_root: Element,
+    selector: &str,
+) -> Result<Vec<Element>, String> {
+    select_elements(doc, domain_root, "watchdog", selector)
 }
 
 /// Applies a `--watchdog` optstring's named attributes directly onto an
@@ -195,27 +211,96 @@ pub fn apply_watchdog_optstr(doc: &mut Document, el: Element, optstr: &str) {
     }
 }
 
-/// `--remove-device`'s watchdog path — upstream's `action_remove_device`:
-/// the exact same [`select_watchdog_elements`] `--edit` uses (upstream
-/// reuses `_find_objects_to_edit` for both), then one
+/// `--vsock` — upstream's `ParserVsock`. Unlike `--watchdog`, there's no
+/// positional/`remove_first` shorthand (`model=`/`cid.auto=`/
+/// `cid.address=` are always explicit), and the `cid.*` keys are dotted
+/// aliases landing on the nested `<cid>` element, not self-attributes
+/// (see `DeviceVsock`'s doc comment for the target shape). **Not
+/// re-verified against upstream `cli.py` directly** — the reference
+/// checkout this ticket cites (`/usr/share/virt-manager`) is gone from
+/// this machine after the wipe noted in the prior commit; the dotted
+/// keys are inferred from `DeviceVsock`'s own `#[xml(path = "cid", ...)]`
+/// shape instead, which the optstring has to target either way.
+/// `cid.auto` reuses `Option<bool>`'s own `yes`/`no` parsing
+/// ([`XmlAttrValue::from_attr`]) rather than a new bool convention.
+pub fn vsock_from_optstr(optstr: &str) -> DeviceVsock {
+    let tuples = parse_optstr_tuples(optstr);
+    let mut dev = DeviceVsock::default();
+    for (cliname, val) in tuples {
+        match cliname.as_str() {
+            "model" => dev.model = val,
+            "cid.auto" => dev.auto_cid = Option::<bool>::from_attr(val.as_deref()),
+            "cid.address" => dev.cid = val.and_then(|v| v.parse().ok()),
+            _ => {}
+        }
+    }
+    dev
+}
+
+/// [`apply_watchdog_optstr`]'s vsock counterpart — same "mutate only the
+/// named attributes on the existing element" approach, extended to
+/// reach through to the nested `<cid>` child for `cid.*` keys.
+/// [`resolve_or_create_path`] creates `<cid>` if the vsock element
+/// didn't have one yet (e.g. editing a `<vsock model="virtio"/>` with
+/// no cid set at all), without disturbing anything else on `el`.
+/// `cid.auto` is normalized through the same `Option<bool>` round-trip
+/// [`vsock_from_optstr`] uses, not written raw — otherwise the two entry
+/// points would disagree on non-canonical input (`cid.auto=true` would
+/// build `auto="no"` but edit would write the libvirt-invalid literal
+/// `auto="true"`).
+pub fn apply_vsock_optstr(doc: &mut Document, el: Element, optstr: &str) {
+    let tuples = parse_optstr_tuples(optstr);
+    for (cliname, val) in tuples {
+        let Some(val) = val else { continue };
+        match cliname.as_str() {
+            "model" => el.set_attribute(doc, "model", val),
+            "cid.auto" => {
+                if let Some(normalized) = Option::<bool>::from_attr(Some(&val)).to_attr() {
+                    resolve_or_create_path(doc, el, &["cid"])
+                        .set_attribute(doc, "auto", normalized);
+                }
+            }
+            "cid.address" => {
+                resolve_or_create_path(doc, el, &["cid"]).set_attribute(doc, "address", val);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// `--remove-device`'s path, for any device `tag` — upstream's
+/// `action_remove_device`: the exact same [`select_elements`] `--edit`
+/// uses (upstream reuses `_find_objects_to_edit` for both), then one
 /// `guest.remove_device(dev)` per match instead of a mutation. Note
-/// `selector` here is `--watchdog`'s own value, not a `model=`/`action=`
-/// optstring — upstream's `--remove-device --watchdog 1` passes `"1"`
-/// straight through as the selector (`action.parservalue[-1]` in
-/// `virtxml.py`), the device flag's value slot means something
-/// different depending on which action flag is active. Returns how
-/// many elements were removed, for a caller that wants to report it.
-pub fn remove_watchdog_elements(
+/// `selector` here is the device flag's own value, not a `model=`/
+/// `action=` optstring — upstream's `--remove-device --watchdog 1`
+/// passes `"1"` straight through as the selector
+/// (`action.parservalue[-1]` in `virtxml.py`), the device flag's value
+/// slot means something different depending on which action flag is
+/// active. Returns how many elements were removed, for a caller that
+/// wants to report it.
+pub fn remove_elements(
     doc: &mut Document,
     domain_root: Element,
+    tag: &str,
     selector: &str,
 ) -> Result<usize, String> {
-    let els = select_watchdog_elements(doc, domain_root, selector)?;
+    let els = select_elements(doc, domain_root, tag, selector)?;
     let count = els.len();
     for el in els {
         list_remove(doc, el).map_err(|e| e.to_string())?;
     }
     Ok(count)
+}
+
+/// Thin wrapper over [`remove_elements`], kept so existing call sites
+/// and tests didn't need to change when `--vsock` generalized it.
+pub fn remove_watchdog_elements(
+    doc: &mut Document,
+    domain_root: Element,
+    selector: &str,
+) -> Result<usize, String> {
+    remove_elements(doc, domain_root, "watchdog", selector)
 }
 
 #[cfg(test)]
@@ -632,6 +717,137 @@ mod tests {
         assert!(
             select_watchdog_elements(&doc, root, "all").is_err(),
             "the watchdog is actually gone from the persistent config"
+        );
+    }
+
+    #[test]
+    fn vsock_from_optstr_maps_model_and_dotted_cid_keys() {
+        let dev = vsock_from_optstr("model=virtio,cid.auto=no,cid.address=3");
+        assert_eq!(dev.model.as_deref(), Some("virtio"));
+        assert_eq!(dev.auto_cid, Some(false));
+        assert_eq!(dev.cid, Some(3));
+    }
+
+    #[test]
+    fn vsock_build_xml_output_matches_expected_shape() {
+        let dev = vsock_from_optstr("model=virtio,cid.auto=no,cid.address=3");
+        let xml = virtinst_xml::to_xml_string(&dev).unwrap();
+        assert!(xml.starts_with("<vsock "));
+        assert!(xml.contains(r#"model="virtio""#));
+        assert!(xml.contains("<cid "));
+        assert!(xml.contains(r#"auto="no""#));
+        assert!(xml.contains(r#"address="3""#));
+    }
+
+    /// The risk surface specific to vsock: `cid.*` keys target a nested
+    /// element the top-level `<vsock>` tag may not have yet at all — the
+    /// reason `apply_vsock_optstr` reaches for
+    /// [`resolve_or_create_path`] instead of [`Element::set_attribute`]
+    /// directly like [`apply_watchdog_optstr`] can.
+    #[test]
+    fn apply_vsock_optstr_creates_the_nested_cid_element_when_absent() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <vsock model="virtio"/>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "vsock", "1").unwrap()[0];
+
+        apply_vsock_optstr(&mut doc, el, "cid.auto=no,cid.address=3");
+
+        let cid = el.find(&doc, "cid").expect("cid element was created");
+        assert_eq!(cid.attribute(&doc, "auto"), Some("no"));
+        assert_eq!(cid.attribute(&doc, "address"), Some("3"));
+        // The untouched attribute on the parent element is still there.
+        assert_eq!(el.attribute(&doc, "model"), Some("virtio"));
+    }
+
+    /// Pins the fix for a real divergence ultrareview caught: on
+    /// non-canonical `cid.auto` input (anything but the literal `"yes"`),
+    /// [`vsock_from_optstr`] and [`apply_vsock_optstr`] must write the
+    /// same normalized `yes`/`no`, not one normalized and the other raw
+    /// (raw would have written the libvirt-invalid `auto="true"` here).
+    #[test]
+    fn apply_vsock_optstr_normalizes_cid_auto_the_same_way_vsock_from_optstr_does() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <vsock model="virtio"/>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "vsock", "1").unwrap()[0];
+
+        apply_vsock_optstr(&mut doc, el, "cid.auto=true");
+
+        let cid = el.find(&doc, "cid").expect("cid element was created");
+        assert_eq!(cid.attribute(&doc, "auto"), Some("no"));
+        assert_eq!(vsock_from_optstr("cid.auto=true").auto_cid, Some(false));
+    }
+
+    #[test]
+    fn apply_vsock_optstr_mutates_only_the_named_cid_attribute() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <vsock model="virtio"><cid auto="yes" address="7"/></vsock>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "vsock", "1").unwrap()[0];
+
+        apply_vsock_optstr(&mut doc, el, "cid.address=3");
+
+        let cid = el.find(&doc, "cid").unwrap();
+        assert_eq!(cid.attribute(&doc, "address"), Some("3"));
+        assert_eq!(cid.attribute(&doc, "auto"), Some("yes"));
+    }
+
+    /// Real end-to-end proof mirroring `add_then_remove_device_against_a_
+    /// real_domain`, for the nested-element device instead of the
+    /// flat-attribute one — the case ticket 06's order-preserving DOM
+    /// actually has to construct a new child element for, not just set
+    /// an attribute on an existing one.
+    #[test]
+    fn add_then_remove_vsock_against_a_real_domain() {
+        use virtinst_core::connection::{Connection, Domain};
+
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        let domain = Domain::lookup_by_name(&conn, "test").expect("the default test domain");
+
+        let dev = vsock_from_optstr("model=virtio,cid.auto=no,cid.address=3");
+        domain
+            .add_device(&conn, &dev)
+            .expect("add-device's exact call chain succeeds");
+
+        let after_add = domain.inactive_xml().expect("fetch inactive XML");
+        let doc = virtinst_xml::parse_libvirt_xml(&after_add).expect("re-parses");
+        let root = doc.root_element().unwrap();
+        assert_eq!(
+            select_elements(&doc, root, "vsock", "all").unwrap().len(),
+            1,
+            "the vsock actually landed in the persistent config"
+        );
+
+        domain
+            .edit_inactive_xml(&conn, |doc, root| {
+                remove_elements(doc, root, "vsock", "1")?;
+                Ok(())
+            })
+            .expect("remove-device's exact call chain succeeds");
+
+        let after_remove = domain.inactive_xml().expect("fetch inactive XML");
+        let doc = virtinst_xml::parse_libvirt_xml(&after_remove).expect("re-parses");
+        let root = doc.root_element().unwrap();
+        assert!(
+            select_elements(&doc, root, "vsock", "all").is_err(),
+            "the vsock is actually gone from the persistent config"
         );
     }
 }
