@@ -82,24 +82,53 @@ pub fn splice_remove_first(tuples: &mut [(String, Option<String>)], remove_first
     }
 }
 
+/// Upstream's `_VirtCLIArgument.__init__` — every optstring value goes
+/// through this rule before reaching a device's own field mapping,
+/// *regardless of device* (found while grounding `--vsock`'s
+/// `edit-simple-vsock`/`--watchdog`'s `edit-simple-watchdog` fixtures
+/// against the real `cli.py`, but the rule itself has nothing
+/// device-specific in it — the same trigger `select_elements`/
+/// `remove_elements` already generalized on). Two real states hide
+/// inside one `Option<String>` from [`parse_optstr_tuples`]:
+///
+/// - A bare key `splice_remove_first` didn't consume (`val` is `None`)
+///   is upstream's `RuntimeError("Option '%s' had no value set.")` — a
+///   real parse error, not something to silently skip.
+/// - An explicit empty value (`key=`) means "clear this field"
+///   (upstream's `if val == "": val = None`) — for a fresh struct field
+///   that's just `None`; for mutating an *existing* XML element it means
+///   removing the attribute, not writing `attr=""`.
+///
+/// Returns `Ok(Some(v))` for a real value, `Ok(None)` for an explicit
+/// clear, `Err` for the bare-key case. Doesn't touch the *unrecognized
+/// cliname* gap (`_ => {}` below) — that's a separate, already-flagged,
+/// deliberately-deferred piece of upstream's `fail()` behavior.
+fn required_value(cliname: &str, val: Option<String>) -> Result<Option<String>, String> {
+    match val {
+        None => Err(format!("Option '{cliname}' had no value set.")),
+        Some(v) if v.is_empty() => Ok(None),
+        Some(v) => Ok(Some(v)),
+    }
+}
+
 /// `--watchdog` — upstream's `ParserWatchdog` (`remove_first = "model"`,
 /// two plain `add_arg` calls, no aliases or custom `_parse`). Unknown
 /// clinames are ignored rather than erroring — upstream's real behavior
 /// (unrecognized name -> `fail()` with a "no arg with name X" message)
 /// isn't ported yet; this slice only needs the mapping to prove out.
-pub fn watchdog_from_optstr(optstr: &str) -> DeviceWatchdog {
+pub fn watchdog_from_optstr(optstr: &str) -> Result<DeviceWatchdog, String> {
     let mut tuples = parse_optstr_tuples(optstr);
     splice_remove_first(&mut tuples, &["model"]);
 
     let mut dev = DeviceWatchdog::default();
     for (cliname, val) in tuples {
         match cliname.as_str() {
-            "model" => dev.model = val,
-            "action" => dev.action = val,
+            "model" => dev.model = required_value(&cliname, val)?,
+            "action" => dev.action = required_value(&cliname, val)?,
             _ => {}
         }
     }
-    dev
+    Ok(dev)
 }
 
 /// Target-selection logic shared by `--edit` *and* `--remove-device` —
@@ -195,18 +224,29 @@ pub fn select_watchdog_elements(
 /// field the optstring *didn't* name, clearing them. Setting only the
 /// named attributes on the real `Element` gets the same "leave
 /// everything else alone" result, and for free extends it to
-/// attributes this crate doesn't even model.
-pub fn apply_watchdog_optstr(doc: &mut Document, el: Element, optstr: &str) {
+/// attributes this crate doesn't even model. `key=` (empty value) goes
+/// through [`required_value`] like everywhere else — removes the
+/// attribute rather than writing `attr=""` (pins `edit-simple-watchdog`
+/// against the restored upstream fixture, though that particular
+/// fixture only exercises `action=reset`, a real value — the empty-value
+/// removal path itself is proven by `edit-simple-vsock` on the sibling
+/// device instead, same shared rule).
+pub fn apply_watchdog_optstr(doc: &mut Document, el: Element, optstr: &str) -> Result<(), String> {
     let mut tuples = parse_optstr_tuples(optstr);
     splice_remove_first(&mut tuples, &["model"]);
 
     for (cliname, val) in tuples {
-        let Some(val) = val else { continue };
         match cliname.as_str() {
-            "model" | "action" => el.set_attribute(doc, cliname, val),
+            "model" | "action" => match required_value(&cliname, val)? {
+                Some(v) => el.set_attribute(doc, cliname, v),
+                None => {
+                    el.mut_attributes(doc).remove(&cliname);
+                }
+            },
             _ => {}
         }
     }
+    Ok(())
 }
 
 /// Upstream's `_on_off_convert`/`_raw_on_off_convert` — every
@@ -241,13 +281,19 @@ pub fn vsock_from_optstr(optstr: &str) -> Result<DeviceVsock, String> {
     let mut dev = DeviceVsock::default();
     for (cliname, val) in tuples {
         match cliname.as_str() {
-            "model" => dev.model = val,
+            "model" => dev.model = required_value(&cliname, val)?,
             "cid.auto" => {
-                if let Some(v) = val {
-                    dev.auto_cid = Some(parse_onoff("cid.auto", &v)?);
-                }
+                dev.auto_cid = match required_value(&cliname, val)? {
+                    Some(v) => Some(parse_onoff("cid.auto", &v)?),
+                    None => None,
+                };
             }
-            "cid.address" => dev.cid = val.and_then(|v| v.parse().ok()),
+            "cid.address" => {
+                dev.cid = match required_value(&cliname, val)? {
+                    Some(v) => v.parse().ok(),
+                    None => None,
+                };
+            }
             _ => {}
         }
     }
@@ -255,31 +301,55 @@ pub fn vsock_from_optstr(optstr: &str) -> Result<DeviceVsock, String> {
 }
 
 /// [`apply_watchdog_optstr`]'s vsock counterpart — same "mutate only the
-/// named attributes on the existing element" approach, extended to
-/// reach through to the nested `<cid>` child for `cid.*` keys and to
-/// [`vsock_from_optstr`]'s positional shorthand and `cid.auto` failure
-/// mode. [`resolve_or_create_path`] creates `<cid>` if the vsock element
-/// didn't have one yet (e.g. editing a `<vsock model="virtio"/>` with no
-/// cid set at all), without disturbing anything else on `el`.
+/// named attributes on the existing element" approach (including the
+/// shared `key=` → remove-the-attribute rule, via [`required_value`]),
+/// extended to reach through to the nested `<cid>` child for `cid.*`
+/// keys and to [`vsock_from_optstr`]'s positional shorthand and
+/// `cid.auto` failure mode. [`resolve_or_create_path`] creates `<cid>`
+/// if the vsock element didn't have one yet (e.g. editing a `<vsock
+/// model="virtio"/>` with no cid set at all), without disturbing
+/// anything else on `el`. Pins `edit-simple-vsock` against the restored
+/// upstream fixture — `cid.address=,cid.auto=on` on a domain with an
+/// existing `<cid auto="no" address="5"/>` must produce `<cid
+/// auto="yes"/>`, `address` gone entirely.
 pub fn apply_vsock_optstr(doc: &mut Document, el: Element, optstr: &str) -> Result<(), String> {
     let mut tuples = parse_optstr_tuples(optstr);
     splice_remove_first(&mut tuples, &["model"]);
 
     for (cliname, val) in tuples {
-        let Some(val) = val else { continue };
         match cliname.as_str() {
-            "model" => el.set_attribute(doc, "model", val),
-            "cid.auto" => {
-                let normalized = if parse_onoff("cid.auto", &val)? {
-                    "yes"
-                } else {
-                    "no"
-                };
-                resolve_or_create_path(doc, el, &["cid"]).set_attribute(doc, "auto", normalized);
-            }
-            "cid.address" => {
-                resolve_or_create_path(doc, el, &["cid"]).set_attribute(doc, "address", val);
-            }
+            "model" => match required_value(&cliname, val)? {
+                Some(v) => el.set_attribute(doc, "model", v),
+                None => {
+                    el.mut_attributes(doc).remove("model");
+                }
+            },
+            "cid.auto" => match required_value(&cliname, val)? {
+                Some(v) => {
+                    let normalized = if parse_onoff("cid.auto", &v)? {
+                        "yes"
+                    } else {
+                        "no"
+                    };
+                    resolve_or_create_path(doc, el, &["cid"])
+                        .set_attribute(doc, "auto", normalized);
+                }
+                None => {
+                    resolve_or_create_path(doc, el, &["cid"])
+                        .mut_attributes(doc)
+                        .remove("auto");
+                }
+            },
+            "cid.address" => match required_value(&cliname, val)? {
+                Some(v) => {
+                    resolve_or_create_path(doc, el, &["cid"]).set_attribute(doc, "address", v);
+                }
+                None => {
+                    resolve_or_create_path(doc, el, &["cid"])
+                        .mut_attributes(doc)
+                        .remove("address");
+                }
+            },
             _ => {}
         }
     }
@@ -386,14 +456,14 @@ mod tests {
 
     #[test]
     fn watchdog_from_optstr_handles_the_positional_form() {
-        let dev = watchdog_from_optstr("default,action=poweroff");
+        let dev = watchdog_from_optstr("default,action=poweroff").unwrap();
         assert_eq!(dev.model.as_deref(), Some("default"));
         assert_eq!(dev.action.as_deref(), Some("poweroff"));
     }
 
     #[test]
     fn watchdog_from_optstr_handles_the_explicit_form() {
-        let dev = watchdog_from_optstr("model=itco,action=none");
+        let dev = watchdog_from_optstr("model=itco,action=none").unwrap();
         assert_eq!(dev.model.as_deref(), Some("itco"));
         assert_eq!(dev.action.as_deref(), Some("none"));
     }
@@ -416,7 +486,7 @@ mod tests {
     /// rather than pin a golden string that's flaky by construction.
     #[test]
     fn watchdog_build_xml_output_matches_expected_shape() {
-        let dev = watchdog_from_optstr("model=itco,action=none");
+        let dev = watchdog_from_optstr("model=itco,action=none").unwrap();
         let xml = virtinst_xml::to_xml_string(&dev).unwrap();
         assert!(xml.starts_with("<watchdog "));
         assert!(xml.ends_with("/>"));
@@ -519,7 +589,7 @@ mod tests {
         let root = doc.root_element().unwrap();
         let el = select_watchdog_elements(&doc, root, "1").unwrap()[0];
 
-        apply_watchdog_optstr(&mut doc, el, "action=poweroff");
+        apply_watchdog_optstr(&mut doc, el, "action=poweroff").unwrap();
 
         // The named attribute changed...
         assert_eq!(el.attribute(&doc, "action"), Some("poweroff"));
@@ -529,6 +599,43 @@ mod tests {
         let els = select_watchdog_elements(&doc, root, "2").unwrap();
         assert_eq!(els[0].attribute(&doc, "action"), Some("none"));
         assert_eq!(els[0].attribute(&doc, "model"), Some("ib700"));
+    }
+
+    /// A bare key `splice_remove_first` didn't consume is a hard parse
+    /// error upstream (`RuntimeError("Option '%s' had no value set.")`),
+    /// not something silently ignored — `--watchdog default,action` has
+    /// a recognized `action` key left over with no `=` and nothing left
+    /// to splice it into (must be a *recognized* cliname to reach
+    /// `required_value` at all — an unrecognized one hits the separate,
+    /// already-deferred "unknown cliname" gap in the `_ => {}` arm
+    /// instead, a real trap this test's first draft fell into).
+    #[test]
+    fn watchdog_from_optstr_rejects_a_second_bare_key() {
+        assert!(watchdog_from_optstr("default,action").is_err());
+    }
+
+    /// Golden fixture, pinned directly from upstream's own
+    /// `tests/data/cli/compare/virt-xml-edit-simple-watchdog.xml`
+    /// (`~/DEV/virt-manager-upstream-reference`, restored this session):
+    /// `virt-xml --edit --watchdog action=reset` against a domain with
+    /// `<watchdog model="ib700" action="poweroff"/>` must produce
+    /// `<watchdog model="ib700" action="reset"/>` — `model` untouched.
+    #[test]
+    fn golden_edit_simple_watchdog() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <watchdog model="ib700" action="poweroff"/>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_watchdog_elements(&doc, root, "1").unwrap()[0];
+
+        apply_watchdog_optstr(&mut doc, el, "action=reset").unwrap();
+
+        assert_eq!(el.attribute(&doc, "model"), Some("ib700"));
+        assert_eq!(el.attribute(&doc, "action"), Some("reset"));
     }
 
     #[test]
@@ -616,7 +723,7 @@ mod tests {
             .edit_inactive_xml(&conn, |doc, root| {
                 let els = select_watchdog_elements(doc, root, "1")?;
                 for el in els {
-                    apply_watchdog_optstr(doc, el, "action=poweroff");
+                    apply_watchdog_optstr(doc, el, "action=poweroff")?;
                 }
                 Ok(())
             })
@@ -672,7 +779,7 @@ mod tests {
         let mut doc = parse_fixture(FIXTURE);
         let root = doc.root_element().unwrap();
         let el = select_watchdog_elements(&doc, root, "1").unwrap()[0];
-        apply_watchdog_optstr(&mut doc, el, "action=poweroff");
+        apply_watchdog_optstr(&mut doc, el, "action=poweroff").unwrap();
 
         let written = doc.write_str().expect("serializes");
         let doc2 = virtinst_xml::parse_libvirt_xml(&written).expect("re-parses");
@@ -707,7 +814,7 @@ mod tests {
         let domain = Domain::lookup_by_name(&conn, "test").expect("the default test domain");
 
         // --add-device --watchdog model=i6300esb,action=reset
-        let dev = watchdog_from_optstr("model=i6300esb,action=reset");
+        let dev = watchdog_from_optstr("model=i6300esb,action=reset").unwrap();
         domain
             .add_device(&conn, &dev)
             .expect("add-device's exact call chain succeeds");
@@ -896,6 +1003,57 @@ mod tests {
         let cid = el.find(&doc, "cid").unwrap();
         assert_eq!(cid.attribute(&doc, "address"), Some("3"));
         assert_eq!(cid.attribute(&doc, "auto"), Some("yes"));
+    }
+
+    /// Same rule as watchdog's (must be a *recognized* cliname —
+    /// `cid.auto`, not an unrecognized one, for the same reason spelled
+    /// out on `watchdog_from_optstr_rejects_a_second_bare_key`), proven
+    /// on the sibling device too since `required_value` is shared,
+    /// device-agnostic logic.
+    #[test]
+    fn vsock_from_optstr_rejects_a_second_bare_key() {
+        assert!(vsock_from_optstr("virtio,cid.auto").is_err());
+    }
+
+    /// `key=` (empty value) clears the field on a fresh struct too — a
+    /// no-op in practice (nothing was set yet) but proves
+    /// `required_value`'s `Ok(None)` path reaches `dev.cid`, not just
+    /// the mutate-existing-element path `apply_vsock_optstr` covers.
+    #[test]
+    fn vsock_from_optstr_empty_value_clears_the_field() {
+        let dev = vsock_from_optstr("cid.address=3,cid.address=").unwrap();
+        assert_eq!(dev.cid, None);
+    }
+
+    /// Golden fixture, pinned directly from upstream's own
+    /// `tests/data/cli/compare/virt-xml-edit-simple-vsock.xml`
+    /// (`~/DEV/virt-manager-upstream-reference`, restored this session):
+    /// `virt-xml --edit --vsock model=virtio,cid.address=,cid.auto=on`
+    /// against a domain with `<cid auto="no" address="5"/>` must produce
+    /// `<cid auto="yes"/>` — `address` gone entirely, not `address=""`.
+    /// This is the fixture that first surfaced the empty-value-means-
+    /// clear rule `required_value` exists for.
+    #[test]
+    fn golden_edit_simple_vsock() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <vsock model="virtio"><cid auto="no" address="5"/></vsock>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "vsock", "1").unwrap()[0];
+
+        apply_vsock_optstr(&mut doc, el, "model=virtio,cid.address=,cid.auto=on").unwrap();
+
+        let cid = el.find(&doc, "cid").unwrap();
+        assert_eq!(cid.attribute(&doc, "auto"), Some("yes"));
+        assert_eq!(
+            cid.attribute(&doc, "address"),
+            None,
+            "address must be removed, not \"\""
+        );
     }
 
     /// Real end-to-end proof mirroring `add_then_remove_device_against_a_

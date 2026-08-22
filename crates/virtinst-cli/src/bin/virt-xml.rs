@@ -148,8 +148,10 @@ fn run_build_xml(args: &Args) {
     let (device, optstr) = device_optstr(args, "--build-xml");
 
     let xml = match device {
-        "watchdog" => to_xml_string(&watchdog_from_optstr(optstr))
-            .expect("a freshly built DeviceWatchdog always serializes"),
+        "watchdog" => {
+            let dev = watchdog_from_optstr(optstr).unwrap_or_else(exit_on_err);
+            to_xml_string(&dev).expect("a freshly built DeviceWatchdog always serializes")
+        }
         "vsock" => {
             let dev = vsock_from_optstr(optstr).unwrap_or_else(exit_on_err);
             to_xml_string(&dev).expect("a freshly built DeviceVsock always serializes")
@@ -175,7 +177,7 @@ fn run_edit(args: &Args, selector: &str) {
         let els = select_elements(doc, root, device, selector)?;
         for el in els {
             match device {
-                "watchdog" => apply_watchdog_optstr(doc, el, optstr),
+                "watchdog" => apply_watchdog_optstr(doc, el, optstr)?,
                 "vsock" => apply_vsock_optstr(doc, el, optstr)?,
                 _ => unreachable!(),
             }
@@ -190,7 +192,10 @@ fn run_add_device(args: &Args) {
     let (conn, domain, domain_name) = connect_and_lookup(args);
 
     let result = match device {
-        "watchdog" => domain.add_device(&conn, &watchdog_from_optstr(optstr)),
+        "watchdog" => domain.add_device(
+            &conn,
+            &watchdog_from_optstr(optstr).unwrap_or_else(exit_on_err),
+        ),
         "vsock" => domain.add_device(
             &conn,
             &vsock_from_optstr(optstr).unwrap_or_else(exit_on_err),
