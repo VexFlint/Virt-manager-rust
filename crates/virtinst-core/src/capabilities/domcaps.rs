@@ -36,11 +36,16 @@ use virtinst_xml::{parse_libvirt_xml, Document, Element, Result as XmlResult};
 
 /// Either the libvirt call or the XML parse can fail, for different
 /// reasons — same small bridging-enum shape `connection::domain`'s
-/// `DomainError` already established for the same situation.
+/// `DomainError` already established for the same situation. `Io`
+/// added for ticket 20's test-mode injection (`VIRTINST_TEST_CAPS_
+/// FILE`/`VIRTINST_TEST_DOMCAPS_FILE`) — reading a caller-supplied
+/// fixture path can fail (typo, missing file) same as any other file
+/// read, and should surface as a normal `Err` rather than panicking.
 #[derive(Debug)]
 pub enum CapabilitiesError {
     Libvirt(LibvirtError),
     Xml(virtinst_xml::EditXMLError),
+    Io(std::io::Error),
 }
 
 impl std::fmt::Display for CapabilitiesError {
@@ -48,6 +53,7 @@ impl std::fmt::Display for CapabilitiesError {
         match self {
             CapabilitiesError::Libvirt(e) => write!(f, "{e}"),
             CapabilitiesError::Xml(e) => write!(f, "{e}"),
+            CapabilitiesError::Io(e) => write!(f, "{e}"),
         }
     }
 }
@@ -63,6 +69,12 @@ impl From<LibvirtError> for CapabilitiesError {
 impl From<virtinst_xml::EditXMLError> for CapabilitiesError {
     fn from(e: virtinst_xml::EditXMLError) -> Self {
         CapabilitiesError::Xml(e)
+    }
+}
+
+impl From<std::io::Error> for CapabilitiesError {
+    fn from(e: std::io::Error) -> Self {
+        CapabilitiesError::Io(e)
     }
 }
 
@@ -220,6 +232,14 @@ impl DomainCapabilities {
     /// yet — see `connection.rs`'s doc comment for why; a call against
     /// a driver too old to support this just surfaces as a normal
     /// `Err` here instead).
+    ///
+    /// Checks `VIRTINST_TEST_DOMCAPS_FILE` first (ticket 20's test-mode
+    /// injection, same precedent as [`Capabilities::fetch`](super::caps::Capabilities::fetch)'s
+    /// `VIRTINST_TEST_CAPS_FILE` — see `caps.rs`'s doc comment for the
+    /// full rationale) — reads and parses that file instead of making
+    /// the real libvirt call when set. Every one of this function's
+    /// existing callers (`import.rs`/`container.rs`/`iso.rs`/
+    /// `manual.rs`) needs no changes at all; the gate lives here once.
     pub fn fetch(
         conn: &Connection,
         emulator: Option<&str>,
@@ -227,6 +247,10 @@ impl DomainCapabilities {
         machine: Option<&str>,
         virttype: Option<&str>,
     ) -> Result<DomainCapabilities, CapabilitiesError> {
+        if let Some(path) = std::env::var_os("VIRTINST_TEST_DOMCAPS_FILE") {
+            let xml = std::fs::read_to_string(&path)?;
+            return Ok(DomainCapabilities::parse(&xml)?);
+        }
         let xml = conn
             .as_connect()
             .get_domain_capabilities(emulator, arch, machine, virttype, 0)?;
@@ -237,19 +261,66 @@ impl DomainCapabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TEST_DOMAIN_LOCK;
 
     /// Real libvirt call against libvirt's builtin `test:///` driver —
     /// same no-daemon guarantee `connection.rs`/`domain.rs`'s own tests
     /// rely on. Sparse output (the test driver reports almost nothing
     /// supported), but proves the fetch-then-parse pipeline actually
     /// works end to end against a live connection, not just a fixture.
+    /// Holds `TEST_DOMAIN_LOCK`: asserts specific `domain`/`arch`
+    /// values a concurrently-running `VIRTINST_TEST_DOMCAPS_FILE`
+    /// injection test below would otherwise override — see
+    /// `TEST_DOMAIN_LOCK`'s own doc comment for the confirmed-for-real
+    /// failure this guards against.
     #[test]
     fn fetch_against_the_builtin_test_driver() {
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let conn = Connection::open("test:///default").expect("test:/// driver always opens");
         let caps = DomainCapabilities::fetch(&conn, None, None, None, None)
             .expect("test driver answers domcapabilities");
         assert_eq!(caps.domain.as_deref(), Some("test"));
         assert_eq!(caps.arch.as_deref(), Some("i686"));
+    }
+
+    /// Ticket 20's test-mode injection: `VIRTINST_TEST_DOMCAPS_FILE`
+    /// read directly instead of calling libvirt, mirroring
+    /// `capabilities::caps`'s identical test for `Capabilities::fetch`.
+    #[test]
+    fn fetch_reads_from_env_var_file_instead_of_calling_libvirt() {
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let path = std::env::temp_dir().join("virtinst_test_domcaps_fetch.xml");
+        std::fs::write(&path, QEMU_DOMCAPS_EXCERPT).expect("writes fixture file");
+        std::env::set_var("VIRTINST_TEST_DOMCAPS_FILE", &path);
+
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        let caps = DomainCapabilities::fetch(&conn, None, None, None, None)
+            .expect("reads the injected file, not libvirt");
+
+        std::env::remove_var("VIRTINST_TEST_DOMCAPS_FILE");
+        std::fs::remove_file(&path).ok();
+
+        // test:///default's own domcaps report domain="test"/arch="i686"
+        // (see the test right above) -- getting kvm/x86_64 back instead
+        // proves the injected file was really used, not a live call.
+        assert_eq!(caps.domain.as_deref(), Some("kvm"));
+        assert_eq!(caps.arch.as_deref(), Some("x86_64"));
+    }
+
+    #[test]
+    fn fetch_surfaces_a_missing_env_var_file_as_a_real_error_not_a_panic() {
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(
+            "VIRTINST_TEST_DOMCAPS_FILE",
+            "/nonexistent/path/does-not-exist.xml",
+        );
+
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        let result = DomainCapabilities::fetch(&conn, None, None, None, None);
+
+        std::env::remove_var("VIRTINST_TEST_DOMCAPS_FILE");
+
+        assert!(matches!(result, Err(CapabilitiesError::Io(_))));
     }
 
     /// A real `qemu:///system` domcapabilities excerpt captured on this

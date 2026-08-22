@@ -174,8 +174,52 @@ Two distinct pieces of future work, not one:
   effectively "finish `virt-install`'s default-resolution logic,"
   ticket 17's real remaining work, not a byproduct of (a).
 
-Not starting either autonomously — this ticket's job was scoping, per
-the explicit request. (a) alone is a reasonable, bounded next step if
-wanted; (b) is a multi-session undertaking that deserves its own
-explicit go-ahead once (a) exists and its shape is provable against a
-first real fixture.
+## (a) built
+
+`virtinst-core::capabilities::caps` — direct port of `capabilities.py`'s
+real classes (`Capabilities`/`CapsHost`/`CapsCpu`/`CapsGuest`/
+`CapsDomain`/`CapsMachine`/`CapsGuestFeatures`/`CapsInfo`), same
+deserialize-only no-DOM shape `DomainCapabilities` already established,
+plus `guest_lookup`'s real algorithm in full (`_guestForOSType`'s
+two-pass arch fallback, `_bestDomainType`'s `kvm > xen > hvf > qemu`
+priority, the `os_type == "linux"` xen quirk, all four upstream error
+messages verbatim). `<host><secmodel>`/query-helper methods/
+`is_machine_alias` explicitly not modeled — no current consumer, same
+as `domcaps.rs`'s own precedent.
+
+Both `Capabilities::fetch` and `DomainCapabilities::fetch` now check
+`VIRTINST_TEST_CAPS_FILE`/`VIRTINST_TEST_DOMCAPS_FILE` before making a
+real libvirt call, reading and parsing that file instead when set —
+zero changes needed at any existing call site. `Connection::open` checks
+`VIRTINST_TEST_FAKE_URI` to build the *reported* URI independently of
+what's actually opened — the real call always uses the literal `uri`
+argument, verified by a real, live `test://` connection staying alive
+under the override (not just that the reported scheme changed).
+
+**A real, confirmed test race found and fixed along the way**: the
+first version of these tests used their own local locks, and two
+*pre-existing*, previously-unguarded tests (`open_close_against_the_
+builtin_test_driver`, `DomainCapabilities`'s/`Capabilities`'s own
+`fetch_against_the_builtin_test_driver`) failed intermittently under
+default parallel `cargo test` — picking up a sibling test's injected
+fake URI/caps file mid-run. Fixed by reusing the crate's existing
+`test_support::TEST_DOMAIN_LOCK` everywhere instead (broadened its
+documented scope to cover this too) — every test in the crate that
+calls `Connection::open` or either `fetch` now holds it, not just the
+ones that mutate an env var; a reader that never acquires a lock isn't
+protected by another thread holding it.
+
+**Verified**: 134/134 `virtinst-core` tests (16 new) across 5
+consecutive parallel `cargo test` runs with zero flakes, 98/98
+`virtinst-cli`, harness 61/61, `cargo fmt`/`clippy` clean.
+
+**Not done — piece (b), deliberately**: nothing yet calls
+`Capabilities::guest_lookup` from any real `virt-install` code path.
+Today's install methods still only thread `DomainCapabilities::arch`
+through (see `domain_skeleton.rs`'s doc comment) — wiring
+`hypervisor_type`/`os_type`/`loader`/`emulator`/`machine` from a real
+`guest_lookup` result into the actual domain builders, and the
+CPU/clock/PM/9-file driver-family defaulting beyond that, is the
+separate, larger undertaking this ticket's own "Decision" section
+already named. The injection layer is ready for it; nothing consumes
+it yet.

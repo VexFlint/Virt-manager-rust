@@ -33,6 +33,21 @@ mod xml_binding_tests;
 /// up what it added; this is that same lock, pulled up to crate level
 /// so `cloner`'s real-libvirt test can share it too instead of getting
 /// its own lock that doesn't actually protect anything.
+///
+/// Also guards ticket 20's test-mode env vars (`VIRTINST_TEST_CAPS_
+/// FILE`/`VIRTINST_TEST_DOMCAPS_FILE`/`VIRTINST_TEST_FAKE_URI`) for the
+/// same underlying reason: they're process-wide state too, and a test
+/// that briefly sets one while calling `Connection::open`/
+/// `{Capabilities,DomainCapabilities}::fetch` can leak into any other
+/// concurrently-running test making the same calls — confirmed for
+/// real (not theoretical) when `capabilities::caps`'s own injection
+/// tests first landed: `open_close_against_the_builtin_test_driver`
+/// and `fetch_against_the_builtin_test_driver` failed intermittently
+/// under default parallel `cargo test`, picking up a sibling test's
+/// injected fake URI/caps file. Every test anywhere in this crate that
+/// calls `Connection::open`/either `fetch` must hold this lock, not
+/// just the tests that mutate one of these vars — a reader that never
+/// acquires it isn't protected by another thread's lock at all.
 #[cfg(test)]
 pub(crate) mod test_support {
     pub(crate) static TEST_DOMAIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

@@ -21,9 +21,19 @@
 //! `is_qemu()`-style prefix checks (which pass even against a
 //! subtly-wrong parser).
 //!
-//! **Not ported**: `MagicURI` — upstream's own test-suite fake-connection
-//! harness (`__virtinst_test__` URI prefix, canned capabilities XML,
-//! stubbed `createXML`/`defineXML`), not a user-facing feature.
+//! **Not ported**: `MagicURI` itself — upstream's own test-suite
+//! fake-connection harness (`__virtinst_test__` URI prefix, stubbed
+//! `createXML`/`defineXML`), not a user-facing feature, and the real
+//! `virt` crate has no `libvirt.open()`-equivalent seam to hang a
+//! monkeypatch off anyway (ticket 19's finding). Ticket 20 ports two of
+//! its *effects* through different, Rust-native seams instead: canned
+//! capabilities/domcaps XML via `capabilities::{Capabilities,
+//! DomainCapabilities}::fetch`'s own env-var gates (see
+//! `capabilities/mod.rs`'s doc comment), and the faked *reported* URI
+//! (upstream's `fakeuri` — real connection stays on the harmless
+//! `test://` driver, but `is_qemu()`-style scheme checks see a
+//! different string) via `Connection::open`'s `VIRTINST_TEST_FAKE_URI`
+//! (see `connection.rs`'s doc comment).
 //!
 //! **Not here**: `is_privileged()`/`is_unprivileged()` (and the
 //! `is_qemu_privileged`/`is_qemu_unprivileged` pair built on them) —
