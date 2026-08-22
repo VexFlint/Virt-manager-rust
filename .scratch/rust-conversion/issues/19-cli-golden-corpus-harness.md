@@ -52,3 +52,34 @@ highest-leverage next slice) rather than a blocker on starting.
 
 **Not yet built**: the harness script itself, and the capability-override
 layer for the KVM/x86 (and other arch) fixture subset.
+
+## Groundwork found since (not yet built on)
+
+- **Compare fixtures are unified diffs, not full documents.**
+  `tests/data/cli/compare/*.xml` hold a before/after diff (domain XML
+  before the CLI action, arrow to after) plus the command's stdout —
+  much cheaper to hand-verify or generate than a full golden document.
+  Two already hand-verified directly against these real files:
+  `virt-xml-edit-simple-watchdog.xml`, `virt-xml-edit-simple-vsock.xml`
+  (see the `golden_edit_simple_*` tests in `virtinst-cli/src/lib.rs`,
+  commit `2ea8f52`).
+- **Even the `test:///`-only subset needs a "predictable" mode.**
+  `URI-TEST-FULL`/`URI-TEST-REMOTE` both route through upstream's
+  `MagicURI` with a `,predictable` flag — real UUIDs/MACs would never
+  match a golden fixture otherwise. Traced the exact mechanism
+  (`virtinst/guest.py:125`, `virtinst/devices/interface.py:111`): a
+  fixed UUID constant (`"00000000-1111-2222-3333-444444444444"`) and a
+  MAC that's always `"00:11:22:33:44:55"` unless the env var
+  `VIRTINST_TEST_SUITE_INCREMENT_MACADDR` is set (then a process-global
+  counter increments the last hex digit per call, reset to 0 after each
+  generation otherwise). Small to port — `virtinst-core`'s `Guest`/
+  `DeviceInterface` UUID/MAC generation needs an equivalent predictable
+  toggle before *any* fixture compare will match, not just the
+  KVM/x86 ones.
+- **`test:///<path-to-xml>` as the connection URI is a real native
+  libvirt `test://` driver feature** (loading `tests/data/testdriver/
+  testdriver.xml` as backing state), separate from the `caps=`/
+  `domcaps=` override which is the Python-only `MagicURI` interception
+  this ticket's main finding is about. The harness can open that XML
+  file directly through the real `virt` crate with no interception
+  layer needed for *this* part.
