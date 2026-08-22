@@ -222,5 +222,10 @@ all, not on the harness itself — and for `--disk` specifically, on
 extending past this session's partial slice); extending to
 `virt-install`'s corpus (blocked on the capability-injection layer,
 still real future work — see above, this is *not* what the
-`testsuite.xml` finding resolved); `--print-diff` (needs a real diff
-algorithm, not built, flagged in `virt-xml.rs`'s own doc comment).
+`testsuite.xml` finding resolved — **now fully scoped in [ticket
+20](./20-capability-injection-layer.md)**: 66 fixtures counted exactly,
+a concrete bounded architecture proposed, and a real second blocker
+found — the injection layer alone doesn't reach them, virt-install's
+own capability-driven default-resolution pipeline is the larger
+missing piece); `--print-diff` (needs a real diff algorithm, not
+built, flagged in `virt-xml.rs`'s own doc comment).
