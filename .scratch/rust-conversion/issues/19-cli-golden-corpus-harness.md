@@ -124,7 +124,20 @@ fixture. Confirmed the seed file is genuinely never mutated (`md5sum`
 before/after, both directly and now built into how the harness reasons
 about safety of reuse across cases).
 
-**Not yet done**: growing case coverage past 2 (blocked on more devices
+Extended to 15 checks / 6 cases (commit after `060ae94`): `--add-device`/
+`--remove-device` now also support `--print-xml` (same local-preview
+pattern, `list_add`/`remove_elements` against a locally-parsed copy
+instead of `Domain::add_device`/`edit_inactive_xml`'s real redefine —
+factored `fetch_and_parse_inactive`/`print_doc` once a third caller
+needed the same two steps). Checked `tests/test_cli.py` directly: no
+`--add-device`/`--remove-device` fixture exists for watchdog or vsock
+at all, so those 4 cases are self-verified against the real driver
+instead — labeled as such in the harness output, same rigor as
+`virtinst-cli/src/lib.rs`'s existing `add_then_remove_device_against_a_
+real_domain`/`add_then_remove_vsock_against_a_real_domain`, one level
+up through the real compiled binary.
+
+**Not yet done**: growing case coverage past 6 (blocked on more devices
 having a `{device}_from_optstr`/`apply_{device}_optstr` pair at all, not
 on the harness itself); extending to `virt-install`'s corpus (blocked on
 the capability-injection layer, still real future work — see above,

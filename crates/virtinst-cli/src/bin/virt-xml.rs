@@ -28,19 +28,24 @@
 //! running domain being edited/added-to here still behaves like
 //! upstream's own default, just without the opt-in extra.
 //!
-//! `--print-xml` on `--edit`, the one case built so far — upstream's
-//! `virtxml.py`'s own doc comment on the function backing it says it
-//! best: "Perform requested XML edits locally, but don't submit them to
-//! libvirt." One `inactive_xml()` read, the edit applied to that parsed
-//! copy same as the defining path, printed, `edit_inactive_xml`'s
-//! actual redefine call never happens. Real, not incidental: this is
-//! the only way to inspect an edit's effect against libvirt's `test://`
-//! driver from outside the process that made it — each `test://`
-//! connection is its own throwaway in-memory copy of its seed XML, a
-//! second `virsh`/process never sees what a first one defined (checked
-//! directly, not assumed). `--print-diff` isn't built — needs a real
-//! diff algorithm this crate doesn't have a use for yet beyond this one
-//! flag.
+//! `--print-xml`, on all three of `--edit`/`--add-device`/
+//! `--remove-device` — upstream's `virtxml.py`'s own doc comment on the
+//! function backing it says it best: "Perform requested XML edits
+//! locally, but don't submit them to libvirt." One `inactive_xml()`
+//! read, the same mutation each defining path already applies
+//! ([`apply_edit`]/[`list_add`]/[`remove_elements`]) run against that
+//! parsed copy instead, printed — the real redefine call never happens.
+//! Real, not incidental: this is the only way to inspect an action's
+//! effect against libvirt's `test://` driver from outside the process
+//! that made it — each `test://` connection is its own throwaway
+//! in-memory copy of its seed XML, a second `virsh`/process never sees
+//! what a first one defined (checked directly, not assumed; this is
+//! also upstream's own actual testing architecture, not a workaround —
+//! `tests/test_cli.py`'s compare mechanism checks captured stdout via
+//! `--print-diff`/`--print-xml`, never a live re-query of the
+//! connection, even for its own `--add-device`/`--remove-device`
+//! fixtures). `--print-diff` isn't built — needs a real diff algorithm
+//! this crate doesn't have a use for yet beyond this one flag.
 
 use clap::Parser;
 use virtinst_cli::{
@@ -48,7 +53,7 @@ use virtinst_cli::{
     watchdog_from_optstr,
 };
 use virtinst_core::connection::{Connection, Domain};
-use virtinst_xml::{parse_libvirt_xml, to_xml_string};
+use virtinst_xml::{list_add, parse_libvirt_xml, to_xml_string, Document, Element};
 
 #[derive(Parser)]
 #[command(name = "virt-xml")]
@@ -72,9 +77,9 @@ struct Args {
     #[arg(long, num_args = 0..=1, default_missing_value = "1")]
     edit: Option<String>,
 
-    /// Print the edited XML instead of defining it — the edit is
-    /// applied to a local, throwaway copy; libvirt never sees it.
-    /// `--edit` only so far.
+    /// Print the resulting XML instead of defining it — the action is
+    /// applied to a local, throwaway copy; libvirt never sees it. Works
+    /// with --edit/--add-device/--remove-device.
     #[arg(long)]
     print_xml: bool,
 
@@ -204,33 +209,83 @@ fn run_edit(args: &Args, selector: &str) {
     report(&domain_name, result);
 }
 
-/// The `--print-xml` path: one `inactive_xml()` read, the edit applied
-/// to that parsed copy exactly like [`run_edit`]'s defining path (same
-/// [`apply_edit`]), printed — `edit_inactive_xml`'s actual redefine call
-/// never happens. See this file's own doc comment for why this exists.
-fn run_print_xml_edit(args: &Args, device: &str, optstr: &str, selector: &str) {
-    let (_conn, domain, _domain_name) = connect_and_lookup(args);
+/// The `inactive_xml()`-fetch-then-parse step every `--print-xml` path
+/// needs before it can mutate a local copy — factored out once a third
+/// caller ([`run_print_xml_add_device`]/[`run_print_xml_remove_device`],
+/// alongside [`run_print_xml_edit`]) needed the exact same two steps.
+fn fetch_and_parse_inactive(domain: &virtinst_core::connection::Domain) -> (Document, Element) {
     let xml = domain.inactive_xml().unwrap_or_else(|e| {
         eprintln!("virt-xml: failed to fetch the domain's XML: {e}");
         std::process::exit(1);
     });
-    let mut doc = parse_libvirt_xml(&xml).unwrap_or_else(|e| {
+    let doc = parse_libvirt_xml(&xml).unwrap_or_else(|e| {
         eprintln!("virt-xml: failed to parse the domain's XML: {e}");
         std::process::exit(1);
     });
     let root = doc
         .root_element()
         .expect("a parsed domain document has a root element");
+    (doc, root)
+}
+
+/// Every `--print-xml` path ends the same way: serialize and print the
+/// locally-mutated copy — nothing was ever defined.
+fn print_doc(doc: &Document) {
+    let printed = doc
+        .write_str()
+        .expect("an edited domain document always serializes");
+    println!("{printed}");
+}
+
+/// The `--print-xml` path: one `inactive_xml()` read, the edit applied
+/// to that parsed copy exactly like [`run_edit`]'s defining path (same
+/// [`apply_edit`]), printed — `edit_inactive_xml`'s actual redefine call
+/// never happens. See this file's own doc comment for why this exists.
+fn run_print_xml_edit(args: &Args, device: &str, optstr: &str, selector: &str) {
+    let (_conn, domain, _domain_name) = connect_and_lookup(args);
+    let (mut doc, root) = fetch_and_parse_inactive(&domain);
 
     if let Err(e) = apply_edit(&mut doc, root, device, optstr, selector) {
         eprintln!("virt-xml: {e}");
         std::process::exit(1);
     }
+    print_doc(&doc);
+}
 
-    let printed = doc
-        .write_str()
-        .expect("an edited domain document always serializes");
-    println!("{printed}");
+/// [`run_print_xml_edit`]'s `--add-device` counterpart — [`list_add`]
+/// straight onto the parsed copy, same primitive
+/// [`virtinst_core::connection::Domain::add_device`]'s defining path
+/// uses internally.
+fn run_print_xml_add_device(args: &Args, device: &str, optstr: &str) {
+    let (_conn, domain, _domain_name) = connect_and_lookup(args);
+    let (mut doc, root) = fetch_and_parse_inactive(&domain);
+
+    match device {
+        "watchdog" => {
+            let dev = watchdog_from_optstr(optstr).unwrap_or_else(exit_on_err);
+            list_add(&mut doc, root, &["devices"], &dev);
+        }
+        "vsock" => {
+            let dev = vsock_from_optstr(optstr).unwrap_or_else(exit_on_err);
+            list_add(&mut doc, root, &["devices"], &dev);
+        }
+        _ => unreachable!(),
+    }
+    print_doc(&doc);
+}
+
+/// [`run_print_xml_edit`]'s `--remove-device` counterpart — same
+/// [`remove_elements`] the defining path uses, applied to the parsed
+/// copy instead of a document `edit_inactive_xml` will redefine.
+fn run_print_xml_remove_device(args: &Args, device: &str, selector: &str) {
+    let (_conn, domain, _domain_name) = connect_and_lookup(args);
+    let (mut doc, root) = fetch_and_parse_inactive(&domain);
+
+    if let Err(e) = remove_elements(&mut doc, root, device, selector) {
+        eprintln!("virt-xml: {e}");
+        std::process::exit(1);
+    }
+    print_doc(&doc);
 }
 
 /// The actual edit, shared between the defining path
@@ -258,8 +313,13 @@ fn apply_edit(
 
 fn run_add_device(args: &Args) {
     let (device, optstr) = device_optstr(args, "--add-device");
-    let (conn, domain, domain_name) = connect_and_lookup(args);
 
+    if args.print_xml {
+        run_print_xml_add_device(args, device, optstr);
+        return;
+    }
+
+    let (conn, domain, domain_name) = connect_and_lookup(args);
     let result = match device {
         "watchdog" => domain.add_device(
             &conn,
@@ -276,8 +336,13 @@ fn run_add_device(args: &Args) {
 
 fn run_remove_device(args: &Args) {
     let (device, selector) = device_optstr(args, "--remove-device");
-    let (conn, domain, domain_name) = connect_and_lookup(args);
 
+    if args.print_xml {
+        run_print_xml_remove_device(args, device, selector);
+        return;
+    }
+
+    let (conn, domain, domain_name) = connect_and_lookup(args);
     let result = domain.edit_inactive_xml(&conn, |doc, root| {
         remove_elements(doc, root, device, selector)?;
         Ok(())
