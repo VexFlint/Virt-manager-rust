@@ -121,6 +121,40 @@ run_virt_xml_action() {
         test-for-virtxml "$action" --print-xml "$@"
 }
 
+# run_virt_xml_select SELECTOR ARGS... — like run_virt_xml, but with an
+# explicit --edit selector instead of the bare (index-1-default) form,
+# for the field-match cases below (select_elements_by_selector).
+run_virt_xml_select() {
+    local selector="$1"
+    shift
+    VIRTINST_TEST_PREDICTABLE=1 "$BIN" --connect "test://$TESTSUITE_XML" \
+        test-for-virtxml --edit "$selector" --print-xml "$@"
+}
+
+# check_fails_with CMD... EXPECTED_STDERR LABEL — runs a command
+# expected to *fail*, and checks its stderr against an exact expected
+# string (upstream's own add_invalid fixtures pin exact error text).
+check_fails_with() {
+    local label="${@: -1}"
+    local expected="${@: -2:1}"
+    local args=("${@:1:$#-2}")
+    local actual
+    if actual="$("${args[@]}" 2>&1 >/dev/null)"; then
+        echo "  FAIL: $label (expected failure, command succeeded)"
+        fail=$((fail + 1))
+        return
+    fi
+    if [[ "$actual" == *"$expected"* ]]; then
+        echo "  PASS: $label"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL: $label"
+        echo "        expected substring: $expected"
+        echo "        actual stderr:      $actual"
+        fail=$((fail + 1))
+    fi
+}
+
 echo
 echo "=== edit-simple-watchdog ==="
 echo "  upstream: tests/data/cli/compare/virt-xml-edit-simple-watchdog.xml"
@@ -216,6 +250,27 @@ check_xpath "$xml" "string(//disk[1]/target/@bus)" "sata" "bus changed to sata"
 check_xpath "$xml" "string(//disk[1]/target/@dev)" "fda" "target dev untouched"
 check_xpath "$xml" "string(//disk[1]/@type)" "block" "disk type untouched"
 
+echo
+echo "=== edit-select-disk-target ==="
+echo "  upstream: tests/data/cli/compare/virt-xml-edit-select-disk-target.xml"
+echo "  cmd: --edit target=hda --disk /dev/null (field-match selector, disk's target/target.dev alias)"
+xml="$(run_virt_xml_select target=hda --disk /dev/null)"
+check_xpath "$xml" "string(//disk[target/@dev='hda']/source/@file)" "/dev/null" "the hda disk's path changed"
+
+echo
+echo "=== edit-select-disk-path ==="
+echo "  upstream: tests/data/cli/compare/virt-xml-edit-select-disk-path.xml"
+echo "  cmd: --edit /tmp/foobar2 --disk shareable=off,readonly=on (field-match, disk's path/remove_first)"
+xml="$(run_virt_xml_select /tmp/foobar2 --disk shareable=off,readonly=on)"
+check_xpath "$xml" "count(//disk[source/@file='/tmp/foobar2']/readonly)" "1" "readonly added to the matched disk"
+check_xpath "$xml" "count(//disk[source/@file='/tmp/foobar2']/shareable)" "0" "shareable removed from the matched disk"
+
+echo
+echo "=== add_invalid: no matching objects (exact upstream error text) ==="
+echo "  upstream: tests/test_cli.py's add_invalid for '--edit target=vvv --disk /dev/null'"
+check_fails_with "$BIN" --connect "test://$TESTSUITE_XML" test-for-virtxml --edit target=vvv --print-xml --disk /dev/null \
+    "No matching objects found for --edit target=vvv" "exact upstream error text"
+
 # --memballoon cases. Sixth device, small field set (model/autodeflate/
 # stats.period/freePageReporting), three real upstream fixtures — see
 # virtinst-cli/src/lib.rs's memballoon_from_optstr/apply_memballoon_optstr
@@ -248,10 +303,7 @@ check_xpath "$xml" "count(//memballoon)" "0" "the only memballoon is gone"
 # --sound / --video cases. Both structs already existed in
 # virtinst-core; this is CLI optstring wiring only — see
 # sound_from_optstr/video_from_optstr's own doc comments in
-# virtinst-cli/src/lib.rs. remove-sound-model needs a field-match
-# selector ("ich6", not an index/all) that select_elements doesn't
-# support yet, so it's skipped here rather than faked with a different
-# optstring — same discipline as edit-disk's out-of-reach fixtures.
+# virtinst-cli/src/lib.rs.
 
 echo
 echo "=== edit-simple-soundhw ==="
@@ -266,6 +318,24 @@ echo "  upstream: tests/data/cli/compare/virt-xml-add-sound.xml"
 echo "  cmd: --add-device --sound pcspk"
 xml="$(run_virt_xml_action --add-device --sound pcspk)"
 check_xpath "$xml" "string(//sound[last()]/@model)" "pcspk" "new sound has the given model"
+
+echo
+echo "=== edit-select-sound-model ==="
+echo "  upstream: tests/data/cli/compare/virt-xml-edit-select-sound-model.xml"
+echo "  cmd: --edit ich6 --sound pcspk (field-match selector, not an index)"
+xml="$(run_virt_xml_select ich6 --sound pcspk)"
+check_xpath "$xml" "count(//sound[@model='ich6'])" "0" "the ich6 sound is gone (renamed)"
+check_xpath "$xml" "count(//sound[@model='pcspk'])" "1" "...to pcspk"
+check_xpath "$xml" "count(//sound[@model='sb16'])" "1" "sb16 untouched"
+check_xpath "$xml" "count(//sound[@model='es1370'])" "1" "es1370 untouched"
+
+echo
+echo "=== remove-sound-model ==="
+echo "  upstream: tests/data/cli/compare/virt-xml-remove-sound-model.xml"
+echo "  cmd: --remove-device --sound ich6 (field-match selector, not an index)"
+xml="$(run_virt_xml_action --remove-device --sound ich6)"
+check_xpath "$xml" "count(//sound[@model='ich6'])" "0" "the ich6 sound is gone"
+check_xpath "$xml" "count(//sound)" "2" "the other two remain"
 
 echo
 echo "=== edit-simple-video ==="

@@ -174,6 +174,23 @@ pure CLI wiring). Four real upstream fixtures covered exactly
 by its own attribute value rather than index/`all`), same deferred gap
 flagged since the very first version of `select_elements`.
 
+**The field-match `--edit`/`--remove-device` selector form is now
+built** (`select_elements`'s own doc comment had flagged it since the
+very first version) — `select_elements_by_selector`/
+`remove_elements_by_selector` in `virtinst-cli/src/lib.rs`: when a
+selector isn't an index or `"all"`, parse it as the device's own
+optstring (same `remove_first` splice, same parser upstream literally
+reuses via `parserclass(editval, guest=guest)`) and match existing
+elements whose current field values equal what was given. Grew the
+harness to 44 checks / 21 cases: five real upstream fixtures unlocked
+(`edit-select-sound-model`, `remove-sound-model`,
+`edit-select-disk-target`, `edit-select-disk-path`, plus the exact
+`add_invalid` error text for `--edit target=vvv --disk /dev/null`) —
+all five match exactly, including the pinned error string
+(`"No matching objects found for --edit target=vvv"`). A sixth
+(`remove-disk-path`) needs block-device `source.dev` handling, same
+already-documented gap `edit-simple-disk` has, not a new one.
+
 **Not yet done**: growing case/device coverage further (blocked on more
 devices having a `{device}_from_optstr`/`apply_{device}_optstr` pair at
 all, not on the harness itself — and for `--disk` specifically, on
@@ -181,7 +198,4 @@ extending past this session's partial slice); extending to
 `virt-install`'s corpus (blocked on the capability-injection layer,
 still real future work — see above, this is *not* what the
 `testsuite.xml` finding resolved); `--print-diff` (needs a real diff
-algorithm, not built, flagged in `virt-xml.rs`'s own doc comment); the
-field-match `--edit`/`--remove-device` selector form (`select_elements`'s
-own doc comment already flags it — `remove-sound-model` is the first
-case actually blocked on it, not just a theoretical gap anymore).
+algorithm, not built, flagged in `virt-xml.rs`'s own doc comment).
