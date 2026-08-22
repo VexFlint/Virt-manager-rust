@@ -20,13 +20,27 @@
 //! flag that parses is worse than an absent one.
 //!
 //! `--add-device`/`--edit`'s output contract is also deliberately
-//! narrower than upstream for now: this always defines the change
-//! (upstream's default when a domain is given and no
-//! `--print-xml`/`--no-define` is passed), with no `--update` (live
+//! narrower than upstream for now: absent `--print-xml`, this always
+//! defines the change (upstream's default when a domain is given and
+//! no `--print-xml`/`--no-define` is passed), with no `--update` (live
 //! hotplug alongside the persistent define) support yet — upstream
 //! itself only hotplugs when `--update` is explicitly passed, so a
 //! running domain being edited/added-to here still behaves like
 //! upstream's own default, just without the opt-in extra.
+//!
+//! `--print-xml` on `--edit`, the one case built so far — upstream's
+//! `virtxml.py`'s own doc comment on the function backing it says it
+//! best: "Perform requested XML edits locally, but don't submit them to
+//! libvirt." One `inactive_xml()` read, the edit applied to that parsed
+//! copy same as the defining path, printed, `edit_inactive_xml`'s
+//! actual redefine call never happens. Real, not incidental: this is
+//! the only way to inspect an edit's effect against libvirt's `test://`
+//! driver from outside the process that made it — each `test://`
+//! connection is its own throwaway in-memory copy of its seed XML, a
+//! second `virsh`/process never sees what a first one defined (checked
+//! directly, not assumed). `--print-diff` isn't built — needs a real
+//! diff algorithm this crate doesn't have a use for yet beyond this one
+//! flag.
 
 use clap::Parser;
 use virtinst_cli::{
@@ -34,7 +48,7 @@ use virtinst_cli::{
     watchdog_from_optstr,
 };
 use virtinst_core::connection::{Connection, Domain};
-use virtinst_xml::to_xml_string;
+use virtinst_xml::{parse_libvirt_xml, to_xml_string};
 
 #[derive(Parser)]
 #[command(name = "virt-xml")]
@@ -57,6 +71,12 @@ struct Args {
     /// selects by position; `--edit all` selects every object.
     #[arg(long, num_args = 0..=1, default_missing_value = "1")]
     edit: Option<String>,
+
+    /// Print the edited XML instead of defining it — the edit is
+    /// applied to a local, throwaway copy; libvirt never sees it.
+    /// `--edit` only so far.
+    #[arg(long)]
+    print_xml: bool,
 
     /// Add the device described by --watchdog/--vsock.
     #[arg(long)]
@@ -171,20 +191,69 @@ fn exit_on_err<T>(e: String) -> T {
 
 fn run_edit(args: &Args, selector: &str) {
     let (device, optstr) = device_optstr(args, "--edit");
-    let (conn, domain, domain_name) = connect_and_lookup(args);
 
+    if args.print_xml {
+        run_print_xml_edit(args, device, optstr, selector);
+        return;
+    }
+
+    let (conn, domain, domain_name) = connect_and_lookup(args);
     let result = domain.edit_inactive_xml(&conn, |doc, root| {
-        let els = select_elements(doc, root, device, selector)?;
-        for el in els {
-            match device {
-                "watchdog" => apply_watchdog_optstr(doc, el, optstr)?,
-                "vsock" => apply_vsock_optstr(doc, el, optstr)?,
-                _ => unreachable!(),
-            }
-        }
-        Ok(())
+        apply_edit(doc, root, device, optstr, selector)
     });
     report(&domain_name, result);
+}
+
+/// The `--print-xml` path: one `inactive_xml()` read, the edit applied
+/// to that parsed copy exactly like [`run_edit`]'s defining path (same
+/// [`apply_edit`]), printed — `edit_inactive_xml`'s actual redefine call
+/// never happens. See this file's own doc comment for why this exists.
+fn run_print_xml_edit(args: &Args, device: &str, optstr: &str, selector: &str) {
+    let (_conn, domain, _domain_name) = connect_and_lookup(args);
+    let xml = domain.inactive_xml().unwrap_or_else(|e| {
+        eprintln!("virt-xml: failed to fetch the domain's XML: {e}");
+        std::process::exit(1);
+    });
+    let mut doc = parse_libvirt_xml(&xml).unwrap_or_else(|e| {
+        eprintln!("virt-xml: failed to parse the domain's XML: {e}");
+        std::process::exit(1);
+    });
+    let root = doc
+        .root_element()
+        .expect("a parsed domain document has a root element");
+
+    if let Err(e) = apply_edit(&mut doc, root, device, optstr, selector) {
+        eprintln!("virt-xml: {e}");
+        std::process::exit(1);
+    }
+
+    let printed = doc
+        .write_str()
+        .expect("an edited domain document always serializes");
+    println!("{printed}");
+}
+
+/// The actual edit, shared between the defining path
+/// ([`Domain::edit_inactive_xml`]'s closure) and the local-only
+/// `--print-xml` path — both need the exact same select-then-apply
+/// sequence against an already-parsed `Document`, just with a different
+/// caller deciding what happens to the result afterward.
+fn apply_edit(
+    doc: &mut virtinst_xml::Document,
+    root: virtinst_xml::Element,
+    device: &str,
+    optstr: &str,
+    selector: &str,
+) -> Result<(), String> {
+    let els = select_elements(doc, root, device, selector)?;
+    for el in els {
+        match device {
+            "watchdog" => apply_watchdog_optstr(doc, el, optstr)?,
+            "vsock" => apply_vsock_optstr(doc, el, optstr)?,
+            _ => unreachable!(),
+        }
+    }
+    Ok(())
 }
 
 fn run_add_device(args: &Args) {

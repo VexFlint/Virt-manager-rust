@@ -85,3 +85,49 @@ layer for the KVM/x86 (and other arch) fixture subset.
   this ticket's main finding is about. The harness can open that XML
   file directly through the real `virt` crate with no interception
   layer needed for *this* part.
+- **The `test://` driver's state is per-process and ephemeral** —
+  checked directly: editing+defining via one process, then reading back
+  via a second `virsh`/process invocation against the same seed file,
+  sees none of the first process's changes (each connection gets its
+  own throwaway in-memory copy). Rules out "run the CLI binary, then
+  inspect via a separate `virsh dumpxml`" as a harness shape entirely.
+  Resolved by porting upstream's `--print-xml` (`virt-xml`, commit
+  below) — pure local preview, upstream's own doc comment says it
+  outright ("perform requested XML edits locally, but don't submit them
+  to libvirt"), so the edit and the inspection happen in one process
+  invocation that can see both.
+- **Compare fixtures with a `test-for-virtxml`-style domain name use a
+  *different* seed file than the URI survey above implied**: `vixml`
+  (virt-xml's `App`) defaults to `utils.URIs.test_suite` →
+  `tests/data/testdriver/testsuite.xml`, not `testdriver.xml` — a
+  separate, richer fixture file with more pre-defined domains. No
+  `caps=`/`domcaps=` override on this URI at all, only `,predictable` —
+  meaning **virt-xml's entire `--edit`/`--add-device`/`--remove-device`
+  compare corpus needs none of the capability-injection layer** this
+  ticket's main finding scoped as follow-up; that gap is specific to
+  `virt-install`'s per-arch default-device-selection logic, which
+  `--edit`-an-existing-domain never exercises.
+
+## Harness built (commit range starting `<TODO fill after commit>`)
+
+`.scratch/rust-conversion/harness/run.sh` — runs the real compiled
+`virt-xml` binary against `test-for-virtxml` (loaded from upstream's own
+`testsuite.xml`, `VIRTINST_TEST_PREDICTABLE=1` set) via `--print-xml`,
+checks specific `xmllint --xpath` assertions against what each named
+upstream compare file's diff documents, reports pass/fail per case. Two
+cases wired so far (`edit-simple-watchdog`, `edit-simple-vsock` — the
+same two the `golden_edit_simple_*` unit tests in `virtinst-cli/src/
+lib.rs` already covered with a hand-typed fixture) — this is the
+stronger proof of the two: real compiled binary, real upstream fixture
+domain, real `test://` driver round-trip, not an in-memory synthetic
+fixture. Confirmed the seed file is genuinely never mutated (`md5sum`
+before/after, both directly and now built into how the harness reasons
+about safety of reuse across cases).
+
+**Not yet done**: growing case coverage past 2 (blocked on more devices
+having a `{device}_from_optstr`/`apply_{device}_optstr` pair at all, not
+on the harness itself); extending to `virt-install`'s corpus (blocked on
+the capability-injection layer, still real future work — see above,
+this is *not* what the `testsuite.xml` finding resolved); `--print-diff`
+(needs a real diff algorithm, not built, flagged in `virt-xml.rs`'s own
+doc comment).
