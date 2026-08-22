@@ -3584,6 +3584,37 @@ mod tests {
         assert!(!dev.readonly);
     }
 
+    /// The one arm in `apply_filesystem_optstr` where an alias remaps
+    /// the attribute name (`mode` -> `accessmode`) — the clear path
+    /// (`key=`, [`required_value`]'s `Ok(None)` case) has to remove the
+    /// *remapped* name, not an attribute literally called `mode` (which
+    /// never existed). Nothing else exercised this: every filesystem
+    /// test/fixture so far only sets `mode=mapped`, never clears it.
+    #[test]
+    fn apply_filesystem_optstr_mode_alias_clears_the_remapped_accessmode_attribute() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <filesystem type="mount" accessmode="passthrough">
+      <source dir="/foo/bar"/>
+      <target dir="/bar/baz"/>
+    </filesystem>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "filesystem", "1").unwrap()[0];
+
+        apply_filesystem_optstr(&mut doc, el, "mode=").unwrap();
+
+        assert_eq!(
+            el.attribute(&doc, "accessmode"),
+            None,
+            "accessmode removed, not an attribute literally named \"mode\""
+        );
+        assert_eq!(el.attribute(&doc, "type"), Some("mount"), "untouched");
+    }
+
     /// Golden fixture, pinned against upstream's own
     /// `tests/data/cli/compare/virt-xml-edit-simple-filesystem.xml`:
     /// `virt-xml --edit --filesystem /1/2/3,/4/5/6,mode=mapped` against
