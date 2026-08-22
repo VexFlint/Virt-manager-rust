@@ -63,19 +63,21 @@ layer for the KVM/x86 (and other arch) fixture subset.
   `virt-xml-edit-simple-watchdog.xml`, `virt-xml-edit-simple-vsock.xml`
   (see the `golden_edit_simple_*` tests in `virtinst-cli/src/lib.rs`,
   commit `2ea8f52`).
-- **Even the `test:///`-only subset needs a "predictable" mode.**
-  `URI-TEST-FULL`/`URI-TEST-REMOTE` both route through upstream's
-  `MagicURI` with a `,predictable` flag — real UUIDs/MACs would never
-  match a golden fixture otherwise. Traced the exact mechanism
-  (`virtinst/guest.py:125`, `virtinst/devices/interface.py:111`): a
-  fixed UUID constant (`"00000000-1111-2222-3333-444444444444"`) and a
-  MAC that's always `"00:11:22:33:44:55"` unless the env var
-  `VIRTINST_TEST_SUITE_INCREMENT_MACADDR` is set (then a process-global
-  counter increments the last hex digit per call, reset to 0 after each
-  generation otherwise). Small to port — `virtinst-core`'s `Guest`/
-  `DeviceInterface` UUID/MAC generation needs an equivalent predictable
-  toggle before *any* fixture compare will match, not just the
-  KVM/x86 ones.
+- **Even the `test:///`-only subset needs a "predictable" mode — built,
+  commit `86ea310`.** `URI-TEST-FULL`/`URI-TEST-REMOTE` both route
+  through upstream's `MagicURI` with a `,predictable` flag — real
+  UUIDs/MACs would never match a golden fixture otherwise. Ported the
+  exact mechanism (`virtinst/guest.py:125`, `virtinst/devices/
+  interface.py:111`) into `virtinst-core::cloner`'s `generate_uuid`/
+  `generate_mac`: a fixed UUID constant, and a MAC that's always
+  `"00:11:22:33:44:55"` unless `VIRTINST_TEST_SUITE_INCREMENT_MACADDR`
+  is also set (then a process-global counter increments the last
+  digit). Gated by `VIRTINST_TEST_PREDICTABLE`, an env var rather than
+  a threaded flag — see the commit message for why that's sufficient
+  (this harness spawns each CLI binary as its own OS process, so
+  predictable/non-predictable are never needed in the same one).
+  **Not yet used by anything** — the harness script itself still
+  doesn't exist to set this var.
 - **`test:///<path-to-xml>` as the connection URI is a real native
   libvirt `test://` driver feature** (loading `tests/data/testdriver/
   testdriver.xml` as backing state), separate from the `caps=`/
