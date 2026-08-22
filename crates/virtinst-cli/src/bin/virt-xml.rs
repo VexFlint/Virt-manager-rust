@@ -41,7 +41,7 @@
 //! function backing it says it best: "Perform requested XML edits
 //! locally, but don't submit them to libvirt." One `inactive_xml()`
 //! read, the same mutation each defining path already applies
-//! ([`apply_edit`]/[`list_add`]/[`remove_elements`]) run against that
+//! ([`apply_edit`]/[`list_add`]/[`remove_elements_by_selector`]) run against that
 //! parsed copy instead, printed — the real redefine call never happens.
 //! Real, not incidental: this is the only way to inspect an action's
 //! effect against libvirt's `test://` driver from outside the process
@@ -59,8 +59,8 @@ use clap::Parser;
 use virtinst_cli::{
     apply_disk_optstr, apply_memballoon_optstr, apply_sound_optstr, apply_video_optstr,
     apply_vsock_optstr, apply_watchdog_optstr, disk_from_optstr, memballoon_from_optstr,
-    remove_elements, select_elements, sound_from_optstr, video_from_optstr, vsock_from_optstr,
-    watchdog_from_optstr,
+    remove_elements_by_selector, select_elements_by_selector, sound_from_optstr, video_from_optstr,
+    vsock_from_optstr, watchdog_from_optstr,
 };
 use virtinst_core::connection::{Connection, Domain};
 use virtinst_xml::{list_add, parse_libvirt_xml, to_xml_string, Document, Element};
@@ -357,13 +357,13 @@ fn run_print_xml_add_device(args: &Args, device: &str, optstr: &str) {
 }
 
 /// [`run_print_xml_edit`]'s `--remove-device` counterpart — same
-/// [`remove_elements`] the defining path uses, applied to the parsed
+/// [`remove_elements_by_selector`] the defining path uses, applied to the parsed
 /// copy instead of a document `edit_inactive_xml` will redefine.
 fn run_print_xml_remove_device(args: &Args, device: &str, selector: &str) {
     let (_conn, domain, _domain_name) = connect_and_lookup(args);
     let (mut doc, root) = fetch_and_parse_inactive(&domain);
 
-    if let Err(e) = remove_elements(&mut doc, root, device, selector) {
+    if let Err(e) = remove_elements_by_selector(&mut doc, root, device, "remove-device", selector) {
         eprintln!("virt-xml: {e}");
         std::process::exit(1);
     }
@@ -382,7 +382,7 @@ fn apply_edit(
     optstr: &str,
     selector: &str,
 ) -> Result<(), String> {
-    let els = select_elements(doc, root, device, selector)?;
+    let els = select_elements_by_selector(doc, root, device, "edit", selector)?;
     for el in els {
         match device {
             "watchdog" => apply_watchdog_optstr(doc, el, optstr)?,
@@ -443,7 +443,7 @@ fn run_remove_device(args: &Args) {
 
     let (conn, domain, domain_name) = connect_and_lookup(args);
     let result = domain.edit_inactive_xml(&conn, |doc, root| {
-        remove_elements(doc, root, device, selector)?;
+        remove_elements_by_selector(doc, root, device, "remove-device", selector)?;
         Ok(())
     });
     report(&domain_name, result);

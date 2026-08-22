@@ -167,12 +167,17 @@ pub fn watchdog_from_optstr(optstr: &str) -> Result<DeviceWatchdog, String> {
 /// exactly: `_find_objects_to_edit`'s own index/bounds `fail()` calls
 /// hardcode `"--edit"` regardless of `action_name` too, only the
 /// selector-string branch's message actually varies by action. Not a
-/// gap introduced here. **Not yet ported**:
-/// upstream's third form, a bare selector string matched against an
-/// existing device's own fields (e.g. `--edit action=reset` finding
-/// the device that already has `action="reset"`,
-/// `lookup_child_from_option_string`) — flagged rather than built,
-/// no second selector-string consumer yet to generalize from.
+/// gap introduced here. Upstream's third selector form — a bare string
+/// matched against an existing device's own field values (e.g. `--edit
+/// ich6 --sound pcspk` finding the `<sound>` whose `model` is already
+/// `"ich6"`) — is *not* handled here; [`select_elements_by_selector`]
+/// wraps this function and adds that form on top, once
+/// `remove-sound-model` made it a real blocker rather than a
+/// theoretical one. Direct callers of this function keep getting the
+/// plain "not a number or 'all'" error on a non-numeric, non-`"all"`
+/// selector — that's intentional, not a regression: `select_elements`
+/// itself still only knows index math, same as its own tests always
+/// assumed.
 pub fn select_elements(
     doc: &Document,
     domain_root: Element,
@@ -222,6 +227,184 @@ pub fn select_watchdog_elements(
     selector: &str,
 ) -> Result<Vec<Element>, String> {
     select_elements(doc, domain_root, "watchdog", selector)
+}
+
+/// Where a device's optstring `cliname` reads or writes on its element
+/// — a self-attribute, or an attribute one or more levels down a
+/// nested-element chain. The read half (`field_value`, backing the
+/// field-match selector below) and the write half (every
+/// `apply_{device}_optstr`'s plain-attribute match arms) both encode
+/// this same alias knowledge; **kept as two hand-written copies here**
+/// rather than sharing code — the write side also has to interleave
+/// per-field validation (`parse_int`/`parse_onoff`/`required_value`'s
+/// clear rule) that the read side never needs, so a shared table would
+/// only cover the location half anyway. Every entry below is copied
+/// directly from its device's real `apply_*_optstr`/`*_from_optstr`
+/// match arms (not re-derived or guessed) and re-verified against real
+/// upstream fixtures (`edit-select-disk-target`,
+/// `edit-select-disk-path`, `edit-select-sound-model`) once built —
+/// if a device's aliases ever change, both copies need updating.
+enum FieldLoc {
+    SelfAttr(&'static str),
+    Nested(&'static [&'static str], &'static str),
+}
+
+/// See [`FieldLoc`]'s doc comment. Only covers plain attribute-valued
+/// fields — present-bool fields (`--disk readonly`/`shareable`/
+/// `transient`) and derived ones (`--disk perms`) have no single
+/// location to compare against and aren't selector-matchable here,
+/// same as upstream's own `lookup_param` returning `None`/skipping for
+/// argument kinds it can't compare structurally either.
+fn field_loc(device: &str, cliname: &str) -> Option<FieldLoc> {
+    use FieldLoc::{Nested, SelfAttr};
+    match (device, cliname) {
+        ("watchdog", "model") => Some(SelfAttr("model")),
+        ("watchdog", "action") => Some(SelfAttr("action")),
+        ("vsock", "model") => Some(SelfAttr("model")),
+        ("vsock", "cid.auto") => Some(Nested(&["cid"], "auto")),
+        ("vsock", "cid.address") => Some(Nested(&["cid"], "address")),
+        ("memballoon", "model") => Some(SelfAttr("model")),
+        ("memballoon", "autodeflate") => Some(SelfAttr("autodeflate")),
+        ("memballoon", "freePageReporting") => Some(SelfAttr("freePageReporting")),
+        ("memballoon", "stats.period") => Some(Nested(&["stats"], "period")),
+        ("disk", "path") => Some(Nested(&["source"], "file")),
+        ("disk", "device") => Some(SelfAttr("device")),
+        ("disk", "type") => Some(SelfAttr("type")),
+        ("disk", "bus" | "target.bus") => Some(Nested(&["target"], "bus")),
+        ("disk", "target" | "target.dev") => Some(Nested(&["target"], "dev")),
+        ("disk", "driver.name") => Some(Nested(&["driver"], "name")),
+        ("disk", "driver.type") => Some(Nested(&["driver"], "type")),
+        ("sound", "model") => Some(SelfAttr("model")),
+        ("sound", "multichannel") => Some(SelfAttr("multichannel")),
+        ("sound", "streams") => Some(SelfAttr("streams")),
+        ("sound", "audio.id") => Some(Nested(&["audio"], "id")),
+        ("video", "model.type") => Some(Nested(&["model"], "type")),
+        ("video", "model.heads") => Some(Nested(&["model"], "heads")),
+        ("video", "model.ram") => Some(Nested(&["model"], "ram")),
+        ("video", "model.vram") => Some(Nested(&["model"], "vram")),
+        ("video", "model.vram64") => Some(Nested(&["model"], "vram64")),
+        ("video", "model.vgamem") => Some(Nested(&["model"], "vgamem")),
+        ("video", "model.acceleration.accel3d") => {
+            Some(Nested(&["model", "acceleration"], "accel3d"))
+        }
+        _ => None,
+    }
+}
+
+/// Reads whatever's currently at a [`FieldLoc`] — `None` if the nested
+/// chain (or the attribute itself) isn't there at all, same "absent"
+/// meaning `resolve_path` already uses.
+fn field_value(doc: &Document, el: Element, loc: &FieldLoc) -> Option<String> {
+    match loc {
+        FieldLoc::SelfAttr(attr) => el.attribute(doc, attr).map(String::from),
+        FieldLoc::Nested(path, attr) => resolve_path(doc, el, path)?
+            .attribute(doc, attr)
+            .map(String::from),
+    }
+}
+
+/// Each device's `remove_first` list — the same array every
+/// `{device}_from_optstr`/`apply_{device}_optstr` already splices with
+/// inline, factored out once [`select_by_field_match`] needed the exact
+/// same list for a second purpose: splicing a bare positional selector
+/// (`--edit ich6 --sound pcspk`'s `"ich6"`) the same way a bare
+/// positional *value* already splices (`--sound pcspk`'s `"pcspk"`) —
+/// upstream reuses the identical `parserclass(editval, ...)` parse path
+/// for both, so this does too.
+fn device_remove_first(device: &str) -> &'static [&'static str] {
+    match device {
+        "video" => &["model.type"],
+        "disk" => &["path"],
+        _ => &["model"],
+    }
+}
+
+/// The field-match half of upstream's `_find_objects_to_edit` —
+/// `lookup_child_from_option_string`, reached once
+/// [`select_elements_by_selector`] has already ruled out an index or
+/// `"all"`. Parses `selector` as this device's own optstring (through
+/// [`device_remove_first`]'s splice, same as a real `--{device}`
+/// value), then keeps every existing element whose current value at
+/// each named field equals what was given — *every* named field must
+/// match, a single mismatch excludes that element.
+///
+/// An unrecognized cliname is a hard error here, deliberately unlike
+/// `apply_*_optstr`'s own `_ => {}` no-op arms: a no-op *filter* would
+/// silently match every element instead of properly failing (matches
+/// upstream's `_check_leftover_opts`, called after
+/// `_optdict_to_param_list` pops every matched key — anything left over
+/// fails). **Known gap, not chased**: upstream's real per-device field
+/// set is wider than this crate's partial slices (e.g. `--disk`'s real
+/// indexed `seclabel[N]*` fields aren't modeled at all), so a selector
+/// naming a real upstream field this crate doesn't model yet hits this
+/// same "unrecognized" error rather than upstream's actual "no matching
+/// objects" — out of reach for the same documented reason those fields
+/// are unimplemented in the first place, not a new gap. Also unlike
+/// upstream: `is_onoff` selector values (e.g. a hypothetical
+/// `cid.auto=on` selector) are compared as the raw string, not
+/// converted to a bool first — no reachable fixture uses a boolean
+/// selector value (every one is a name, a path, a MAC, a hex address —
+/// checked directly against `test_cli.py`), so this is a real but
+/// unexercised divergence, not a checked-and-dismissed one.
+fn select_by_field_match(
+    doc: &Document,
+    domain_root: Element,
+    tag: &str,
+    action: &str,
+    selector: &str,
+) -> Result<Vec<Element>, String> {
+    let mut tuples = parse_optstr_tuples(selector);
+    splice_remove_first(&mut tuples, device_remove_first(tag));
+
+    let mut filters = Vec::new();
+    for (cliname, val) in tuples {
+        let loc = field_loc(tag, &cliname)
+            .ok_or_else(|| format!("--{tag} has no option named '{cliname}'"))?;
+        let expected = required_value(&cliname, val)?.unwrap_or_default();
+        filters.push((loc, expected));
+    }
+
+    let all: Vec<Element> = match resolve_path(doc, domain_root, &["devices"]) {
+        Some(devices) => devices.find_all(doc, tag),
+        None => Vec::new(),
+    };
+
+    let matches: Vec<Element> = all
+        .into_iter()
+        .filter(|el| {
+            filters.iter().all(|(loc, expected)| {
+                field_value(doc, *el, loc).as_deref() == Some(expected.as_str())
+            })
+        })
+        .collect();
+
+    if matches.is_empty() {
+        return Err(format!(
+            "No matching objects found for --{action} {selector}"
+        ));
+    }
+    Ok(matches)
+}
+
+/// The real top-level entry point `--edit`/`--remove-device` should
+/// call from now on — upstream's own `_find_objects_to_edit` in full:
+/// index/`"all"` via [`select_elements`] unchanged, anything else via
+/// [`select_by_field_match`]. `action` is only used on the field-match
+/// path (`"edit"`/`"remove-device"`, matching upstream's own two call
+/// sites) — the index/bounds error messages [`select_elements`]
+/// produces internally hardcode `"--edit"` regardless, per that
+/// function's own doc comment.
+pub fn select_elements_by_selector(
+    doc: &Document,
+    domain_root: Element,
+    tag: &str,
+    action: &str,
+    selector: &str,
+) -> Result<Vec<Element>, String> {
+    if selector == "all" || selector.parse::<i64>().is_ok() {
+        return select_elements(doc, domain_root, tag, selector);
+    }
+    select_by_field_match(doc, domain_root, tag, action, selector)
 }
 
 /// Applies a `--watchdog` optstring's named attributes directly onto an
@@ -890,26 +1073,21 @@ fn check_int_or_clear(cliname: &str, val: Option<String>) -> Result<Option<Strin
 /// `--remove-device`'s path, for any device `tag` — upstream's
 /// `action_remove_device`: the exact same [`select_elements`] `--edit`
 /// uses (upstream reuses `_find_objects_to_edit` for both), then one
-/// `guest.remove_device(dev)` per match instead of a mutation. Note
-/// `selector` here is the device flag's own value, not a `model=`/
-/// `action=` optstring — upstream's `--remove-device --watchdog 1`
-/// passes `"1"` straight through as the selector
-/// (`action.parservalue[-1]` in `virtxml.py`), the device flag's value
-/// slot means something different depending on which action flag is
-/// active. Returns how many elements were removed, for a caller that
-/// wants to report it.
+/// `guest.remove_device(dev)` per match instead of a mutation. `selector`
+/// here is the device flag's own value — upstream's `--remove-device
+/// --watchdog 1` passes `"1"` straight through as the selector
+/// (`action.parservalue[-1]` in `virtxml.py`). Only handles the
+/// index/`"all"` forms [`select_elements`] does; see
+/// [`remove_elements_by_selector`] for the field-match form
+/// `--remove-device --sound ich6` needs. Returns how many elements were
+/// removed, for a caller that wants to report it.
 pub fn remove_elements(
     doc: &mut Document,
     domain_root: Element,
     tag: &str,
     selector: &str,
 ) -> Result<usize, String> {
-    let els = select_elements(doc, domain_root, tag, selector)?;
-    let count = els.len();
-    for el in els {
-        list_remove(doc, el).map_err(|e| e.to_string())?;
-    }
-    Ok(count)
+    detach_elements(doc, select_elements(doc, domain_root, tag, selector)?)
 }
 
 /// Thin wrapper over [`remove_elements`], kept so existing call sites
@@ -920,6 +1098,34 @@ pub fn remove_watchdog_elements(
     selector: &str,
 ) -> Result<usize, String> {
     remove_elements(doc, domain_root, "watchdog", selector)
+}
+
+/// [`remove_elements`]'s [`select_elements_by_selector`] counterpart —
+/// the version `--remove-device`'s real dispatch should call, so a
+/// field-match selector like `--remove-device --sound ich6`
+/// (`remove-sound-model`'s real fixture) resolves the same way `--edit`
+/// does rather than being rejected as "not a number or 'all'".
+pub fn remove_elements_by_selector(
+    doc: &mut Document,
+    domain_root: Element,
+    tag: &str,
+    action: &str,
+    selector: &str,
+) -> Result<usize, String> {
+    detach_elements(
+        doc,
+        select_elements_by_selector(doc, domain_root, tag, action, selector)?,
+    )
+}
+
+/// Shared by [`remove_elements`]/[`remove_elements_by_selector`]: detach
+/// every already-selected element, return how many.
+fn detach_elements(doc: &mut Document, els: Vec<Element>) -> Result<usize, String> {
+    let count = els.len();
+    for el in els {
+        list_remove(doc, el).map_err(|e| e.to_string())?;
+    }
+    Ok(count)
 }
 
 #[cfg(test)]
@@ -2281,5 +2487,157 @@ mod tests {
         let doc = virtinst_xml::parse_libvirt_xml(&after_remove).expect("re-parses");
         let root = doc.root_element().unwrap();
         assert!(select_elements(&doc, root, "video", "all").is_err());
+    }
+
+    const THREE_SOUNDS_FIXTURE: &str = r#"<domain>
+  <devices>
+    <sound model="sb16"/>
+    <sound model="es1370"/>
+    <sound model="ich6"/>
+  </devices>
+</domain>"#;
+
+    /// Golden fixture, pinned against upstream's own
+    /// `tests/data/cli/compare/virt-xml-edit-select-sound-model.xml`:
+    /// `virt-xml --edit ich6 --sound pcspk` must find the `<sound>`
+    /// whose `model` is already `"ich6"` — not index 1 (which is
+    /// `sb16`) — and change only that one.
+    #[test]
+    fn golden_edit_select_sound_model() {
+        let mut doc = parse_fixture(THREE_SOUNDS_FIXTURE);
+        let root = doc.root_element().unwrap();
+
+        let els = select_elements_by_selector(&doc, root, "sound", "edit", "ich6").unwrap();
+        assert_eq!(els.len(), 1);
+        apply_sound_optstr(&mut doc, els[0], "pcspk").unwrap();
+
+        let all = select_elements(&doc, root, "sound", "all").unwrap();
+        assert_eq!(all[0].attribute(&doc, "model"), Some("sb16"), "untouched");
+        assert_eq!(all[1].attribute(&doc, "model"), Some("es1370"), "untouched");
+        assert_eq!(
+            all[2].attribute(&doc, "model"),
+            Some("pcspk"),
+            "the matched one changed"
+        );
+    }
+
+    /// Golden fixture, pinned against upstream's own
+    /// `tests/data/cli/compare/virt-xml-remove-sound-model.xml`:
+    /// `virt-xml --remove-device --sound ich6` removes only the `<sound
+    /// model="ich6"/>`, the other two untouched.
+    #[test]
+    fn golden_remove_sound_model() {
+        let mut doc = parse_fixture(THREE_SOUNDS_FIXTURE);
+        let root = doc.root_element().unwrap();
+
+        let removed =
+            remove_elements_by_selector(&mut doc, root, "sound", "remove-device", "ich6").unwrap();
+        assert_eq!(removed, 1);
+
+        let remaining = select_elements(&doc, root, "sound", "all").unwrap();
+        assert_eq!(remaining.len(), 2);
+        assert!(remaining
+            .iter()
+            .all(|el| el.attribute(&doc, "model") != Some("ich6")));
+    }
+
+    /// A bare positional selector (`--edit ich6`, no `=`) splices into
+    /// the device's own `remove_first` — same mechanism a real
+    /// `--sound` optstring's positional shorthand uses, reused here per
+    /// upstream's own `parserclass(editval, guest=guest)` (the selector
+    /// string is parsed by the *same* parser class the device flag
+    /// itself uses).
+    #[test]
+    fn select_by_field_match_splices_a_bare_selector_through_remove_first() {
+        let doc = parse_fixture(THREE_SOUNDS_FIXTURE);
+        let root = doc.root_element().unwrap();
+
+        let els = select_by_field_match(&doc, root, "sound", "edit", "sb16").unwrap();
+        assert_eq!(els.len(), 1);
+        assert_eq!(els[0].attribute(&doc, "model"), Some("sb16"));
+    }
+
+    /// Every named field must match — `model=sb16,streams=bogus` on a
+    /// domain where no `<sound>` has `streams="bogus"` matches nothing,
+    /// even though `model=sb16` alone would.
+    #[test]
+    fn select_by_field_match_requires_every_named_field_to_match() {
+        let doc = parse_fixture(THREE_SOUNDS_FIXTURE);
+        let root = doc.root_element().unwrap();
+
+        assert!(
+            select_by_field_match(&doc, root, "sound", "edit", "model=sb16,streams=bogus").is_err()
+        );
+    }
+
+    /// An unrecognized cliname during a field-match selector is a hard
+    /// error, deliberately unlike `apply_*_optstr`'s own silent `_ =>
+    /// {}` no-op — a no-op *filter* would otherwise match every
+    /// element instead of properly failing.
+    #[test]
+    fn select_by_field_match_rejects_an_unrecognized_cliname() {
+        let doc = parse_fixture(THREE_SOUNDS_FIXTURE);
+        let root = doc.root_element().unwrap();
+
+        assert!(select_by_field_match(&doc, root, "sound", "edit", "bogus=x").is_err());
+    }
+
+    /// Golden fixture, pinned against upstream's own
+    /// `tests/data/cli/compare/virt-xml-edit-select-disk-target.xml`:
+    /// `virt-xml --edit target=hda --disk /dev/null` finds the disk
+    /// whose `<target dev="hda"/>` already exists via disk's own
+    /// `target`/`target.dev` alias (the same alias
+    /// `apply_disk_optstr`'s own match arm uses) — not the bare
+    /// `remove_first` splice (`target=hda` already has an `=`).
+    #[test]
+    fn golden_edit_select_disk_target() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <disk type="file" device="disk">
+      <source file="/tmp/foobar"/>
+      <target dev="hda" bus="ide"/>
+    </disk>
+    <disk type="file" device="disk">
+      <source file="/tmp/other"/>
+      <target dev="hdb" bus="ide"/>
+    </disk>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+
+        let els = select_elements_by_selector(&doc, root, "disk", "edit", "target=hda").unwrap();
+        assert_eq!(els.len(), 1);
+        apply_disk_optstr(&mut doc, els[0], "/dev/null").unwrap();
+
+        let all = select_elements(&doc, root, "disk", "all").unwrap();
+        assert_eq!(
+            all[0].find(&doc, "source").unwrap().attribute(&doc, "file"),
+            Some("/dev/null"),
+            "the hda disk's path changed"
+        );
+        assert_eq!(
+            all[1].find(&doc, "source").unwrap().attribute(&doc, "file"),
+            Some("/tmp/other"),
+            "the hdb disk untouched"
+        );
+    }
+
+    /// Pins upstream's exact error text for a field-match selector that
+    /// matches nothing (`tests/test_cli.py`'s
+    /// `--edit target=vvv --disk /dev/null` -> grep
+    /// `"No matching objects found for --edit target=vvv"`) — the same
+    /// text upstream's own `_find_objects_to_edit` produces
+    /// (`"No matching objects found for %s" % ("--%s %s" % (action_name,
+    /// editval))`).
+    #[test]
+    fn select_by_field_match_error_text_matches_upstream_exactly() {
+        let doc = parse_fixture(THREE_SOUNDS_FIXTURE);
+        let root = doc.root_element().unwrap();
+
+        let err =
+            select_elements_by_selector(&doc, root, "disk", "edit", "target=vvv").unwrap_err();
+        assert_eq!(err, "No matching objects found for --edit target=vvv");
     }
 }
