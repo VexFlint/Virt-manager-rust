@@ -325,26 +325,40 @@ pub fn vsock_from_optstr(optstr: &str) -> Result<DeviceVsock, String> {
 }
 
 /// Sets or removes one attribute on a *nested* child element (`el`'s
-/// `path` child, e.g. `<cid>`/`<source>`/`<target>`/`<driver>`) — the
-/// dotted-key case every `apply_{device}_optstr` with a
-/// non-self-attribute field needs. `Some(v)` creates the child first if
-/// absent ([`resolve_or_create_path`]) then sets the attribute; `None`
-/// (the [`required_value`] "clear" case) removes the attribute *without*
-/// creating the child if it wasn't already there — clearing a field that
-/// was never set shouldn't leave a spurious empty `<cid/>`/`<source/>`
-/// behind. (An earlier version of `apply_vsock_optstr` used
-/// `resolve_or_create_path` unconditionally, including on the clear
-/// path — harmless in practice so far since every case exercised
-/// against a real domain already had the nested element, but a real gap
-/// this generalization fixes rather than repeats a third time for
-/// `--disk`.)
-fn apply_nested_attr(doc: &mut Document, el: Element, path: &str, attr: &str, val: Option<String>) {
+/// `path` chain, e.g. `<cid>`/`<source>`/`<target>`/`<driver>`, or a
+/// two-level chain like `<model><acceleration>`) — the dotted-key case
+/// every `apply_{device}_optstr` with a non-self-attribute field needs.
+/// `path` is a segment list like [`resolve_path`]'s own, not a
+/// `/`-joined string — passing `&["model/acceleration"]` as one segment
+/// would ask `edit-xml` for a literal child tag named
+/// `"model/acceleration"` instead of walking two levels (a real bug,
+/// caught by `video_accel3d_edit_reaches_the_nested_acceleration_
+/// element_not_a_literal_slash_named_one` after `--video
+/// model.acceleration.accel3d=on` produced exactly that malformed
+/// sibling tag against the real binary). `Some(v)` creates the chain
+/// first if absent ([`resolve_or_create_path`]) then sets the
+/// attribute; `None` (the [`required_value`] "clear" case) removes the
+/// attribute *without* creating the chain if it wasn't already there —
+/// clearing a field that was never set shouldn't leave a spurious empty
+/// `<cid/>`/`<source/>` behind. (An earlier version of
+/// `apply_vsock_optstr` used `resolve_or_create_path` unconditionally,
+/// including on the clear path — harmless in practice so far since
+/// every case exercised against a real domain already had the nested
+/// element, but a real gap this generalization fixes rather than
+/// repeats a third time for `--disk`.)
+fn apply_nested_attr(
+    doc: &mut Document,
+    el: Element,
+    path: &[&str],
+    attr: &str,
+    val: Option<String>,
+) {
     match val {
         Some(v) => {
-            resolve_or_create_path(doc, el, &[path]).set_attribute(doc, attr, v);
+            resolve_or_create_path(doc, el, path).set_attribute(doc, attr, v);
         }
         None => {
-            if let Some(nested) = el.find(doc, path) {
+            if let Some(nested) = resolve_path(doc, el, path) {
                 nested.mut_attributes(doc).remove(attr);
             }
         }
@@ -409,7 +423,7 @@ pub fn apply_vsock_optstr(doc: &mut Document, el: Element, optstr: &str) -> Resu
                     ),
                     None => None,
                 };
-                apply_nested_attr(doc, el, "cid", "auto", normalized);
+                apply_nested_attr(doc, el, &["cid"], "auto", normalized);
             }
             "cid.address" => {
                 let checked = match required_value(&cliname, val)? {
@@ -419,7 +433,7 @@ pub fn apply_vsock_optstr(doc: &mut Document, el: Element, optstr: &str) -> Resu
                     }
                     None => None,
                 };
-                apply_nested_attr(doc, el, "cid", "address", checked);
+                apply_nested_attr(doc, el, &["cid"], "address", checked);
             }
             _ => {}
         }
@@ -508,7 +522,7 @@ pub fn apply_memballoon_optstr(
                     }
                     None => None,
                 };
-                apply_nested_attr(doc, el, "stats", "period", checked);
+                apply_nested_attr(doc, el, &["stats"], "period", checked);
             }
             _ => {}
         }
@@ -640,7 +654,9 @@ pub fn apply_disk_optstr(doc: &mut Document, el: Element, optstr: &str) -> Resul
 
     for (cliname, val) in tuples {
         match cliname.as_str() {
-            "path" => apply_nested_attr(doc, el, "source", "file", required_value(&cliname, val)?),
+            "path" => {
+                apply_nested_attr(doc, el, &["source"], "file", required_value(&cliname, val)?)
+            }
             "device" => match required_value(&cliname, val)? {
                 Some(v) => el.set_attribute(doc, "device", v),
                 None => {
@@ -654,16 +670,16 @@ pub fn apply_disk_optstr(doc: &mut Document, el: Element, optstr: &str) -> Resul
                 }
             },
             "bus" | "target.bus" => {
-                apply_nested_attr(doc, el, "target", "bus", required_value(&cliname, val)?)
+                apply_nested_attr(doc, el, &["target"], "bus", required_value(&cliname, val)?)
             }
             "target" | "target.dev" => {
-                apply_nested_attr(doc, el, "target", "dev", required_value(&cliname, val)?)
+                apply_nested_attr(doc, el, &["target"], "dev", required_value(&cliname, val)?)
             }
             "driver.name" => {
-                apply_nested_attr(doc, el, "driver", "name", required_value(&cliname, val)?)
+                apply_nested_attr(doc, el, &["driver"], "name", required_value(&cliname, val)?)
             }
             "driver.type" => {
-                apply_nested_attr(doc, el, "driver", "type", required_value(&cliname, val)?)
+                apply_nested_attr(doc, el, &["driver"], "type", required_value(&cliname, val)?)
             }
             "readonly" => apply_present_bool(doc, el, "readonly", onoff_or_false("readonly", val)?),
             "shareable" => {
@@ -734,7 +750,9 @@ pub fn apply_sound_optstr(doc: &mut Document, el: Element, optstr: &str) -> Resu
                     el.mut_attributes(doc).remove(&cliname);
                 }
             },
-            "audio.id" => apply_nested_attr(doc, el, "audio", "id", required_value(&cliname, val)?),
+            "audio.id" => {
+                apply_nested_attr(doc, el, &["audio"], "id", required_value(&cliname, val)?)
+            }
             _ => {}
         }
     }
@@ -813,27 +831,27 @@ pub fn apply_video_optstr(doc: &mut Document, el: Element, optstr: &str) -> Resu
     for (cliname, val) in tuples {
         match cliname.as_str() {
             "model.type" => {
-                apply_nested_attr(doc, el, "model", "type", required_value(&cliname, val)?)
+                apply_nested_attr(doc, el, &["model"], "type", required_value(&cliname, val)?)
             }
             "model.heads" => {
                 let checked = check_int_or_clear(&cliname, val)?;
-                apply_nested_attr(doc, el, "model", "heads", checked);
+                apply_nested_attr(doc, el, &["model"], "heads", checked);
             }
             "model.ram" => {
                 let checked = check_int_or_clear(&cliname, val)?;
-                apply_nested_attr(doc, el, "model", "ram", checked);
+                apply_nested_attr(doc, el, &["model"], "ram", checked);
             }
             "model.vram" => {
                 let checked = check_int_or_clear(&cliname, val)?;
-                apply_nested_attr(doc, el, "model", "vram", checked);
+                apply_nested_attr(doc, el, &["model"], "vram", checked);
             }
             "model.vram64" => {
                 let checked = check_int_or_clear(&cliname, val)?;
-                apply_nested_attr(doc, el, "model", "vram64", checked);
+                apply_nested_attr(doc, el, &["model"], "vram64", checked);
             }
             "model.vgamem" => {
                 let checked = check_int_or_clear(&cliname, val)?;
-                apply_nested_attr(doc, el, "model", "vgamem", checked);
+                apply_nested_attr(doc, el, &["model"], "vgamem", checked);
             }
             "model.acceleration.accel3d" => {
                 let normalized = match required_value(&cliname, val)? {
@@ -847,7 +865,7 @@ pub fn apply_video_optstr(doc: &mut Document, el: Element, optstr: &str) -> Resu
                     ),
                     None => None,
                 };
-                apply_nested_attr(doc, el, "model/acceleration", "accel3d", normalized);
+                apply_nested_attr(doc, el, &["model", "acceleration"], "accel3d", normalized);
             }
             _ => {}
         }
@@ -2186,6 +2204,49 @@ mod tests {
         assert_eq!(model.attribute(&doc, "vram"), Some("16384"));
         assert_eq!(model.attribute(&doc, "heads"), Some("1"));
         assert_eq!(model.attribute(&doc, "primary"), Some("yes"));
+    }
+
+    /// `model.acceleration.accel3d` reaches a *two-level* nested chain
+    /// (`<model><acceleration accel3d=.../></model>`) — the first
+    /// `apply_nested_attr` caller with more than one path segment.
+    /// Regression test for a real bug caught against the compiled
+    /// binary: an earlier version passed `"model/acceleration"` as one
+    /// literal path string into `resolve_or_create_path(doc, el,
+    /// &[path])`, which asked `edit-xml` for a single child tag
+    /// literally named `"model/acceleration"` — produced a malformed
+    /// `<model/acceleration accel3d="yes"/>` sibling instead of nesting
+    /// under the real `<model>`. `apply_nested_attr` takes a segment
+    /// slice now, matching `resolve_path`'s own convention.
+    #[test]
+    fn video_accel3d_edit_reaches_the_nested_acceleration_element_not_a_literal_slash_named_one() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <video>
+      <model type="virtio" heads="1"/>
+    </video>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "video", "1").unwrap()[0];
+
+        apply_video_optstr(&mut doc, el, "model.acceleration.accel3d=on").unwrap();
+
+        let model = el.find(&doc, "model").unwrap();
+        assert_eq!(
+            model.attribute(&doc, "type"),
+            Some("virtio"),
+            "sibling attribute on <model> untouched"
+        );
+        let acceleration = model
+            .find(&doc, "acceleration")
+            .expect("<acceleration> nested under <model>, not a sibling of it");
+        assert_eq!(acceleration.attribute(&doc, "accel3d"), Some("yes"));
+        assert!(
+            el.find(&doc, "model/acceleration").is_none(),
+            "must not create a literal tag named \"model/acceleration\""
+        );
     }
 
     /// Real end-to-end proof, also pinning `remove-video-all`'s real
