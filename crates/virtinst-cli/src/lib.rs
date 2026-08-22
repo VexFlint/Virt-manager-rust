@@ -266,6 +266,19 @@ fn parse_onoff(key: &str, val: &str) -> Result<bool, String> {
     }
 }
 
+/// Upstream's `XMLProperty`'s `is_int=True` setter path
+/// (`_convert_value_for_setter`'s `int(val, **intkwargs)`) — raises on
+/// unparsable input rather than silently dropping the value, which a
+/// bare `.parse().ok()` would do (the same class of bug `parse_onoff`
+/// fixed for `cid.auto`, found on `cid.address` while checking the
+/// fix's sibling field against upstream). **Known gap**: upstream also
+/// accepts `0x`-prefixed hex (`intkwargs["base"] = 16`); this is
+/// decimal-only. Not hit by anything built so far — `--vsock cid.address`
+/// is the only `is_int` consumer yet; revisit if a real device needs hex.
+fn parse_int(key: &str, val: &str) -> Result<u32, String> {
+    val.parse().map_err(|_| format!("{key} must be an integer"))
+}
+
 /// `--vsock` — upstream's real `ParserVsock` (`/usr/share/virt-manager`,
 /// reinstalled after the machine wipe noted in the prior commit, so this
 /// is grounded in the actual class again, not inferred). `remove_first =
@@ -290,7 +303,7 @@ pub fn vsock_from_optstr(optstr: &str) -> Result<DeviceVsock, String> {
             }
             "cid.address" => {
                 dev.cid = match required_value(&cliname, val)? {
-                    Some(v) => v.parse().ok(),
+                    Some(v) => Some(parse_int("cid.address", &v)?),
                     None => None,
                 };
             }
@@ -342,6 +355,7 @@ pub fn apply_vsock_optstr(doc: &mut Document, el: Element, optstr: &str) -> Resu
             },
             "cid.address" => match required_value(&cliname, val)? {
                 Some(v) => {
+                    parse_int("cid.address", &v)?;
                     resolve_or_create_path(doc, el, &["cid"]).set_attribute(doc, "address", v);
                 }
                 None => {
@@ -894,6 +908,40 @@ mod tests {
     #[test]
     fn vsock_from_optstr_cid_auto_rejects_garbage() {
         assert!(vsock_from_optstr("cid.auto=maybe").is_err());
+    }
+
+    /// Matches `XMLProperty`'s `is_int=True` setter (`int(val)` raises
+    /// on unparsable input) — a bare `.parse().ok()` would have silently
+    /// dropped `cid.address` to `None` instead, the same class of bug
+    /// `cid.auto`'s garbage-rejection test above pins for its own field.
+    #[test]
+    fn vsock_from_optstr_cid_address_rejects_garbage() {
+        assert!(vsock_from_optstr("cid.address=not-a-number").is_err());
+    }
+
+    /// Same rejection on the edit path. `cid.address` comes first in
+    /// this optstring deliberately (same convention as
+    /// `apply_vsock_optstr_rejects_garbage_cid_auto_without_mutating_
+    /// anything`): this isn't transactional, an earlier key that
+    /// succeeded before a later one fails would stay applied, so the
+    /// failing key has to be first to honestly assert "nothing changed".
+    #[test]
+    fn apply_vsock_optstr_cid_address_rejects_garbage_without_mutating_anything() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <vsock model="virtio"><cid auto="no" address="5"/></vsock>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "vsock", "1").unwrap()[0];
+
+        assert!(apply_vsock_optstr(&mut doc, el, "cid.address=nope,cid.auto=yes").is_err());
+
+        let cid = el.find(&doc, "cid").unwrap();
+        assert_eq!(cid.attribute(&doc, "auto"), Some("no"));
+        assert_eq!(cid.attribute(&doc, "address"), Some("5"));
     }
 
     #[test]
