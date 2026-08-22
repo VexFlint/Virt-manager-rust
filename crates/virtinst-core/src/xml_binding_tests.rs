@@ -8,8 +8,9 @@
 
 use crate::devices::{
     DeviceController, DeviceDisk, DeviceFilesystem, DeviceGraphics, DeviceHostdev, DeviceInput,
-    DeviceList, DeviceNetwork, DevicePanic, DeviceRedirdev, DeviceRng, DeviceSerial,
-    DeviceSmartcard, DeviceSound, DeviceTpm, DeviceVideo, DeviceVsock, DeviceWatchdog,
+    DeviceList, DeviceMemballoon, DeviceNetwork, DevicePanic, DeviceRedirdev, DeviceRng,
+    DeviceSerial, DeviceSmartcard, DeviceSound, DeviceTpm, DeviceVideo, DeviceVsock,
+    DeviceWatchdog,
 };
 use crate::domain::{
     Cachetune, Clock, CurrentMemory, DomainBlkiotune, DomainCpu, DomainCputune, DomainFeatures,
@@ -1056,6 +1057,29 @@ fn panic_stub_case_round_trips_with_no_model_and_no_invented_attribute() {
     panic_dev.write_to(&mut doc, el);
     let out = doc.write_str().expect("serializes");
     assert!(!out.contains("model="));
+}
+
+#[test]
+fn memballoon_round_trips_onoff_and_nested_stats_period() {
+    let mut doc = parse_libvirt_xml(
+        r#"<memballoon model="virtio" autodeflate="on"><stats period="10"/></memballoon>"#,
+    )
+    .expect("fixture parses");
+    let el = doc.root_element().expect("root element");
+
+    let mut memballoon = DeviceMemballoon::from_element(&doc, el);
+    assert_eq!(memballoon.model, Some("virtio".into()));
+    assert_eq!(memballoon.autodeflate, Some(OnOff(true)));
+    assert_eq!(memballoon.stats_period, Some(10));
+    assert_eq!(memballoon.free_page_reporting, None);
+
+    memballoon.model = Some("none".into());
+    memballoon.write_to(&mut doc, el);
+
+    let after = DeviceMemballoon::from_element(&doc, el);
+    assert_eq!(after.model, Some("none".into()));
+    assert_eq!(after.autodeflate, Some(OnOff(true))); // untouched
+    assert_eq!(after.stats_period, Some(10)); // untouched
 }
 
 #[test]

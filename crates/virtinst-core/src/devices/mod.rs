@@ -54,6 +54,9 @@ pub use vsock::DeviceVsock;
 pub mod watchdog;
 pub use watchdog::DeviceWatchdog;
 
+pub mod memballoon;
+pub use memballoon::DeviceMemballoon;
+
 pub mod smartcard;
 pub use smartcard::{Certificate, DeviceSmartcard};
 
