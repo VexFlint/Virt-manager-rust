@@ -14,18 +14,22 @@
 //!
 //! This slice covers `--build-xml`/`--edit`/`--add-device`/
 //! `--remove-device`, for `--watchdog`/`--vsock`/`--disk`/
-//! `--memballoon`/`--sound`/`--video` — see `virtinst_cli`'s doc comment
-//! for why those devices specifically (`--disk` is upstream's largest
-//! and most irregular parser; only a partial slice of it is ported —
-//! see `disk_from_optstr`'s own doc comment for exactly which fields),
-//! and why their optstring mapping is still hand-written rather than
-//! shared. Only the flags this slice actually implements are declared;
-//! an unimplemented flag that parses is worse than an absent one.
-//! `--memballoon` also can't be exercised through `--add-device` against
-//! a domain that already has one — the real driver rejects a second
-//! `<memballoon>` outright (see `virtinst_cli`'s
-//! `remove_then_restore_memballoon_against_a_real_domain` test); that's
-//! a real hardware constraint, not a gap here.
+//! `--memballoon`/`--sound`/`--video`/`--controller`/`--tpm`/
+//! `--smartcard`/`--redirdev`/`--filesystem` — see `virtinst_cli`'s doc
+//! comment for why those devices specifically (`--disk` is upstream's
+//! largest and most irregular parser; only a partial slice of it is
+//! ported — see `disk_from_optstr`'s own doc comment for exactly which
+//! fields), and why their optstring mapping is still hand-written
+//! rather than shared. Only the flags this slice actually implements
+//! are declared; an unimplemented flag that parses is worse than an
+//! absent one. `--memballoon` also can't be exercised through
+//! `--add-device` against a domain that already has one — the real
+//! driver rejects a second `<memballoon>` outright (see
+//! `virtinst_cli`'s `remove_then_restore_memballoon_against_a_real_
+//! domain` test); that's a real hardware constraint, not a gap here.
+//! `--edit`/`--remove-device` also support upstream's field-match
+//! selector form (`select_elements_by_selector`/
+//! `remove_elements_by_selector`), not just index/`all`.
 //!
 //! `--add-device`/`--edit`'s output contract is also deliberately
 //! narrower than upstream for now: absent `--print-xml`, this always
@@ -57,12 +61,12 @@
 
 use clap::Parser;
 use virtinst_cli::{
-    apply_controller_optstr, apply_disk_optstr, apply_memballoon_optstr, apply_redirdev_optstr,
-    apply_smartcard_optstr, apply_sound_optstr, apply_tpm_optstr, apply_video_optstr,
-    apply_vsock_optstr, apply_watchdog_optstr, controller_from_optstr, disk_from_optstr,
-    memballoon_from_optstr, redirdev_from_optstr, remove_elements_by_selector,
-    select_elements_by_selector, smartcard_from_optstr, sound_from_optstr, tpm_from_optstr,
-    video_from_optstr, vsock_from_optstr, watchdog_from_optstr,
+    apply_controller_optstr, apply_disk_optstr, apply_filesystem_optstr, apply_memballoon_optstr,
+    apply_redirdev_optstr, apply_smartcard_optstr, apply_sound_optstr, apply_tpm_optstr,
+    apply_video_optstr, apply_vsock_optstr, apply_watchdog_optstr, controller_from_optstr,
+    disk_from_optstr, filesystem_from_optstr, memballoon_from_optstr, redirdev_from_optstr,
+    remove_elements_by_selector, select_elements_by_selector, smartcard_from_optstr,
+    sound_from_optstr, tpm_from_optstr, video_from_optstr, vsock_from_optstr, watchdog_from_optstr,
 };
 use virtinst_core::connection::{Connection, Domain};
 use virtinst_xml::{list_add, parse_libvirt_xml, to_xml_string, Document, Element};
@@ -165,6 +169,12 @@ struct Args {
     /// selector for --remove-device (e.g. "1", "all").
     #[arg(long)]
     redirdev: Option<String>,
+
+    /// Filesystem device options for --build-xml/--edit/--add-device
+    /// (e.g. "/host/share,/mnt/share,mode=mapped"), or the selector
+    /// for --remove-device (e.g. "1", "all").
+    #[arg(long)]
+    filesystem: Option<String>,
 }
 
 fn main() {
@@ -229,8 +239,11 @@ fn device_optstr<'a>(args: &'a Args, action: &str) -> (&'static str, &'a str) {
     if let Some(optstr) = &args.redirdev {
         return ("redirdev", optstr);
     }
+    if let Some(optstr) = &args.filesystem {
+        return ("filesystem", optstr);
+    }
     eprintln!(
-        "virt-xml {action}: no device option given (--watchdog/--vsock/--disk/--memballoon/--sound/--video/--controller/--tpm/--smartcard/--redirdev implemented so far)"
+        "virt-xml {action}: no device option given (--watchdog/--vsock/--disk/--memballoon/--sound/--video/--controller/--tpm/--smartcard/--redirdev/--filesystem implemented so far)"
     );
     std::process::exit(1);
 }
@@ -300,6 +313,10 @@ fn run_build_xml(args: &Args) {
         "redirdev" => {
             let dev = redirdev_from_optstr(optstr).unwrap_or_else(exit_on_err);
             to_xml_string(&dev).expect("a freshly built DeviceRedirdev always serializes")
+        }
+        "filesystem" => {
+            let dev = filesystem_from_optstr(optstr).unwrap_or_else(exit_on_err);
+            to_xml_string(&dev).expect("a freshly built DeviceFilesystem always serializes")
         }
         _ => unreachable!(),
     };
@@ -421,6 +438,10 @@ fn run_print_xml_add_device(args: &Args, device: &str, optstr: &str) {
             let dev = redirdev_from_optstr(optstr).unwrap_or_else(exit_on_err);
             list_add(&mut doc, root, &["devices"], &dev);
         }
+        "filesystem" => {
+            let dev = filesystem_from_optstr(optstr).unwrap_or_else(exit_on_err);
+            list_add(&mut doc, root, &["devices"], &dev);
+        }
         _ => unreachable!(),
     }
     print_doc(&doc);
@@ -465,6 +486,7 @@ fn apply_edit(
             "tpm" => apply_tpm_optstr(doc, el, optstr)?,
             "smartcard" => apply_smartcard_optstr(doc, el, optstr)?,
             "redirdev" => apply_redirdev_optstr(doc, el, optstr)?,
+            "filesystem" => apply_filesystem_optstr(doc, el, optstr)?,
             _ => unreachable!(),
         }
     }
@@ -514,6 +536,10 @@ fn run_add_device(args: &Args) {
         "redirdev" => domain.add_device(
             &conn,
             &redirdev_from_optstr(optstr).unwrap_or_else(exit_on_err),
+        ),
+        "filesystem" => domain.add_device(
+            &conn,
+            &filesystem_from_optstr(optstr).unwrap_or_else(exit_on_err),
         ),
         _ => unreachable!(),
     };

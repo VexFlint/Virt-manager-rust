@@ -40,8 +40,8 @@
 //! of the same type added in one call.
 
 use virtinst_core::devices::{
-    DeviceController, DeviceDisk, DeviceMemballoon, DeviceRedirdev, DeviceSmartcard, DeviceSound,
-    DeviceTpm, DeviceVideo, DeviceVsock, DeviceWatchdog,
+    DeviceController, DeviceDisk, DeviceFilesystem, DeviceMemballoon, DeviceRedirdev,
+    DeviceSmartcard, DeviceSound, DeviceTpm, DeviceVideo, DeviceVsock, DeviceWatchdog,
 };
 use virtinst_xml::{list_remove, resolve_or_create_path, resolve_path, Document, Element, OnOff};
 
@@ -305,6 +305,10 @@ fn field_loc(device: &str, cliname: &str) -> Option<FieldLoc> {
         ("smartcard", "type") => Some(SelfAttr("type")),
         ("redirdev", "bus") => Some(SelfAttr("bus")),
         ("redirdev", "type") => Some(SelfAttr("type")),
+        ("filesystem", "type") => Some(SelfAttr("type")),
+        ("filesystem", "accessmode" | "mode") => Some(SelfAttr("accessmode")),
+        ("filesystem", "source" | "source.dir") => Some(Nested(&["source"], "dir")),
+        ("filesystem", "target" | "target.dir") => Some(Nested(&["target"], "dir")),
         _ => None,
     }
 }
@@ -353,6 +357,7 @@ fn device_remove_first(device: &str) -> &'static [&'static str] {
         "controller" | "tpm" => &["type"],
         "smartcard" => &["mode"],
         "redirdev" => &["bus"],
+        "filesystem" => &["source", "target"],
         _ => panic!("device_remove_first: no remove_first entry for device '{device}'"),
     }
 }
@@ -1474,6 +1479,90 @@ pub fn apply_redirdev_optstr(doc: &mut Document, el: Element, optstr: &str) -> R
                     }
                 }
             }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// `--filesystem` — upstream's real `ParserFilesystem`. The first
+/// device with a **two-slot** `remove_first` (`["source", "target"]`)
+/// — `--filesystem /1/2/3,/4/5/6` means `source=/1/2/3,target=/4/5/6`,
+/// both positional. `source`/`target` are themselves Python properties
+/// on the real device object, not raw `XMLProperty` attributes:
+/// `target` always forwards to `target_dir`, but `source` is
+/// *type*-dependent (`_type_to_source_prop`: `source_name` for
+/// `template`, `source_file` for `file`, `source_dev` for `block`,
+/// `source_usage` for `ram`, `source_dir` otherwise). `DeviceFilesystem`
+/// only models `source_dir`/`target_dir` here, so `source`/`source.dir`
+/// both hardcode the `source_dir` mapping unconditionally — correct for
+/// `edit-simple-filesystem`'s own domain (`type="mount"`, which falls
+/// into the "otherwise" branch), wrong for `type=template`/`file`/
+/// `block`/`ram`, flagged rather than silently guessed at. `accessmode`
+/// has an alias, `mode` (upstream's `aliases = {"accessmode": "mode"}`
+/// — the same "one virtarg answers to two names" shape `--tpm`'s
+/// `type`/`backend.type` already established). `readonly` is
+/// `is_onoff` CLI vocab over an `is_bool` (existence) XML shape — same
+/// pattern `--disk`'s `readonly`/`shareable`/`transient` already
+/// proved, [`onoff_or_false`]/[`apply_present_bool`] reused directly,
+/// not reinvented. **Not modeled**: `model`, `multidevs`, `fmode`/
+/// `dmode`, `space_hard_limit`/`space_soft_limit`, every `driver.*`/
+/// `binary.*` field, and every `source.*` variant besides `dir` — all
+/// flagged, same partial-slice discipline as `--disk`.
+pub fn filesystem_from_optstr(optstr: &str) -> Result<DeviceFilesystem, String> {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, device_remove_first("filesystem"));
+
+    let mut dev = DeviceFilesystem::default();
+    for (cliname, val) in tuples {
+        match cliname.as_str() {
+            "type" => dev.filesystem_type = required_value(&cliname, val)?,
+            "accessmode" | "mode" => dev.accessmode = required_value(&cliname, val)?,
+            "source" | "source.dir" => dev.source_dir = required_value(&cliname, val)?,
+            "target" | "target.dir" => dev.target_dir = required_value(&cliname, val)?,
+            "readonly" => dev.readonly = onoff_or_false("readonly", val)?,
+            _ => {}
+        }
+    }
+    Ok(dev)
+}
+
+/// [`apply_watchdog_optstr`]'s filesystem counterpart. Pins
+/// `edit-simple-filesystem` against the restored upstream fixture:
+/// `--filesystem /1/2/3,/4/5/6,mode=mapped` on `<filesystem type="mount"
+/// accessmode="passthrough"><source dir="/foo/bar"/><target
+/// dir="/bar/baz"/></filesystem>` must produce `accessmode="mapped"`,
+/// `source/@dir="/1/2/3"`, `target/@dir="/4/5/6"` — `type` untouched.
+pub fn apply_filesystem_optstr(
+    doc: &mut Document,
+    el: Element,
+    optstr: &str,
+) -> Result<(), String> {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, device_remove_first("filesystem"));
+
+    for (cliname, val) in tuples {
+        match cliname.as_str() {
+            "type" | "accessmode" | "mode" => {
+                let attr = if cliname == "mode" {
+                    "accessmode"
+                } else {
+                    &cliname
+                };
+                match required_value(&cliname, val)? {
+                    Some(v) => el.set_attribute(doc, attr.to_string(), v),
+                    None => {
+                        el.mut_attributes(doc).remove(attr);
+                    }
+                }
+            }
+            "source" | "source.dir" => {
+                apply_nested_attr(doc, el, &["source"], "dir", required_value(&cliname, val)?)
+            }
+            "target" | "target.dir" => {
+                apply_nested_attr(doc, el, &["target"], "dir", required_value(&cliname, val)?)
+            }
+            "readonly" => apply_present_bool(doc, el, "readonly", onoff_or_false("readonly", val)?),
             _ => {}
         }
     }
@@ -3122,6 +3211,18 @@ mod tests {
             ),
             ("smartcard", &["mode", "type"]),
             ("redirdev", &["bus", "type"]),
+            (
+                "filesystem",
+                &[
+                    "type",
+                    "accessmode",
+                    "mode",
+                    "source",
+                    "source.dir",
+                    "target",
+                    "target.dir",
+                ],
+            ),
         ];
         for (device, clinames) in known {
             for cliname in *clinames {
@@ -3454,5 +3555,106 @@ mod tests {
             select_elements(&doc, root, "controller", "all").is_err(),
             "back to no controllers, as found"
         );
+    }
+
+    /// `remove_first = ["source", "target"]` — the first device with a
+    /// *two-slot* positional shorthand: `--filesystem /1/2/3,/4/5/6`
+    /// splices both bare values in order.
+    #[test]
+    fn filesystem_from_optstr_handles_the_two_slot_positional_form() {
+        let dev = filesystem_from_optstr("/1/2/3,/4/5/6").unwrap();
+        assert_eq!(dev.source_dir.as_deref(), Some("/1/2/3"));
+        assert_eq!(dev.target_dir.as_deref(), Some("/4/5/6"));
+    }
+
+    /// `mode` is an alias for `accessmode` (upstream's `aliases =
+    /// {"accessmode": "mode"}` — one virtarg answering to two names,
+    /// same shape `--tpm`'s `type`/`backend.type` already established).
+    #[test]
+    fn filesystem_from_optstr_mode_is_an_alias_for_accessmode() {
+        let dev = filesystem_from_optstr("mode=mapped").unwrap();
+        assert_eq!(dev.accessmode.as_deref(), Some("mapped"));
+    }
+
+    #[test]
+    fn filesystem_from_optstr_readonly_is_onoff_over_present_bool() {
+        let dev = filesystem_from_optstr("/a,/b,readonly=on").unwrap();
+        assert!(dev.readonly);
+        let dev = filesystem_from_optstr("/a,/b,readonly=off").unwrap();
+        assert!(!dev.readonly);
+    }
+
+    /// Golden fixture, pinned against upstream's own
+    /// `tests/data/cli/compare/virt-xml-edit-simple-filesystem.xml`:
+    /// `virt-xml --edit --filesystem /1/2/3,/4/5/6,mode=mapped` against
+    /// `<filesystem type="mount" accessmode="passthrough"><source
+    /// dir="/foo/bar"/><target dir="/bar/baz"/></filesystem>` must
+    /// produce `accessmode="mapped"`, `source/@dir="/1/2/3"`,
+    /// `target/@dir="/4/5/6"` — `type` untouched.
+    #[test]
+    fn golden_edit_simple_filesystem() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <filesystem type="mount" accessmode="passthrough">
+      <source dir="/foo/bar"/>
+      <target dir="/bar/baz"/>
+    </filesystem>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "filesystem", "1").unwrap()[0];
+
+        apply_filesystem_optstr(&mut doc, el, "/1/2/3,/4/5/6,mode=mapped").unwrap();
+
+        assert_eq!(el.attribute(&doc, "type"), Some("mount"), "untouched");
+        assert_eq!(el.attribute(&doc, "accessmode"), Some("mapped"));
+        assert_eq!(
+            el.find(&doc, "source").unwrap().attribute(&doc, "dir"),
+            Some("/1/2/3")
+        );
+        assert_eq!(
+            el.find(&doc, "target").unwrap().attribute(&doc, "dir"),
+            Some("/4/5/6")
+        );
+    }
+
+    /// Real end-to-end proof mirroring `add_then_remove_vsock_against_a_
+    /// real_domain`.
+    #[test]
+    fn add_then_remove_filesystem_against_a_real_domain() {
+        use virtinst_core::connection::{Connection, Domain};
+
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        let domain = Domain::lookup_by_name(&conn, "test").expect("the default test domain");
+
+        let dev = filesystem_from_optstr("/host/share,/mnt/share").unwrap();
+        domain
+            .add_device(&conn, &dev)
+            .expect("add-device's exact call chain succeeds");
+
+        let after_add = domain.inactive_xml().expect("fetch inactive XML");
+        let doc = virtinst_xml::parse_libvirt_xml(&after_add).expect("re-parses");
+        let root = doc.root_element().unwrap();
+        assert_eq!(
+            select_elements(&doc, root, "filesystem", "all")
+                .unwrap()
+                .len(),
+            1
+        );
+
+        domain
+            .edit_inactive_xml(&conn, |doc, root| {
+                remove_elements(doc, root, "filesystem", "all")?;
+                Ok(())
+            })
+            .expect("remove-device's exact call chain succeeds");
+
+        let after_remove = domain.inactive_xml().expect("fetch inactive XML");
+        let doc = virtinst_xml::parse_libvirt_xml(&after_remove).expect("re-parses");
+        let root = doc.root_element().unwrap();
+        assert!(select_elements(&doc, root, "filesystem", "all").is_err());
     }
 }
