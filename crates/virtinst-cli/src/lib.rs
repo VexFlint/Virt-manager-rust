@@ -129,7 +129,7 @@ fn required_value(cliname: &str, val: Option<String>) -> Result<Option<String>, 
 /// isn't ported yet; this slice only needs the mapping to prove out.
 pub fn watchdog_from_optstr(optstr: &str) -> Result<DeviceWatchdog, String> {
     let mut tuples = parse_optstr_tuples(optstr);
-    splice_remove_first(&mut tuples, &["model"]);
+    splice_remove_first(&mut tuples, device_remove_first("watchdog"));
 
     let mut dev = DeviceWatchdog::default();
     for (cliname, val) in tuples {
@@ -311,11 +311,28 @@ fn field_value(doc: &Document, el: Element, loc: &FieldLoc) -> Option<String> {
 /// positional *value* already splices (`--sound pcspk`'s `"pcspk"`) —
 /// upstream reuses the identical `parserclass(editval, ...)` parse path
 /// for both, so this does too.
+///
+/// Every wired device is named explicitly, deliberately with **no**
+/// wildcard fallback: a `_ => &["model"]` default reads fine today
+/// (every device so far but `disk`/`video` really does splice into
+/// `model`) but is a silent-wrong-answer trap the moment a future
+/// device with a different or absent `remove_first` (upstream's real
+/// `_ParserChar` subclasses and `ParserFilesystem` both lack one) is
+/// added to [`field_loc`] without a matching arm here — it would
+/// splice a bare selector into the wrong key and either match nothing
+/// or, worse, match something unintended, instead of failing loudly.
+/// Panics on an unwired device: every real caller only ever passes one
+/// of the devices [`device_optstr`](../virt_xml) already dispatches on
+/// or a test-fixture device wired in the table below, so reaching the
+/// fallback means a device was added to the write path but not here —
+/// a programming error to catch immediately, not a user-facing one to
+/// degrade gracefully from.
 fn device_remove_first(device: &str) -> &'static [&'static str] {
     match device {
+        "watchdog" | "vsock" | "memballoon" | "sound" => &["model"],
         "video" => &["model.type"],
         "disk" => &["path"],
-        _ => &["model"],
+        _ => panic!("device_remove_first: no remove_first entry for device '{device}'"),
     }
 }
 
@@ -427,7 +444,7 @@ pub fn select_elements_by_selector(
 /// device instead, same shared rule).
 pub fn apply_watchdog_optstr(doc: &mut Document, el: Element, optstr: &str) -> Result<(), String> {
     let mut tuples = parse_optstr_tuples(optstr);
-    splice_remove_first(&mut tuples, &["model"]);
+    splice_remove_first(&mut tuples, device_remove_first("watchdog"));
 
     for (cliname, val) in tuples {
         match cliname.as_str() {
@@ -483,7 +500,7 @@ fn parse_int(key: &str, val: &str) -> Result<u32, String> {
 /// is `is_onoff=True` — [`parse_onoff`], not a new convention.
 pub fn vsock_from_optstr(optstr: &str) -> Result<DeviceVsock, String> {
     let mut tuples = parse_optstr_tuples(optstr);
-    splice_remove_first(&mut tuples, &["model"]);
+    splice_remove_first(&mut tuples, device_remove_first("vsock"));
 
     let mut dev = DeviceVsock::default();
     for (cliname, val) in tuples {
@@ -584,7 +601,7 @@ fn apply_present_bool(doc: &mut Document, el: Element, tag: &str, present: bool)
 /// gone entirely.
 pub fn apply_vsock_optstr(doc: &mut Document, el: Element, optstr: &str) -> Result<(), String> {
     let mut tuples = parse_optstr_tuples(optstr);
-    splice_remove_first(&mut tuples, &["model"]);
+    splice_remove_first(&mut tuples, device_remove_first("vsock"));
 
     for (cliname, val) in tuples {
         match cliname.as_str() {
@@ -636,7 +653,7 @@ pub fn apply_vsock_optstr(doc: &mut Document, el: Element, optstr: &str) -> Resu
 /// ([`parse_int`]).
 pub fn memballoon_from_optstr(optstr: &str) -> Result<DeviceMemballoon, String> {
     let mut tuples = parse_optstr_tuples(optstr);
-    splice_remove_first(&mut tuples, &["model"]);
+    splice_remove_first(&mut tuples, device_remove_first("memballoon"));
 
     let mut dev = DeviceMemballoon::default();
     for (cliname, val) in tuples {
@@ -678,7 +695,7 @@ pub fn apply_memballoon_optstr(
     optstr: &str,
 ) -> Result<(), String> {
     let mut tuples = parse_optstr_tuples(optstr);
-    splice_remove_first(&mut tuples, &["model"]);
+    splice_remove_first(&mut tuples, device_remove_first("memballoon"));
 
     for (cliname, val) in tuples {
         match cliname.as_str() {
@@ -757,7 +774,7 @@ pub fn apply_memballoon_optstr(
 /// `rawio`/`serial`/`wwn`/`target.removable`/`target.rotation_rate`.
 pub fn disk_from_optstr(optstr: &str) -> Result<DeviceDisk, String> {
     let mut tuples = parse_optstr_tuples(optstr);
-    splice_remove_first(&mut tuples, &["path"]);
+    splice_remove_first(&mut tuples, device_remove_first("disk"));
 
     let mut dev = DeviceDisk::default();
     for (cliname, val) in tuples {
@@ -833,7 +850,7 @@ fn perms_flags(val: Option<String>) -> Result<Option<PermsFlag>, String> {
 /// else alone" rule every `apply_*_optstr` follows.
 pub fn apply_disk_optstr(doc: &mut Document, el: Element, optstr: &str) -> Result<(), String> {
     let mut tuples = parse_optstr_tuples(optstr);
-    splice_remove_first(&mut tuples, &["path"]);
+    splice_remove_first(&mut tuples, device_remove_first("disk"));
 
     for (cliname, val) in tuples {
         match cliname.as_str() {
@@ -900,7 +917,7 @@ pub fn apply_disk_optstr(doc: &mut Document, el: Element, optstr: &str) -> Resul
 /// indexed `source.host[N]*`.
 pub fn sound_from_optstr(optstr: &str) -> Result<DeviceSound, String> {
     let mut tuples = parse_optstr_tuples(optstr);
-    splice_remove_first(&mut tuples, &["model"]);
+    splice_remove_first(&mut tuples, device_remove_first("sound"));
 
     let mut dev = DeviceSound::default();
     for (cliname, val) in tuples {
@@ -923,7 +940,7 @@ pub fn sound_from_optstr(optstr: &str) -> Result<DeviceSound, String> {
 /// going through `parse_onoff`/a bool.
 pub fn apply_sound_optstr(doc: &mut Document, el: Element, optstr: &str) -> Result<(), String> {
     let mut tuples = parse_optstr_tuples(optstr);
-    splice_remove_first(&mut tuples, &["model"]);
+    splice_remove_first(&mut tuples, device_remove_first("sound"));
 
     for (cliname, val) in tuples {
         match cliname.as_str() {
@@ -955,7 +972,7 @@ pub fn apply_sound_optstr(doc: &mut Document, el: Element, optstr: &str) -> Resu
 /// `--disk`'s unported fields, not a new gap invented here.
 pub fn video_from_optstr(optstr: &str) -> Result<DeviceVideo, String> {
     let mut tuples = parse_optstr_tuples(optstr);
-    splice_remove_first(&mut tuples, &["model.type"]);
+    splice_remove_first(&mut tuples, device_remove_first("video"));
 
     let mut dev = DeviceVideo::default();
     for (cliname, val) in tuples {
@@ -1009,7 +1026,7 @@ pub fn video_from_optstr(optstr: &str) -> Result<DeviceVideo, String> {
 /// itself (unlike every device before this one).
 pub fn apply_video_optstr(doc: &mut Document, el: Element, optstr: &str) -> Result<(), String> {
     let mut tuples = parse_optstr_tuples(optstr);
-    splice_remove_first(&mut tuples, &["model.type"]);
+    splice_remove_first(&mut tuples, device_remove_first("video"));
 
     for (cliname, val) in tuples {
         match cliname.as_str() {
@@ -2639,5 +2656,61 @@ mod tests {
         let err =
             select_elements_by_selector(&doc, root, "disk", "edit", "target=vvv").unwrap_err();
         assert_eq!(err, "No matching objects found for --edit target=vvv");
+    }
+
+    /// [`field_loc`]'s own doc comment flags it as a hand-maintained
+    /// second copy of the alias knowledge each `apply_*_optstr`'s plain
+    /// match arms already encode — this is the "one cheap check" that
+    /// catches the drift a comment alone can't: every plain (non
+    /// present-bool, non-`perms`) cliname each `apply_*_optstr` handles
+    /// must have a `field_loc` entry, or a selector naming that field
+    /// silently can't match on it with nothing else failing. Update
+    /// this list alongside any new plain arm.
+    #[test]
+    fn field_loc_covers_every_plain_attribute_cliname_each_apply_optstr_handles() {
+        let known: &[(&str, &[&str])] = &[
+            ("watchdog", &["model", "action"]),
+            ("vsock", &["model", "cid.auto", "cid.address"]),
+            (
+                "memballoon",
+                &["model", "autodeflate", "freePageReporting", "stats.period"],
+            ),
+            (
+                "disk",
+                &[
+                    "path",
+                    "device",
+                    "type",
+                    "bus",
+                    "target.bus",
+                    "target",
+                    "target.dev",
+                    "driver.name",
+                    "driver.type",
+                ],
+            ),
+            ("sound", &["model", "multichannel", "streams", "audio.id"]),
+            (
+                "video",
+                &[
+                    "model.type",
+                    "model.heads",
+                    "model.ram",
+                    "model.vram",
+                    "model.vram64",
+                    "model.vgamem",
+                    "model.acceleration.accel3d",
+                ],
+            ),
+        ];
+        for (device, clinames) in known {
+            for cliname in *clinames {
+                assert!(
+                    field_loc(device, cliname).is_some(),
+                    "field_loc({device:?}, {cliname:?}) is missing — apply_{device}_optstr \
+                     handles it as a plain attribute, so a selector can't match on it"
+                );
+            }
+        }
     }
 }
