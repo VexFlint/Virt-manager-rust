@@ -57,11 +57,12 @@
 
 use clap::Parser;
 use virtinst_cli::{
-    apply_controller_optstr, apply_disk_optstr, apply_memballoon_optstr, apply_sound_optstr,
-    apply_tpm_optstr, apply_video_optstr, apply_vsock_optstr, apply_watchdog_optstr,
-    controller_from_optstr, disk_from_optstr, memballoon_from_optstr, remove_elements_by_selector,
-    select_elements_by_selector, sound_from_optstr, tpm_from_optstr, video_from_optstr,
-    vsock_from_optstr, watchdog_from_optstr,
+    apply_controller_optstr, apply_disk_optstr, apply_memballoon_optstr, apply_redirdev_optstr,
+    apply_smartcard_optstr, apply_sound_optstr, apply_tpm_optstr, apply_video_optstr,
+    apply_vsock_optstr, apply_watchdog_optstr, controller_from_optstr, disk_from_optstr,
+    memballoon_from_optstr, redirdev_from_optstr, remove_elements_by_selector,
+    select_elements_by_selector, smartcard_from_optstr, sound_from_optstr, tpm_from_optstr,
+    video_from_optstr, vsock_from_optstr, watchdog_from_optstr,
 };
 use virtinst_core::connection::{Connection, Domain};
 use virtinst_xml::{list_add, parse_libvirt_xml, to_xml_string, Document, Element};
@@ -152,6 +153,18 @@ struct Args {
     /// for --remove-device (e.g. "1", "all").
     #[arg(long)]
     tpm: Option<String>,
+
+    /// Smartcard device options for --build-xml/--edit/--add-device
+    /// (e.g. "type=spicevmc" or bare "host"), or the selector for
+    /// --remove-device (e.g. "1", "all").
+    #[arg(long)]
+    smartcard: Option<String>,
+
+    /// Redirdev device options for --build-xml/--edit/--add-device
+    /// (e.g. "type=spicevmc,server=example.com:12345"), or the
+    /// selector for --remove-device (e.g. "1", "all").
+    #[arg(long)]
+    redirdev: Option<String>,
 }
 
 fn main() {
@@ -210,8 +223,14 @@ fn device_optstr<'a>(args: &'a Args, action: &str) -> (&'static str, &'a str) {
     if let Some(optstr) = &args.tpm {
         return ("tpm", optstr);
     }
+    if let Some(optstr) = &args.smartcard {
+        return ("smartcard", optstr);
+    }
+    if let Some(optstr) = &args.redirdev {
+        return ("redirdev", optstr);
+    }
     eprintln!(
-        "virt-xml {action}: no device option given (--watchdog/--vsock/--disk/--memballoon/--sound/--video/--controller/--tpm implemented so far)"
+        "virt-xml {action}: no device option given (--watchdog/--vsock/--disk/--memballoon/--sound/--video/--controller/--tpm/--smartcard/--redirdev implemented so far)"
     );
     std::process::exit(1);
 }
@@ -273,6 +292,14 @@ fn run_build_xml(args: &Args) {
         "tpm" => {
             let dev = tpm_from_optstr(optstr).unwrap_or_else(exit_on_err);
             to_xml_string(&dev).expect("a freshly built DeviceTpm always serializes")
+        }
+        "smartcard" => {
+            let dev = smartcard_from_optstr(optstr).unwrap_or_else(exit_on_err);
+            to_xml_string(&dev).expect("a freshly built DeviceSmartcard always serializes")
+        }
+        "redirdev" => {
+            let dev = redirdev_from_optstr(optstr).unwrap_or_else(exit_on_err);
+            to_xml_string(&dev).expect("a freshly built DeviceRedirdev always serializes")
         }
         _ => unreachable!(),
     };
@@ -386,6 +413,14 @@ fn run_print_xml_add_device(args: &Args, device: &str, optstr: &str) {
             let dev = tpm_from_optstr(optstr).unwrap_or_else(exit_on_err);
             list_add(&mut doc, root, &["devices"], &dev);
         }
+        "smartcard" => {
+            let dev = smartcard_from_optstr(optstr).unwrap_or_else(exit_on_err);
+            list_add(&mut doc, root, &["devices"], &dev);
+        }
+        "redirdev" => {
+            let dev = redirdev_from_optstr(optstr).unwrap_or_else(exit_on_err);
+            list_add(&mut doc, root, &["devices"], &dev);
+        }
         _ => unreachable!(),
     }
     print_doc(&doc);
@@ -428,6 +463,8 @@ fn apply_edit(
             "video" => apply_video_optstr(doc, el, optstr)?,
             "controller" => apply_controller_optstr(doc, el, optstr)?,
             "tpm" => apply_tpm_optstr(doc, el, optstr)?,
+            "smartcard" => apply_smartcard_optstr(doc, el, optstr)?,
+            "redirdev" => apply_redirdev_optstr(doc, el, optstr)?,
             _ => unreachable!(),
         }
     }
@@ -470,6 +507,14 @@ fn run_add_device(args: &Args) {
             &controller_from_optstr(optstr).unwrap_or_else(exit_on_err),
         ),
         "tpm" => domain.add_device(&conn, &tpm_from_optstr(optstr).unwrap_or_else(exit_on_err)),
+        "smartcard" => domain.add_device(
+            &conn,
+            &smartcard_from_optstr(optstr).unwrap_or_else(exit_on_err),
+        ),
+        "redirdev" => domain.add_device(
+            &conn,
+            &redirdev_from_optstr(optstr).unwrap_or_else(exit_on_err),
+        ),
         _ => unreachable!(),
     };
     report(&domain_name, result);

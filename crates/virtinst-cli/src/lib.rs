@@ -40,8 +40,8 @@
 //! of the same type added in one call.
 
 use virtinst_core::devices::{
-    DeviceController, DeviceDisk, DeviceMemballoon, DeviceSound, DeviceTpm, DeviceVideo,
-    DeviceVsock, DeviceWatchdog,
+    DeviceController, DeviceDisk, DeviceMemballoon, DeviceRedirdev, DeviceSmartcard, DeviceSound,
+    DeviceTpm, DeviceVideo, DeviceVsock, DeviceWatchdog,
 };
 use virtinst_xml::{list_remove, resolve_or_create_path, resolve_path, Document, Element, OnOff};
 
@@ -301,6 +301,10 @@ fn field_loc(device: &str, cliname: &str) -> Option<FieldLoc> {
         ("tpm", "persistent_state" | "backend.persistent_state") => {
             Some(Nested(&["backend"], "persistent_state"))
         }
+        ("smartcard", "mode") => Some(SelfAttr("mode")),
+        ("smartcard", "type") => Some(SelfAttr("type")),
+        ("redirdev", "bus") => Some(SelfAttr("bus")),
+        ("redirdev", "type") => Some(SelfAttr("type")),
         _ => None,
     }
 }
@@ -347,6 +351,8 @@ fn device_remove_first(device: &str) -> &'static [&'static str] {
         "video" => &["model.type"],
         "disk" => &["path"],
         "controller" | "tpm" => &["type"],
+        "smartcard" => &["mode"],
+        "redirdev" => &["bus"],
         _ => panic!("device_remove_first: no remove_first entry for device '{device}'"),
     }
 }
@@ -1320,6 +1326,153 @@ pub fn apply_tpm_optstr(doc: &mut Document, el: Element, optstr: &str) -> Result
                     None => None,
                 };
                 apply_nested_attr(doc, el, &["backend"], "persistent_state", normalized);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// `--smartcard` — upstream's real `ParserSmartcard` (`remove_first =
+/// "mode"`). Covers `mode`/`type`, the two self-attributes
+/// `DeviceSmartcard` already models and the only two `edit-simple-
+/// smartcard` needs. **Not modeled**: `database`/`certificate[0-9]*`
+/// (an indexed sub-list, same category of gap as `--disk`'s
+/// `source.host[N]*`) and the shared `_add_char_source_args`
+/// `source.*` fields (`DeviceSmartcard` already binds
+/// `source_mode`/`source_host`/`source_service`, but no real virt-xml
+/// compare fixture exercises setting them through `--smartcard` to
+/// ground the mapping against) — flagged rather than guessed.
+pub fn smartcard_from_optstr(optstr: &str) -> Result<DeviceSmartcard, String> {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, device_remove_first("smartcard"));
+
+    let mut dev = DeviceSmartcard::default();
+    for (cliname, val) in tuples {
+        match cliname.as_str() {
+            "mode" => dev.mode = required_value(&cliname, val)?,
+            "type" => dev.smartcard_type = required_value(&cliname, val)?,
+            _ => {}
+        }
+    }
+    Ok(dev)
+}
+
+/// [`apply_watchdog_optstr`]'s smartcard counterpart. Pins
+/// `edit-simple-smartcard` against the restored upstream fixture:
+/// `--smartcard type=spicevmc` on `<smartcard mode="host"/>` must
+/// produce `<smartcard mode="host" type="spicevmc"/>` — `mode`
+/// untouched.
+pub fn apply_smartcard_optstr(doc: &mut Document, el: Element, optstr: &str) -> Result<(), String> {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, device_remove_first("smartcard"));
+
+    for (cliname, val) in tuples {
+        if let "mode" | "type" = cliname.as_str() {
+            match required_value(&cliname, val)? {
+                Some(v) => el.set_attribute(doc, cliname, v),
+                None => {
+                    el.mut_attributes(doc).remove(&cliname);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Upstream's `_set_host_helper(obj, "host", "service", val)` (real
+/// name for the callback `ParserRedir.set_server_cb` and several other
+/// devices' `server=`/similar options reuse) — splits `"host:port"` on
+/// the *first* `:` only (`str.partition`, not a general split: a value
+/// with more colons keeps everything after the first one as the port
+/// half verbatim, matching Python's `partition` exactly rather than
+/// guessing at IPv6-style handling). An empty host half with a real
+/// port defaults the host to `"127.0.0.1"` (upstream's own fallback,
+/// for a bind-style `":2222"` shorthand) — every other combination
+/// (both present, host-only, neither) passes through as given. Returns
+/// `(host, port)`, both `None` when their half was empty.
+fn parse_friendly_host(val: &str) -> (Option<String>, Option<String>) {
+    let (host, port) = match val.split_once(':') {
+        Some((h, p)) => (h, Some(p).filter(|p| !p.is_empty())),
+        None => (val, None),
+    };
+    let host = if host.is_empty() { None } else { Some(host) };
+    let host = if port.is_some() && host.is_none() {
+        Some("127.0.0.1")
+    } else {
+        host
+    };
+    (host.map(String::from), port.map(String::from))
+}
+
+/// `--redirdev` — upstream's real `ParserRedir` (`remove_first =
+/// "bus"`). Covers `bus`/`type` (self-attributes) and `server`
+/// (upstream's `set_server_cb` → [`parse_friendly_host`], landing on
+/// the nested `source.host`/`source.service` `DeviceRedirdev` already
+/// models — critically, upstream's own helper never touches
+/// `source.mode` at all, so this doesn't either; `edit-simple-
+/// redirdev`'s fixture keeps its pre-existing `mode="connect"`
+/// untouched specifically because of that). **Not modeled**: every
+/// other `_add_char_source_args` field (`path`, `mode` set directly,
+/// `channel`, `tls`, ...) and the `--redirdev none` sentinel
+/// (`skip_default_usbredir` — a `Guest`-level flag `virt-install`'s
+/// build-from-scratch flow would need, meaningless for `virt-xml`
+/// editing an already-built domain, so not a gap this binary can hit).
+pub fn redirdev_from_optstr(optstr: &str) -> Result<DeviceRedirdev, String> {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, device_remove_first("redirdev"));
+
+    let mut dev = DeviceRedirdev::default();
+    for (cliname, val) in tuples {
+        match cliname.as_str() {
+            "bus" => dev.bus = required_value(&cliname, val)?,
+            "type" => dev.redirdev_type = required_value(&cliname, val)?,
+            "server" => {
+                if let Some(v) = required_value(&cliname, val)? {
+                    let (host, port) = parse_friendly_host(&v);
+                    dev.source_host = host;
+                    dev.source_service = match port {
+                        Some(p) => Some(parse_int("server", &p)?),
+                        None => dev.source_service,
+                    };
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(dev)
+}
+
+/// [`apply_watchdog_optstr`]'s redirdev counterpart. Pins
+/// `edit-simple-redirdev` against the restored upstream fixture:
+/// `--redirdev type=spicevmc,server=example.com:12345` on `<redirdev
+/// bus="usb" type="tcp"><source mode="connect" host="localhost"
+/// service="4000"/></redirdev>` must produce `type="spicevmc"`,
+/// `source/@host="example.com"`, `source/@service="12345"` —
+/// `bus`/`source/@mode` both untouched.
+pub fn apply_redirdev_optstr(doc: &mut Document, el: Element, optstr: &str) -> Result<(), String> {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, device_remove_first("redirdev"));
+
+    for (cliname, val) in tuples {
+        match cliname.as_str() {
+            "bus" | "type" => match required_value(&cliname, val)? {
+                Some(v) => el.set_attribute(doc, cliname, v),
+                None => {
+                    el.mut_attributes(doc).remove(&cliname);
+                }
+            },
+            "server" => {
+                if let Some(v) = required_value(&cliname, val)? {
+                    let (host, port) = parse_friendly_host(&v);
+                    if let Some(h) = host {
+                        apply_nested_attr(doc, el, &["source"], "host", Some(h));
+                    }
+                    if let Some(p) = port {
+                        parse_int("server", &p)?;
+                        apply_nested_attr(doc, el, &["source"], "service", Some(p));
+                    }
+                }
             }
             _ => {}
         }
@@ -2967,6 +3120,8 @@ mod tests {
                     "backend.persistent_state",
                 ],
             ),
+            ("smartcard", &["mode", "type"]),
+            ("redirdev", &["bus", "type"]),
         ];
         for (device, clinames) in known {
             for cliname in *clinames {
@@ -3149,6 +3304,155 @@ mod tests {
             backend.attribute(&doc, "persistent_state"),
             Some("yes"),
             "is_onoff CLI vocab, is_yesno XML spelling — must write \"yes\", not \"on\""
+        );
+    }
+
+    /// `remove_first = "mode"` for `--smartcard`.
+    #[test]
+    fn smartcard_from_optstr_handles_the_positional_form() {
+        let dev = smartcard_from_optstr("host").unwrap();
+        assert_eq!(dev.mode.as_deref(), Some("host"));
+    }
+
+    /// Golden fixture, pinned against upstream's own
+    /// `tests/data/cli/compare/virt-xml-edit-simple-smartcard.xml`:
+    /// `virt-xml --edit --smartcard type=spicevmc` against `<smartcard
+    /// mode="host"/>` must produce `<smartcard mode="host"
+    /// type="spicevmc"/>` — `mode` untouched.
+    #[test]
+    fn golden_edit_simple_smartcard() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <smartcard mode="host"/>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "smartcard", "1").unwrap()[0];
+
+        apply_smartcard_optstr(&mut doc, el, "type=spicevmc").unwrap();
+
+        assert_eq!(el.attribute(&doc, "mode"), Some("host"), "untouched");
+        assert_eq!(el.attribute(&doc, "type"), Some("spicevmc"));
+    }
+
+    /// [`parse_friendly_host`]'s own edge cases, grounded directly
+    /// against upstream's real `_set_host_helper`/`parse_host`: first-
+    /// colon-only split, empty-host-with-port defaults to
+    /// `"127.0.0.1"`, no colon at all is host-only, empty string is
+    /// neither.
+    #[test]
+    fn parse_friendly_host_matches_upstreams_real_helper() {
+        assert_eq!(
+            parse_friendly_host("example.com:12345"),
+            (Some("example.com".into()), Some("12345".into()))
+        );
+        assert_eq!(
+            parse_friendly_host(":2222"),
+            (Some("127.0.0.1".into()), Some("2222".into())),
+            "empty host with a real port defaults to 127.0.0.1"
+        );
+        assert_eq!(
+            parse_friendly_host("justhost"),
+            (Some("justhost".into()), None),
+            "no colon at all is host-only"
+        );
+        assert_eq!(parse_friendly_host(""), (None, None));
+        assert_eq!(
+            parse_friendly_host("host:"),
+            (Some("host".into()), None),
+            "trailing colon with an empty port is host-only, not a port of \"\""
+        );
+    }
+
+    /// Golden fixture, pinned against upstream's own
+    /// `tests/data/cli/compare/virt-xml-edit-simple-redirdev.xml`:
+    /// `virt-xml --edit --redirdev type=spicevmc,server=example.com:12345`
+    /// against `<redirdev bus="usb" type="tcp"><source mode="connect"
+    /// host="localhost" service="4000"/></redirdev>` must produce
+    /// `type="spicevmc"`, `source/@host="example.com"`,
+    /// `source/@service="12345"` — `bus` and `source/@mode` both
+    /// untouched (upstream's own `set_friendly_host` never touches
+    /// `mode` either).
+    #[test]
+    fn golden_edit_simple_redirdev() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <redirdev bus="usb" type="tcp">
+      <source mode="connect" host="localhost" service="4000"/>
+    </redirdev>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "redirdev", "1").unwrap()[0];
+
+        apply_redirdev_optstr(&mut doc, el, "type=spicevmc,server=example.com:12345").unwrap();
+
+        assert_eq!(el.attribute(&doc, "bus"), Some("usb"), "untouched");
+        assert_eq!(el.attribute(&doc, "type"), Some("spicevmc"));
+        let source = el.find(&doc, "source").unwrap();
+        assert_eq!(source.attribute(&doc, "mode"), Some("connect"), "untouched");
+        assert_eq!(source.attribute(&doc, "host"), Some("example.com"));
+        assert_eq!(source.attribute(&doc, "service"), Some("12345"));
+    }
+
+    /// Real end-to-end proof mirroring `add_then_remove_vsock_against_a_
+    /// real_domain` — with one real wrinkle found empirically: the
+    /// stock "test" domain has no USB controller at all, and the real
+    /// driver's own `defineXML` validation rejects a `redirdev` outright
+    /// on a domain with USB disabled (`"cannot add redirected USB
+    /// device: USB is disabled for this domain"`, code 67). Not a gap
+    /// in this crate — a real libvirt-level constraint, same class of
+    /// discovery as memballoon's "only one" limit. Adds a `<controller
+    /// type="usb"/>` first (also exercises `controller_from_optstr`'s
+    /// add-device path for free) so the redirdev add has something to
+    /// attach to, then cleans up both.
+    #[test]
+    fn add_then_remove_redirdev_against_a_real_domain() {
+        use virtinst_core::connection::{Connection, Domain};
+
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        let domain = Domain::lookup_by_name(&conn, "test").expect("the default test domain");
+
+        let usb_controller = controller_from_optstr("type=usb").unwrap();
+        domain
+            .add_device(&conn, &usb_controller)
+            .expect("adding a usb controller so redirdev has somewhere to attach");
+
+        let dev = redirdev_from_optstr("bus=usb,type=spicevmc").unwrap();
+        domain
+            .add_device(&conn, &dev)
+            .expect("add-device's exact call chain succeeds, now that USB exists");
+
+        let after_add = domain.inactive_xml().expect("fetch inactive XML");
+        let doc = virtinst_xml::parse_libvirt_xml(&after_add).expect("re-parses");
+        let root = doc.root_element().unwrap();
+        assert_eq!(
+            select_elements(&doc, root, "redirdev", "all")
+                .unwrap()
+                .len(),
+            1
+        );
+
+        domain
+            .edit_inactive_xml(&conn, |doc, root| {
+                remove_elements(doc, root, "redirdev", "all")?;
+                remove_elements(doc, root, "controller", "all")?;
+                Ok(())
+            })
+            .expect("remove-device's exact call chain succeeds");
+
+        let after_remove = domain.inactive_xml().expect("fetch inactive XML");
+        let doc = virtinst_xml::parse_libvirt_xml(&after_remove).expect("re-parses");
+        let root = doc.root_element().unwrap();
+        assert!(select_elements(&doc, root, "redirdev", "all").is_err());
+        assert!(
+            select_elements(&doc, root, "controller", "all").is_err(),
+            "back to no controllers, as found"
         );
     }
 }
