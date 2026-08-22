@@ -13,14 +13,19 @@
 //! `virtinst-cli` for where that was found.
 //!
 //! This slice covers `--build-xml`/`--edit`/`--add-device`/
-//! `--remove-device`, for `--watchdog`/`--vsock`/`--disk` — see
-//! `virtinst_cli`'s doc comment for why those devices specifically
-//! (`--disk` is upstream's largest and most irregular parser; only a
-//! partial slice of it is ported — see `disk_from_optstr`'s own doc
-//! comment for exactly which fields), and why their optstring mapping
-//! is still hand-written rather than shared. Only the flags this slice
-//! actually implements are declared; an unimplemented flag that parses
-//! is worse than an absent one.
+//! `--remove-device`, for `--watchdog`/`--vsock`/`--disk`/`--memballoon`
+//! — see `virtinst_cli`'s doc comment for why those devices
+//! specifically (`--disk` is upstream's largest and most irregular
+//! parser; only a partial slice of it is ported — see
+//! `disk_from_optstr`'s own doc comment for exactly which fields), and
+//! why their optstring mapping is still hand-written rather than
+//! shared. Only the flags this slice actually implements are declared;
+//! an unimplemented flag that parses is worse than an absent one.
+//! `--memballoon` also can't be exercised through `--add-device` against
+//! a domain that already has one — the real driver rejects a second
+//! `<memballoon>` outright (see `virtinst_cli`'s
+//! `remove_then_restore_memballoon_against_a_real_domain` test); that's
+//! a real hardware constraint, not a gap here.
 //!
 //! `--add-device`/`--edit`'s output contract is also deliberately
 //! narrower than upstream for now: absent `--print-xml`, this always
@@ -52,8 +57,9 @@
 
 use clap::Parser;
 use virtinst_cli::{
-    apply_disk_optstr, apply_vsock_optstr, apply_watchdog_optstr, disk_from_optstr,
-    remove_elements, select_elements, vsock_from_optstr, watchdog_from_optstr,
+    apply_disk_optstr, apply_memballoon_optstr, apply_vsock_optstr, apply_watchdog_optstr,
+    disk_from_optstr, memballoon_from_optstr, remove_elements, select_elements, vsock_from_optstr,
+    watchdog_from_optstr,
 };
 use virtinst_core::connection::{Connection, Domain};
 use virtinst_xml::{list_add, parse_libvirt_xml, to_xml_string, Document, Element};
@@ -114,6 +120,12 @@ struct Args {
     /// which fields.
     #[arg(long)]
     disk: Option<String>,
+
+    /// Memballoon device options for --build-xml/--edit/--add-device
+    /// (e.g. "model=none" or bare "none"), or the selector for
+    /// --remove-device (e.g. "1", "all").
+    #[arg(long)]
+    memballoon: Option<String>,
 }
 
 fn main() {
@@ -143,10 +155,10 @@ fn main() {
 }
 
 /// Every action below needs exactly one device flag; this picks whichever
-/// of `--watchdog`/`--vsock`/`--disk` was given (fixed priority, not
-/// argv order — `--watchdog` wins if more than one were) and exits with
-/// the "nothing implemented for this action" message the caller
-/// supplies if none was.
+/// of `--watchdog`/`--vsock`/`--disk`/`--memballoon` was given (fixed
+/// priority, not argv order — `--watchdog` wins if more than one were)
+/// and exits with the "nothing implemented for this action" message the
+/// caller supplies if none was.
 fn device_optstr<'a>(args: &'a Args, action: &str) -> (&'static str, &'a str) {
     if let Some(optstr) = &args.watchdog {
         return ("watchdog", optstr);
@@ -157,8 +169,11 @@ fn device_optstr<'a>(args: &'a Args, action: &str) -> (&'static str, &'a str) {
     if let Some(optstr) = &args.disk {
         return ("disk", optstr);
     }
+    if let Some(optstr) = &args.memballoon {
+        return ("memballoon", optstr);
+    }
     eprintln!(
-        "virt-xml {action}: no device option given (--watchdog/--vsock/--disk implemented so far)"
+        "virt-xml {action}: no device option given (--watchdog/--vsock/--disk/--memballoon implemented so far)"
     );
     std::process::exit(1);
 }
@@ -200,6 +215,10 @@ fn run_build_xml(args: &Args) {
         "disk" => {
             let dev = disk_from_optstr(optstr).unwrap_or_else(exit_on_err);
             to_xml_string(&dev).expect("a freshly built DeviceDisk always serializes")
+        }
+        "memballoon" => {
+            let dev = memballoon_from_optstr(optstr).unwrap_or_else(exit_on_err);
+            to_xml_string(&dev).expect("a freshly built DeviceMemballoon always serializes")
         }
         _ => unreachable!(),
     };
@@ -293,6 +312,10 @@ fn run_print_xml_add_device(args: &Args, device: &str, optstr: &str) {
             let dev = disk_from_optstr(optstr).unwrap_or_else(exit_on_err);
             list_add(&mut doc, root, &["devices"], &dev);
         }
+        "memballoon" => {
+            let dev = memballoon_from_optstr(optstr).unwrap_or_else(exit_on_err);
+            list_add(&mut doc, root, &["devices"], &dev);
+        }
         _ => unreachable!(),
     }
     print_doc(&doc);
@@ -330,6 +353,7 @@ fn apply_edit(
             "watchdog" => apply_watchdog_optstr(doc, el, optstr)?,
             "vsock" => apply_vsock_optstr(doc, el, optstr)?,
             "disk" => apply_disk_optstr(doc, el, optstr)?,
+            "memballoon" => apply_memballoon_optstr(doc, el, optstr)?,
             _ => unreachable!(),
         }
     }
@@ -355,6 +379,10 @@ fn run_add_device(args: &Args) {
             &vsock_from_optstr(optstr).unwrap_or_else(exit_on_err),
         ),
         "disk" => domain.add_device(&conn, &disk_from_optstr(optstr).unwrap_or_else(exit_on_err)),
+        "memballoon" => domain.add_device(
+            &conn,
+            &memballoon_from_optstr(optstr).unwrap_or_else(exit_on_err),
+        ),
         _ => unreachable!(),
     };
     report(&domain_name, result);
