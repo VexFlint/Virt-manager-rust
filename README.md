@@ -21,7 +21,7 @@ the Python original, without changing how it looks or where anything is.
 | `virtinst-core` | Library. All device/domain XML types, the connection layer (real `virt`/libvirt bindings), install-method logic, clone logic. |
 | `virt-install` | Working binary. `--import`, `--cdrom`/`--livecd`, `--boot`, `--cdrom --disk` (two-phase), `--pxe`, `--container --filesystem`. Most of upstream's flags aren't implemented yet. |
 | `virt-clone` | Working binary. `--preserve-data` mode only (rewrites XML — name/UUID/MACs/disk paths — no disk-content copying). |
-| `virt-xml` | Working binary. `--build-xml`/`--edit`/`--add-device`/`--remove-device`/`--print-xml`, wired up for four device options (`--watchdog`, `--vsock`, `--disk` — a deliberately partial slice of upstream's real 40+-field `--disk`, `--memballoon`) as the pattern to extend. |
+| `virt-xml` | Working binary. `--build-xml`/`--edit`/`--add-device`/`--remove-device`/`--print-xml`, wired up for six device options (`--watchdog`, `--vsock`, `--disk` — a deliberately partial slice of upstream's real 40+-field `--disk`, `--memballoon`, `--sound`, `--video`) as the pattern to extend. |
 | `virt-manager` (GUI) | **Not started.** `fn main() {}`. |
 
 Run any binary with `--help` for its exact current flag set — the help text

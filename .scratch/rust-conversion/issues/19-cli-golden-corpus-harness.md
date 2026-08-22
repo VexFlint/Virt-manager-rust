@@ -164,6 +164,16 @@ single memory balloon device is supported") — matches upstream's own
 compare corpus, which has no `add-memballoon` fixture either. A real
 hardware constraint, not a gap.
 
+Extended again to 34 checks / 16 cases: `--sound`/`--video` (seventh
+and eighth devices, both structs already existed in `virtinst-core` —
+pure CLI wiring). Four real upstream fixtures covered exactly
+(`edit-simple-soundhw`, `add-sound`, `edit-simple-video`,
+`remove-video-all`). `remove-sound-model` skipped — its real command
+(`--remove-device --sound ich6`) needs the field-match selector form
+`select_elements` still doesn't support (matching an existing device
+by its own attribute value rather than index/`all`), same deferred gap
+flagged since the very first version of `select_elements`.
+
 **Not yet done**: growing case/device coverage further (blocked on more
 devices having a `{device}_from_optstr`/`apply_{device}_optstr` pair at
 all, not on the harness itself — and for `--disk` specifically, on
@@ -171,4 +181,7 @@ extending past this session's partial slice); extending to
 `virt-install`'s corpus (blocked on the capability-injection layer,
 still real future work — see above, this is *not* what the
 `testsuite.xml` finding resolved); `--print-diff` (needs a real diff
-algorithm, not built, flagged in `virt-xml.rs`'s own doc comment).
+algorithm, not built, flagged in `virt-xml.rs`'s own doc comment); the
+field-match `--edit`/`--remove-device` selector form (`select_elements`'s
+own doc comment already flags it — `remove-sound-model` is the first
+case actually blocked on it, not just a theoretical gap anymore).

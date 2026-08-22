@@ -245,6 +245,44 @@ echo "  cmd: --remove-device --memballoon all"
 xml="$(run_virt_xml_action --remove-device --memballoon all)"
 check_xpath "$xml" "count(//memballoon)" "0" "the only memballoon is gone"
 
+# --sound / --video cases. Both structs already existed in
+# virtinst-core; this is CLI optstring wiring only — see
+# sound_from_optstr/video_from_optstr's own doc comments in
+# virtinst-cli/src/lib.rs. remove-sound-model needs a field-match
+# selector ("ich6", not an index/all) that select_elements doesn't
+# support yet, so it's skipped here rather than faked with a different
+# optstring — same discipline as edit-disk's out-of-reach fixtures.
+
+echo
+echo "=== edit-simple-soundhw ==="
+echo "  upstream: tests/data/cli/compare/virt-xml-edit-simple-soundhw.xml"
+echo "  cmd: --sound pcspk"
+xml="$(run_virt_xml --sound pcspk)"
+check_xpath "$xml" "string(//sound[1]/@model)" "pcspk" "first sound's model changed to pcspk"
+
+echo
+echo "=== add-sound ==="
+echo "  upstream: tests/data/cli/compare/virt-xml-add-sound.xml"
+echo "  cmd: --add-device --sound pcspk"
+xml="$(run_virt_xml_action --add-device --sound pcspk)"
+check_xpath "$xml" "string(//sound[last()]/@model)" "pcspk" "new sound has the given model"
+
+echo
+echo "=== edit-simple-video ==="
+echo "  upstream: tests/data/cli/compare/virt-xml-edit-simple-video.xml"
+echo "  cmd: --edit 1 --video cirrus"
+xml="$(run_virt_xml --video cirrus)"
+check_xpath "$xml" "string(//video[1]/model/@type)" "cirrus" "first video's model type changed to cirrus"
+check_xpath "$xml" "string(//video[1]/model/@vram)" "16384" "sibling attribute untouched"
+check_xpath "$xml" "string(//video[1]/model/@heads)" "1" "sibling attribute untouched"
+
+echo
+echo "=== remove-video-all ==="
+echo "  upstream: tests/data/cli/compare/virt-xml-remove-video-all.xml"
+echo "  cmd: --remove-device --video all"
+xml="$(run_virt_xml_action --remove-device --video all)"
+check_xpath "$xml" "count(//video)" "0" "both videos are gone"
+
 echo
 echo "$pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]
