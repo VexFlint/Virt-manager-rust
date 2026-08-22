@@ -13,12 +13,12 @@
 //! `virtinst-cli` for where that was found.
 //!
 //! This slice covers `--build-xml`/`--edit`/`--add-device`/
-//! `--remove-device`, for `--watchdog`/`--vsock`/`--disk`/`--memballoon`
-//! — see `virtinst_cli`'s doc comment for why those devices
-//! specifically (`--disk` is upstream's largest and most irregular
-//! parser; only a partial slice of it is ported — see
-//! `disk_from_optstr`'s own doc comment for exactly which fields), and
-//! why their optstring mapping is still hand-written rather than
+//! `--remove-device`, for `--watchdog`/`--vsock`/`--disk`/
+//! `--memballoon`/`--sound`/`--video` — see `virtinst_cli`'s doc comment
+//! for why those devices specifically (`--disk` is upstream's largest
+//! and most irregular parser; only a partial slice of it is ported —
+//! see `disk_from_optstr`'s own doc comment for exactly which fields),
+//! and why their optstring mapping is still hand-written rather than
 //! shared. Only the flags this slice actually implements are declared;
 //! an unimplemented flag that parses is worse than an absent one.
 //! `--memballoon` also can't be exercised through `--add-device` against
@@ -57,8 +57,9 @@
 
 use clap::Parser;
 use virtinst_cli::{
-    apply_disk_optstr, apply_memballoon_optstr, apply_vsock_optstr, apply_watchdog_optstr,
-    disk_from_optstr, memballoon_from_optstr, remove_elements, select_elements, vsock_from_optstr,
+    apply_disk_optstr, apply_memballoon_optstr, apply_sound_optstr, apply_video_optstr,
+    apply_vsock_optstr, apply_watchdog_optstr, disk_from_optstr, memballoon_from_optstr,
+    remove_elements, select_elements, sound_from_optstr, video_from_optstr, vsock_from_optstr,
     watchdog_from_optstr,
 };
 use virtinst_core::connection::{Connection, Domain};
@@ -126,6 +127,18 @@ struct Args {
     /// --remove-device (e.g. "1", "all").
     #[arg(long)]
     memballoon: Option<String>,
+
+    /// Sound device options for --build-xml/--edit/--add-device (e.g.
+    /// "pcspk" or "model=ich9"), or the selector for --remove-device
+    /// (e.g. "1", "all").
+    #[arg(long)]
+    sound: Option<String>,
+
+    /// Video device options for --build-xml/--edit/--add-device (e.g.
+    /// "cirrus" or "model.type=virtio,model.heads=2"), or the selector
+    /// for --remove-device (e.g. "1", "all").
+    #[arg(long)]
+    video: Option<String>,
 }
 
 fn main() {
@@ -172,8 +185,14 @@ fn device_optstr<'a>(args: &'a Args, action: &str) -> (&'static str, &'a str) {
     if let Some(optstr) = &args.memballoon {
         return ("memballoon", optstr);
     }
+    if let Some(optstr) = &args.sound {
+        return ("sound", optstr);
+    }
+    if let Some(optstr) = &args.video {
+        return ("video", optstr);
+    }
     eprintln!(
-        "virt-xml {action}: no device option given (--watchdog/--vsock/--disk/--memballoon implemented so far)"
+        "virt-xml {action}: no device option given (--watchdog/--vsock/--disk/--memballoon/--sound/--video implemented so far)"
     );
     std::process::exit(1);
 }
@@ -219,6 +238,14 @@ fn run_build_xml(args: &Args) {
         "memballoon" => {
             let dev = memballoon_from_optstr(optstr).unwrap_or_else(exit_on_err);
             to_xml_string(&dev).expect("a freshly built DeviceMemballoon always serializes")
+        }
+        "sound" => {
+            let dev = sound_from_optstr(optstr).unwrap_or_else(exit_on_err);
+            to_xml_string(&dev).expect("a freshly built DeviceSound always serializes")
+        }
+        "video" => {
+            let dev = video_from_optstr(optstr).unwrap_or_else(exit_on_err);
+            to_xml_string(&dev).expect("a freshly built DeviceVideo always serializes")
         }
         _ => unreachable!(),
     };
@@ -316,6 +343,14 @@ fn run_print_xml_add_device(args: &Args, device: &str, optstr: &str) {
             let dev = memballoon_from_optstr(optstr).unwrap_or_else(exit_on_err);
             list_add(&mut doc, root, &["devices"], &dev);
         }
+        "sound" => {
+            let dev = sound_from_optstr(optstr).unwrap_or_else(exit_on_err);
+            list_add(&mut doc, root, &["devices"], &dev);
+        }
+        "video" => {
+            let dev = video_from_optstr(optstr).unwrap_or_else(exit_on_err);
+            list_add(&mut doc, root, &["devices"], &dev);
+        }
         _ => unreachable!(),
     }
     print_doc(&doc);
@@ -354,6 +389,8 @@ fn apply_edit(
             "vsock" => apply_vsock_optstr(doc, el, optstr)?,
             "disk" => apply_disk_optstr(doc, el, optstr)?,
             "memballoon" => apply_memballoon_optstr(doc, el, optstr)?,
+            "sound" => apply_sound_optstr(doc, el, optstr)?,
+            "video" => apply_video_optstr(doc, el, optstr)?,
             _ => unreachable!(),
         }
     }
@@ -382,6 +419,14 @@ fn run_add_device(args: &Args) {
         "memballoon" => domain.add_device(
             &conn,
             &memballoon_from_optstr(optstr).unwrap_or_else(exit_on_err),
+        ),
+        "sound" => domain.add_device(
+            &conn,
+            &sound_from_optstr(optstr).unwrap_or_else(exit_on_err),
+        ),
+        "video" => domain.add_device(
+            &conn,
+            &video_from_optstr(optstr).unwrap_or_else(exit_on_err),
         ),
         _ => unreachable!(),
     };

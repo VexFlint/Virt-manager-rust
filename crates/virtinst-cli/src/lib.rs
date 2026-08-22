@@ -39,7 +39,9 @@
 //! anything built so far; revisit if a real use needs multiple devices
 //! of the same type added in one call.
 
-use virtinst_core::devices::{DeviceDisk, DeviceMemballoon, DeviceVsock, DeviceWatchdog};
+use virtinst_core::devices::{
+    DeviceDisk, DeviceMemballoon, DeviceSound, DeviceVideo, DeviceVsock, DeviceWatchdog,
+};
 use virtinst_xml::{list_remove, resolve_or_create_path, resolve_path, Document, Element, OnOff};
 
 /// Upstream's `parse_optstr_tuples`: split `"model=itco,action=none"`
@@ -679,6 +681,192 @@ pub fn apply_disk_optstr(doc: &mut Document, el: Element, optstr: &str) -> Resul
         }
     }
     Ok(())
+}
+
+/// `--sound` — upstream's real `ParserSound` (`remove_first = "model"`,
+/// same positional shorthand as `--watchdog`/`--vsock`/`--memballoon`).
+/// `audio.id` is a dotted nested-element key ([`apply_nested_attr`],
+/// same shape as `cid.address`/`stats.period`). `multichannel`/
+/// `streams` are deliberately **not** validated or normalized —
+/// checked directly against upstream's real `add_arg` calls: neither
+/// passes `is_onoff=True`, so upstream's own `_VirtCLIArgument.__init__`
+/// never runs them through `_on_off_convert` at all, and
+/// `XMLProperty._convert_set_value`'s `is_yesno` branch only coerces an
+/// actual Python `True`/`False` — a raw string (which is all the CLI
+/// ever produces without that flag) passes straight through unexamined.
+/// A real, faithfully-reproduced footgun: `--sound multichannel=on`
+/// upstream writes `multichannel="on"` verbatim, which is never `"yes"`
+/// so reads back as `false` — not ported around, matched. `codec[0-9]*`
+/// (indexed sub-list) isn't modeled, same category of gap as `--disk`'s
+/// indexed `source.host[N]*`.
+pub fn sound_from_optstr(optstr: &str) -> Result<DeviceSound, String> {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, &["model"]);
+
+    let mut dev = DeviceSound::default();
+    for (cliname, val) in tuples {
+        match cliname.as_str() {
+            "model" => dev.model = required_value(&cliname, val)?,
+            "audio.id" => dev.audio_id = required_value(&cliname, val)?,
+            "multichannel" => {
+                dev.multichannel = required_value(&cliname, val)?.map(|v| v == "yes");
+            }
+            "streams" => dev.streams = required_value(&cliname, val)?,
+            _ => {}
+        }
+    }
+    Ok(dev)
+}
+
+/// [`apply_watchdog_optstr`]'s sound counterpart. `multichannel` writes
+/// the raw string verbatim (see [`sound_from_optstr`]'s doc comment for
+/// why that's faithful, not a missing validation step) rather than
+/// going through `parse_onoff`/a bool.
+pub fn apply_sound_optstr(doc: &mut Document, el: Element, optstr: &str) -> Result<(), String> {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, &["model"]);
+
+    for (cliname, val) in tuples {
+        match cliname.as_str() {
+            "model" | "multichannel" | "streams" => match required_value(&cliname, val)? {
+                Some(v) => el.set_attribute(doc, cliname, v),
+                None => {
+                    el.mut_attributes(doc).remove(&cliname);
+                }
+            },
+            "audio.id" => apply_nested_attr(doc, el, "audio", "id", required_value(&cliname, val)?),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// `--video` — upstream's real `ParserVideo` (`remove_first =
+/// "model.type"` — `--video cirrus` means `model.type=cirrus`, spliced
+/// into a *dotted* nested-element key rather than a self-attribute, the
+/// first `remove_first` target seen so far that isn't flat). Every
+/// field except `model.type` itself is a plain `./model/@...`
+/// attribute one level down; `model.acceleration.accel3d` reaches a
+/// second level (`./model/acceleration/@accel3d`), still just another
+/// `apply_nested_attr` path/attr pair, this one with a `/`-joined path.
+/// `model.blob` (`is_onoff`, `./model/@blob`) isn't modeled — no
+/// `blob` field on `DeviceVideo` yet, same "not built" category as
+/// `--disk`'s unported fields, not a new gap invented here.
+pub fn video_from_optstr(optstr: &str) -> Result<DeviceVideo, String> {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, &["model.type"]);
+
+    let mut dev = DeviceVideo::default();
+    for (cliname, val) in tuples {
+        match cliname.as_str() {
+            "model.type" => dev.model = required_value(&cliname, val)?,
+            "model.heads" => {
+                dev.heads = match required_value(&cliname, val)? {
+                    Some(v) => Some(parse_int(&cliname, &v)?),
+                    None => None,
+                };
+            }
+            "model.ram" => {
+                dev.ram = match required_value(&cliname, val)? {
+                    Some(v) => Some(parse_int(&cliname, &v)?),
+                    None => None,
+                };
+            }
+            "model.vram" => {
+                dev.vram = match required_value(&cliname, val)? {
+                    Some(v) => Some(parse_int(&cliname, &v)?),
+                    None => None,
+                };
+            }
+            "model.vram64" => {
+                dev.vram64 = match required_value(&cliname, val)? {
+                    Some(v) => Some(parse_int(&cliname, &v)?),
+                    None => None,
+                };
+            }
+            "model.vgamem" => {
+                dev.vgamem = match required_value(&cliname, val)? {
+                    Some(v) => Some(parse_int(&cliname, &v)?),
+                    None => None,
+                };
+            }
+            "model.acceleration.accel3d" => {
+                dev.accel3d = match required_value(&cliname, val)? {
+                    Some(v) => Some(parse_onoff(&cliname, &v)?),
+                    None => None,
+                };
+            }
+            _ => {}
+        }
+    }
+    Ok(dev)
+}
+
+/// [`apply_watchdog_optstr`]'s video counterpart — every field here
+/// reaches through [`apply_nested_attr`] to `<model>` or
+/// `<model><acceleration>`, none is a self-attribute on `<video>`
+/// itself (unlike every device before this one).
+pub fn apply_video_optstr(doc: &mut Document, el: Element, optstr: &str) -> Result<(), String> {
+    let mut tuples = parse_optstr_tuples(optstr);
+    splice_remove_first(&mut tuples, &["model.type"]);
+
+    for (cliname, val) in tuples {
+        match cliname.as_str() {
+            "model.type" => {
+                apply_nested_attr(doc, el, "model", "type", required_value(&cliname, val)?)
+            }
+            "model.heads" => {
+                let checked = check_int_or_clear(&cliname, val)?;
+                apply_nested_attr(doc, el, "model", "heads", checked);
+            }
+            "model.ram" => {
+                let checked = check_int_or_clear(&cliname, val)?;
+                apply_nested_attr(doc, el, "model", "ram", checked);
+            }
+            "model.vram" => {
+                let checked = check_int_or_clear(&cliname, val)?;
+                apply_nested_attr(doc, el, "model", "vram", checked);
+            }
+            "model.vram64" => {
+                let checked = check_int_or_clear(&cliname, val)?;
+                apply_nested_attr(doc, el, "model", "vram64", checked);
+            }
+            "model.vgamem" => {
+                let checked = check_int_or_clear(&cliname, val)?;
+                apply_nested_attr(doc, el, "model", "vgamem", checked);
+            }
+            "model.acceleration.accel3d" => {
+                let normalized = match required_value(&cliname, val)? {
+                    Some(v) => Some(
+                        if parse_onoff(&cliname, &v)? {
+                            "yes"
+                        } else {
+                            "no"
+                        }
+                        .to_string(),
+                    ),
+                    None => None,
+                };
+                apply_nested_attr(doc, el, "model/acceleration", "accel3d", normalized);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Shared by every `--video` `is_int` field's `apply_*` half: validate
+/// via [`parse_int`], but (like `cid.address`) write the original
+/// string back unchanged rather than a reformatted one — an int
+/// attribute's XML text is just its decimal digits either way.
+fn check_int_or_clear(cliname: &str, val: Option<String>) -> Result<Option<String>, String> {
+    match required_value(cliname, val)? {
+        Some(v) => {
+            parse_int(cliname, &v)?;
+            Ok(Some(v))
+        }
+        None => Ok(None),
+    }
 }
 
 /// `--remove-device`'s path, for any device `tag` — upstream's
@@ -1867,5 +2055,170 @@ mod tests {
             remaining, baseline,
             "back to whatever disk count was there before this test"
         );
+    }
+
+    #[test]
+    fn sound_from_optstr_handles_the_positional_form() {
+        let dev = sound_from_optstr("pcspk").unwrap();
+        assert_eq!(dev.model.as_deref(), Some("pcspk"));
+    }
+
+    /// `multichannel`/`streams` are raw pass-through, not validated —
+    /// see `sound_from_optstr`'s doc comment. Garbage that isn't `"yes"`
+    /// reads back as `Some(false)` on the `Option<bool>` field (matching
+    /// `_convert_get_value`'s own `is_yesno` fallback exactly: anything
+    /// other than the literal strings `"yes"`/`"no"` just fails the
+    /// equality check), not an error.
+    #[test]
+    fn sound_from_optstr_multichannel_is_unvalidated_pass_through() {
+        let dev = sound_from_optstr("multichannel=on").unwrap();
+        assert_eq!(
+            dev.multichannel,
+            Some(false),
+            "\"on\" isn't \"yes\", so it reads back as false, same as upstream"
+        );
+        let dev = sound_from_optstr("multichannel=yes").unwrap();
+        assert_eq!(dev.multichannel, Some(true));
+    }
+
+    /// Golden fixture, pinned against upstream's own
+    /// `tests/data/cli/compare/virt-xml-edit-simple-soundhw.xml`:
+    /// `virt-xml --edit --sound pcspk` against `<sound model="sb16"/>`
+    /// must produce `<sound model="pcspk"/>`.
+    #[test]
+    fn golden_edit_simple_soundhw() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <sound model="sb16"/>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "sound", "1").unwrap()[0];
+
+        apply_sound_optstr(&mut doc, el, "pcspk").unwrap();
+
+        assert_eq!(el.attribute(&doc, "model"), Some("pcspk"));
+    }
+
+    /// Real end-to-end proof, same shape as
+    /// `add_then_remove_vsock_against_a_real_domain` — pins
+    /// `add-sound`'s real fixture shape too (`--add-device --sound
+    /// pcspk`, a bare positional model on an otherwise-empty domain).
+    #[test]
+    fn add_then_remove_sound_against_a_real_domain() {
+        use virtinst_core::connection::{Connection, Domain};
+
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        let domain = Domain::lookup_by_name(&conn, "test").expect("the default test domain");
+
+        let dev = sound_from_optstr("pcspk").unwrap();
+        domain
+            .add_device(&conn, &dev)
+            .expect("add-device's exact call chain succeeds");
+
+        let after_add = domain.inactive_xml().expect("fetch inactive XML");
+        let doc = virtinst_xml::parse_libvirt_xml(&after_add).expect("re-parses");
+        let root = doc.root_element().unwrap();
+        let sounds = select_elements(&doc, root, "sound", "all").unwrap();
+        assert_eq!(sounds.len(), 1);
+        assert_eq!(sounds[0].attribute(&doc, "model"), Some("pcspk"));
+
+        domain
+            .edit_inactive_xml(&conn, |doc, root| {
+                remove_elements(doc, root, "sound", "all")?;
+                Ok(())
+            })
+            .expect("remove-device's exact call chain succeeds");
+
+        let after_remove = domain.inactive_xml().expect("fetch inactive XML");
+        let doc = virtinst_xml::parse_libvirt_xml(&after_remove).expect("re-parses");
+        let root = doc.root_element().unwrap();
+        assert!(select_elements(&doc, root, "sound", "all").is_err());
+    }
+
+    /// `remove_first = "model.type"` — a dotted nested-element key, the
+    /// first positional-shorthand target that isn't a flat self-attribute.
+    #[test]
+    fn video_from_optstr_handles_the_positional_form() {
+        let dev = video_from_optstr("cirrus").unwrap();
+        assert_eq!(dev.model.as_deref(), Some("cirrus"));
+    }
+
+    #[test]
+    fn video_from_optstr_parses_int_and_onoff_fields() {
+        let dev = video_from_optstr(
+            "model.type=virtio,model.heads=2,model.vram=65536,model.acceleration.accel3d=on",
+        )
+        .unwrap();
+        assert_eq!(dev.model.as_deref(), Some("virtio"));
+        assert_eq!(dev.heads, Some(2));
+        assert_eq!(dev.vram, Some(65536));
+        assert_eq!(dev.accel3d, Some(true));
+    }
+
+    /// Golden fixture, pinned against upstream's own
+    /// `tests/data/cli/compare/virt-xml-edit-simple-video.xml`:
+    /// `virt-xml --edit 1 --video cirrus` against a `<model type="vmvga"
+    /// vram="16384" heads="1" primary="yes"/>` must change only `type`
+    /// to `cirrus`, every sibling attribute on the same nested `<model>`
+    /// element untouched.
+    #[test]
+    fn golden_edit_simple_video() {
+        let mut doc = parse_fixture(
+            r#"<domain>
+  <devices>
+    <video>
+      <model type="vmvga" vram="16384" heads="1" primary="yes"/>
+    </video>
+  </devices>
+</domain>"#,
+        );
+        let root = doc.root_element().unwrap();
+        let el = select_elements(&doc, root, "video", "1").unwrap()[0];
+
+        apply_video_optstr(&mut doc, el, "cirrus").unwrap();
+
+        let model = el.find(&doc, "model").unwrap();
+        assert_eq!(model.attribute(&doc, "type"), Some("cirrus"));
+        assert_eq!(model.attribute(&doc, "vram"), Some("16384"));
+        assert_eq!(model.attribute(&doc, "heads"), Some("1"));
+        assert_eq!(model.attribute(&doc, "primary"), Some("yes"));
+    }
+
+    /// Real end-to-end proof, also pinning `remove-video-all`'s real
+    /// fixture shape (`--remove-device --video all`).
+    #[test]
+    fn add_then_remove_video_against_a_real_domain() {
+        use virtinst_core::connection::{Connection, Domain};
+
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        let domain = Domain::lookup_by_name(&conn, "test").expect("the default test domain");
+
+        let dev = video_from_optstr("model.type=cirrus,model.vram=16384").unwrap();
+        domain
+            .add_device(&conn, &dev)
+            .expect("add-device's exact call chain succeeds");
+
+        let after_add = domain.inactive_xml().expect("fetch inactive XML");
+        let doc = virtinst_xml::parse_libvirt_xml(&after_add).expect("re-parses");
+        let root = doc.root_element().unwrap();
+        let videos = select_elements(&doc, root, "video", "all").unwrap();
+        assert_eq!(videos.len(), 1);
+
+        domain
+            .edit_inactive_xml(&conn, |doc, root| {
+                remove_elements(doc, root, "video", "all")?;
+                Ok(())
+            })
+            .expect("remove-device's exact call chain succeeds");
+
+        let after_remove = domain.inactive_xml().expect("fetch inactive XML");
+        let doc = virtinst_xml::parse_libvirt_xml(&after_remove).expect("re-parses");
+        let root = doc.root_element().unwrap();
+        assert!(select_elements(&doc, root, "video", "all").is_err());
     }
 }
