@@ -120,6 +120,11 @@ mod tests {
 
     #[test]
     fn builds_a_complete_bootable_domain() {
+        // Asserts a real (non-predictable) OUI prefix — see
+        // `crate::cloner::PREDICTABLE_TEST_LOCK`'s doc comment.
+        let _guard = crate::cloner::PREDICTABLE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let doc = build_import_document(
             "imported-guest",
             2097152,
