@@ -211,6 +211,11 @@ has USB disabled, so `defineXML` rejects a `redirdev` outright until a
 `<controller type="usb"/>` exists — same class of discovery as
 memballoon's "only one" limit, not a gap in this crate.
 
+Extended again to 61 checks / 26 cases: `--filesystem` (thirteenth
+device, struct already existed). One real upstream fixture
+(`edit-simple-filesystem`) covered exactly. First device with a
+two-slot `remove_first` (`["source", "target"]`).
+
 **Not yet done**: growing case/device coverage further (blocked on more
 devices having a `{device}_from_optstr`/`apply_{device}_optstr` pair at
 all, not on the harness itself — and for `--disk` specifically, on

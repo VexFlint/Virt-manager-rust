@@ -402,6 +402,21 @@ check_xpath "$xml" "string(//redirdev/source/@mode)" "connect" "source mode unto
 check_xpath "$xml" "string(//redirdev/source/@host)" "example.com" "source host changed"
 check_xpath "$xml" "string(//redirdev/source/@service)" "12345" "source service changed"
 
+# --filesystem case. Struct already existed in virtinst-core; this is
+# CLI optstring wiring only — see filesystem_from_optstr's own doc
+# comment in virtinst-cli/src/lib.rs (source/target's type-dependent
+# mapping, hardcoded to source_dir).
+
+echo
+echo "=== edit-simple-filesystem ==="
+echo "  upstream: tests/data/cli/compare/virt-xml-edit-simple-filesystem.xml"
+echo "  cmd: --filesystem /1/2/3,/4/5/6,mode=mapped"
+xml="$(run_virt_xml --filesystem /1/2/3,/4/5/6,mode=mapped)"
+check_xpath "$xml" "string(//filesystem/@type)" "mount" "type untouched"
+check_xpath "$xml" "string(//filesystem/@accessmode)" "mapped" "accessmode changed via mode alias"
+check_xpath "$xml" "string(//filesystem/source/@dir)" "/1/2/3" "source dir changed"
+check_xpath "$xml" "string(//filesystem/target/@dir)" "/4/5/6" "target dir changed"
+
 echo
 echo "$pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]
