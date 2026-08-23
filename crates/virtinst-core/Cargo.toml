@@ -15,11 +15,25 @@ virtinst-xml = { version = "0.1.0", path = "../virtinst-xml" }
 # (pkg-config: `libvirt`) — installed on this machine 2026-08-19.
 virt = "0.4"
 uuid = { version = "1.20.0", features = ["v4"] }
+# `bindgen`-bound `libosinfo` (ticket 04, reasserted 2026-08-23 over an
+# unchecked "gir-bound" assumption that crept into other tickets — see
+# that ticket's amendment). Pure GObject/GLib, no GTK — doesn't violate
+# this crate's "no GTK dependency" boundary (ticket 15). The generated
+# FFI (`osinfo/ffi.rs`, built by `build.rs`) references glib/gobject/
+# gio's own types (`GError`, `GObject`, `GList`, …) rather than
+# redefining them, so those three `-sys` crates are real dependencies,
+# not just build-time ones.
+glib-sys = "0.22"
+gobject-sys = "0.22"
+gio-sys = "0.22"
 #
-# gir-generated, not yet vendored/generated (tickets 04, 09, 17):
+# gir-generated, not yet vendored/generated (ticket 09):
 #   - libvirt-glib event-loop + Connection/Domain signals
-#   - libosinfo OS database
-# These need a `gir` codegen pass against the system .gir files
-# (confirmed present: libvirt-glib-1.0-dev, and libosinfo once that
-# package is installed) — plus the `gir` codegen tool itself, which
-# isn't an apt package (build from github.com/gtk-rs/gir).
+# Needs a `gir` codegen pass against the system .gir files (confirmed
+# present: libvirt-glib-1.0-dev) — the `gir` codegen tool itself is now
+# installed too (wasn't an apt package, built from
+# github.com/gtk-rs/gir; unblocked sometime after 2026-08-19).
+
+[build-dependencies]
+bindgen = "0.72"
+pkg-config = "0.3"

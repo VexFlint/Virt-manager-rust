@@ -76,3 +76,84 @@ Since either path leaves the safe-wrapper layer to be hand-written
 the simpler build-time tooling wins. Corrected the "gir-bound"
 references in tickets 09/14/15 and `osinfo/mod.rs`'s own doc comment
 to point back here rather than to each other.
+
+## Built: the `-sys` layer plus a minimal safe wrapper
+
+`virtinst-core/build.rs`: `bindgen` against a one-line wrapper header
+(`#include <libosinfo-1.0/osinfo/osinfo.h>`), `allowlist_function("osinfo_.*")`/
+`allowlist_type("Osinfo.*")`/`allowlist_var("OSINFO_.*")`, and a
+`blocklist_type("_?G[A-Z_].*")` for the entire transitively-pulled-in
+glib/gobject/gio type universe (safe since no real libosinfo type
+starts with `G` — confirmed, not assumed, since a wrong blocklist
+regex here would silently drop a real libosinfo type instead of a glib
+one). `raw_line`s re-point the blocklisted names at `glib-sys`/
+`gobject-sys`/`gio-sys`'s own real definitions instead of leaving them
+undefined, so the generated FFI's `GError`/`GObject`/`GList`/etc.
+fields are the *same* types any future `libvirt-glib`-consuming code
+(ticket 09) will use, not a second incompatible redefinition. One
+real gotcha hit and fixed while building this, not predicted from
+ticket 04's own research: `libosinfo-1.0.pc`'s declared `Requires` is
+`gobject-2.0` alone, but a header needs `gio-2.0`'s cflags too —
+`build.rs` probes and adds them explicitly, exactly as the original
+research flagged.
+
+`osinfo/ffi.rs`: the generated bindings, `include!`'d verbatim with a
+module-level `#[allow(...)]` (including `unused_imports`, since the
+`raw_line` glib/gobject/gio imports are deliberately broader than any
+one libosinfo minor version's actual header surface needs — see the
+comment on that choice in `build.rs`).
+
+`osinfo/mod.rs`: `OsDb`/`OsInfo`, matching ticket 15's planned shape.
+`OsDb::load_default()` runs the real init sequence (`osinfo_loader_new`
+→ `osinfo_loader_process_default_path` → `osinfo_loader_get_db`), with
+the loader itself staying private plumbing — nothing outside this one
+function ever touches it again, same as upstream's own `osdict.py`
+shape. `OsDb::os(id)`/`OsDb::all_os()`/`OsInfo::{id, short_id, name}`
+round out a deliberately minimal first slice; the deeper API (device
+lists, install scripts, firmware requirements, the `guess_os_from_*`/
+`identify_*` matching functions ticket 21 already flagged as blocked
+elsewhere) is real future work once a caller needs it, not modeled yet.
+
+**No `glib`/`gtk-rs` idiomatic-wrapper crate in the middle** — every
+type here manages its own `g_object_ref`/`g_object_unref` by hand.
+Confirmed safe (not assumed) that GObject subtype→supertype pointer
+casts are valid here by reading the actual generated struct layout:
+every `Osinfo*` struct's first field is its immediate parent type
+(`#[repr(C)] struct OsinfoOs { parent_instance: OsinfoProduct, .. }`),
+the standard GObject inheritance-by-embedding layout.
+
+**A real mistake caught on review, not shipped**: a first draft
+inferred each function's transfer-ownership (borrowed vs. owned
+return) from its C name (`_get_` implies borrowed) rather than
+checking it. That inference was backwards for one of the four calls —
+`osinfo_db_get_os_list` is actually `transfer-ownership="full"`
+despite the `get_` prefix — which would have shipped as a use-after-free
+too subtle for a short-lived test process to reproduce (the `Db`
+outlives the test, nothing re-reads the freed list afterward). Caught
+by checking the real `.gir` file's `transfer-ownership` attribute on
+each `<return-value>` directly (`/usr/share/gir-1.0/Libosinfo-1.0.gir`)
+— the one piece of ground truth here that's strictly better than the C
+headers `bindgen` itself reads, since C has no ownership-transfer
+syntax at all. All four call sites (`osinfo_loader_get_db`/
+`osinfo_db_get_os`/`osinfo_list_get_nth` transfer-none;
+`osinfo_db_get_os_list` transfer-full) now cite the verified annotation
+in their own comment, not the naming convention.
+
+**Verified against this machine's real, installed `osinfo-db`** — no
+fixture, no injection seam (libosinfo has no `test:///`-equivalent to
+fake): `OsDb::load_default()` really loads `/usr/share/osinfo`, then
+looks up a specific, permanently-archived, decade-old entry (Fedora
+25 — EOL for years, chosen so the test stays stable as osinfo-db keeps
+growing new entries under it) by exact id/short-id/name, confirms an
+unknown id reads as `None` rather than panicking, confirms the same
+entry surfaces through the list-iteration path too, and confirms a
+cloned `OsInfo` handle survives dropping the original (the actual risk
+a hand-rolled refcount pair carries that a derived `Clone` wouldn't).
+3 new tests, 184/184 `virtinst-core`, harness 61/61, `fmt`/`clippy`
+clean.
+
+**Not yet tested under a memory sanitizer** — no `valgrind` and no
+nightly toolchain (ASan needs one) available in this environment.
+The transfer-ownership review above is the real safety net for this
+slice; a sanitizer pass is worth running before this code carries
+much more weight, flagged rather than silently skipped.
