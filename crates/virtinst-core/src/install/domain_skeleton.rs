@@ -295,6 +295,77 @@ pub(super) fn push_default_graphics(doc: &mut Document, devices_el: Element, gra
         .expect("a freshly-created detached element always attaches cleanly");
 }
 
+/// `<clock><timer name="rtc" tickpolicy="catchup"/><timer name="pit"
+/// tickpolicy="delay"/><timer name="hpet" present="no"/></clock>` —
+/// ticket 21 slice (d): upstream's `DomainClock.set_defaults`
+/// (`clock.py:41`), the x86+qemu-only base timer trio (`-no-hpet
+/// -no-kvm-pit-reinjection -rtc driftfix=slew`, upstream's own comment
+/// on what this maps to at the qemu command-line level).
+///
+/// Self-gating, exactly like upstream's own three early-returns, so
+/// this is called unconditionally from every builder including
+/// `--container` (upstream calls `self.clock.set_defaults(self)`
+/// unconditionally too, from `guest.py`'s `set_defaults()`, relying on
+/// the same gate) rather than needing a "not container" exception the
+/// way `push_default_graphics` does:
+/// - `os_type != "hvm"` (upstream's `guest.os.is_hvm()`) — containers
+///   (`os_type = "exe"`) get no `<clock>` at all, matches without a
+///   separate check at any call site.
+/// - `arch` not x86 (upstream's `is_x86()`: `x86_64`/`i686` only).
+/// - `!is_qemu` (upstream's `conn.is_qemu()`).
+///
+/// `offset` (upstream's `osinfo.get_clock()`) is blocked on `OsInfo`
+/// same as everywhere else in this crate — omitted here entirely
+/// rather than guessed, letting libvirt's own hypervisor-specific
+/// default stand (qemu's own default offset is `utc`). A real,
+/// deliberate design choice flagged in ticket 21's own scoping pass
+/// rather than decided arbitrarily: the trio itself has zero `OsInfo`
+/// dependency and is upstream's real behavior on every guest this
+/// crate can build, so emitting it without `offset` is closer to
+/// upstream's actual shape than skipping `<clock>` outright until
+/// `offset` becomes resolvable. The optional `hypervclock` timer
+/// (`guest.hyperv_supported()` — needs `OsInfo`'s `is_windows()` check
+/// — `and` a hv-version support-check mechanism this crate doesn't
+/// have, `conn.support.conn_hyperv_clock()`) is left unbuilt for the
+/// same reason.
+pub(super) fn push_default_clock(
+    doc: &mut Document,
+    root: Element,
+    os_type: &str,
+    arch: &str,
+    is_qemu: bool,
+) {
+    if os_type != "hvm" || (arch != "x86_64" && arch != "i686") || !is_qemu {
+        return;
+    }
+
+    let clock_el = Element::new(doc, "clock");
+
+    let rtc_el = Element::new(doc, "timer");
+    rtc_el.set_attribute(doc, "name", "rtc");
+    rtc_el.set_attribute(doc, "tickpolicy", "catchup");
+    clock_el
+        .push_child(doc, rtc_el)
+        .expect("a freshly-created detached element always attaches cleanly");
+
+    let pit_el = Element::new(doc, "timer");
+    pit_el.set_attribute(doc, "name", "pit");
+    pit_el.set_attribute(doc, "tickpolicy", "delay");
+    clock_el
+        .push_child(doc, pit_el)
+        .expect("a freshly-created detached element always attaches cleanly");
+
+    let hpet_el = Element::new(doc, "timer");
+    hpet_el.set_attribute(doc, "name", "hpet");
+    hpet_el.set_attribute(doc, "present", "no");
+    clock_el
+        .push_child(doc, hpet_el)
+        .expect("a freshly-created detached element always attaches cleanly");
+
+    root.push_child(doc, clock_el)
+        .expect("a freshly-created detached element always attaches cleanly");
+}
+
 pub(super) fn push_default_nic(doc: &mut Document, devices_el: Element, mac: &str) {
     let iface_el = Element::new(doc, "interface");
     iface_el.set_attribute(doc, "type", "network");

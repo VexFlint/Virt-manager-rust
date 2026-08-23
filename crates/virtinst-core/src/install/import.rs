@@ -42,8 +42,8 @@
 use virtinst_xml::{Document, Element};
 
 use super::domain_skeleton::{
-    build_domain_skeleton, push_boot_dev, push_default_graphics, push_default_nic,
-    GuestCapsDefaults,
+    build_domain_skeleton, push_boot_dev, push_default_clock, push_default_graphics,
+    push_default_nic, GuestCapsDefaults,
 };
 
 /// `name`/`memory_kib`/`vcpus` are the wizard's Name/Memory pages'
@@ -59,7 +59,10 @@ use super::domain_skeleton::{
 /// `i686`, a real `qemu:///system` to `x86_64`). `graphics_type`
 /// (`"spice"`/`"vnc"`) is ticket 21 slice (c) — caller-resolved via
 /// `DomainCapabilities::default_graphics_type`, see `push_default_
-/// graphics`'s doc comment for the XML it produces.
+/// graphics`'s doc comment for the XML it produces. The `<clock>`
+/// timer trio (ticket 21 slice (d)) needs no separate parameter at
+/// all — `push_default_clock` self-gates on `caps.os_type`/`caps.arch`/
+/// `caps.is_qemu`, already in hand.
 ///
 /// Always stamps an explicit `<uuid>` (via the same `generate_uuid()`
 /// approach `cloner.rs` uses, matching upstream's own hand-rolled
@@ -80,13 +83,14 @@ pub fn build_import_document(
     caps: GuestCapsDefaults,
     graphics_type: &str,
 ) -> Document {
-    let (mut doc, _root, os_el, devices_el) = build_domain_skeleton(
+    let (mut doc, root, os_el, devices_el) = build_domain_skeleton(
         name,
         memory_kib,
         vcpus,
         &crate::cloner::generate_uuid(),
         &caps,
     );
+    push_default_clock(&mut doc, root, caps.os_type, caps.arch, caps.is_qemu);
     push_boot_dev(&mut doc, os_el, "hd");
 
     let disk_el = Element::new(&mut doc, "disk");
@@ -213,6 +217,77 @@ mod tests {
         assert_eq!(graphics.attribute(&doc, "port"), Some("-1"));
         assert_eq!(graphics.attribute(&doc, "tlsPort"), Some("-1"));
         assert_eq!(graphics.attribute(&doc, "autoport"), Some("yes"));
+
+        // Ticket 21 slice (d): the x86+qemu clock timer trio, no offset.
+        let clock = root.find(&doc, "clock").unwrap();
+        assert_eq!(clock.attribute(&doc, "offset"), None);
+        let timers = clock.find_all(&doc, "timer");
+        assert_eq!(timers.len(), 3);
+        let rtc = timers
+            .iter()
+            .find(|t| t.attribute(&doc, "name") == Some("rtc"))
+            .unwrap();
+        assert_eq!(rtc.attribute(&doc, "tickpolicy"), Some("catchup"));
+        let pit = timers
+            .iter()
+            .find(|t| t.attribute(&doc, "name") == Some("pit"))
+            .unwrap();
+        assert_eq!(pit.attribute(&doc, "tickpolicy"), Some("delay"));
+        let hpet = timers
+            .iter()
+            .find(|t| t.attribute(&doc, "name") == Some("hpet"))
+            .unwrap();
+        assert_eq!(hpet.attribute(&doc, "present"), Some("no"));
+    }
+
+    /// `push_default_clock`'s `is_qemu` gate: reuses the same fixture
+    /// `nic_oui_follows_is_qemu_not_domain_type` pins (`os_type = "hvm"`,
+    /// `arch = "i686"` — still x86, per upstream's own `is_x86()` — but
+    /// `is_qemu = false`), so a `<clock>` showing up here could only mean
+    /// the `is_qemu` check was dropped or inverted.
+    #[test]
+    fn clock_is_omitted_when_the_connection_is_not_qemu() {
+        let doc = build_import_document(
+            "x",
+            1048576,
+            1,
+            "/tmp/x.img",
+            GuestCapsDefaults {
+                domain_type: "test",
+                os_type: "hvm",
+                arch: "i686",
+                machine: None,
+                emulator: None,
+                is_qemu: false,
+            },
+            "spice",
+        );
+        let root = doc.root_element().unwrap();
+        assert!(root.find(&doc, "clock").is_none());
+    }
+
+    /// `push_default_clock`'s arch gate: `is_qemu = true` and
+    /// `os_type = "hvm"` alone aren't enough — upstream's `is_x86()`
+    /// (`x86_64`/`i686` only) still has to hold.
+    #[test]
+    fn clock_is_omitted_for_a_non_x86_arch() {
+        let doc = build_import_document(
+            "x",
+            1048576,
+            1,
+            "/tmp/x.img",
+            GuestCapsDefaults {
+                domain_type: "qemu",
+                os_type: "hvm",
+                arch: "aarch64",
+                machine: None,
+                emulator: None,
+                is_qemu: true,
+            },
+            "spice",
+        );
+        let root = doc.root_element().unwrap();
+        assert!(root.find(&doc, "clock").is_none());
     }
 
     /// `push_default_graphics`'s other branch: `vnc` gets `port="-1"`
@@ -771,5 +846,88 @@ mod tests {
             "hypervisor_type = \"kvm\" on a qemu:// connection must still get qemu's OUI \
              (derived from the URI scheme, not hypervisor_type), got {mac}"
         );
+    }
+
+    /// A real gap `push_default_clock`'s own gate creates: `is_qemu`
+    /// requires a real `qemu://`-scheme connection, but every one of
+    /// this module's other real end-to-end tests runs against
+    /// `test:///default`, where `conn.uri().is_qemu()` is always
+    /// `false` — so none of them ever actually ask the real libvirt
+    /// driver to accept a `<clock>` with this trio at all, only this
+    /// crate's own serialization/DOM-construction path. Closes that gap
+    /// with the same `VIRTINST_TEST_FAKE_URI` technique the NIC-OUI
+    /// composition test above uses: physically open `test:///default`,
+    /// but make the connection report itself as `qemu:///system` so
+    /// `is_qemu` really is `true`, then run the real `create_new`/
+    /// `define_new` sequence and check the refetched `inactive_xml`
+    /// kept the trio — not just that this crate's own writer produced
+    /// it.
+    #[test]
+    fn clock_trio_survives_a_real_libvirt_define_when_is_qemu_is_true() {
+        use crate::connection::{Connection, Domain};
+        use crate::test_support::TEST_DOMAIN_LOCK;
+
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        // `Connection::open` reads `VIRTINST_TEST_FAKE_URI` once and
+        // stores the parsed `Uri` (see `connection.rs`'s doc comment on
+        // that env var) — safe to remove it right after `open` returns,
+        // both `conn.uri()` calls below read the already-stored value,
+        // not the environment. The `assert!` right after `open` is the
+        // actual proof of that, not just an aside: if `uri()` re-derived
+        // from the environment instead, this assert would already be
+        // `false` here (right after removal), and the test would fail
+        // loudly rather than silently building a clock-less document.
+        std::env::set_var("VIRTINST_TEST_FAKE_URI", "qemu:///system");
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        std::env::remove_var("VIRTINST_TEST_FAKE_URI");
+        assert!(
+            conn.uri().is_qemu(),
+            "the fake URI must make the connection report itself as qemu"
+        );
+
+        // `domain_type: "test"` and `is_qemu: true` deliberately
+        // disagree here — the same `hypervisor_type`-vs-URI-scheme split
+        // the NIC-OUI bug was about, just both halves pinned on purpose
+        // this time: `domain_type` has to stay `"test"` for the real
+        // `test:///` driver to accept `create_new`/`define_new` at all
+        // (it's the connection actually reached), while `is_qemu` comes
+        // from the faked URI so `push_default_clock`'s real gate
+        // actually fires. Not a typo.
+        let doc = build_import_document(
+            "clock-end-to-end",
+            1048576,
+            1,
+            "/guest/clock-end-to-end.img",
+            GuestCapsDefaults {
+                domain_type: "test",
+                os_type: "hvm",
+                arch: "x86_64",
+                machine: None,
+                emulator: None,
+                is_qemu: conn.uri().is_qemu(),
+            },
+            "spice",
+        );
+        let xml = doc.write_str().expect("serializes");
+
+        let running = Domain::create_new(&conn, &xml).expect("transient create succeeds");
+        let persisted = Domain::define_new(&conn, &xml).expect("define succeeds");
+        let refetched = Domain::lookup_by_name(&conn, "clock-end-to-end")
+            .expect("the domain is findable by the name we gave it");
+        let inactive_xml = refetched.inactive_xml().expect("fetch inactive XML");
+        assert!(
+            inactive_xml.contains("name='rtc'")
+                && inactive_xml.contains("name='pit'")
+                && inactive_xml.contains("name='hpet'"),
+            "the real driver kept all three timers we defined it with, got: {inactive_xml}"
+        );
+
+        running
+            .destroy()
+            .expect("cleanup: destroy the transient instance");
+        persisted
+            .undefine()
+            .expect("cleanup: undefine the persistent config");
     }
 }

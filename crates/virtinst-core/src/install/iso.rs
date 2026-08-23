@@ -76,8 +76,8 @@
 use virtinst_xml::{Document, Element};
 
 use super::domain_skeleton::{
-    build_domain_skeleton, push_boot_dev, push_default_graphics, push_default_nic,
-    push_on_reboot_destroy, push_virtio_disk, GuestCapsDefaults,
+    build_domain_skeleton, push_boot_dev, push_default_clock, push_default_graphics,
+    push_default_nic, push_on_reboot_destroy, push_virtio_disk, GuestCapsDefaults,
 };
 
 /// `name`/`memory_kib`/`vcpus`/`caps`/`graphics_type` — see
@@ -95,13 +95,14 @@ pub fn build_iso_document(
     caps: GuestCapsDefaults,
     graphics_type: &str,
 ) -> Document {
-    let (mut doc, _root, os_el, devices_el) = build_domain_skeleton(
+    let (mut doc, root, os_el, devices_el) = build_domain_skeleton(
         name,
         memory_kib,
         vcpus,
         &crate::cloner::generate_uuid(),
         &caps,
     );
+    push_default_clock(&mut doc, root, caps.os_type, caps.arch, caps.is_qemu);
     push_boot_dev(&mut doc, os_el, "cdrom");
 
     push_cdrom_disk(&mut doc, devices_el, Some(media));
@@ -196,6 +197,7 @@ fn build_iso_phase_document(
 ) -> Document {
     let (mut doc, root, os_el, devices_el) =
         build_domain_skeleton(name, memory_kib, vcpus, uuid, &caps);
+    push_default_clock(&mut doc, root, caps.os_type, caps.arch, caps.is_qemu);
     if is_initial {
         push_on_reboot_destroy(&mut doc, root);
     }
@@ -304,6 +306,15 @@ mod tests {
 
         let graphics = devices.find(&doc, "graphics").unwrap();
         assert_eq!(graphics.attribute(&doc, "type"), Some("spice"));
+
+        // Ticket 21 slice (d).
+        assert_eq!(
+            root.find(&doc, "clock")
+                .unwrap()
+                .find_all(&doc, "timer")
+                .len(),
+            3
+        );
     }
 
     #[test]
@@ -536,6 +547,10 @@ mod tests {
                 .attribute(&final_doc, "type"),
             Some("spice")
         );
+
+        // Ticket 21 slice (d): both phases get the clock trio too.
+        assert!(initial_root.find(&initial, "clock").is_some());
+        assert!(final_root.find(&final_doc, "clock").is_some());
     }
 
     /// Real end-to-end proof that two-phase create/define actually

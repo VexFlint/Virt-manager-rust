@@ -481,6 +481,56 @@ advertised) + `VIRTINST_TEST_FAKE_URI=qemu:///system` together — the
 exact combination that exercises the new domcaps-fetch-and-resolve
 path — all completed with no crash.
 
-**Not done**: slices (d)–(f) — `clock`'s rtc/pit/hpet timer trio,
-`hostdev.set_defaults`, and CPU mode defaulting — remain exactly as
-scoped above, not started. (a)/(b)/(c) are now all built.
+## (d) built: `clock`'s rtc/pit/hpet timer trio
+
+`domain_skeleton::push_default_clock` ports upstream's `DomainClock.
+set_defaults` (`clock.py:41`): `<clock><timer name="rtc"
+tickpolicy="catchup"/><timer name="pit" tickpolicy="delay"/><timer
+name="hpet" present="no"/></clock>`, no `offset` attribute (blocked on
+`OsInfo`'s `get_clock()`; omitted rather than guessed, letting
+libvirt's own hypervisor-specific default stand — qemu's own default
+offset is `utc` — a real design choice flagged in this ticket's
+scoping pass, not decided arbitrarily). `hypervclock` (also `OsInfo`-
+gated, plus an unbuilt hv-version support-check) stays unbuilt too.
+
+**Structurally different from (c)**: `push_default_clock` self-gates
+exactly like upstream's own three early-returns (`os_type != "hvm"`,
+non-x86 `arch`, `!is_qemu`), so it's called *unconditionally* from all
+six builders including `--container` — no "not container" exception
+needed at any call site, since `os_type = "exe"` there already fails
+the first gate. Matches upstream exactly: `guest.py`'s `set_defaults()`
+calls `self.clock.set_defaults(self)` unconditionally too, relying on
+the same internal gate rather than a caller-side check.
+
+**A real gap found and closed while verifying this slice**: every one
+of this module's other real end-to-end tests runs against
+`test:///default`, where `conn.uri().is_qemu()` is always `false` — so
+none of them could ever exercise `push_default_clock`'s `is_qemu` gate
+against a live libvirt call, only this crate's own DOM construction.
+Closed with `clock_trio_survives_a_real_libvirt_define_when_is_qemu_is_true`
+(`import.rs`), reusing the `VIRTINST_TEST_FAKE_URI` technique from the
+NIC-OUI composition test: physically opens `test:///default` but makes
+the connection report itself as `qemu:///system`, so `is_qemu` really
+is `true` for a real `create_new`/`define_new`/refetch round-trip
+(`domain_type` deliberately stays `"test"` — the two fields disagree on
+purpose, since the real driver reached is still `test:///`).
+
+**Verified**: `import.rs` gained the pinned-test clock assertion plus
+`clock_is_omitted_when_the_connection_is_not_qemu`/`clock_is_omitted_
+for_a_non_x86_arch` (the two negative gates) and the real-driver test
+above; `iso.rs`/`manual.rs` gained matching assertions on their own
+pinned and two-phase tests; `container.rs` gained a clock-absence
+assertion using inputs (`is_qemu=true`, `arch="x86_64"`) that would
+otherwise pass the other two gates, isolating the `os_type` gate
+specifically. 99/99 `virtinst-cli`, 151/151 `virtinst-core` (+3 over
+the 148 slice-(c) baseline), harness 61/61, `fmt`/`clippy` clean.
+
+**Not done**: slices (e)–(f) — `hostdev.set_defaults` and CPU mode
+defaulting — remain exactly as scoped above, not started. (a)/(b)/(c)/
+(d) are now all built. (e) is still explicitly unreachable from any
+`virt-install` CLI flag (no `--hostdev` flag exists) — (f), CPU mode
+defaulting, is the higher-value pick despite being nominally last:
+it's the single most user-visible default on this list (host-
+passthrough/host-model CPU vs. qemu's bare default), but needs
+`domcaps.rs`'s `<cpu>` section built first, a real sub-piece not a
+one-liner.

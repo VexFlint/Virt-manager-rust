@@ -53,8 +53,8 @@
 use virtinst_xml::Document;
 
 use super::domain_skeleton::{
-    build_domain_skeleton, push_boot_dev, push_default_graphics, push_default_nic,
-    push_on_reboot_destroy, push_virtio_disk, GuestCapsDefaults,
+    build_domain_skeleton, push_boot_dev, push_default_clock, push_default_graphics,
+    push_default_nic, push_on_reboot_destroy, push_virtio_disk, GuestCapsDefaults,
 };
 
 /// `name`/`memory_kib`/`vcpus`/`caps`/`graphics_type` — see
@@ -189,6 +189,7 @@ fn build_manual_phase_document(
 ) -> Document {
     let (mut doc, root, os_el, devices_el) =
         build_domain_skeleton(name, memory_kib, vcpus, uuid, &caps);
+    push_default_clock(&mut doc, root, caps.os_type, caps.arch, caps.is_qemu);
     if is_initial {
         push_on_reboot_destroy(&mut doc, root);
     }
@@ -248,6 +249,15 @@ mod tests {
                 .unwrap()
                 .attribute(&doc, "type"),
             Some("spice")
+        );
+
+        // Ticket 21 slice (d).
+        assert_eq!(
+            root.find(&doc, "clock")
+                .unwrap()
+                .find_all(&doc, "timer")
+                .len(),
+            3
         );
     }
 
@@ -508,6 +518,10 @@ mod tests {
             .unwrap()
             .to_string();
         assert_eq!(initial_mac, final_mac, "same NIC in both documents");
+
+        // Ticket 21 slice (d): both phases get the clock trio too.
+        assert!(initial_root.find(&initial, "clock").is_some());
+        assert!(final_root.find(&final_doc, "clock").is_some());
     }
 
     #[test]

@@ -52,7 +52,7 @@
 use virtinst_xml::{Document, Element};
 
 use super::domain_skeleton::{
-    build_domain_skeleton, push_default_nic, push_text_child, GuestCapsDefaults,
+    build_domain_skeleton, push_default_clock, push_default_nic, push_text_child, GuestCapsDefaults,
 };
 
 /// `name`/`memory_kib`/`vcpus`/`domain_type`/`arch`/`is_qemu` — see
@@ -91,7 +91,7 @@ pub fn build_container_os_document(
     // resolves a real `capsinfo` for an `exe` guest, only ever the
     // `hvm`/`xen` guest a plain, unfiltered `guest_lookup` returns,
     // which would be actively wrong to borrow from).
-    let (mut doc, _root, os_el, devices_el) = build_domain_skeleton(
+    let (mut doc, root, os_el, devices_el) = build_domain_skeleton(
         name,
         memory_kib,
         vcpus,
@@ -105,6 +105,12 @@ pub fn build_container_os_document(
             is_qemu,
         },
     );
+    // Ticket 21 slice (d): upstream calls `clock.set_defaults`
+    // unconditionally too (`guest.py`'s `set_defaults()`), relying on
+    // its own `os_type != "hvm"` self-gate rather than a container
+    // exception at the call site — `push_default_clock` is a no-op
+    // here since `os_type` above is always `"exe"`.
+    push_default_clock(&mut doc, root, "exe", arch, is_qemu);
     // Real, load-bearing finding, hit for real writing this module's own
     // test: libvirt itself rejects an `exe`-type domain with no `<init>`
     // at all ("XML error: init binary must be specified"). Upstream
@@ -193,6 +199,16 @@ mod tests {
         );
 
         assert!(devices.find(&doc, "interface").is_some());
+
+        // Ticket 21 slice (d): `is_qemu = true` and `arch = "x86_64"`
+        // would otherwise satisfy `push_default_clock`'s other two
+        // gates — only `os_type = "exe"` (never `"hvm"`) keeps
+        // containers clock-free, matching upstream's own `is_hvm()`
+        // check.
+        assert!(
+            root.find(&doc, "clock").is_none(),
+            "containers never get a <clock> element"
+        );
     }
 
     #[test]
