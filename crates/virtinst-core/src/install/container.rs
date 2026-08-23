@@ -79,7 +79,13 @@ pub fn build_container_os_document(
     domain_type: &str,
     arch: &str,
 ) -> Document {
-    let (mut doc, root, os_el) = build_domain_skeleton(
+    // `machine`/`emulator` are always `None` here, deliberately — see
+    // `build_domain_skeleton`'s doc comment for why a container guest
+    // has no correct value to thread (no driver this crate reaches
+    // resolves a real `capsinfo` for an `exe` guest, only ever the
+    // `hvm`/`xen` guest a plain, unfiltered `guest_lookup` returns,
+    // which would be actively wrong to borrow from).
+    let (mut doc, _root, os_el, devices_el) = build_domain_skeleton(
         name,
         memory_kib,
         vcpus,
@@ -87,6 +93,8 @@ pub fn build_container_os_document(
         domain_type,
         "exe",
         arch,
+        None,
+        None,
     );
     // Real, load-bearing finding, hit for real writing this module's own
     // test: libvirt itself rejects an `exe`-type domain with no `<init>`
@@ -96,8 +104,6 @@ pub fn build_container_os_document(
     // device targets `/`, which is exactly this shape) selects
     // `/sbin/init` over the bare-`ContainerApp` fallback of `/bin/sh`.
     push_text_child(&mut doc, os_el, "init", "/sbin/init");
-
-    let devices_el = Element::new(&mut doc, "devices");
 
     let fs_el = Element::new(&mut doc, "filesystem");
     fs_el.set_attribute(&mut doc, "type", "mount");
@@ -121,8 +127,6 @@ pub fn build_container_os_document(
         devices_el,
         &crate::cloner::generate_mac(domain_type == "qemu"),
     );
-    root.push_child(&mut doc, devices_el)
-        .expect("a freshly-created detached element always attaches cleanly");
 
     doc
 }

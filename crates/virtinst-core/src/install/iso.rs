@@ -87,6 +87,7 @@ use super::domain_skeleton::{
 /// Builds and boots from the CD alone (`<boot dev="cdrom">`) with no
 /// persistent disk device at all — matches `live: true`'s own doc comment
 /// on `InstallMethod::Iso` ("no persistent disk attached").
+#[allow(clippy::too_many_arguments)]
 pub fn build_iso_document(
     name: &str,
     memory_kib: u64,
@@ -95,8 +96,10 @@ pub fn build_iso_document(
     domain_type: &str,
     os_type: &str,
     arch: &str,
+    machine: Option<&str>,
+    emulator: Option<&str>,
 ) -> Document {
-    let (mut doc, root, os_el) = build_domain_skeleton(
+    let (mut doc, _root, os_el, devices_el) = build_domain_skeleton(
         name,
         memory_kib,
         vcpus,
@@ -104,18 +107,17 @@ pub fn build_iso_document(
         domain_type,
         os_type,
         arch,
+        machine,
+        emulator,
     );
     push_boot_dev(&mut doc, os_el, "cdrom");
 
-    let devices_el = Element::new(&mut doc, "devices");
     push_cdrom_disk(&mut doc, devices_el, Some(media));
     push_default_nic(
         &mut doc,
         devices_el,
         &crate::cloner::generate_mac(domain_type == "qemu"),
     );
-    root.push_child(&mut doc, devices_el)
-        .expect("a freshly-created detached element always attaches cleanly");
 
     doc
 }
@@ -144,6 +146,8 @@ pub fn build_iso_two_phase_documents(
     domain_type: &str,
     os_type: &str,
     arch: &str,
+    machine: Option<&str>,
+    emulator: Option<&str>,
 ) -> (Document, Document) {
     let uuid = crate::cloner::generate_uuid();
     // Same device, same MAC in both documents — same reason the UUID is
@@ -158,6 +162,8 @@ pub fn build_iso_two_phase_documents(
         domain_type,
         os_type,
         arch,
+        machine,
+        emulator,
         "cdrom",
         Some(media),
         disk_path,
@@ -172,6 +178,8 @@ pub fn build_iso_two_phase_documents(
         domain_type,
         os_type,
         arch,
+        machine,
+        emulator,
         "hd",
         None,
         disk_path,
@@ -196,25 +204,33 @@ fn build_iso_phase_document(
     domain_type: &str,
     os_type: &str,
     arch: &str,
+    machine: Option<&str>,
+    emulator: Option<&str>,
     boot_dev: &str,
     cdrom_source: Option<&str>,
     disk_path: &str,
     mac: &str,
     is_initial: bool,
 ) -> Document {
-    let (mut doc, root, os_el) =
-        build_domain_skeleton(name, memory_kib, vcpus, uuid, domain_type, os_type, arch);
+    let (mut doc, root, os_el, devices_el) = build_domain_skeleton(
+        name,
+        memory_kib,
+        vcpus,
+        uuid,
+        domain_type,
+        os_type,
+        arch,
+        machine,
+        emulator,
+    );
     if is_initial {
         push_on_reboot_destroy(&mut doc, root);
     }
     push_boot_dev(&mut doc, os_el, boot_dev);
 
-    let devices_el = Element::new(&mut doc, "devices");
     push_cdrom_disk(&mut doc, devices_el, cdrom_source);
     push_virtio_disk(&mut doc, devices_el, disk_path);
     push_default_nic(&mut doc, devices_el, mac);
-    root.push_child(&mut doc, devices_el)
-        .expect("a freshly-created detached element always attaches cleanly");
 
     doc
 }
@@ -264,6 +280,8 @@ mod tests {
             "qemu",
             "hvm",
             "x86_64",
+            None,
+            None,
         );
         let root = doc.root_element().unwrap();
 
@@ -309,7 +327,17 @@ mod tests {
 
     #[test]
     fn serializes_and_reparses_cleanly() {
-        let doc = build_iso_document("x", 1048576, 1, "/tmp/x.iso", "test", "hvm", "i686");
+        let doc = build_iso_document(
+            "x",
+            1048576,
+            1,
+            "/tmp/x.iso",
+            "test",
+            "hvm",
+            "i686",
+            None,
+            None,
+        );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
         let root = reparsed.root_element().unwrap();
@@ -347,6 +375,8 @@ mod tests {
             &domain_type,
             "hvm",
             &arch,
+            None,
+            None,
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -385,6 +415,8 @@ mod tests {
             "qemu",
             "hvm",
             "x86_64",
+            None,
+            None,
         );
 
         let initial_root = initial.root_element().unwrap();
@@ -524,6 +556,8 @@ mod tests {
             &domain_type,
             "hvm",
             &arch,
+            None,
+            None,
         );
         let initial_xml = initial.write_str().expect("serializes");
         let final_xml = final_doc.write_str().expect("serializes");

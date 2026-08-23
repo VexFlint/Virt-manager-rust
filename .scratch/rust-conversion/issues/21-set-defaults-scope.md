@@ -176,3 +176,99 @@ built. Six independently-shippable, real slices identified:
 are confirmed **fully blocked** on `OsInfo` for every arch/driver this
 crate can currently reach — not worth picking up piecemeal; revisit
 whole once `OsInfo` exists.
+
+## (a)+(b) built: `emulator` threading + `machine` fallback defaulting
+
+User picked slices (a)/(b) from the six above (via `AskUserQuestion`,
+labeled together as "emulator + machine fallback"). Built both,
+together, since both land in the same shared function.
+
+`domain_skeleton::build_domain_skeleton` gained `machine: Option<&str>`
+and `emulator: Option<&str>` parameters and now returns a fourth
+element, `devices_el`, already created and attached to `root` (with
+`<emulator>` pushed as its first child when `Some`) — matching the
+existing "return an already-attached element, let callers push more
+children into it" pattern `os_el` already used for `<boot>`. `machine`,
+when `Some`, becomes `<os><type arch=... machine=...>`. Neither
+attribute/element is emitted when the value is `None` — confirmed with
+a dedicated test (`machine_and_emulator_are_omitted_entirely_when_
+absent`), since `None` is the real, common case here, not a
+placeholder: `test:///default`'s own real capabilities report no
+`<machine>` elements at all (pinned in `caps.rs`'s existing fixture).
+
+All five non-`--container` builders (`build_import_document`,
+`build_iso_document`, `build_iso_two_phase_documents`, `build_manual_
+document`, `build_manual_two_phase_documents`, plus their two private
+per-phase helpers) gained the same two parameters and now return the
+skeleton's own `devices_el` instead of creating a second one — each
+caller's trailing `root.push_child(&mut doc, devices_el)` is gone,
+since it's already attached. `build_container_os_document` deliberately
+excluded, matching the precedent already set for `os_type`: it always
+passes `None, None` for both, since no driver this crate reaches ever
+resolves a real `capsinfo` for an `exe` guest — only ever the `hvm`/
+`xen` guest a plain `guest_lookup` returns, which would be an actively
+wrong value to borrow, not a missing one to backfill.
+
+`virt-install.rs` computes `machine`/`emulator` once, right alongside
+the existing `require_os_type()` closure, from the same `capsinfo`
+ticket 20 already resolves — no second capability fetch. Threaded into
+all five non-container call sites.
+
+**Verified against the real driver, not just this crate's own
+serialization**: `import_creates_a_running_and_persisted_domain`
+(`import.rs`) was upgraded from `DomainCapabilities::fetch` to the same
+`Capabilities::fetch` + `guest_lookup` sequence `virt-install.rs` now
+runs, confirms `test:///default` really reports no machines
+(`assert_eq!(machine, None, ...)`, not assumed), and asserts the
+*returned* `inactive_xml()` from a real `Domain::define_new` call
+contains `<emulator>` — proof the real driver accepts and keeps the
+new element, not just that this crate's own DOM construction looks
+right. `builds_a_complete_bootable_domain` (same file) separately pins
+both fields present (`Some("q35")`/`Some("/usr/bin/qemu-system-
+x86_64")`) through the DOM.
+
+**A second advisor review caught that the actual composition
+`virt-install.rs` runs was still untested for `machine`, the same class
+of gap already closed for `os_type`.** `builds_a_complete_bootable_
+domain` pins a literal `Some("q35")`; the real end-to-end test's driver
+reports no machines at all (`test:///default`'s own real capture is
+empty) — so `capsinfo.machines.first()` → `<os><type machine=...>` had
+no test exercising it with an actual non-empty, real-shaped list. Added
+`capsinfo_machine_fallback_actually_flows_into_the_built_document`
+using the same `VIRTINST_TEST_CAPS_FILE` injection mechanism, a fixture
+with a real multi-machine list (trimmed from the same real `qemu:///
+system` capture as `caps.rs`'s `REAL_QEMU_SYSTEM_CAPS_EXCERPT`), and
+found something worth stating plainly rather than assuming: `.first()`
+on this shape returns `pc-i440fx-11.1` — the first `<machine>`
+element's own version-pinned name, not the friendlier `pc` canonical
+alias two entries later. Traced upstream's own `capabilities.py`
+(`all_machine_names`) before treating this as a Rust-side bug: it
+builds the same list the same way (name first, canonical only if not
+already present) — **upstream's own fallback would land on the exact
+same value on this exact data**. Not a divergence to fix; a real,
+now-tested property of the ported fallback.
+
+**One more thing this slice changed, not caught by any test and worth
+naming rather than leaving as a silent diff**: in the two-phase
+builders (`iso`/`manual`), `<devices>` now attaches to `root` *inside*
+`build_domain_skeleton`, before `push_on_reboot_destroy(root)` runs —
+previously `<devices>` attached last, after `<on_reboot>`. The initial
+document of a two-phase pair therefore now emits `<on_reboot>` *after*
+`<devices>` instead of before. Every existing assertion uses `find()`
+(presence), not position, so nothing caught this, and libvirt
+renormalizes element order on `defineXML` regardless — functionally
+inert today. Matters only because ticket 20 names upstream's own
+full-document `virt-install` fixtures (byte-comparable against
+`_XML_PROP_ORDER`) as the eventual acceptance bar for the fake-arch
+corpus; whoever reaches for byte-exact matching later will need
+`domain_skeleton.rs` to control final element order explicitly, not
+rely on push order like every builder does today.
+
+**Verified**: 99/99 `virtinst-cli`, 138/138 `virtinst-core` (+2 new:
+`machine_and_emulator_are_omitted_entirely_when_absent`,
+`capsinfo_machine_fallback_actually_flows_into_the_built_document`),
+harness 61/61, `cargo fmt`/`clippy` clean workspace-wide.
+
+**Not done**: slices (c)–(f) — `graphics` default type, `clock`'s timer
+trio, `hostdev.set_defaults`, and CPU mode defaulting — remain exactly
+as scoped above, not started.

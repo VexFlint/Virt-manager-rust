@@ -51,6 +51,18 @@
 //! otherwise ("both are single-shot against one XML string") — that was
 //! wrong, caught while grounding this one; the actual gap was builder-
 //! side (nothing produced a document *pair* sharing a UUID).
+//!
+//! `hypervisor_type`/`arch`/`os_type`/`machine`/`emulator` all come from
+//! one real `Capabilities::fetch` + `guest_lookup` call (ticket 20 +
+//! ticket 21 slice (a)) — `_set_default_machine`'s fallback-only branch
+//! and `set_capabilities_defaults`'s plain `emulator` thread, not the
+//! full `set_defaults()` pipeline. `--container` deliberately excepted
+//! from `os_type`/`machine`/`emulator` (see `build_container_os_
+//! document`'s doc comment). `loader`/UEFI selection, the q35-preferred
+//! machine branch, CPU/clock/PM defaults, and the 9-file per-driver
+//! device-default matrix remain unbuilt — scoped in `.scratch/rust-
+//! conversion/issues/21-set-defaults-scope.md`, mostly blocked on
+//! `OsInfo` (still blocked on the `gir` codegen tool).
 
 use clap::Parser;
 use virtinst_core::capabilities::Capabilities;
@@ -209,6 +221,20 @@ fn main() {
             std::process::exit(1);
         })
     };
+    // ticket 21 slice (a): `machine` is `_set_default_machine`'s
+    // fallback-only branch (`capsinfo.machines and capsinfo.machines[0]
+    // or None`) — the q35-preferred branch above it needs `OsInfo` plus
+    // an unbuilt hypervisor-version support-check mechanism, both out
+    // of scope. `emulator` is `set_capabilities_defaults`'s plain
+    // `self.emulator = capsinfo.emulator` thread. Both `None` when the
+    // driver doesn't report one (`test:///default`'s own real machine
+    // list is empty) — `build_domain_skeleton` omits the attribute/
+    // element entirely rather than emitting an empty one. Neither is
+    // threaded into `--container` below, deliberately — see `build_
+    // container_os_document`'s doc comment for why there's no correct
+    // value to give it.
+    let machine = capsinfo.machines.first().cloned();
+    let emulator = capsinfo.emulator.clone();
 
     let memory_kib = args.memory.checked_mul(1024).unwrap_or_else(|| {
         eprintln!("virt-install: --memory {} MiB overflows", args.memory);
@@ -239,6 +265,8 @@ fn main() {
             &domain_type,
             &require_os_type(),
             &arch,
+            machine.as_deref(),
+            emulator.as_deref(),
         ));
         (xml.clone(), xml)
     } else if let Some(media) = args.cdrom {
@@ -251,6 +279,8 @@ fn main() {
                 &domain_type,
                 &require_os_type(),
                 &arch,
+                machine.as_deref(),
+                emulator.as_deref(),
             ));
             (xml.clone(), xml)
         } else {
@@ -267,6 +297,8 @@ fn main() {
                 &domain_type,
                 &require_os_type(),
                 &arch,
+                machine.as_deref(),
+                emulator.as_deref(),
             );
             (write(initial), write(final_doc))
         }
@@ -280,6 +312,8 @@ fn main() {
             &domain_type,
             &require_os_type(),
             &arch,
+            machine.as_deref(),
+            emulator.as_deref(),
         );
         (write(initial), write(final_doc))
     } else if let Some(boot_dev) = args.boot {
@@ -292,6 +326,8 @@ fn main() {
             &domain_type,
             &require_os_type(),
             &arch,
+            machine.as_deref(),
+            emulator.as_deref(),
         ));
         (xml.clone(), xml)
     } else if args.container {

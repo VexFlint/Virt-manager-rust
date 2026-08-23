@@ -50,10 +50,16 @@ use super::domain_skeleton::{build_domain_skeleton, push_boot_dev, push_default_
 /// text content, e.g. `"hvm"`), and `arch` (`<os><type arch=...>`) come
 /// from the connection's own host `capabilities::Capabilities::
 /// guest_lookup` rather than being guessed — upstream gets all three
-/// (plus `loader`/`emulator`/`machine`, not modeled yet) from `guest.
+/// (plus `loader`, not modeled yet) from `guest.
 /// set_capabilities_defaults()`, and hardcoding any of them would be a
 /// real, connection-specific-shaped divergence (`test:///` defaults to
 /// `i686`, a real `qemu:///system` to `x86_64`).
+///
+/// `machine`/`emulator` are ticket 21 slice (a) — see `build_domain_
+/// skeleton`'s own doc comment for exactly what's threaded (the
+/// fallback-only `capsinfo.machines.first()`/plain `capsinfo.emulator`)
+/// versus what stays unbuilt (the q35-preferred machine branch, real
+/// UEFI/loader selection).
 ///
 /// Always stamps an explicit `<uuid>` (via the same `generate_uuid()`
 /// approach `cloner.rs` uses, matching upstream's own hand-rolled
@@ -66,6 +72,7 @@ use super::domain_skeleton::{build_domain_skeleton, push_boot_dev, push_default_
 /// libvirt-generated one, and the second call fails outright
 /// ("domain already exists with uuid ..." — hit this for real while
 /// writing this function's own test, not a theoretical concern).
+#[allow(clippy::too_many_arguments)]
 pub fn build_import_document(
     name: &str,
     memory_kib: u64,
@@ -74,8 +81,10 @@ pub fn build_import_document(
     domain_type: &str,
     os_type: &str,
     arch: &str,
+    machine: Option<&str>,
+    emulator: Option<&str>,
 ) -> Document {
-    let (mut doc, root, os_el) = build_domain_skeleton(
+    let (mut doc, _root, os_el, devices_el) = build_domain_skeleton(
         name,
         memory_kib,
         vcpus,
@@ -83,10 +92,11 @@ pub fn build_import_document(
         domain_type,
         os_type,
         arch,
+        machine,
+        emulator,
     );
     push_boot_dev(&mut doc, os_el, "hd");
 
-    let devices_el = Element::new(&mut doc, "devices");
     let disk_el = Element::new(&mut doc, "disk");
     disk_el.set_attribute(&mut doc, "type", "file");
     disk_el.set_attribute(&mut doc, "device", "disk");
@@ -109,8 +119,6 @@ pub fn build_import_document(
         devices_el,
         &crate::cloner::generate_mac(domain_type == "qemu"),
     );
-    root.push_child(&mut doc, devices_el)
-        .expect("a freshly-created detached element always attaches cleanly");
 
     doc
 }
@@ -135,6 +143,8 @@ mod tests {
             "qemu",
             "hvm",
             "x86_64",
+            Some("q35"),
+            Some("/usr/bin/qemu-system-x86_64"),
         );
         let root = doc.root_element().unwrap();
 
@@ -157,12 +167,17 @@ mod tests {
         let os_type = os.find(&doc, "type").unwrap();
         assert_eq!(os_type.text_content(&doc), "hvm");
         assert_eq!(os_type.attribute(&doc, "arch"), Some("x86_64"));
+        assert_eq!(os_type.attribute(&doc, "machine"), Some("q35"));
         assert_eq!(
             os.find(&doc, "boot").unwrap().attribute(&doc, "dev"),
             Some("hd")
         );
 
         let devices = root.find(&doc, "devices").unwrap();
+        assert_eq!(
+            devices.find(&doc, "emulator").unwrap().text_content(&doc),
+            "/usr/bin/qemu-system-x86_64"
+        );
         let disk = devices.find(&doc, "disk").unwrap();
         assert_eq!(disk.attribute(&doc, "type"), Some("file"));
         assert_eq!(disk.attribute(&doc, "device"), Some("disk"));
@@ -202,7 +217,17 @@ mod tests {
         // pins the other branch (`push_default_nic`'s `domain_type ==
         // "qemu"` proxy for `cloner::generate_mac`'s `is_qemu`), so a
         // broken proxy wouldn't go unnoticed.
-        let doc = build_import_document("x", 1048576, 1, "/tmp/x.img", "test", "hvm", "i686");
+        let doc = build_import_document(
+            "x",
+            1048576,
+            1,
+            "/tmp/x.img",
+            "test",
+            "hvm",
+            "i686",
+            None,
+            None,
+        );
         let root = doc.root_element().unwrap();
         let mac = root
             .find(&doc, "devices")
@@ -220,9 +245,47 @@ mod tests {
         );
     }
 
+    /// `machine`/`emulator` are both optional (`test:///default`'s own
+    /// real capabilities report no `<machine>` elements at all, per the
+    /// pinned capture in `caps.rs` — `None` is the real, common case,
+    /// not just a theoretical one) — `None` must omit the attribute/
+    /// element entirely, not emit an empty one.
+    #[test]
+    fn machine_and_emulator_are_omitted_entirely_when_absent() {
+        let doc = build_import_document(
+            "x",
+            1048576,
+            1,
+            "/tmp/x.img",
+            "test",
+            "hvm",
+            "i686",
+            None,
+            None,
+        );
+        let root = doc.root_element().unwrap();
+        let type_el = root.find(&doc, "os").unwrap().find(&doc, "type").unwrap();
+        assert_eq!(type_el.attribute(&doc, "machine"), None);
+        assert!(root
+            .find(&doc, "devices")
+            .unwrap()
+            .find(&doc, "emulator")
+            .is_none());
+    }
+
     #[test]
     fn serializes_and_reparses_cleanly() {
-        let doc = build_import_document("x", 1048576, 1, "/tmp/x.img", "test", "hvm", "i686");
+        let doc = build_import_document(
+            "x",
+            1048576,
+            1,
+            "/tmp/x.img",
+            "test",
+            "hvm",
+            "i686",
+            None,
+            None,
+        );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
         let root = reparsed.root_element().unwrap();
@@ -235,27 +298,43 @@ mod tests {
     }
 
     /// Real end-to-end proof against `test:///default`: fetch the
-    /// connection's own default `domain`/`arch` from
-    /// `DomainCapabilities` (not hardcoded — `test:///`'s is `i686`,
-    /// confirmed by probing it directly, not assumed), build an import
-    /// document, then do upstream's actual two-call default sequence
-    /// (`create_new` — starts it running, transient — then
-    /// `define_new` — persists it), matching `Installer._create_guest`
-    /// exactly. Confirms both effects landed, then cleans up: destroy
-    /// the transient/running instance, undefine the persistent config.
+    /// connection's own real `hypervisor_type`/`arch`/`machine`/
+    /// `emulator` via `Capabilities::guest_lookup` (not hardcoded —
+    /// `test:///`'s arch is `i686`, confirmed by probing it directly,
+    /// not assumed; its `<guest>` reports no `<machine>` elements at
+    /// all, so `machine` is a real `None` here, not a placeholder —
+    /// see `machine_and_emulator_are_omitted_entirely_when_absent`),
+    /// build an import document, then do upstream's actual two-call
+    /// default sequence (`create_new` — starts it running, transient —
+    /// then `define_new` — persists it), matching `Installer._create_
+    /// guest` exactly. Also proves the real driver accepts a domain
+    /// defined with the new `<devices><emulator>` element (ticket 21
+    /// slice (a)) — not just that this crate's own XML construction
+    /// looks right. Confirms both effects landed, then cleans up:
+    /// destroy the transient/running instance, undefine the persistent
+    /// config.
     #[test]
     fn import_creates_a_running_and_persisted_domain() {
-        use crate::capabilities::DomainCapabilities;
+        use crate::capabilities::Capabilities;
         use crate::connection::{Connection, Domain};
         use crate::test_support::TEST_DOMAIN_LOCK;
 
         let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let conn = Connection::open("test:///default").expect("test:/// driver always opens");
-        let caps = DomainCapabilities::fetch(&conn, None, None, None, None)
-            .expect("domcaps fetch succeeds");
-        let domain_type = caps.domain.expect("test driver reports a domain type");
-        let arch = caps.arch.expect("test driver reports a default arch");
+        let host_caps = Capabilities::fetch(&conn).expect("host caps fetch succeeds");
+        let capsinfo = host_caps
+            .guest_lookup(None, None, None, None)
+            .expect("test driver always resolves a default guest");
+        let domain_type = capsinfo
+            .hypervisor_type
+            .expect("test driver reports a domain type");
+        let arch = capsinfo.arch.expect("test driver reports a default arch");
+        let machine = capsinfo.machines.first().map(|s| s.as_str());
+        assert_eq!(
+            machine, None,
+            "test:///default's own real capabilities report no machines at all"
+        );
 
         let doc = build_import_document(
             "import-end-to-end",
@@ -265,6 +344,8 @@ mod tests {
             &domain_type,
             "hvm",
             &arch,
+            machine,
+            capsinfo.emulator.as_deref(),
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -275,10 +356,12 @@ mod tests {
         let refetched = Domain::lookup_by_name(&conn, "import-end-to-end")
             .expect("the domain is findable by the name we gave it");
         assert_eq!(refetched.name().unwrap(), "import-end-to-end");
-        assert!(refetched
-            .inactive_xml()
-            .expect("fetch inactive XML")
-            .contains("import-end-to-end.img"));
+        let inactive_xml = refetched.inactive_xml().expect("fetch inactive XML");
+        assert!(inactive_xml.contains("import-end-to-end.img"));
+        assert!(
+            inactive_xml.contains("<emulator>"),
+            "the real driver kept the <emulator> element we defined it with"
+        );
 
         // The actual point of the two-call sequence: destroy the
         // running instance and the *config* must still be there.
@@ -360,6 +443,8 @@ mod tests {
             &capsinfo.hypervisor_type.unwrap(),
             &capsinfo.os_type.unwrap(),
             &capsinfo.arch.unwrap(),
+            capsinfo.machines.first().map(|s| s.as_str()),
+            capsinfo.emulator.as_deref(),
         );
         // Through the DOM, not a raw string match on the serialized
         // XML — a string match couples this test to `virtinst_xml`'s
@@ -373,5 +458,101 @@ mod tests {
             "the injected os_type must reach <os><type>, not a stray hardcoded \"hvm\""
         );
         assert_eq!(type_el.attribute(&doc, "arch"), Some("i686"));
+    }
+
+    /// Same gap, closed for `machine`/`emulator` (ticket 21 slice (a)):
+    /// `builds_a_complete_bootable_domain` pins a literal `Some("q35")`
+    /// and the real end-to-end test's driver reports no machines at
+    /// all, so neither exercises the actual composition `virt-
+    /// install.rs` runs — `capsinfo.machines.first()` → `<os><type
+    /// machine=...>`. This fixture has a real, *populated* multi-
+    /// machine list (trimmed from the same real `virsh -c qemu:///
+    /// system capabilities` capture as `caps.rs`'s own `REAL_QEMU_
+    /// SYSTEM_CAPS_EXCERPT`), so `.first()` returns a real, non-trivial
+    /// value to check, not `None`.
+    ///
+    /// Confirmed directly against upstream's own `capabilities.py`
+    /// (`all_machine_names`: `ret.append(m.name)` per `<machine>` in
+    /// document order, canonical alias appended only if not already
+    /// present) before writing this: for this exact machine-list shape,
+    /// **upstream's own fallback would also land on `pc-i440fx-11.1`**,
+    /// the first `<machine>`'s own name, not the friendlier `pc`
+    /// canonical alias two entries later — this isn't a Rust-side
+    /// divergence to fix, it's upstream's real, faithfully-ported
+    /// behavior on real capabilities data.
+    #[test]
+    fn capsinfo_machine_fallback_actually_flows_into_the_built_document() {
+        use crate::capabilities::Capabilities;
+        use crate::connection::Connection;
+        use crate::test_support::TEST_DOMAIN_LOCK;
+
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let fixture = r#"<capabilities>
+  <host><cpu><arch>x86_64</arch></cpu></host>
+  <guest>
+    <os_type>hvm</os_type>
+    <arch name='x86_64'>
+      <wordsize>64</wordsize>
+      <emulator>/usr/bin/qemu-system-x86_64</emulator>
+      <machine maxCpus='255'>pc-i440fx-11.1</machine>
+      <machine canonical='pc-i440fx-11.1' maxCpus='255'>pc</machine>
+      <machine maxCpus='4096'>pc-q35-11.1</machine>
+      <machine canonical='pc-q35-11.1' maxCpus='4096'>q35</machine>
+      <domain type='qemu'/>
+      <domain type='kvm'/>
+    </arch>
+  </guest>
+</capabilities>"#;
+        let fixture_path = std::env::temp_dir().join(format!(
+            "virtinst-core-test-machine-caps-{}.xml",
+            std::process::id()
+        ));
+        std::fs::write(&fixture_path, fixture).expect("writes the fixture");
+        std::env::set_var("VIRTINST_TEST_CAPS_FILE", &fixture_path);
+
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        let host_caps =
+            Capabilities::fetch(&conn).expect("reads the injected fixture, not libvirt");
+        let capsinfo = host_caps
+            .guest_lookup(None, None, None, None)
+            .expect("the fixture's one guest matches");
+
+        std::env::remove_var("VIRTINST_TEST_CAPS_FILE");
+        std::fs::remove_file(&fixture_path).ok();
+
+        assert_eq!(
+            capsinfo.machines.first().map(|s| s.as_str()),
+            Some("pc-i440fx-11.1"),
+            "guest_lookup must read the injected fixture's real machine list, not test:/// \
+             default's empty one"
+        );
+
+        let doc = build_import_document(
+            "capsinfo-machine-flow-check",
+            1048576,
+            1,
+            "/guest/whatever.img",
+            &capsinfo.hypervisor_type.unwrap(),
+            "hvm",
+            &capsinfo.arch.unwrap(),
+            capsinfo.machines.first().map(|s| s.as_str()),
+            capsinfo.emulator.as_deref(),
+        );
+        let root = doc.root_element().unwrap();
+        let type_el = root.find(&doc, "os").unwrap().find(&doc, "type").unwrap();
+        assert_eq!(
+            type_el.attribute(&doc, "machine"),
+            Some("pc-i440fx-11.1"),
+            "the injected machine fallback must reach <os><type machine=...>"
+        );
+        assert_eq!(
+            root.find(&doc, "devices")
+                .unwrap()
+                .find(&doc, "emulator")
+                .unwrap()
+                .text_content(&doc),
+            "/usr/bin/qemu-system-x86_64"
+        );
     }
 }

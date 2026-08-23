@@ -19,12 +19,15 @@
 use virtinst_xml::{Document, Element};
 
 /// Builds `<domain type=domain_type><name/><uuid/><memory/>
-/// <currentMemory/><vcpu/><os><type arch=arch>os_type</type></os></domain>`
-/// and returns the open document plus its `<os>` element — callers push
-/// their own `<boot>` entries onto `os` (bootdev handling differs enough
-/// per install method, see `Iso::live`/`Manual`, that it isn't shared
-/// here — container guests skip `<boot>` entirely, see `container.rs`)
-/// and their own `<devices>` onto `root`.
+/// <currentMemory/><vcpu/><os><type arch=arch machine=machine>os_type
+/// </type></os><devices><emulator>emulator</emulator></devices></domain>`
+/// and returns the open document plus its `<os>` and `<devices>`
+/// elements — callers push their own `<boot>` entries onto `os` (bootdev
+/// handling differs enough per install method, see `Iso::live`/`Manual`,
+/// that it isn't shared here — container guests skip `<boot>` entirely,
+/// see `container.rs`) and their own devices onto the returned `devices`
+/// element (already attached to `root`, same "push into an already-
+/// attached element" pattern `os_el` has always used for `<boot>`).
 ///
 /// `os_type` is `<os><type>`'s text content — `"hvm"` for every install
 /// method except containers (`"exe"`, `DomainOs.is_container()`'s check).
@@ -32,6 +35,24 @@ use virtinst_xml::{Document, Element};
 /// for containers — confirmed directly in `guest.py`'s `set_capabilities_
 /// defaults`: `self.os.arch = capsinfo.arch` runs unconditionally, no
 /// container exception, so this isn't guessed.
+///
+/// `machine`/`emulator` are ticket 21 slice (a): `capsinfo.machines.
+/// first()`/`capsinfo.emulator` threaded through when the caller has
+/// them, `None` when it doesn't — `container.rs` always passes `None`
+/// for both, deliberately, matching the same reasoning that already
+/// keeps its `os_type` hardcoded to `"exe"` rather than sourced from
+/// `capsinfo` (see `build_container_os_document`'s doc comment: no
+/// driver this crate reaches ever resolves a real `capsinfo` for an
+/// `exe` guest, so there's no correct value to thread, only a wrong
+/// one borrowed from the `hvm`/`xen` guest a plain `guest_lookup` would
+/// actually return). Neither attribute/element is emitted when absent
+/// — `machine` omitted from `<type>` (matches upstream's own `_set_
+/// default_machine`, whose *fallback-only* branch this ports:
+/// `capsinfo.machines and capsinfo.machines[0] or None`; the q35-
+/// preferred branch above it needs `OsInfo` plus an unbuilt hypervisor-
+/// version support-check mechanism, both out of scope per ticket 21),
+/// `<emulator>` omitted from `<devices>` entirely rather than emitted
+/// empty.
 ///
 /// `uuid` is caller-supplied rather than generated here — required
 /// because `virt-install`'s default sequence calls `Domain::create_new`
@@ -46,6 +67,7 @@ use virtinst_xml::{Document, Element};
 /// Without a fixed UUID at all, each libvirt call invents its own and
 /// the second call fails outright ("domain already exists with uuid
 /// ..." — hit this for real, see `import.rs`'s doc comment).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_domain_skeleton(
     name: &str,
     memory_kib: u64,
@@ -54,7 +76,9 @@ pub(super) fn build_domain_skeleton(
     domain_type: &str,
     os_type: &str,
     arch: &str,
-) -> (Document, Element, Element) {
+    machine: Option<&str>,
+    emulator: Option<&str>,
+) -> (Document, Element, Element, Element) {
     let mut doc = Document::new();
     let root = Element::new(&mut doc, "domain");
     root.set_attribute(&mut doc, "type", domain_type);
@@ -79,13 +103,23 @@ pub(super) fn build_domain_skeleton(
     let os_el = Element::new(&mut doc, "os");
     let type_el = Element::new_with_text(&mut doc, "type", os_type);
     type_el.set_attribute(&mut doc, "arch", arch);
+    if let Some(m) = machine {
+        type_el.set_attribute(&mut doc, "machine", m);
+    }
     os_el
         .push_child(&mut doc, type_el)
         .expect("a freshly-created detached element always attaches cleanly");
     root.push_child(&mut doc, os_el)
         .expect("a freshly-created detached element always attaches cleanly");
 
-    (doc, root, os_el)
+    let devices_el = Element::new(&mut doc, "devices");
+    if let Some(e) = emulator {
+        push_text_child(&mut doc, devices_el, "emulator", e);
+    }
+    root.push_child(&mut doc, devices_el)
+        .expect("a freshly-created detached element always attaches cleanly");
+
+    (doc, root, os_el, devices_el)
 }
 
 pub(super) fn push_text_child(doc: &mut Document, parent: Element, tag: &str, text: &str) {
