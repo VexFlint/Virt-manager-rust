@@ -556,3 +556,116 @@ defaults for xen/non-xen, an explicit `managed` surviving, mode
 defaulting, an explicit `mode` surviving). 99/99 `virtinst-cli`,
 156/156 `virtinst-core` (+5 over the 151 slice-(d) baseline), harness
 61/61, `fmt`/`clippy` clean.
+
+## (f): CPU mode defaulting — scope is bigger than the six-slice list implies
+
+Before writing any code: an advisor review flagged that slice (f)'s
+one-line label ("CPU mode defaulting, needs `domcaps.rs`'s `<cpu>`
+section built first") undersells it the same way ticket 20's one-line
+label undersold this whole ticket. Two genuinely separate pieces, not
+one:
+
+1. **`domcaps.rs`'s `<cpu>` section** — upstream's `_CPU`: a list of
+   `<mode>` elements, each with `name`/`supported`, `<model>` children
+   carrying full CPU feature lists. Ticket 17 already flagged this as a
+   *different shape* from `_CapsBlock` (`domcaps.rs`'s own doc comment:
+   "each a different, non-`_CapsBlock` shape... `_CPU` is a list of
+   `<mode>`s with their own `<model>` children including full CPU
+   feature lists") — not another `from_optional_child` call, a real
+   parser.
+2. **Three query methods plus the defaulting chain on top**
+   (`supports_maximum_cpu_mode`/`supports_safe_host_passthrough`/
+   `supports_safe_host_model`, then `_get_app_default_mode`, then
+   emitting `<cpu mode=...>`).
+
+Per the review: build (1) as its own commit with its own tests against
+a real captured `<cpu>` block (same discipline as `GuestCapsDefaults`
+being split from slice (c)'s actual graphics wiring) — the parser is
+where the shape risk lives and deserves isolated verification, not
+bundled with the defaulting logic that consumes it.
+
+### Grounding pass: is (2) actually finishable, or partially blocked like (b)'s q35 branch?
+
+Checked before committing to build anything, per the review's explicit
+warning that `_get_app_default_mode` might consult a hypervisor-
+*version* check (`conn.support.*`), the same unbuilt mechanism that
+blocked slice (b)'s q35-preferred machine branch.
+
+**Conclusion: not blocked.** Read `cpu.py`'s whole chain
+(`_get_app_default_mode` → `_should_use_maximum_cpu_mode` →
+`supports_maximum_cpu_mode`/`supports_safe_host_passthrough`/
+`supports_safe_host_model`) line by line: every one of those calls
+resolves to a pure `domcaps.cpu`/`domcaps.devices` read, no
+`conn.support.*` hypervisor-version check anywhere in that specific
+call graph. The q35 blocker is scoped to a different branch entirely
+(`_set_default_machine`'s preferred-machine selection), not to CPU
+mode defaulting. Piece (2) is fully buildable now.
+
+The pieces that *are* out of scope, found while tracing the rest of
+`DomainCpu.set_defaults`/`set_special_mode`/`set_model` for piece (2)'s
+design (see below): the `arm_machvirt`/`riscv_virt`/`loongarch64`
+guest-type branches (this crate has no ARM/RISC-V/LoongArch guest
+support at all yet — same "not this crate's scope" reasoning as
+everywhere else `is_x86()`-adjacent logic has come up) and the
+CPU-security-feature enrichment on the custom-model path
+(`_add_security_features`/`get_cpu_security_features`, which requires
+`_get_expanded_cpu` — a live libvirt round-trip to expand a CPU model
+into its real feature list, a new kind of capability query this ticket
+didn't scope in). The security-feature gap is stated, not silent: it
+only matters on the `host-model-only` fallback branch, which is
+unreachable on any host (including this one) where host-passthrough or
+host-model is safely supported.
+
+## (f) piece 1 built: `domcaps.rs`'s `<cpu>` section
+
+`Cpu`/`CpuMode`/`CpuModel` structs (upstream's `_CPU`/`_CPUMode`/
+`_CPUModel`) parse `<domainCapabilities><cpu>`'s list-of-modes shape —
+each `<mode name=... supported=...>` carrying its own `<enum>`s and
+`<model>` children, the "list of enum-blocks with typed children"
+shape ticket 17 flagged as genuinely different from every other
+`_CapsBlock`-based device section in this file. `find`/`find_all` on
+`edit_xml::Element` are direct-children-only by construction (checked
+the dependency source directly, not inferred from behavior), so
+`CpuMode::from_element`'s `find_all(doc, "model")` cannot accidentally
+pick up a sibling `<feature>`/`<vendor>`/`<maxphysaddr>` element under
+the same `<mode>` — confirmed rather than assumed, since a mistaken
+recursive `find_all` was exactly the kind of shape risk this piece was
+split out to catch in isolation.
+
+Deliberately not modeled, matching upstream's own `_CPUMode`/
+`_CPUModel` scope (not exceeding it): `<vendor>`/`<maxphysaddr>`/
+`<feature>` under `host-model`, and the `vendor`/`canonical` attributes
+on `custom` `<model>` entries.
+
+Three query methods on `DomainCapabilities`, next to
+`default_graphics_type`: `supports_safe_host_model` (host-model mode
+supported, with a model whose `fallback="forbid"`), `supports_safe_
+host_passthrough` (host-passthrough mode supported, with
+`hostPassthroughMigratable` advertising `"on"`), `supports_maximum_cpu_
+mode` (maximum mode supported). `supports_safe_host_model` uses
+`.first()` on the model list rather than upstream's bare `models[0]`
+(which would panic on a modelless host-model block) — a defensive,
+not-a-behavior-change divergence, confirmed by every real capture
+always carrying exactly one model.
+
+**Verified against a real capture, not just a hand-trimmed fixture**:
+unit tests run against a trimmed `<cpu>` excerpt from this machine's
+own `virsh -c qemu:///session domcapabilities` output (`qemu:///system`
+hit a polkit denial on this session; `qemu:///session` reports the
+identical `<cpu>` shape on the same host). As a one-off sanity pass
+before committing, also parsed the full untrimmed 2891-line capture
+(not committed as a fixture) and confirmed `supports_safe_host_
+passthrough()` is `true`, `host-model` yields exactly one model named
+`Skylake-Client-IBRS`, and `custom` yields all 171 real models —
+proving the parser against data nobody hand-shaped to fit the code,
+not just the excerpt trimmed to match it.
+
+11 new tests: `parse_reads_the_cpu_block_and_its_nested_models`,
+`cpu_block_absent_reads_as_default_not_a_parse_error`, plus
+true/false pairs for each of the three query methods against the real
+fixture and each of their individual failure conditions (mode absent,
+`hostPassthroughMigratable` lacking `"on"`, host-model advertised with
+no model child, `fallback` not `"forbid"`).
+
+**Verified**: 99/99 `virtinst-cli`, 167/167 `virtinst-core` (+11 over
+the 156 slice-(e) baseline), harness 61/61, `fmt`/`clippy` clean.

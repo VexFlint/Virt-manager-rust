@@ -21,14 +21,25 @@
 //! class — not modeled, matching upstream's own gap rather than
 //! exceeding it.
 //!
-//! **Not yet built**: `os`/`cpu`/`features` — each a different,
-//! non-`_CapsBlock` shape upstream layers on top (`_OS` adds a nested
-//! `loader` sub-block, `_CPU` is a list of `<mode>`s with their own
-//! `<model>` children including full CPU feature lists, `_Features`
-//! mixes plain `_CapsBlock`s with a distinct `_SEV` shape) — added
-//! when ticket 17's per-driver chains actually need one, same "close
-//! the gap when it's real, not speculatively" pattern as everywhere
-//! else in this crate.
+//! **Not yet built**: `os`/`features` — each a different, non-
+//! `_CapsBlock` shape upstream layers on top (`_OS` adds a nested
+//! `loader` sub-block, `_Features` mixes plain `_CapsBlock`s with a
+//! distinct `_SEV` shape) — added when ticket 17's per-driver chains
+//! actually need one, same "close the gap when it's real, not
+//! speculatively" pattern as everywhere else in this crate.
+//!
+//! **`cpu` built as of ticket 21 slice (f)**: `_CPU` is a list of
+//! `<mode>`s (`Cpu`/`CpuMode` below), each carrying its own `_CapsBlock`
+//! shape (`supported`/`enums`, reused as plain fields rather than
+//! inheritance — Rust has no `_CapsBlock` base class to extend) plus a
+//! list of `<model>` children (`CpuModel`). Real libvirt output on this
+//! machine's own `qemu:///session` capture also has `<vendor>`/
+//! `<maxphysaddr>`/`<feature>` elements directly under `<mode
+//! name='host-model'>`, and `vendor`/`canonical` attributes on `custom`
+//! mode's `<model>` entries — none bound here, matching upstream's own
+//! `_CPUMode`/`_CPUModel` classes exactly rather than exceeding them
+//! (same posture as the `crypto`/`interface`/`console` gap already
+//! noted above).
 
 use crate::connection::Connection;
 use virt::error::Error as LibvirtError;
@@ -181,6 +192,94 @@ impl DomainCapabilitiesDevices {
     }
 }
 
+/// `<model>` under a `<cpu><mode>` — upstream's `_CPUModel`. `model` is
+/// the element's own text content (`XMLProperty(".")`), not an
+/// attribute — the one case this struct needs `text_content` rather
+/// than `attribute` for its primary value, same shape `net_interface`
+/// already needed in `devices/hostdev.rs`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CpuModel {
+    pub model: Option<String>,
+    pub usable: Option<String>,
+    pub fallback: Option<String>,
+}
+
+impl CpuModel {
+    fn from_element(doc: &Document, el: Element) -> CpuModel {
+        CpuModel {
+            model: Some(el.text_content(doc)),
+            usable: el.attribute(doc, "usable").map(str::to_string),
+            fallback: el.attribute(doc, "fallback").map(str::to_string),
+        }
+    }
+}
+
+/// `<mode>` under `<domainCapabilities><cpu>` — upstream's `_CPUMode`,
+/// which extends `_CapsBlock` (`supported`/`values`/`enums`) rather
+/// than composing it; Rust has no base class to extend, so
+/// `supported`/`enums` are plain fields here instead (`values` omitted
+/// — no real `<cpu><mode>` block uses direct `<value>` children the
+/// way `<loader>` does, unlike every other `CapsBlock`-shaped block in
+/// this file).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CpuMode {
+    pub name: Option<String>,
+    pub supported: Option<bool>,
+    pub enums: Vec<CapsEnum>,
+    pub models: Vec<CpuModel>,
+}
+
+impl CpuMode {
+    pub fn get_enum(&self, name: &str) -> Option<&CapsEnum> {
+        self.enums.iter().find(|e| e.name.as_deref() == Some(name))
+    }
+
+    pub fn get_model(&self, name: &str) -> Option<&CpuModel> {
+        self.models
+            .iter()
+            .find(|m| m.model.as_deref() == Some(name))
+    }
+
+    fn from_element(doc: &Document, el: Element) -> CpuMode {
+        CpuMode {
+            name: el.attribute(doc, "name").map(str::to_string),
+            supported: el.attribute(doc, "supported").map(|s| s == "yes"),
+            enums: el
+                .find_all(doc, "enum")
+                .into_iter()
+                .map(|e| CapsEnum::from_element(doc, e))
+                .collect(),
+            models: el
+                .find_all(doc, "model")
+                .into_iter()
+                .map(|m| CpuModel::from_element(doc, m))
+                .collect(),
+        }
+    }
+}
+
+/// `<domainCapabilities><cpu>` — upstream's `_CPU`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Cpu {
+    pub modes: Vec<CpuMode>,
+}
+
+impl Cpu {
+    pub fn get_mode(&self, name: &str) -> Option<&CpuMode> {
+        self.modes.iter().find(|m| m.name.as_deref() == Some(name))
+    }
+
+    fn from_element(doc: &Document, el: Element) -> Cpu {
+        Cpu {
+            modes: el
+                .find_all(doc, "mode")
+                .into_iter()
+                .map(|m| CpuMode::from_element(doc, m))
+                .collect(),
+        }
+    }
+}
+
 /// ```xml
 /// <domainCapabilities>
 ///   <path>/usr/bin/qemu-system-x86_64</path>
@@ -201,6 +300,7 @@ pub struct DomainCapabilities {
     pub machine: Option<String>,
     pub arch: Option<String>,
     pub devices: DomainCapabilitiesDevices,
+    pub cpu: Cpu,
 }
 
 impl DomainCapabilities {
@@ -221,6 +321,10 @@ impl DomainCapabilities {
             devices: match root.find(&doc, "devices") {
                 Some(el) => DomainCapabilitiesDevices::from_element(&doc, el),
                 None => DomainCapabilitiesDevices::default(),
+            },
+            cpu: match root.find(&doc, "cpu") {
+                Some(el) => Cpu::from_element(&doc, el),
+                None => Cpu::default(),
             },
         })
     }
@@ -315,6 +419,46 @@ impl DomainCapabilities {
             return "vnc";
         }
         DEFAULT_GRAPHICS_TYPE
+    }
+
+    /// Ticket 21 slice (f): upstream's `supports_safe_host_model`
+    /// (`domapabilities.py:374`). Uses `.first()` rather than upstream's
+    /// bare `m.models[0]` — a real, deliberate divergence: upstream's
+    /// Python would raise `IndexError` on an advertised-but-modelless
+    /// `host-model` block, whereas this returns `false` instead of
+    /// panicking. Confirmed against this machine's own real
+    /// `qemu:///session` capture that a real `host-model` block always
+    /// has exactly one `<model>` child, so this is a defensive
+    /// divergence for malformed input, not a behavior change on any
+    /// real driver output.
+    pub fn supports_safe_host_model(&self) -> bool {
+        let Some(mode) = self.cpu.get_mode("host-model") else {
+            return false;
+        };
+        mode.supported == Some(true)
+            && mode
+                .models
+                .first()
+                .is_some_and(|m| m.fallback.as_deref() == Some("forbid"))
+    }
+
+    /// Upstream's `supports_safe_host_passthrough`
+    /// (`domcapabilities.py:381`).
+    pub fn supports_safe_host_passthrough(&self) -> bool {
+        let Some(mode) = self.cpu.get_mode("host-passthrough") else {
+            return false;
+        };
+        mode.supported == Some(true)
+            && mode
+                .get_enum("hostPassthroughMigratable")
+                .is_some_and(|e| e.has_value("on"))
+    }
+
+    /// Upstream's `supports_maximum_cpu_mode` (`domcapabilities.py:391`).
+    pub fn supports_maximum_cpu_mode(&self) -> bool {
+        self.cpu
+            .get_mode("maximum")
+            .is_some_and(|m| m.supported == Some(true))
     }
 }
 
@@ -427,6 +571,40 @@ mod tests {
       <enum name='capsType'/>
     </hostdev>
   </devices>
+</domainCapabilities>"#;
+
+    /// A real `<cpu>` block, trimmed from this machine's own
+    /// `virsh -c qemu:///session domcapabilities` capture (`custom`'s
+    /// full model list runs to hundreds of entries — kept two real
+    /// ones, one `usable='yes'` and one `usable='no'`, enough to
+    /// exercise the shape without pasting the whole thing). Not
+    /// `qemu:///system`'s capture — this session had no polkit
+    /// authorization for `qemu:///system` directly, `qemu:///session`
+    /// reports the identical `<cpu>` shape on this same host/QEMU/
+    /// libvirt install.
+    const REAL_QEMU_CPU_EXCERPT: &str = r#"<domainCapabilities>
+  <cpu>
+    <mode name='host-passthrough' supported='yes'>
+      <enum name='hostPassthroughMigratable'>
+        <value>on</value>
+        <value>off</value>
+      </enum>
+    </mode>
+    <mode name='maximum' supported='yes'>
+      <enum name='maximumMigratable'>
+        <value>on</value>
+        <value>off</value>
+      </enum>
+    </mode>
+    <mode name='host-model' supported='yes'>
+      <model fallback='forbid'>Skylake-Client-IBRS</model>
+      <vendor>Intel</vendor>
+    </mode>
+    <mode name='custom' supported='yes'>
+      <model usable='yes' vendor='unknown' canonical='486-v1'>486</model>
+      <model usable='no' vendor='Intel' canonical='Broadwell-v1'>Broadwell</model>
+    </mode>
+  </cpu>
 </domainCapabilities>"#;
 
     #[test]
@@ -604,5 +782,129 @@ mod tests {
             "vnc",
             "a real xen URI must be forced to vnc even though domcaps advertises spice support"
         );
+    }
+
+    #[test]
+    fn parse_reads_the_cpu_block_and_its_nested_models() {
+        let caps = DomainCapabilities::parse(REAL_QEMU_CPU_EXCERPT).expect("parses");
+
+        let passthrough = caps.cpu.get_mode("host-passthrough").expect("mode exists");
+        assert_eq!(passthrough.supported, Some(true));
+        assert!(passthrough
+            .get_enum("hostPassthroughMigratable")
+            .expect("enum exists")
+            .has_value("on"));
+
+        let maximum = caps.cpu.get_mode("maximum").expect("mode exists");
+        assert_eq!(maximum.supported, Some(true));
+
+        let host_model = caps.cpu.get_mode("host-model").expect("mode exists");
+        assert_eq!(host_model.models.len(), 1);
+        let model = host_model
+            .get_model("Skylake-Client-IBRS")
+            .expect("model exists");
+        assert_eq!(model.fallback.as_deref(), Some("forbid"));
+
+        let custom = caps.cpu.get_mode("custom").expect("mode exists");
+        assert_eq!(custom.models.len(), 2);
+        assert_eq!(
+            custom.get_model("486").unwrap().usable.as_deref(),
+            Some("yes")
+        );
+        assert_eq!(
+            custom.get_model("Broadwell").unwrap().usable.as_deref(),
+            Some("no")
+        );
+
+        assert!(
+            caps.cpu.get_mode("nonexistent").is_none(),
+            "a mode name that isn't in the fixture must read as absent, not panic"
+        );
+    }
+
+    #[test]
+    fn cpu_block_absent_reads_as_default_not_a_parse_error() {
+        let caps = DomainCapabilities::parse("<domainCapabilities/>").expect("parses");
+        assert_eq!(caps.cpu, Cpu::default());
+        assert!(caps.cpu.get_mode("host-passthrough").is_none());
+    }
+
+    #[test]
+    fn supports_safe_host_passthrough_reads_the_real_fixture() {
+        let caps = DomainCapabilities::parse(REAL_QEMU_CPU_EXCERPT).expect("parses");
+        assert!(caps.supports_safe_host_passthrough());
+    }
+
+    #[test]
+    fn supports_safe_host_passthrough_is_false_when_the_mode_is_absent() {
+        let caps = DomainCapabilities::default();
+        assert!(!caps.supports_safe_host_passthrough());
+    }
+
+    #[test]
+    fn supports_safe_host_passthrough_is_false_when_migratable_lacks_on() {
+        let fixture = r#"<domainCapabilities>
+  <cpu>
+    <mode name='host-passthrough' supported='yes'>
+      <enum name='hostPassthroughMigratable'>
+        <value>off</value>
+      </enum>
+    </mode>
+  </cpu>
+</domainCapabilities>"#;
+        let caps = DomainCapabilities::parse(fixture).expect("parses");
+        assert!(!caps.supports_safe_host_passthrough());
+    }
+
+    #[test]
+    fn supports_maximum_cpu_mode_reads_the_real_fixture() {
+        let caps = DomainCapabilities::parse(REAL_QEMU_CPU_EXCERPT).expect("parses");
+        assert!(caps.supports_maximum_cpu_mode());
+    }
+
+    #[test]
+    fn supports_maximum_cpu_mode_is_false_when_the_mode_is_absent() {
+        let caps = DomainCapabilities::default();
+        assert!(!caps.supports_maximum_cpu_mode());
+    }
+
+    #[test]
+    fn supports_safe_host_model_reads_the_real_fixture() {
+        let caps = DomainCapabilities::parse(REAL_QEMU_CPU_EXCERPT).expect("parses");
+        assert!(caps.supports_safe_host_model());
+    }
+
+    #[test]
+    fn supports_safe_host_model_is_false_when_the_mode_is_absent() {
+        let caps = DomainCapabilities::default();
+        assert!(!caps.supports_safe_host_model());
+    }
+
+    /// The `.first()`-not-`[0]` divergence from upstream's bare
+    /// `m.models[0]`, documented on `supports_safe_host_model` itself:
+    /// an advertised `host-model` block with no `<model>` child at all
+    /// must read as unsupported, not panic.
+    #[test]
+    fn supports_safe_host_model_is_false_when_advertised_with_no_model_child() {
+        let fixture = r#"<domainCapabilities>
+  <cpu>
+    <mode name='host-model' supported='yes'/>
+  </cpu>
+</domainCapabilities>"#;
+        let caps = DomainCapabilities::parse(fixture).expect("parses");
+        assert!(!caps.supports_safe_host_model());
+    }
+
+    #[test]
+    fn supports_safe_host_model_is_false_when_fallback_is_not_forbid() {
+        let fixture = r#"<domainCapabilities>
+  <cpu>
+    <mode name='host-model' supported='yes'>
+      <model fallback='allow'>Skylake-Client-IBRS</model>
+    </mode>
+  </cpu>
+</domainCapabilities>"#;
+        let caps = DomainCapabilities::parse(fixture).expect("parses");
+        assert!(!caps.supports_safe_host_model());
     }
 }
