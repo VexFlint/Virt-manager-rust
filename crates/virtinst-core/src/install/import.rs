@@ -41,9 +41,11 @@
 
 use virtinst_xml::{Document, Element};
 
+use crate::capabilities::DefaultCpuMode;
+
 use super::domain_skeleton::{
-    build_domain_skeleton, push_boot_dev, push_default_clock, push_default_graphics,
-    push_default_nic, GuestCapsDefaults,
+    build_domain_skeleton, push_boot_dev, push_default_clock, push_default_cpu,
+    push_default_graphics, push_default_nic, GuestCapsDefaults,
 };
 
 /// `name`/`memory_kib`/`vcpus` are the wizard's Name/Memory pages'
@@ -62,7 +64,12 @@ use super::domain_skeleton::{
 /// graphics`'s doc comment for the XML it produces. The `<clock>`
 /// timer trio (ticket 21 slice (d)) needs no separate parameter at
 /// all — `push_default_clock` self-gates on `caps.os_type`/`caps.arch`/
-/// `caps.is_qemu`, already in hand.
+/// `caps.is_qemu`, already in hand. `cpu_mode` (ticket 21 slice (f)) is
+/// the opposite shape from `<clock>`: it's the caller's already-
+/// resolved [`DefaultCpuMode`] (or `None`), the same "resolve once,
+/// pass the answer in" pattern `graphics_type` uses — see `push_
+/// default_cpu`'s doc comment for why this one can't self-gate on
+/// primitives already in hand the way `<clock>` does.
 ///
 /// Always stamps an explicit `<uuid>` (via the same `generate_uuid()`
 /// approach `cloner.rs` uses, matching upstream's own hand-rolled
@@ -82,6 +89,7 @@ pub fn build_import_document(
     disk_path: &str,
     caps: GuestCapsDefaults,
     graphics_type: &str,
+    cpu_mode: Option<&DefaultCpuMode>,
 ) -> Document {
     let (mut doc, root, os_el, devices_el) = build_domain_skeleton(
         name,
@@ -91,6 +99,7 @@ pub fn build_import_document(
         &caps,
     );
     push_default_clock(&mut doc, root, caps.os_type, caps.arch, caps.is_qemu);
+    push_default_cpu(&mut doc, root, cpu_mode);
     push_boot_dev(&mut doc, os_el, "hd");
 
     let disk_el = Element::new(&mut doc, "disk");
@@ -146,6 +155,7 @@ mod tests {
                 is_qemu: true,
             },
             "spice",
+            None,
         );
         let root = doc.root_element().unwrap();
 
@@ -261,6 +271,7 @@ mod tests {
                 is_qemu: false,
             },
             "spice",
+            None,
         );
         let root = doc.root_element().unwrap();
         assert!(root.find(&doc, "clock").is_none());
@@ -285,6 +296,7 @@ mod tests {
                 is_qemu: true,
             },
             "spice",
+            None,
         );
         let root = doc.root_element().unwrap();
         assert!(root.find(&doc, "clock").is_none());
@@ -310,6 +322,7 @@ mod tests {
                 is_qemu: false,
             },
             "vnc",
+            None,
         );
         let root = doc.root_element().unwrap();
         let graphics = root
@@ -321,6 +334,125 @@ mod tests {
         assert_eq!(graphics.attribute(&doc, "port"), Some("-1"));
         assert_eq!(graphics.attribute(&doc, "tlsPort"), None);
         assert_eq!(graphics.attribute(&doc, "autoport"), None);
+    }
+
+    /// Ticket 21 slice (f): `cpu_mode = None` (the default for every
+    /// other test in this module) emits no `<cpu>` element at all —
+    /// the resolution itself is `domcaps.rs`'s own job, this only
+    /// proves `push_default_cpu` doesn't invent one out of nothing.
+    #[test]
+    fn cpu_is_omitted_when_no_default_mode_was_resolved() {
+        let doc = build_import_document(
+            "x",
+            1048576,
+            1,
+            "/tmp/x.img",
+            GuestCapsDefaults {
+                domain_type: "test",
+                os_type: "hvm",
+                arch: "x86_64",
+                machine: None,
+                emulator: None,
+                is_qemu: false,
+            },
+            "spice",
+            None,
+        );
+        let root = doc.root_element().unwrap();
+        assert!(root.find(&doc, "cpu").is_none());
+    }
+
+    /// `DefaultCpuMode::Mode` — a bare `<cpu mode="...">`, no other
+    /// attributes or children.
+    #[test]
+    fn cpu_mode_variant_emits_a_bare_mode_attribute() {
+        let resolved = DefaultCpuMode::Mode("host-passthrough");
+        let doc = build_import_document(
+            "x",
+            1048576,
+            1,
+            "/tmp/x.img",
+            GuestCapsDefaults {
+                domain_type: "kvm",
+                os_type: "hvm",
+                arch: "x86_64",
+                machine: None,
+                emulator: None,
+                is_qemu: true,
+            },
+            "spice",
+            Some(&resolved),
+        );
+        let root = doc.root_element().unwrap();
+        let cpu = root.find(&doc, "cpu").unwrap();
+        assert_eq!(cpu.attribute(&doc, "mode"), Some("host-passthrough"));
+        assert_eq!(cpu.attribute(&doc, "match"), None);
+        assert!(cpu.find(&doc, "model").is_none());
+    }
+
+    /// `DefaultCpuMode::Custom { model: Some(_) }` — `mode="custom"`,
+    /// `match="exact"`, and a `<model>` text child.
+    #[test]
+    fn cpu_custom_variant_with_a_model_emits_match_exact_and_the_model_element() {
+        let resolved = DefaultCpuMode::Custom {
+            model: Some("Skylake-Client-IBRS".to_string()),
+        };
+        let doc = build_import_document(
+            "x",
+            1048576,
+            1,
+            "/tmp/x.img",
+            GuestCapsDefaults {
+                domain_type: "kvm",
+                os_type: "hvm",
+                arch: "x86_64",
+                machine: None,
+                emulator: None,
+                is_qemu: true,
+            },
+            "spice",
+            Some(&resolved),
+        );
+        let root = doc.root_element().unwrap();
+        let cpu = root.find(&doc, "cpu").unwrap();
+        assert_eq!(cpu.attribute(&doc, "mode"), Some("custom"));
+        assert_eq!(cpu.attribute(&doc, "match"), Some("exact"));
+        assert_eq!(
+            cpu.find(&doc, "model").unwrap().text_content(&doc),
+            "Skylake-Client-IBRS"
+        );
+    }
+
+    /// `DefaultCpuMode::Custom { model: None }` — upstream's `_validate_
+    /// default_host_model_only` logic stripping an unusable model still
+    /// leaves `mode="custom" match="exact"` standing with no `<model>`
+    /// child (applied unconditionally here rather than gated on a
+    /// GUI-only setting this crate has no equivalent for — see
+    /// `default_cpu_mode`'s own doc comment).
+    #[test]
+    fn cpu_custom_variant_with_no_model_emits_custom_mode_alone() {
+        let resolved = DefaultCpuMode::Custom { model: None };
+        let doc = build_import_document(
+            "x",
+            1048576,
+            1,
+            "/tmp/x.img",
+            GuestCapsDefaults {
+                domain_type: "kvm",
+                os_type: "hvm",
+                arch: "x86_64",
+                machine: None,
+                emulator: None,
+                is_qemu: true,
+            },
+            "spice",
+            Some(&resolved),
+        );
+        let root = doc.root_element().unwrap();
+        let cpu = root.find(&doc, "cpu").unwrap();
+        assert_eq!(cpu.attribute(&doc, "mode"), Some("custom"));
+        assert_eq!(cpu.attribute(&doc, "match"), Some("exact"));
+        assert!(cpu.find(&doc, "model").is_none());
     }
 
     #[test]
@@ -342,6 +474,7 @@ mod tests {
                 is_qemu: false,
             },
             "spice",
+            None,
         );
         let root = doc.root_element().unwrap();
         let mac = root
@@ -391,6 +524,7 @@ mod tests {
                 is_qemu: true,
             },
             "spice",
+            None,
         );
         let root = doc.root_element().unwrap();
         let mac = root
@@ -430,6 +564,7 @@ mod tests {
                 is_qemu: false,
             },
             "spice",
+            None,
         );
         let root = doc.root_element().unwrap();
         let type_el = root.find(&doc, "os").unwrap().find(&doc, "type").unwrap();
@@ -457,6 +592,7 @@ mod tests {
                 is_qemu: false,
             },
             "spice",
+            None,
         );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
@@ -522,6 +658,7 @@ mod tests {
                 is_qemu: conn.uri().is_qemu(),
             },
             "spice",
+            None,
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -629,6 +766,7 @@ mod tests {
                 is_qemu: false,
             },
             "spice",
+            None,
         );
         // Through the DOM, not a raw string match on the serialized
         // XML — a string match couples this test to `virtinst_xml`'s
@@ -726,6 +864,7 @@ mod tests {
                 is_qemu: true,
             },
             "spice",
+            None,
         );
         let root = doc.root_element().unwrap();
         let type_el = root.find(&doc, "os").unwrap().find(&doc, "type").unwrap();
@@ -829,6 +968,7 @@ mod tests {
                 is_qemu: conn.uri().is_qemu(),
             },
             "spice",
+            None,
         );
         let root = doc.root_element().unwrap();
         let mac = root
@@ -908,6 +1048,7 @@ mod tests {
                 is_qemu: conn.uri().is_qemu(),
             },
             "spice",
+            None,
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -921,6 +1062,96 @@ mod tests {
                 && inactive_xml.contains("name='pit'")
                 && inactive_xml.contains("name='hpet'"),
             "the real driver kept all three timers we defined it with, got: {inactive_xml}"
+        );
+
+        running
+            .destroy()
+            .expect("cleanup: destroy the transient instance");
+        persisted
+            .undefine()
+            .expect("cleanup: undefine the persistent config");
+    }
+
+    /// Ticket 21 slice (f)'s real discriminating check: does a
+    /// `<cpu mode="host-passthrough"/>` this crate resolved actually
+    /// survive a real `Domain::create_new`/`define_new` round trip
+    /// against `test:///default`, not just this crate's own
+    /// serialization? Unlike `clock_trio_survives_a_real_libvirt_
+    /// define_when_is_qemu_is_true`, no `VIRTINST_TEST_FAKE_URI` trick
+    /// is needed here: `default_cpu_mode` is a pure function over an
+    /// already-parsed `DomainCapabilities` plus plain strings, resolved
+    /// entirely before `push_default_cpu` ever runs — proven directly
+    /// against a real fixture in `domcaps.rs`'s own test module, so
+    /// this test only needs to prove the *other* half: that the
+    /// already-resolved value round-trips through a live libvirt
+    /// driver unchanged.
+    #[test]
+    fn cpu_mode_survives_a_real_libvirt_define() {
+        use crate::capabilities::DomainCapabilities;
+        use crate::connection::{Connection, Domain, Uri};
+        use crate::test_support::TEST_DOMAIN_LOCK;
+
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+
+        // A real captured <cpu> shape (domcaps.rs's own REAL_QEMU_CPU_
+        // EXCERPT, inlined here rather than shared across modules —
+        // this crate's convention keeps test fixtures local to the
+        // module that needs them) that advertises host-passthrough as
+        // safe; `domain_type: "kvm"`/arches deliberately don't match
+        // this connection's real `"test"`/whatever-arch-it-reports —
+        // `default_cpu_mode` doesn't touch the connection at all beyond
+        // the URI-scheme gate, which `qemu:///system`'s bare `Uri::
+        // parse` (no real connection opened to it) satisfies fine.
+        let domcaps_xml = r#"<domainCapabilities>
+  <cpu>
+    <mode name='host-passthrough' supported='yes'>
+      <enum name='hostPassthroughMigratable'>
+        <value>on</value>
+      </enum>
+    </mode>
+  </cpu>
+</domainCapabilities>"#;
+        let domcaps = DomainCapabilities::parse(domcaps_xml).expect("parses");
+        let resolved = domcaps
+            .default_cpu_mode(
+                &Uri::parse("qemu:///system"),
+                "kvm",
+                "x86_64",
+                "x86_64",
+                Some("Skylake-Client-IBRS"),
+            )
+            .expect("host-passthrough resolves for this fixture");
+        assert_eq!(resolved, DefaultCpuMode::Mode("host-passthrough"));
+
+        let doc = build_import_document(
+            "cpu-end-to-end",
+            1048576,
+            1,
+            "/guest/cpu-end-to-end.img",
+            GuestCapsDefaults {
+                domain_type: "test",
+                os_type: "hvm",
+                arch: "x86_64",
+                machine: None,
+                emulator: None,
+                is_qemu: conn.uri().is_qemu(),
+            },
+            "spice",
+            Some(&resolved),
+        );
+        let xml = doc.write_str().expect("serializes");
+
+        let running = Domain::create_new(&conn, &xml).expect("transient create succeeds");
+        let persisted = Domain::define_new(&conn, &xml).expect("define succeeds");
+        let refetched = Domain::lookup_by_name(&conn, "cpu-end-to-end")
+            .expect("the domain is findable by the name we gave it");
+        let inactive_xml = refetched.inactive_xml().expect("fetch inactive XML");
+        assert!(
+            inactive_xml.contains("mode='host-passthrough'"),
+            "the real driver kept the <cpu mode='host-passthrough'> element we defined it \
+             with, got: {inactive_xml}"
         );
 
         running

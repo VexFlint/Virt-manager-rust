@@ -669,3 +669,131 @@ no model child, `fallback` not `"forbid"`).
 
 **Verified**: 99/99 `virtinst-cli`, 167/167 `virtinst-core` (+11 over
 the 156 slice-(e) baseline), harness 61/61, `fmt`/`clippy` clean.
+
+## (f) piece 2 built: CPU mode defaulting, and ticket 21 is fully closed
+
+Ported upstream's `_get_app_default_mode`/`set_special_mode`/
+`set_model`/`_validate_default_host_model_only` chain (`domain/cpu.py`),
+collapsed into one query method rather than mirrored 1:1: this crate
+builds domain XML through direct `edit_xml::Document`/`Element`
+construction (`domain_skeleton.rs`), not through `DomainCpu`'s bound-
+struct setters, so there's no `self.mode =` to mutate — a resolved
+`DefaultCpuMode` (or `None`) is the whole result. Considered building
+`DomainCpu::set_defaults` on the bound struct instead, following slice
+(e)'s "build ahead of a real caller" precedent — advisor caught why
+that precedent doesn't transfer: `<cpu>` defaulting is unconditional in
+upstream's `guest.set_defaults()`, not gated behind a flag that doesn't
+exist yet, so a bound-struct method nothing constructs would leave
+`virt-install` emitting no `<cpu>` block at all — a real behavioral gap
+from upstream, not a missing-API gap the way `DeviceHostdev` was.
+
+**Shape**: `DomainCapabilities::default_cpu_mode(uri, domain_type,
+guest_arch, host_arch, host_cpu_model) -> Option<DefaultCpuMode>`,
+next to the three query methods piece 1 built. `DefaultCpuMode` is a
+two-variant enum: `Mode(&'static str)` (`host-passthrough`/`host-
+model`/`maximum`, a bare `<cpu mode=...>`) and `Custom { model:
+Option<String> }` (`mode="custom" match="exact"`, with or without a
+`<model>` child — see below). `domain_skeleton::push_default_cpu(doc,
+root, resolved)` materializes whichever variant won, called from every
+builder including `--container` (which always passes `None` — no
+domcaps/host-CPU-model pair is resolved for a container guest at all,
+same "no correct value to give it" reasoning `machine`/`emulator`
+already carry there). Follows `push_default_graphics`'s "resolve once
+in `virt-install.rs`, pass the answer in" pattern, not `push_default_
+clock`'s self-gating one — advisor's call: clock's inputs (`os_type`/
+`arch`/`is_qemu`) are already threaded to every builder, cpu's aren't
+(`domcaps` plus the host's own reported CPU model from `<capabilities>`
+are new inputs no builder carries), so self-gating would mean either
+threading both through every builder's signature or resolving twice.
+
+**Scope traced from upstream's real branches, not assumed**:
+- Top gate: `uri.is_test() || uri.is_qemu()`, upstream's `conn.is_test()
+  or conn.is_qemu()` — a real xen/vz connection never gets a `<cpu>`
+  default here.
+- `arm_machvirt`/`riscv_virt`/`loongarch64` guest-type branches: **not
+  modeled** — no ARM/RISC-V/LoongArch guest support exists in this
+  crate at all to ground it against, same posture as every other
+  `is_x86()`-adjacent gap.
+- x86 + `domain_type == "kvm"`: requires `guest_arch == host_arch`
+  (cross-arch emulation gets no host-based default). Prefers `host-
+  passthrough`, then `host-model`, then a custom model pinned to the
+  host's own reported CPU. `_should_use_maximum_cpu_mode` cannot fire
+  in this branch — it requires `guest.type == "qemu"`, which this
+  branch's own `domain_type == "kvm"` guard already excludes; confirmed
+  by reading the source, not assumed, since it's what let this branch
+  skip straight to the three-way chain with no maximum-mode check.
+- x86 + `domain_type == "qemu"` (TCG): `maximum` if domcaps advertises
+  it, otherwise no default at all.
+- **A deliberate superset, not a straight port**: `_validate_default_
+  host_model_only` can strip just the model name (when domcaps says
+  the host's own reported CPU isn't usable) while leaving `mode=
+  "custom" match="exact"` standing with no `<model>` child. Caught on
+  review: upstream only runs this check when `guest.x86_cpu_default ==
+  HOST_MODEL_ONLY` — for `virt-install` specifically, `x86_cpu_default`
+  is pinned to `APP_DEFAULT` (`guest.py:273`, never reassigned on that
+  path) and `_set_cpu_x86_kvm_default` checks the *unresolved* sentinel
+  against `HOST_MODEL_ONLY` before `set_special_mode` ever resolves it,
+  so the check is dead code on `virt-install`'s own CLI path — it only
+  fires via the GUI's CPU-preference setting (`createvm.py:1390`) or a
+  test override. `default_cpu_mode` runs it unconditionally anyway:
+  this crate has no `x86_cpu_default`-equivalent switch to gate it on,
+  a 1:1 GUI port is this project's stated endpoint (where this exact
+  behavior *is* live), and skipping it to match virt-install's dead
+  branch would just mean re-adding it later. `DefaultCpuMode::Custom {
+  model: None }` represents the stripped-model shape exactly, and
+  `push_default_cpu` emits it as-is — a real, documented divergence
+  from what `virt-install` itself would produce upstream, not
+  "faithfully replicated," as an earlier draft of this section claimed
+  before review caught the mistake.
+- **Not modeled, stated rather than silently dropped**: the CPU-
+  security-feature enrichment on the custom-model path (`_add_security_
+  features`/`get_cpu_security_features`) needs `_get_expanded_cpu` — a
+  live libvirt round-trip to expand a CPU model into its real feature
+  list, a kind of capability query this crate doesn't have. Only
+  matters on the `host-model-only` fallback, itself unreachable on any
+  host (including the one this was grounded against) where host-
+  passthrough or host-model is safely supported.
+
+**Grounding confirmed empirically, not just by reading source**: on
+this machine's own real `qemu:///session` capture, host-passthrough is
+safely supported (`hostPassthroughMigratable` advertises `"on"`), so
+`_get_app_default_mode` would resolve to `host-passthrough` and short-
+circuit before host-model/host-model-only are ever reached — those two
+branches are exercised by synthetic fixtures in this crate's own test
+suite, not by a live driver, matching upstream's own real-world
+behavior on modern libvirt+qemu rather than a gap.
+
+**Real end-to-end proof, following slice (d)'s pattern exactly**: unlike
+`clock_trio_survives_a_real_libvirt_define_when_is_qemu_is_true`, no
+`VIRTINST_TEST_FAKE_URI` trick is needed here — `default_cpu_mode` is a
+pure function over an already-parsed `DomainCapabilities` plus plain
+strings, resolved entirely before `push_default_cpu` ever runs, so the
+real end-to-end test only has to prove the other half: that a value
+resolved from a real captured `<cpu>` fixture survives a real `Domain::
+create_new`/`define_new` round trip against `test:///default`
+unchanged (`cpu_mode_survives_a_real_libvirt_define`, `import.rs`).
+
+**Verified**: 9 new `domcaps.rs` unit tests covering every branch
+(host-passthrough preferred, host-model fallback, custom-model
+fallback, the unusable-model-gets-stripped wrinkle, no-host-model-at-
+all, cross-arch mismatch, TCG maximum-mode, TCG with no maximum
+advertised, xen exclusion) plus 5 new `import.rs` tests (`<cpu>`
+omitted when unresolved, each `DefaultCpuMode` variant's exact XML
+shape, the real end-to-end proof). 99/99 `virtinst-cli`, 181/181
+`virtinst-core` (+14 over the 167 piece-1 baseline), harness 61/61,
+`fmt`/`clippy` clean (three newly-8-argument builder functions gained
+`#[allow(clippy::too_many_arguments)]`, matching the private phase-
+document helpers that already carried it).
+
+**Ticket 21 is now fully closed**: all six slices from the Decision
+section above are built — (a)+(b) emulator/machine, (c) graphics, (d)
+clock, (e) hostdev, (f) CPU mode defaulting (both the `domcaps.rs`
+parser and the defaulting chain on top). The two items the Decision
+section named as fully blocked (`--loader`/UEFI selection, the disk-bus
+virtio-vs-ide real default — both on `OsInfo`) remain exactly that:
+blocked, not silently dropped, revisit whole once `OsInfo` exists. The
+9-file per-driver device-default matrix and `pm`/`os`/`features`/spice
+upstream's `set_defaults()` also touches were flagged in this ticket's
+scoping pass as "not individually traced this pass" — still true, and
+still real future work, but out of this ticket's six-slice scope as
+decided.

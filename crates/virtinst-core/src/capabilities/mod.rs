@@ -22,7 +22,8 @@
 
 pub mod domcaps;
 pub use domcaps::{
-    CapabilitiesError, CapsBlock, CapsEnum, DomainCapabilities, DomainCapabilitiesDevices,
+    CapabilitiesError, CapsBlock, CapsEnum, DefaultCpuMode, DomainCapabilities,
+    DomainCapabilitiesDevices,
 };
 
 pub mod caps;
@@ -31,9 +32,9 @@ pub use caps::{
     CapsMachine,
 };
 
-// TODO: DomainCapabilities' os/cpu/features blocks — see domcaps.rs's
-// doc comment for why those are a different shape and deliberately not
-// built yet.
+// TODO: DomainCapabilities' os/features blocks — see domcaps.rs's doc
+// comment for why those are a different shape and deliberately not
+// built yet. `cpu` is now built (ticket 21 slice (f)).
 //
 // TODO: caching per-Guest (upstream's lookup_capsinfo()) — nothing
 // calls DomainCapabilities::fetch repeatedly yet to make caching worth

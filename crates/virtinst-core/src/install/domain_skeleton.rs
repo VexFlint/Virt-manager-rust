@@ -366,6 +366,55 @@ pub(super) fn push_default_clock(
         .expect("a freshly-created detached element always attaches cleanly");
 }
 
+/// `<cpu mode="host-passthrough"/>` (or `host-model`/`maximum`/a
+/// `custom` model) — ticket 21 slice (f) piece 2. Unlike `push_default_
+/// clock`, this doesn't self-gate on primitives already in hand: the
+/// real decision (host-passthrough vs. host-model vs. custom vs.
+/// nothing at all) needs `DomainCapabilities` plus the host's own
+/// reported CPU model from `<capabilities>`, neither of which this
+/// module threads through today. Same shape as `push_default_graphics`
+/// instead — the caller resolves via `DomainCapabilities::default_cpu_
+/// mode` and passes the already-decided [`DefaultCpuMode`], or `None`
+/// for "don't emit `<cpu>` at all" (a real, non-error outcome: a xen
+/// connection, cross-arch emulation, or old-enough domcaps with no
+/// safe default to offer). This function just materializes the XML for
+/// whichever outcome won, it doesn't decide.
+///
+/// Called unconditionally from every builder including `--container`
+/// (same as `push_default_clock`, unlike `push_default_graphics`):
+/// `default_cpu_mode` self-gates on `domain_type`/arch the same way
+/// `push_default_clock` gates on `os_type`/arch/`is_qemu`, so a
+/// container's `domain_type` (`"lxc"`, never `"kvm"`/`"qemu"`) already
+/// resolves to `None` with no separate container check needed at any
+/// call site.
+pub(super) fn push_default_cpu(
+    doc: &mut Document,
+    root: Element,
+    resolved: Option<&crate::capabilities::DefaultCpuMode>,
+) {
+    use crate::capabilities::DefaultCpuMode;
+
+    let Some(resolved) = resolved else {
+        return;
+    };
+
+    let cpu_el = Element::new(doc, "cpu");
+    match resolved {
+        DefaultCpuMode::Mode(mode) => {
+            cpu_el.set_attribute(doc, "mode", *mode);
+        }
+        DefaultCpuMode::Custom { model } => {
+            cpu_el.set_attribute(doc, "mode", "custom");
+            cpu_el.set_attribute(doc, "match", "exact");
+            if let Some(model) = model {
+                push_text_child(doc, cpu_el, "model", model);
+            }
+        }
+    }
+    root.push_child(doc, cpu_el)
+        .expect("a freshly-created detached element always attaches cleanly");
+}
+
 pub(super) fn push_default_nic(doc: &mut Document, devices_el: Element, mac: &str) {
     let iface_el = Element::new(doc, "interface");
     iface_el.set_attribute(doc, "type", "network");

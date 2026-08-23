@@ -270,6 +270,26 @@ fn main() {
     let graphics_type =
         domcaps.default_graphics_type(conn.uri(), host_caps.host.cpu.arch.as_deref());
 
+    // Ticket 21 slice (f) piece 2: `cpu` mode defaulting
+    // (`DomainCpu.set_defaults`, `domain/cpu.py:512`) — resolved once,
+    // here, same shape as `graphics_type` above rather than `clock`'s
+    // self-gating: the real decision needs `domcaps` plus the host's
+    // own reported CPU (from `<capabilities>`, not domcaps), neither of
+    // which the builders thread through today. `host_arch`/`host_cpu_
+    // model` both come from the same `host_caps` `graphics_type` above
+    // already fetched, no new capability query. `arch` here is the
+    // *guest* arch (`capsinfo.arch`) — deliberately the other half of
+    // the same `guest_arch`-vs-`host_arch` split `_set_cpu_x86_kvm_
+    // default`'s `guest.os.arch != self.conn.caps.host.cpu.arch` check
+    // makes, not the same value twice under different names.
+    let cpu_mode = domcaps.default_cpu_mode(
+        conn.uri(),
+        &domain_type,
+        &arch,
+        host_caps.host.cpu.arch.as_deref().unwrap_or(""),
+        host_caps.host.cpu.model.as_deref(),
+    );
+
     let memory_kib = args.memory.checked_mul(1024).unwrap_or_else(|| {
         eprintln!("virt-install: --memory {} MiB overflows", args.memory);
         std::process::exit(1);
@@ -307,6 +327,7 @@ fn main() {
             &disk,
             caps,
             graphics_type,
+            cpu_mode.as_ref(),
         ));
         (xml.clone(), xml)
     } else if let Some(media) = args.cdrom {
@@ -327,6 +348,7 @@ fn main() {
                 &media,
                 caps,
                 graphics_type,
+                cpu_mode.as_ref(),
             ));
             (xml.clone(), xml)
         } else {
@@ -342,6 +364,7 @@ fn main() {
                 &disk,
                 caps,
                 graphics_type,
+                cpu_mode.as_ref(),
             );
             (write(initial), write(final_doc))
         }
@@ -363,6 +386,7 @@ fn main() {
             args.disk.as_deref(),
             caps,
             graphics_type,
+            cpu_mode.as_ref(),
         );
         (write(initial), write(final_doc))
     } else if let Some(boot_dev) = args.boot {
@@ -383,6 +407,7 @@ fn main() {
             args.disk.as_deref(),
             caps,
             graphics_type,
+            cpu_mode.as_ref(),
         ));
         (xml.clone(), xml)
     } else if args.container {

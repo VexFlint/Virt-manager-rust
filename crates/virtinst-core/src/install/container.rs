@@ -52,7 +52,8 @@
 use virtinst_xml::{Document, Element};
 
 use super::domain_skeleton::{
-    build_domain_skeleton, push_default_clock, push_default_nic, push_text_child, GuestCapsDefaults,
+    build_domain_skeleton, push_default_clock, push_default_cpu, push_default_nic, push_text_child,
+    GuestCapsDefaults,
 };
 
 /// `name`/`memory_kib`/`vcpus`/`domain_type`/`arch`/`is_qemu` — see
@@ -111,6 +112,17 @@ pub fn build_container_os_document(
     // exception at the call site — `push_default_clock` is a no-op
     // here since `os_type` above is always `"exe"`.
     push_default_clock(&mut doc, root, "exe", arch, is_qemu);
+    // Ticket 21 slice (f): always `None` here, deliberately — unlike
+    // `push_default_clock`, `push_default_cpu` can't self-gate on
+    // primitives already in hand (see its own doc comment), and no
+    // caller resolves a `DomainCapabilities`/host-CPU-model pair for a
+    // container guest at all (same "no correct value to give it"
+    // reasoning `machine`/`emulator` already document above). Even if
+    // one were resolved, `domain_type` here is never `"kvm"`/`"qemu"`
+    // (`"lxc"` on every real driver this crate reaches), so `default_
+    // cpu_mode` would land on `None` anyway — this just skips computing
+    // that for real.
+    push_default_cpu(&mut doc, root, None);
     // Real, load-bearing finding, hit for real writing this module's own
     // test: libvirt itself rejects an `exe`-type domain with no `<init>`
     // at all ("XML error: init binary must be specified"). Upstream

@@ -75,9 +75,12 @@
 
 use virtinst_xml::{Document, Element};
 
+use crate::capabilities::DefaultCpuMode;
+
 use super::domain_skeleton::{
-    build_domain_skeleton, push_boot_dev, push_default_clock, push_default_graphics,
-    push_default_nic, push_on_reboot_destroy, push_virtio_disk, GuestCapsDefaults,
+    build_domain_skeleton, push_boot_dev, push_default_clock, push_default_cpu,
+    push_default_graphics, push_default_nic, push_on_reboot_destroy, push_virtio_disk,
+    GuestCapsDefaults,
 };
 
 /// `name`/`memory_kib`/`vcpus`/`caps`/`graphics_type` — see
@@ -94,6 +97,7 @@ pub fn build_iso_document(
     media: &str,
     caps: GuestCapsDefaults,
     graphics_type: &str,
+    cpu_mode: Option<&DefaultCpuMode>,
 ) -> Document {
     let (mut doc, root, os_el, devices_el) = build_domain_skeleton(
         name,
@@ -103,6 +107,7 @@ pub fn build_iso_document(
         &caps,
     );
     push_default_clock(&mut doc, root, caps.os_type, caps.arch, caps.is_qemu);
+    push_default_cpu(&mut doc, root, cpu_mode);
     push_boot_dev(&mut doc, os_el, "cdrom");
 
     push_cdrom_disk(&mut doc, devices_el, Some(media));
@@ -130,6 +135,7 @@ pub fn build_iso_document(
 /// `build_domain_skeleton` calls — required for the same reason a single
 /// document always needed one: two libvirt-generated UUIDs would collide
 /// on the second call.
+#[allow(clippy::too_many_arguments)]
 pub fn build_iso_two_phase_documents(
     name: &str,
     memory_kib: u64,
@@ -138,6 +144,7 @@ pub fn build_iso_two_phase_documents(
     disk_path: &str,
     caps: GuestCapsDefaults,
     graphics_type: &str,
+    cpu_mode: Option<&DefaultCpuMode>,
 ) -> (Document, Document) {
     let uuid = crate::cloner::generate_uuid();
     // Same device, same MAC in both documents — same reason the UUID is
@@ -155,6 +162,7 @@ pub fn build_iso_two_phase_documents(
         disk_path,
         &mac,
         graphics_type,
+        cpu_mode,
         true,
     );
     let final_doc = build_iso_phase_document(
@@ -168,6 +176,7 @@ pub fn build_iso_two_phase_documents(
         disk_path,
         &mac,
         graphics_type,
+        cpu_mode,
         false,
     );
     (initial, final_doc)
@@ -193,11 +202,13 @@ fn build_iso_phase_document(
     disk_path: &str,
     mac: &str,
     graphics_type: &str,
+    cpu_mode: Option<&DefaultCpuMode>,
     is_initial: bool,
 ) -> Document {
     let (mut doc, root, os_el, devices_el) =
         build_domain_skeleton(name, memory_kib, vcpus, uuid, &caps);
     push_default_clock(&mut doc, root, caps.os_type, caps.arch, caps.is_qemu);
+    push_default_cpu(&mut doc, root, cpu_mode);
     if is_initial {
         push_on_reboot_destroy(&mut doc, root);
     }
@@ -262,6 +273,7 @@ mod tests {
                 is_qemu: true,
             },
             "spice",
+            None,
         );
         let root = doc.root_element().unwrap();
 
@@ -333,6 +345,7 @@ mod tests {
                 is_qemu: false,
             },
             "vnc",
+            None,
         );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
@@ -377,6 +390,7 @@ mod tests {
                 is_qemu: conn.uri().is_qemu(),
             },
             "spice",
+            None,
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -423,6 +437,7 @@ mod tests {
                 is_qemu: true,
             },
             "spice",
+            None,
         );
 
         let initial_root = initial.root_element().unwrap();
@@ -588,6 +603,7 @@ mod tests {
                 is_qemu: conn.uri().is_qemu(),
             },
             "spice",
+            None,
         );
         let initial_xml = initial.write_str().expect("serializes");
         let final_xml = final_doc.write_str().expect("serializes");

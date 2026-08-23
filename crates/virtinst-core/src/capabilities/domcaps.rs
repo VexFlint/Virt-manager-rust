@@ -460,6 +460,149 @@ impl DomainCapabilities {
             .get_mode("maximum")
             .is_some_and(|m| m.supported == Some(true))
     }
+
+    /// Ticket 21 slice (f) piece 2: upstream's `_get_app_default_mode`/
+    /// `set_special_mode`/`set_model` chain (`domain/cpu.py`),
+    /// collapsed into "what would `DomainCpu.set_defaults()` put in
+    /// the `<cpu>` element" — this crate builds domain XML directly
+    /// (`domain_skeleton.rs`) rather than through `DomainCpu`'s bound-
+    /// struct setters, so there's no `self.mode =`/`self.model =` to
+    /// mutate; a resolved [`DefaultCpuMode`] (or `None` for "don't
+    /// emit `<cpu>` at all") is the whole result.
+    ///
+    /// Scope, traced from upstream's real branches rather than assumed:
+    /// - Top gate: `uri.is_test() || uri.is_qemu()` — upstream's
+    ///   `self.conn.is_test() or self.conn.is_qemu()`. Anything else
+    ///   (a real xen/vz connection) never gets a `<cpu>` default here.
+    /// - `guest.os.is_arm_machvirt()`/`is_riscv_virt()`/
+    ///   `is_loongarch64()` guest-type branches: **not modeled**, same
+    ///   as everywhere else `is_x86()`-adjacent logic has come up in
+    ///   this crate — no ARM/RISC-V/LoongArch guest support exists yet
+    ///   to ground it against.
+    /// - x86 + `domain_type == "kvm"`: upstream's `_set_cpu_x86_kvm_
+    ///   default`. Requires `guest_arch == host_arch` (cross-arch
+    ///   emulation gets no host-based default at all). Prefers
+    ///   `host-passthrough`, then `host-model`, then falls back to a
+    ///   custom model pinned to the host's own reported CPU (from
+    ///   `<capabilities>`, not domcaps) — see [`DefaultCpuMode::Custom`]
+    ///   for that branch's own wrinkles. `_should_use_maximum_cpu_mode`
+    ///   cannot fire inside this branch: it requires `guest.type ==
+    ///   "qemu"`, which this branch's own `domain_type == "kvm"` guard
+    ///   already rules out — confirmed by reading the source, not
+    ///   assumed, since it's what let this branch skip straight to
+    ///   host-passthrough/host-model/custom with no maximum-mode check
+    ///   at all.
+    /// - x86 + `domain_type == "qemu"` (TCG, not KVM-accelerated):
+    ///   upstream's `_should_use_maximum_cpu_mode` on the `else`
+    ///   branch — `maximum` mode if domcaps advertises it, otherwise no
+    ///   default at all (nothing better to offer on old libvirt/qemu).
+    ///
+    /// **A deliberate superset, not a straight port**: the custom-model
+    /// fallback always validates the model against domcaps before
+    /// emitting it (see [`DefaultCpuMode::Custom`]'s doc comment).
+    /// Upstream only does this when `guest.x86_cpu_default ==
+    /// HOST_MODEL_ONLY` — for `virt-install` specifically,
+    /// `x86_cpu_default` is pinned to `APP_DEFAULT` (`guest.py:273`,
+    /// never reassigned on that path) and `set_special_mode` only
+    /// resolves `APP_DEFAULT` to an actual mode *after* the validation
+    /// check already ran on the unresolved sentinel, so `_validate_
+    /// default_host_model_only` is dead code on `virt-install`'s own
+    /// CLI path — it only fires via the GUI's CPU-preference setting
+    /// (`createvm.py:1390`) or a test override. Validating unconditionally
+    /// here is deliberate, not an oversight: this crate has no `x86_cpu_
+    /// default`-equivalent switch to gate it on, a 1:1 GUI port is this
+    /// project's stated endpoint (where this exact behavior *is* live),
+    /// and skipping validation to match virt-install's dead branch
+    /// would just mean re-adding it later. A future `--cpu`/GUI CPU-
+    /// preference flag is where the two paths' difference becomes
+    /// observable.
+    ///
+    /// **Not modeled, stated rather than silently dropped**: the
+    /// CPU-security-feature enrichment upstream applies on the custom-
+    /// model path (`_add_security_features`/`get_cpu_security_
+    /// features`), which needs `_get_expanded_cpu` — a live libvirt
+    /// round-trip to expand a CPU model into its real feature list, a
+    /// kind of capability query this crate doesn't have. Only matters
+    /// on the `host-model-only` fallback, itself unreachable on any
+    /// host (including the one this was grounded against) where
+    /// host-passthrough or host-model is safely supported.
+    pub fn default_cpu_mode(
+        &self,
+        uri: &crate::connection::Uri,
+        domain_type: &str,
+        guest_arch: &str,
+        host_arch: &str,
+        host_cpu_model: Option<&str>,
+    ) -> Option<DefaultCpuMode> {
+        if !uri.is_test() && !uri.is_qemu() {
+            return None;
+        }
+
+        let is_x86 = guest_arch == "x86_64" || guest_arch == "i686";
+
+        if is_x86 && domain_type == "kvm" {
+            if guest_arch != host_arch {
+                return None;
+            }
+            if self.supports_safe_host_passthrough() {
+                return Some(DefaultCpuMode::Mode("host-passthrough"));
+            }
+            if self.supports_safe_host_model() {
+                return Some(DefaultCpuMode::Mode("host-model"));
+            }
+            let model = host_cpu_model?;
+            // Upstream's `_validate_default_host_model_only` logic,
+            // applied unconditionally here rather than gated on
+            // `x86_cpu_default == HOST_MODEL_ONLY` (dead on virt-
+            // install's own CLI path, live on the GUI's CPU-preference
+            // path — see this function's own doc comment for why
+            // that's a deliberate superset, not a straight port). The
+            // model `<capabilities>` reports as the host CPU may not
+            // actually be usable per domcaps; if so, strip just the
+            // model name and leave `mode="custom"` (with `match=
+            // "exact"`) standing with no `<model>` child — a genuinely
+            // odd emitted shape, but the one upstream's own GUI path
+            // produces, replicated faithfully rather than tidied up.
+            let usable = self
+                .cpu
+                .get_mode("custom")
+                .and_then(|m| m.get_model(model))
+                .and_then(|m| m.usable.as_deref());
+            let model = if usable == Some("no") {
+                None
+            } else {
+                Some(model.to_string())
+            };
+            return Some(DefaultCpuMode::Custom { model });
+        }
+
+        if domain_type == "qemu" && is_x86 && self.supports_maximum_cpu_mode() {
+            return Some(DefaultCpuMode::Mode("maximum"));
+        }
+
+        None
+    }
+}
+
+/// Resolved default `<cpu>` mode — see [`DomainCapabilities::
+/// default_cpu_mode`]'s doc comment for the full trace of which
+/// upstream branch produces which variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DefaultCpuMode {
+    /// `<cpu mode="MODE"/>` — `host-passthrough`, `host-model`, or
+    /// `maximum`, no other attributes or children.
+    Mode(&'static str),
+    /// `<cpu mode="custom" match="exact">` with an optional `<model>`
+    /// child — upstream's host-model-only fallback. `model` is `None`
+    /// when domcaps considers the host's own reported CPU model unsafe
+    /// to pin; `mode="custom"`/`match="exact"` are emitted either way.
+    /// See `default_cpu_mode`'s doc comment: this validate-then-maybe-
+    /// strip step is upstream's GUI-path behavior (`x86_cpu_default ==
+    /// HOST_MODEL_ONLY`), applied unconditionally here since this crate
+    /// has no equivalent switch — not something `virt-install`'s own
+    /// CLI path reaches upstream, but real behavior a 1:1 GUI port will
+    /// need.
+    Custom { model: Option<String> },
 }
 
 #[cfg(test)]
@@ -906,5 +1049,206 @@ mod tests {
 </domainCapabilities>"#;
         let caps = DomainCapabilities::parse(fixture).expect("parses");
         assert!(!caps.supports_safe_host_model());
+    }
+
+    // -- default_cpu_mode (ticket 21 slice (f) piece 2) --
+
+    #[test]
+    fn default_cpu_mode_prefers_host_passthrough_when_safe() {
+        use crate::connection::Uri;
+        // REAL_QEMU_CPU_EXCERPT advertises both host-passthrough and
+        // host-model as safe -- host-passthrough must win, matching
+        // upstream's preference order.
+        let caps = DomainCapabilities::parse(REAL_QEMU_CPU_EXCERPT).expect("parses");
+        assert_eq!(
+            caps.default_cpu_mode(
+                &Uri::parse("qemu:///system"),
+                "kvm",
+                "x86_64",
+                "x86_64",
+                Some("Skylake-Client-IBRS"),
+            ),
+            Some(DefaultCpuMode::Mode("host-passthrough"))
+        );
+    }
+
+    #[test]
+    fn default_cpu_mode_falls_back_to_host_model_when_passthrough_is_unsafe() {
+        use crate::connection::Uri;
+        let fixture = r#"<domainCapabilities>
+  <cpu>
+    <mode name='host-model' supported='yes'>
+      <model fallback='forbid'>Skylake-Client-IBRS</model>
+    </mode>
+  </cpu>
+</domainCapabilities>"#;
+        let caps = DomainCapabilities::parse(fixture).expect("parses");
+        assert_eq!(
+            caps.default_cpu_mode(
+                &Uri::parse("qemu:///system"),
+                "kvm",
+                "x86_64",
+                "x86_64",
+                Some("Skylake-Client-IBRS"),
+            ),
+            Some(DefaultCpuMode::Mode("host-model"))
+        );
+    }
+
+    #[test]
+    fn default_cpu_mode_falls_back_to_a_custom_model_when_neither_is_safe() {
+        use crate::connection::Uri;
+        // REAL_QEMU_CPU_EXCERPT's `custom` mode lists "486" as
+        // `usable='yes'` -- an empty <cpu> otherwise means neither
+        // host-passthrough nor host-model is even advertised.
+        let fixture = r#"<domainCapabilities>
+  <cpu>
+    <mode name='custom' supported='yes'>
+      <model usable='yes' vendor='unknown' canonical='486-v1'>486</model>
+    </mode>
+  </cpu>
+</domainCapabilities>"#;
+        let caps = DomainCapabilities::parse(fixture).expect("parses");
+        assert_eq!(
+            caps.default_cpu_mode(
+                &Uri::parse("qemu:///system"),
+                "kvm",
+                "x86_64",
+                "x86_64",
+                Some("486"),
+            ),
+            Some(DefaultCpuMode::Custom {
+                model: Some("486".to_string())
+            })
+        );
+    }
+
+    /// Upstream's `_validate_default_host_model_only` logic (applied
+    /// unconditionally here, see `default_cpu_mode`'s doc comment for
+    /// why): the host's own reported CPU model (from `<capabilities>`)
+    /// may be marked `usable='no'` in domcaps' `custom` mode list.
+    /// `mode="custom"` still gets emitted (via `Custom { model: None }`)
+    /// -- not tidied away, matching the shape upstream's own GUI path
+    /// produces.
+    #[test]
+    fn default_cpu_mode_strips_an_unusable_host_model_but_keeps_custom_mode() {
+        use crate::connection::Uri;
+        let fixture = r#"<domainCapabilities>
+  <cpu>
+    <mode name='custom' supported='yes'>
+      <model usable='no' vendor='Intel' canonical='Broadwell-v1'>Broadwell</model>
+    </mode>
+  </cpu>
+</domainCapabilities>"#;
+        let caps = DomainCapabilities::parse(fixture).expect("parses");
+        assert_eq!(
+            caps.default_cpu_mode(
+                &Uri::parse("qemu:///system"),
+                "kvm",
+                "x86_64",
+                "x86_64",
+                Some("Broadwell"),
+            ),
+            Some(DefaultCpuMode::Custom { model: None })
+        );
+    }
+
+    #[test]
+    fn default_cpu_mode_is_none_when_no_host_cpu_model_is_known_at_all() {
+        use crate::connection::Uri;
+        let caps = DomainCapabilities::default();
+        assert_eq!(
+            caps.default_cpu_mode(
+                &Uri::parse("qemu:///system"),
+                "kvm",
+                "x86_64",
+                "x86_64",
+                None
+            ),
+            None,
+            "nothing better to offer -- upstream leaves <cpu> unset entirely here"
+        );
+    }
+
+    #[test]
+    fn default_cpu_mode_is_none_for_cross_arch_emulation() {
+        use crate::connection::Uri;
+        // Guest arch doesn't match the host's -- no host-based default
+        // makes sense, regardless of what domcaps advertises.
+        let caps = DomainCapabilities::parse(REAL_QEMU_CPU_EXCERPT).expect("parses");
+        assert_eq!(
+            caps.default_cpu_mode(
+                &Uri::parse("qemu:///system"),
+                "kvm",
+                "aarch64",
+                "x86_64",
+                Some("Skylake-Client-IBRS"),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn default_cpu_mode_uses_maximum_for_tcg_qemu_when_advertised() {
+        use crate::connection::Uri;
+        // domain_type = "qemu" (TCG, not KVM-accelerated) -- the
+        // host-passthrough/host-model/custom chain never runs; this is
+        // the one branch `_should_use_maximum_cpu_mode` can actually
+        // reach on its own, independent of `_get_app_default_mode`.
+        let caps = DomainCapabilities::parse(REAL_QEMU_CPU_EXCERPT).expect("parses");
+        assert_eq!(
+            caps.default_cpu_mode(
+                &Uri::parse("qemu:///system"),
+                "qemu",
+                "x86_64",
+                "x86_64",
+                Some("Skylake-Client-IBRS"),
+            ),
+            Some(DefaultCpuMode::Mode("maximum"))
+        );
+    }
+
+    #[test]
+    fn default_cpu_mode_is_none_for_tcg_qemu_when_maximum_is_not_advertised() {
+        use crate::connection::Uri;
+        let fixture = r#"<domainCapabilities>
+  <cpu>
+    <mode name='host-passthrough' supported='yes'>
+      <enum name='hostPassthroughMigratable'>
+        <value>on</value>
+      </enum>
+    </mode>
+  </cpu>
+</domainCapabilities>"#;
+        let caps = DomainCapabilities::parse(fixture).expect("parses");
+        assert_eq!(
+            caps.default_cpu_mode(
+                &Uri::parse("qemu:///system"),
+                "qemu",
+                "x86_64",
+                "x86_64",
+                Some("Skylake-Client-IBRS"),
+            ),
+            None,
+            "host-passthrough being safe is irrelevant on the TCG branch -- it's never consulted"
+        );
+    }
+
+    #[test]
+    fn default_cpu_mode_is_none_for_a_real_xen_connection() {
+        use crate::connection::Uri;
+        // Upstream's top gate: `conn.is_test() or conn.is_qemu()` --
+        // xen (and vz) never get a <cpu> default here at all.
+        let caps = DomainCapabilities::parse(REAL_QEMU_CPU_EXCERPT).expect("parses");
+        assert_eq!(
+            caps.default_cpu_mode(
+                &Uri::parse("xen+ssh://root@example.com/"),
+                "xen",
+                "x86_64",
+                "x86_64",
+                Some("Skylake-Client-IBRS"),
+            ),
+            None
+        );
     }
 }
