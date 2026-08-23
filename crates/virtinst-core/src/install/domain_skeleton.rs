@@ -329,6 +329,13 @@ fn supports_virtio(arch: &str, machine: Option<&str>, is_qemu: bool, os_support:
 /// type='sata'>` for it) — `target_prefix_for_bus` below exists for
 /// output fidelity with upstream's own `generate_target`, not because
 /// a mismatch would be rejected.
+///
+// ponytail: four consecutive `bool`s -- correct today (all 6 call
+// sites in `virt-install.rs` are checked against this signature), but
+// nothing stops a future call site from passing them in the wrong
+// order and still compiling. A params struct would be over-building
+// for one function; if a second real caller (not just a test) shows
+// up, that's the trigger to add one.
 pub fn default_disk_bus(
     caps: GuestCapsDefaults,
     is_cdrom: bool,

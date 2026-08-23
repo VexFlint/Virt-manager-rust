@@ -559,6 +559,21 @@ mod tests {
             Some("/var/lib/libvirt/images/install.iso"),
             "install phase has media inserted"
         );
+        // Advisor-flagged gap: cdrom_bus/disk_bus are two adjacent &str
+        // params on build_iso_two_phase_documents/build_iso_phase_
+        // document, forwarded to two different pushers -- nothing here
+        // asserted `bus` at all, so swapping them would still pass
+        // every other assertion in this test. This call passes
+        // distinct values ("ide", "virtio") specifically so a swap is
+        // visible here.
+        assert_eq!(
+            initial_cdrom
+                .find(&initial, "target")
+                .unwrap()
+                .attribute(&initial, "bus"),
+            Some("ide"),
+            "cdrom_bus reached the cdrom device, not the persistent disk"
+        );
 
         let final_devices = final_root.find(&final_doc, "devices").unwrap();
         let final_disks = final_devices.find_all(&final_doc, "disk");
@@ -575,6 +590,14 @@ mod tests {
             .iter()
             .find(|d| d.attribute(&final_doc, "device") == Some("disk"))
             .unwrap();
+        assert_eq!(
+            final_persistent_disk
+                .find(&final_doc, "target")
+                .unwrap()
+                .attribute(&final_doc, "bus"),
+            Some("virtio"),
+            "disk_bus reached the persistent disk, not the cdrom"
+        );
         assert_eq!(
             final_persistent_disk
                 .find(&final_doc, "source")

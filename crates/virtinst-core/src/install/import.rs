@@ -1313,4 +1313,99 @@ mod tests {
             .undefine()
             .expect("cleanup: undefine the persistent config");
     }
+
+    /// The other half of the `default_disk_bus` wiring commit that had
+    /// no composition test at all — advisor-flagged after the fact:
+    /// every builder's own unit test passes a literal `bus` string, and
+    /// `virt-install.rs` (the only real caller of `default_disk_bus`)
+    /// has no tests of its own, so nothing proved `caps + OsInfo →
+    /// default_disk_bus → build_import_document → XML` actually
+    /// composes correctly end to end. Same "resolve for real, prove
+    /// the resolved value round-trips" split as `os_variant_clock_
+    /// offset_survives_a_real_libvirt_define` just above.
+    ///
+    /// Windows XP (real osinfo-db entry, predates virtio outright) is
+    /// the interesting case here, not Fedora — it's the one that
+    /// actually changes this crate's *tested* output (`bus="virtio"` →
+    /// `bus="ide"`, `dev="vda"` → `dev="hda"`), the exact behavior
+    /// change the wiring commit's own message described but never
+    /// exercised through an assertion.
+    #[test]
+    fn default_disk_bus_from_a_real_osinfo_entry_survives_a_real_libvirt_define() {
+        use crate::connection::{Connection, Domain};
+        use crate::install::default_disk_bus;
+        use crate::osinfo::OsDb;
+        use crate::test_support::TEST_DOMAIN_LOCK;
+
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let db = OsDb::load_default().expect("osinfo-db is installed on this machine");
+        let winxp = db
+            .os_by_id_or_short_id("winxp")
+            .expect("winxp ships in every osinfo-db release");
+        assert!(
+            !winxp.supports_virtiodisk(),
+            "winxp predates virtio -- this test only proves something if this holds"
+        );
+
+        // Same is_qemu-gate fake-URI technique the test above needs --
+        // default_disk_bus's own supports_virtio also gates on is_qemu.
+        std::env::set_var("VIRTINST_TEST_FAKE_URI", "qemu:///system");
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        std::env::remove_var("VIRTINST_TEST_FAKE_URI");
+
+        let caps = GuestCapsDefaults {
+            domain_type: "test",
+            os_type: "hvm",
+            arch: "x86_64",
+            machine: None,
+            emulator: None,
+            is_qemu: conn.uri().is_qemu(),
+        };
+        let disk_bus = default_disk_bus(
+            caps,
+            false,
+            false,
+            winxp.supports_virtiodisk(),
+            winxp.supports_virtioscsi(),
+        );
+        assert_eq!(
+            disk_bus, "ide",
+            "no q35/bhyve override, plain x86 falls to ide"
+        );
+
+        let doc = build_import_document(
+            "disk-bus-end-to-end",
+            1048576,
+            1,
+            "/guest/disk-bus-end-to-end.img",
+            caps,
+            "spice",
+            None,
+            "utc",
+            disk_bus,
+        );
+        let xml = doc.write_str().expect("serializes");
+
+        let running = Domain::create_new(&conn, &xml).expect("transient create succeeds");
+        let persisted = Domain::define_new(&conn, &xml).expect("define succeeds");
+        let refetched = Domain::lookup_by_name(&conn, "disk-bus-end-to-end")
+            .expect("the domain is findable by the name we gave it");
+        let inactive_xml = refetched.inactive_xml().expect("fetch inactive XML");
+        assert!(
+            inactive_xml.contains("bus='ide'"),
+            "the real driver kept the ide bus we defined it with, got: {inactive_xml}"
+        );
+        assert!(
+            inactive_xml.contains("dev='hda'"),
+            "target dev follows bus via target_prefix_for_bus, got: {inactive_xml}"
+        );
+
+        running
+            .destroy()
+            .expect("cleanup: destroy the transient instance");
+        persisted
+            .undefine()
+            .expect("cleanup: undefine the persistent config");
+    }
 }
