@@ -263,23 +263,27 @@ impl DomainCapabilities {
     /// connection reference of its own (unlike upstream's `DomainCapabilities`,
     /// which keeps `self.conn` from construction) — `fetch`'s only real
     /// use for a connection is making the libvirt call itself (see its
-    /// own doc comment), so the two URI-scheme predicates upstream reads
-    /// off `self.conn` (`is_qemu()`/`is_test()`) and the host's own CPU
-    /// arch upstream reads off `self.conn.caps.host.cpu.arch` (the
-    /// *host's* arch — deliberately not this struct's own `arch` field,
-    /// which is the *domain's* target arch instead) come in as plain
-    /// parameters instead.
+    /// own doc comment) — but `Uri::parse` is a pure, connection-free
+    /// parser (no libvirt call, no I/O), so taking `&Uri` directly costs
+    /// nothing and closes off a real risk a first draft of this function
+    /// had: two same-typed `bool`s (`is_qemu`/`is_test`) are exactly the
+    /// "transposition compiles, no test catches it" shape the NIC-OUI
+    /// bug (see `push_default_nic`'s doc comment) already hit once for
+    /// real. `host_arch` is the *host's* CPU arch (upstream's `self.conn
+    /// .caps.host.cpu.arch`) — deliberately not this struct's own `arch`
+    /// field, which is the *domain's* target arch instead — plain
+    /// `Capabilities` has no `Uri`-shaped wrapper to fold it into, so it
+    /// stays a separate parameter.
     pub fn supports_graphics_spice(
         &self,
-        is_qemu: bool,
-        is_test: bool,
+        uri: &crate::connection::Uri,
         host_arch: Option<&str>,
     ) -> bool {
         if self.devices.graphics.supported != Some(true) {
             // domcaps is too old, or the driver doesn't advertise
             // graphics support at all. Use the pre-domcaps heuristic
             // upstream still carries for that case.
-            if !is_qemu && !is_test {
+            if !uri.is_qemu() && !uri.is_test() {
                 return false;
             }
             return matches!(host_arch, Some("i686") | Some("x86_64"));
@@ -297,21 +301,17 @@ impl DomainCapabilities {
     /// fixed constant matching upstream's own shipped default.
     pub fn default_graphics_type(
         &self,
-        is_xen: bool,
-        is_qemu: bool,
-        is_test: bool,
+        uri: &crate::connection::Uri,
         host_arch: Option<&str>,
     ) -> &'static str {
         const DEFAULT_GRAPHICS_TYPE: &str = "spice";
-        if is_xen {
+        if uri.is_xen() {
             // Xen domcaps can advertise spice support, but upstream has
             // historically not defaulted to it for xen — forced to vnc
             // unconditionally.
             return "vnc";
         }
-        if DEFAULT_GRAPHICS_TYPE == "spice"
-            && !self.supports_graphics_spice(is_qemu, is_test, host_arch)
-        {
+        if DEFAULT_GRAPHICS_TYPE == "spice" && !self.supports_graphics_spice(uri, host_arch) {
             return "vnc";
         }
         DEFAULT_GRAPHICS_TYPE
@@ -485,38 +485,44 @@ mod tests {
     fn supports_graphics_spice_reads_the_advertised_enum_when_present() {
         let caps = DomainCapabilities::parse(QEMU_DOMCAPS_EXCERPT).expect("parses");
         // The advertised enum settles it regardless of the URI-scheme/
-        // arch fallback inputs -- pass values that would fail the
+        // arch fallback inputs -- pass a URI/arch that would fail the
         // fallback heuristic to prove they're never consulted.
-        assert!(caps.supports_graphics_spice(false, false, None));
+        assert!(caps.supports_graphics_spice(&crate::connection::Uri::parse("xen:///"), None));
     }
 
     #[test]
     fn supports_graphics_spice_is_false_when_the_advertised_enum_lacks_spice() {
         let caps = DomainCapabilities::parse(VNC_ONLY_DOMCAPS_EXCERPT).expect("parses");
-        // Same reasoning in reverse: pass fallback inputs that would
-        // succeed, to prove the advertised (negative) answer wins.
-        assert!(!caps.supports_graphics_spice(true, false, Some("x86_64")));
+        // Same reasoning in reverse: pass a URI/arch that would succeed
+        // the fallback heuristic, to prove the advertised (negative)
+        // answer wins.
+        assert!(!caps.supports_graphics_spice(
+            &crate::connection::Uri::parse("qemu:///system"),
+            Some("x86_64")
+        ));
     }
 
     #[test]
     fn supports_graphics_spice_falls_back_to_the_pre_domcaps_heuristic_when_unadvertised() {
+        use crate::connection::Uri;
+
         // No <graphics> block at all -- `supported` stays `None`, same
         // as talking to a libvirt too old to advertise it.
         let caps = DomainCapabilities::default();
         assert!(
-            caps.supports_graphics_spice(true, false, Some("x86_64")),
+            caps.supports_graphics_spice(&Uri::parse("qemu:///system"), Some("x86_64")),
             "qemu + x86_64 must fall back to true"
         );
         assert!(
-            caps.supports_graphics_spice(false, true, Some("i686")),
+            caps.supports_graphics_spice(&Uri::parse("test:///default"), Some("i686")),
             "the test driver + i686 must fall back to true too"
         );
         assert!(
-            !caps.supports_graphics_spice(false, false, Some("x86_64")),
+            !caps.supports_graphics_spice(&Uri::parse("xen:///"), Some("x86_64")),
             "neither qemu nor test -- e.g. a real Xen connection -- must fall back to false"
         );
         assert!(
-            !caps.supports_graphics_spice(true, false, Some("aarch64")),
+            !caps.supports_graphics_spice(&Uri::parse("qemu:///system"), Some("aarch64")),
             "qemu on a non-x86 host arch must fall back to false"
         );
     }
@@ -525,7 +531,7 @@ mod tests {
     fn default_graphics_type_forces_vnc_for_xen_even_when_spice_is_supported() {
         let caps = DomainCapabilities::parse(QEMU_DOMCAPS_EXCERPT).expect("parses");
         assert_eq!(
-            caps.default_graphics_type(true, false, false, None),
+            caps.default_graphics_type(&crate::connection::Uri::parse("xen:///"), None),
             "vnc",
             "xen must be forced to vnc regardless of what domcaps advertises"
         );
@@ -535,7 +541,10 @@ mod tests {
     fn default_graphics_type_stays_spice_when_the_hv_supports_it() {
         let caps = DomainCapabilities::parse(QEMU_DOMCAPS_EXCERPT).expect("parses");
         assert_eq!(
-            caps.default_graphics_type(false, true, false, Some("x86_64")),
+            caps.default_graphics_type(
+                &crate::connection::Uri::parse("qemu:///system"),
+                Some("x86_64")
+            ),
             "spice"
         );
     }
@@ -544,8 +553,56 @@ mod tests {
     fn default_graphics_type_downgrades_to_vnc_when_the_hv_lacks_spice_support() {
         let caps = DomainCapabilities::parse(VNC_ONLY_DOMCAPS_EXCERPT).expect("parses");
         assert_eq!(
-            caps.default_graphics_type(false, true, false, Some("x86_64")),
+            caps.default_graphics_type(
+                &crate::connection::Uri::parse("qemu:///system"),
+                Some("x86_64")
+            ),
             "vnc"
+        );
+    }
+
+    /// The actual regression test for the transposition risk an advisor
+    /// review flagged: every test above passes a `Uri` built directly
+    /// from a literal scheme string, which proves `default_graphics_
+    /// type` honors `Uri::is_xen()`/`is_qemu()`/`is_test()` correctly,
+    /// but not that a real call site can't transpose *which* argument
+    /// carries which meaning. This is the one case where transposition
+    /// would actually be observable: a **xen** URI specifically, not a
+    /// qemu one -- with a qemu URI, `is_xen()`/`is_test()` are both
+    /// `false` either way, so swapping them changes nothing. With xen,
+    /// swapping `is_xen`/`is_qemu`'s old bool-parameter order would have
+    /// silently let a real xen connection fall through to the spice
+    /// branch instead of being forced to vnc. `VIRTINST_TEST_DOMCAPS_
+    /// FILE` here advertises spice support explicitly (same shape as
+    /// `QEMU_DOMCAPS_EXCERPT`) specifically so a wrong answer would be
+    /// `"spice"`, not an already-correct `"vnc"` for an unrelated reason
+    /// (e.g. spice just not being advertised).
+    #[test]
+    fn default_graphics_type_forces_vnc_for_a_real_xen_uri_even_when_domcaps_advertises_spice() {
+        use crate::connection::Uri;
+
+        let fixture = r#"<domainCapabilities>
+  <devices>
+    <graphics supported='yes'>
+      <enum name='type'>
+        <value>vnc</value>
+        <value>spice</value>
+      </enum>
+    </graphics>
+  </devices>
+</domainCapabilities>"#;
+        let caps = DomainCapabilities::parse(fixture).expect("parses");
+        let uri = Uri::parse("xen+ssh://root@example.com/");
+
+        assert!(uri.is_xen(), "sanity check on the fixture URI itself");
+        assert!(
+            caps.supports_graphics_spice(&uri, Some("x86_64")),
+            "sanity check: domcaps really does advertise spice here"
+        );
+        assert_eq!(
+            caps.default_graphics_type(&uri, Some("x86_64")),
+            "vnc",
+            "a real xen URI must be forced to vnc even though domcaps advertises spice support"
         );
     }
 }

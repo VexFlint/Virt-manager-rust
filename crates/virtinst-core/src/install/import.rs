@@ -42,7 +42,8 @@
 use virtinst_xml::{Document, Element};
 
 use super::domain_skeleton::{
-    build_domain_skeleton, push_boot_dev, push_default_nic, GuestCapsDefaults,
+    build_domain_skeleton, push_boot_dev, push_default_graphics, push_default_nic,
+    GuestCapsDefaults,
 };
 
 /// `name`/`memory_kib`/`vcpus` are the wizard's Name/Memory pages'
@@ -55,7 +56,10 @@ use super::domain_skeleton::{
 /// all three, plus `loader`, not modeled yet, from `guest.
 /// set_capabilities_defaults()`), and hardcoding any of them would be a
 /// real, connection-specific-shaped divergence (`test:///` defaults to
-/// `i686`, a real `qemu:///system` to `x86_64`).
+/// `i686`, a real `qemu:///system` to `x86_64`). `graphics_type`
+/// (`"spice"`/`"vnc"`) is ticket 21 slice (c) — caller-resolved via
+/// `DomainCapabilities::default_graphics_type`, see `push_default_
+/// graphics`'s doc comment for the XML it produces.
 ///
 /// Always stamps an explicit `<uuid>` (via the same `generate_uuid()`
 /// approach `cloner.rs` uses, matching upstream's own hand-rolled
@@ -74,6 +78,7 @@ pub fn build_import_document(
     vcpus: u32,
     disk_path: &str,
     caps: GuestCapsDefaults,
+    graphics_type: &str,
 ) -> Document {
     let (mut doc, _root, os_el, devices_el) = build_domain_skeleton(
         name,
@@ -106,6 +111,7 @@ pub fn build_import_document(
         devices_el,
         &crate::cloner::generate_mac(caps.is_qemu),
     );
+    push_default_graphics(&mut doc, devices_el, graphics_type);
 
     doc
 }
@@ -135,6 +141,7 @@ mod tests {
                 emulator: Some("/usr/bin/qemu-system-x86_64"),
                 is_qemu: true,
             },
+            "spice",
         );
         let root = doc.root_element().unwrap();
 
@@ -198,6 +205,47 @@ mod tests {
             iface.find(&doc, "model").unwrap().attribute(&doc, "type"),
             Some("virtio")
         );
+
+        // Ticket 21 slice (c): a default `<graphics>` element every
+        // builder gets now, spice's full port/tlsPort/autoport trio.
+        let graphics = devices.find(&doc, "graphics").unwrap();
+        assert_eq!(graphics.attribute(&doc, "type"), Some("spice"));
+        assert_eq!(graphics.attribute(&doc, "port"), Some("-1"));
+        assert_eq!(graphics.attribute(&doc, "tlsPort"), Some("-1"));
+        assert_eq!(graphics.attribute(&doc, "autoport"), Some("yes"));
+    }
+
+    /// `push_default_graphics`'s other branch: `vnc` gets `port="-1"`
+    /// alone — no `tlsPort`, no `autoport` (upstream's `_get_default_
+    /// autoport` deliberately withholds it for vnc, "to maintain back
+    /// compat with old libvirt that didn't support 'autoport'").
+    #[test]
+    fn vnc_graphics_gets_only_a_port_no_tls_port_or_autoport() {
+        let doc = build_import_document(
+            "x",
+            1048576,
+            1,
+            "/tmp/x.img",
+            GuestCapsDefaults {
+                domain_type: "test",
+                os_type: "hvm",
+                arch: "i686",
+                machine: None,
+                emulator: None,
+                is_qemu: false,
+            },
+            "vnc",
+        );
+        let root = doc.root_element().unwrap();
+        let graphics = root
+            .find(&doc, "devices")
+            .unwrap()
+            .find(&doc, "graphics")
+            .unwrap();
+        assert_eq!(graphics.attribute(&doc, "type"), Some("vnc"));
+        assert_eq!(graphics.attribute(&doc, "port"), Some("-1"));
+        assert_eq!(graphics.attribute(&doc, "tlsPort"), None);
+        assert_eq!(graphics.attribute(&doc, "autoport"), None);
     }
 
     #[test]
@@ -218,6 +266,7 @@ mod tests {
                 emulator: None,
                 is_qemu: false,
             },
+            "spice",
         );
         let root = doc.root_element().unwrap();
         let mac = root
@@ -266,6 +315,7 @@ mod tests {
                 emulator: None,
                 is_qemu: true,
             },
+            "spice",
         );
         let root = doc.root_element().unwrap();
         let mac = root
@@ -304,6 +354,7 @@ mod tests {
                 emulator: None,
                 is_qemu: false,
             },
+            "spice",
         );
         let root = doc.root_element().unwrap();
         let type_el = root.find(&doc, "os").unwrap().find(&doc, "type").unwrap();
@@ -330,6 +381,7 @@ mod tests {
                 emulator: None,
                 is_qemu: false,
             },
+            "spice",
         );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
@@ -394,6 +446,7 @@ mod tests {
                 emulator: capsinfo.emulator.as_deref(),
                 is_qemu: conn.uri().is_qemu(),
             },
+            "spice",
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -409,6 +462,10 @@ mod tests {
         assert!(
             inactive_xml.contains("<emulator>"),
             "the real driver kept the <emulator> element we defined it with"
+        );
+        assert!(
+            inactive_xml.contains("type='spice'"),
+            "the real driver kept the <graphics type='spice'> element we defined it with"
         );
 
         // The actual point of the two-call sequence: destroy the
@@ -496,6 +553,7 @@ mod tests {
                 emulator: capsinfo.emulator.as_deref(),
                 is_qemu: false,
             },
+            "spice",
         );
         // Through the DOM, not a raw string match on the serialized
         // XML — a string match couples this test to `virtinst_xml`'s
@@ -592,6 +650,7 @@ mod tests {
                 emulator: capsinfo.emulator.as_deref(),
                 is_qemu: true,
             },
+            "spice",
         );
         let root = doc.root_element().unwrap();
         let type_el = root.find(&doc, "os").unwrap().find(&doc, "type").unwrap();
@@ -694,6 +753,7 @@ mod tests {
                 emulator: capsinfo.emulator.as_deref(),
                 is_qemu: conn.uri().is_qemu(),
             },
+            "spice",
         );
         let root = doc.root_element().unwrap();
         let mac = root

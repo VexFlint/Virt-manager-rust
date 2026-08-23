@@ -65,7 +65,7 @@
 //! `OsInfo` (still blocked on the `gir` codegen tool).
 
 use clap::Parser;
-use virtinst_core::capabilities::Capabilities;
+use virtinst_core::capabilities::{Capabilities, DomainCapabilities};
 use virtinst_core::connection::{Connection, Domain};
 use virtinst_core::install::{
     build_container_os_document, build_import_document, build_iso_document,
@@ -249,6 +249,27 @@ fn main() {
     // hazard to avoid.
     let is_qemu = conn.uri().is_qemu();
 
+    // Ticket 21 slice (c): `graphics` default type
+    // (`DeviceGraphics._default_type`, `graphics.py:181`) —
+    // `DomainCapabilities::fetch` dropped entirely from this binary
+    // under ticket 20 piece (b) (its only past use, `.domain`/`.arch`,
+    // moved to `capsinfo`); brought back here for its real purpose,
+    // querying the `<devices><graphics>` block. Falls back to
+    // `DomainCapabilities::default()` on fetch failure, matching
+    // upstream's own `build_from_params`: "if not supported, just use
+    // a stub object" rather than treating an old/unresponsive driver
+    // as a hard error over a defaulting decision.
+    let domcaps = DomainCapabilities::fetch(
+        &conn,
+        emulator.as_deref(),
+        Some(&arch),
+        machine.as_deref(),
+        Some(&domain_type),
+    )
+    .unwrap_or_default();
+    let graphics_type =
+        domcaps.default_graphics_type(conn.uri(), host_caps.host.cpu.arch.as_deref());
+
     let memory_kib = args.memory.checked_mul(1024).unwrap_or_else(|| {
         eprintln!("virt-install: --memory {} MiB overflows", args.memory);
         std::process::exit(1);
@@ -280,7 +301,12 @@ fn main() {
             is_qemu,
         };
         let xml = write(build_import_document(
-            &args.name, memory_kib, args.vcpus, &disk, caps,
+            &args.name,
+            memory_kib,
+            args.vcpus,
+            &disk,
+            caps,
+            graphics_type,
         ));
         (xml.clone(), xml)
     } else if let Some(media) = args.cdrom {
@@ -295,7 +321,12 @@ fn main() {
         };
         if args.livecd {
             let xml = write(build_iso_document(
-                &args.name, memory_kib, args.vcpus, &media, caps,
+                &args.name,
+                memory_kib,
+                args.vcpus,
+                &media,
+                caps,
+                graphics_type,
             ));
             (xml.clone(), xml)
         } else {
@@ -304,7 +335,13 @@ fn main() {
                 std::process::exit(1);
             });
             let (initial, final_doc) = build_iso_two_phase_documents(
-                &args.name, memory_kib, args.vcpus, &media, &disk, caps,
+                &args.name,
+                memory_kib,
+                args.vcpus,
+                &media,
+                &disk,
+                caps,
+                graphics_type,
             );
             (write(initial), write(final_doc))
         }
@@ -325,6 +362,7 @@ fn main() {
             "network",
             args.disk.as_deref(),
             caps,
+            graphics_type,
         );
         (write(initial), write(final_doc))
     } else if let Some(boot_dev) = args.boot {
@@ -344,6 +382,7 @@ fn main() {
             &boot_dev,
             args.disk.as_deref(),
             caps,
+            graphics_type,
         ));
         (xml.clone(), xml)
     } else if args.container {

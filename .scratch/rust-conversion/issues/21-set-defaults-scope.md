@@ -395,5 +395,92 @@ is_test, host_arch)` (upstream's `DeviceGraphics._default_type`,
 `BuildConfig.default_graphics`) — 6 new tests (advertised-enum hit/
 miss, pre-domcaps heuristic fallback across qemu/test/arch
 combinations, xen-forces-vnc, spice-stays, spice-downgrades-to-vnc),
-146/146 `virtinst-core` total. Slice (c) itself (actually pushing a
-default `<graphics>` element from `virt-install.rs`) continues below.
+146/146 `virtinst-core` total.
+
+## (c) built: `graphics` default type (spice/vnc)
+
+`domain_skeleton::push_default_graphics` materializes `<graphics
+type=.. port="-1" .../>` (`tlsPort="-1" autoport="yes"` added only for
+spice) — the fixed shape upstream's `_get_default_port`/`_get_default_
+tlsport`/`_get_default_autoport` chain collapses to once no builder
+here ever adds a `<listen>` element (confirmed by reading the actual
+chain: `port`/`tlsPort` both need `_listen_need_port()`, true whenever
+no `<listen>` exists; `autoport` only for spice, "to maintain back
+compat with old libvirt" for vnc). Threaded `graphics_type: &str` into
+all five non-container builders (`build_import_document`,
+`build_iso_document`/`build_iso_two_phase_documents`,
+`build_manual_document`/`build_manual_two_phase_documents`) — not
+`--container`: upstream's own guard (`self.os.is_container() and not
+self.conn.is_vz()`) skips the whole device there on every driver this
+crate reaches.
+
+`virt-install.rs` fetches `DomainCapabilities` again (dropped from this
+binary entirely under ticket 20 piece (b) once its only past use —
+`.domain`/`.arch` — moved to `capsinfo`; back now for its real
+`<graphics>`-block-shaped purpose, falling back to `DomainCapabilities
+::default()` on fetch failure, matching upstream's own `build_from_
+params` stub-object fallback) and resolves `graphics_type` once via
+`domcaps.default_graphics_type(conn.uri(), host_arch)`, threaded
+alongside `caps` into each of the five builder calls.
+
+**Signature revised on review**: the first draft of `supports_graphics_
+spice`/`default_graphics_type` took `is_qemu`/`is_test`/`is_xen` as
+three separate same-typed `bool`s plus `host_arch: Option<&str>` — the
+same "transposition compiles, no test catches it" shape the NIC-OUI
+bug above already hit once for real. An advisor review caught this and
+asked whether `Uri` could be taken directly instead of reasoned-about-
+as-a-tradeoff; checking `uri.rs` directly showed `Uri::parse` is a
+pure, connection-free parser (no libvirt call, no I/O at all) — so
+there was no real tradeoff to accept, just an unchecked first draft.
+Both methods now take `uri: &Uri` (`crate::connection::Uri`) instead —
+transposition is a type error now, not a silent wrong answer, and
+tests got *simpler*, not harder: `Uri::parse("xen:///")` replaces
+threading a bare `true` through three positional slots. `host_arch`
+stays a separate `Option<&str>` parameter (the *host's* CPU arch,
+upstream's `self.conn.caps.host.cpu.arch` — deliberately not this
+struct's own `arch` field, the *domain's* target arch) since plain
+`DomainCapabilities` has no `Uri`-shaped wrapper to fold it into.
+
+Added `default_graphics_type_forces_vnc_for_a_real_xen_uri_even_when_
+domcaps_advertises_spice` as the actual composition test for this: a
+**xen** URI specifically (not qemu), since a qemu URI makes `is_xen()`/
+`is_test()` both `false` regardless of order — transposition is only
+observable with xen in the mix. Constructs a real `Uri::parse("xen+ssh
+://...")`  against a domcaps fixture that explicitly advertises spice
+support, asserting both the fixture (spice really is supported) and
+the result (`"vnc"` anyway, since xen forces it) — the same "assert the
+precondition, not just the outcome" shape the NIC-OUI composition test
+used.
+
+Also renamed `no_disk_means_a_single_boot_entry_and_only_the_default_
+nic` (`manual.rs`) to `..._and_no_disk_device` — its old name asserted
+"only the default nic" as a device-count claim that a new `<graphics>`
+element would make false; the assertions themselves never checked a
+total device count, only per-tag presence, so nothing was actually
+broken, but the name was making a claim the test didn't back up even
+before this slice. And added `inactive_xml.contains("type='spice'")`
+assertions to `import.rs`/`iso.rs`/`manual.rs`'s real end-to-end
+tests, matching the existing `<emulator>` persistence check in
+`import.rs` — proving the real `test:///` driver *keeps* the
+`<graphics>` element across `create_new`/`define_new`/refetch, not
+just that it accepts it once.
+
+**Verified**: `import.rs` gained a `<graphics>` assertion on its main
+pinned test plus a new `vnc_graphics_gets_only_a_port_no_tls_port_or_
+autoport` test (the other branch); `iso.rs`/`manual.rs` gained
+equivalent assertions on their own pinned tests and two-phase tests
+(checking both initial and final documents agree); `domcaps.rs` gained
+the xen composition test above. 99/99 `virtinst-cli`, 148/148
+`virtinst-core` (+2 over the 146 pre-slice baseline), harness 61/61,
+`fmt`/`clippy` clean. Manually smoke-tested the compiled `virt-install`
+binary three times: plain `test:///default` (baseline, no env
+injection, twice — confirming repeatability), and once with
+`VIRTINST_TEST_CAPS_FILE` (`hypervisor_type=kvm`) +
+`VIRTINST_TEST_DOMCAPS_FILE` (graphics `supported='yes'`, spice
+advertised) + `VIRTINST_TEST_FAKE_URI=qemu:///system` together — the
+exact combination that exercises the new domcaps-fetch-and-resolve
+path — all completed with no crash.
+
+**Not done**: slices (d)–(f) — `clock`'s rtc/pit/hpet timer trio,
+`hostdev.set_defaults`, and CPU mode defaulting — remain exactly as
+scoped above, not started. (a)/(b)/(c) are now all built.

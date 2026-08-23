@@ -76,13 +76,13 @@
 use virtinst_xml::{Document, Element};
 
 use super::domain_skeleton::{
-    build_domain_skeleton, push_boot_dev, push_default_nic, push_on_reboot_destroy,
-    push_virtio_disk, GuestCapsDefaults,
+    build_domain_skeleton, push_boot_dev, push_default_graphics, push_default_nic,
+    push_on_reboot_destroy, push_virtio_disk, GuestCapsDefaults,
 };
 
-/// `name`/`memory_kib`/`vcpus`/`caps` — see `build_import_document`'s doc
-/// comment, identical rationale. `media` is `InstallMethod::Iso::media`,
-/// the path to the ISO/CD image.
+/// `name`/`memory_kib`/`vcpus`/`caps`/`graphics_type` — see
+/// `build_import_document`'s doc comment, identical rationale. `media`
+/// is `InstallMethod::Iso::media`, the path to the ISO/CD image.
 ///
 /// Builds and boots from the CD alone (`<boot dev="cdrom">`) with no
 /// persistent disk device at all — matches `live: true`'s own doc comment
@@ -93,6 +93,7 @@ pub fn build_iso_document(
     vcpus: u32,
     media: &str,
     caps: GuestCapsDefaults,
+    graphics_type: &str,
 ) -> Document {
     let (mut doc, _root, os_el, devices_el) = build_domain_skeleton(
         name,
@@ -109,6 +110,7 @@ pub fn build_iso_document(
         devices_el,
         &crate::cloner::generate_mac(caps.is_qemu),
     );
+    push_default_graphics(&mut doc, devices_el, graphics_type);
 
     doc
 }
@@ -134,6 +136,7 @@ pub fn build_iso_two_phase_documents(
     media: &str,
     disk_path: &str,
     caps: GuestCapsDefaults,
+    graphics_type: &str,
 ) -> (Document, Document) {
     let uuid = crate::cloner::generate_uuid();
     // Same device, same MAC in both documents — same reason the UUID is
@@ -150,10 +153,21 @@ pub fn build_iso_two_phase_documents(
         Some(media),
         disk_path,
         &mac,
+        graphics_type,
         true,
     );
     let final_doc = build_iso_phase_document(
-        name, memory_kib, vcpus, &uuid, caps, "hd", None, disk_path, &mac, false,
+        name,
+        memory_kib,
+        vcpus,
+        &uuid,
+        caps,
+        "hd",
+        None,
+        disk_path,
+        &mac,
+        graphics_type,
+        false,
     );
     (initial, final_doc)
 }
@@ -177,6 +191,7 @@ fn build_iso_phase_document(
     cdrom_source: Option<&str>,
     disk_path: &str,
     mac: &str,
+    graphics_type: &str,
     is_initial: bool,
 ) -> Document {
     let (mut doc, root, os_el, devices_el) =
@@ -189,6 +204,7 @@ fn build_iso_phase_document(
     push_cdrom_disk(&mut doc, devices_el, cdrom_source);
     push_virtio_disk(&mut doc, devices_el, disk_path);
     push_default_nic(&mut doc, devices_el, mac);
+    push_default_graphics(&mut doc, devices_el, graphics_type);
 
     doc
 }
@@ -243,6 +259,7 @@ mod tests {
                 emulator: None,
                 is_qemu: true,
             },
+            "spice",
         );
         let root = doc.root_element().unwrap();
 
@@ -284,6 +301,9 @@ mod tests {
                 .attribute(&doc, "network"),
             Some("default")
         );
+
+        let graphics = devices.find(&doc, "graphics").unwrap();
+        assert_eq!(graphics.attribute(&doc, "type"), Some("spice"));
     }
 
     #[test]
@@ -301,6 +321,7 @@ mod tests {
                 emulator: None,
                 is_qemu: false,
             },
+            "vnc",
         );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
@@ -344,6 +365,7 @@ mod tests {
                 emulator: None,
                 is_qemu: conn.uri().is_qemu(),
             },
+            "spice",
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -354,10 +376,12 @@ mod tests {
         let refetched = Domain::lookup_by_name(&conn, "livecd-end-to-end")
             .expect("the domain is findable by the name we gave it");
         assert_eq!(refetched.name().unwrap(), "livecd-end-to-end");
-        assert!(refetched
-            .inactive_xml()
-            .expect("fetch inactive XML")
-            .contains("livecd-end-to-end.iso"));
+        let inactive_xml = refetched.inactive_xml().expect("fetch inactive XML");
+        assert!(inactive_xml.contains("livecd-end-to-end.iso"));
+        assert!(
+            inactive_xml.contains("type='spice'"),
+            "the real driver kept the <graphics type='spice'> element we defined it with"
+        );
 
         running
             .destroy()
@@ -387,6 +411,7 @@ mod tests {
                 emulator: None,
                 is_qemu: true,
             },
+            "spice",
         );
 
         let initial_root = initial.root_element().unwrap();
@@ -495,6 +520,22 @@ mod tests {
             .unwrap()
             .to_string();
         assert_eq!(initial_mac, final_mac);
+
+        // Both documents get the same default graphics device too.
+        assert_eq!(
+            initial_devices
+                .find(&initial, "graphics")
+                .unwrap()
+                .attribute(&initial, "type"),
+            Some("spice")
+        );
+        assert_eq!(
+            final_devices
+                .find(&final_doc, "graphics")
+                .unwrap()
+                .attribute(&final_doc, "type"),
+            Some("spice")
+        );
     }
 
     /// Real end-to-end proof that two-phase create/define actually
@@ -531,6 +572,7 @@ mod tests {
                 emulator: None,
                 is_qemu: conn.uri().is_qemu(),
             },
+            "spice",
         );
         let initial_xml = initial.write_str().expect("serializes");
         let final_xml = final_doc.write_str().expect("serializes");

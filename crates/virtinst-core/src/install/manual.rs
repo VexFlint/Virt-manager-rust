@@ -53,14 +53,14 @@
 use virtinst_xml::Document;
 
 use super::domain_skeleton::{
-    build_domain_skeleton, push_boot_dev, push_default_nic, push_on_reboot_destroy,
-    push_virtio_disk, GuestCapsDefaults,
+    build_domain_skeleton, push_boot_dev, push_default_graphics, push_default_nic,
+    push_on_reboot_destroy, push_virtio_disk, GuestCapsDefaults,
 };
 
-/// `name`/`memory_kib`/`vcpus`/`caps` — see `build_import_document`'s doc
-/// comment, identical rationale. `boot_dev`
-/// is libvirt's own `<os><boot dev=...>` string (`"network"`, `"hd"`,
-/// …), passed straight through unvalidated, matching
+/// `name`/`memory_kib`/`vcpus`/`caps`/`graphics_type` — see
+/// `build_import_document`'s doc comment, identical rationale.
+/// `boot_dev` is libvirt's own `<os><boot dev=...>` string (`"network"`,
+/// `"hd"`, …), passed straight through unvalidated, matching
 /// `InstallMethod::Manual::boot_dev`'s own doc comment. `disk_path` is
 /// optional: `Manual` doesn't require a disk (a bare `--boot network`
 /// with no `--disk` is a real, valid invocation — e.g. a pure network
@@ -91,6 +91,7 @@ pub fn build_manual_document(
     boot_dev: &str,
     disk_path: Option<&str>,
     caps: GuestCapsDefaults,
+    graphics_type: &str,
 ) -> Document {
     build_manual_phase_document(
         name,
@@ -101,6 +102,7 @@ pub fn build_manual_document(
         boot_dev,
         disk_path,
         &crate::cloner::generate_mac(caps.is_qemu),
+        graphics_type,
         false,
     )
 }
@@ -121,6 +123,7 @@ pub fn build_manual_two_phase_documents(
     boot_dev: &str,
     disk_path: Option<&str>,
     caps: GuestCapsDefaults,
+    graphics_type: &str,
 ) -> (Document, Document) {
     let uuid = crate::cloner::generate_uuid();
     // Same NIC, same MAC in both documents — same reason the UUID is
@@ -128,7 +131,16 @@ pub fn build_manual_two_phase_documents(
     let mac = crate::cloner::generate_mac(caps.is_qemu);
 
     let initial = build_manual_phase_document(
-        name, memory_kib, vcpus, &uuid, caps, boot_dev, disk_path, &mac, true,
+        name,
+        memory_kib,
+        vcpus,
+        &uuid,
+        caps,
+        boot_dev,
+        disk_path,
+        &mac,
+        graphics_type,
+        true,
     );
 
     // _get_postinstall_bootdev: a present disk always wins back to "hd"
@@ -144,6 +156,7 @@ pub fn build_manual_two_phase_documents(
         final_boot_dev,
         disk_path,
         &mac,
+        graphics_type,
         false,
     );
 
@@ -156,11 +169,11 @@ pub fn build_manual_two_phase_documents(
 /// single-phase call always passes `false` since upstream's
 /// `_alter_bootconfig` (the only place that sets it) never runs at all
 /// outside `requires_postboot_xml_changes()`'s two-phase path. `devices_
-/// el` (and the default NIC on it) is always built now, even with no
-/// disk — a disk-less `Manual` document used to return before `<devices>`
-/// existed at all; that's no longer true since the NIC needs somewhere
-/// to attach. `caps` is `Copy`, same reasoning as `iso::build_iso_phase_
-/// document`.
+/// el` (and the default NIC/graphics on it) is always built now, even
+/// with no disk — a disk-less `Manual` document used to return before
+/// `<devices>` existed at all; that's no longer true since the NIC
+/// needs somewhere to attach. `caps` is `Copy`, same reasoning as
+/// `iso::build_iso_phase_document`.
 #[allow(clippy::too_many_arguments)]
 fn build_manual_phase_document(
     name: &str,
@@ -171,6 +184,7 @@ fn build_manual_phase_document(
     boot_dev: &str,
     disk_path: Option<&str>,
     mac: &str,
+    graphics_type: &str,
     is_initial: bool,
 ) -> Document {
     let (mut doc, root, os_el, devices_el) =
@@ -187,6 +201,7 @@ fn build_manual_phase_document(
         push_virtio_disk(&mut doc, devices_el, disk_path);
     }
     push_default_nic(&mut doc, devices_el, mac);
+    push_default_graphics(&mut doc, devices_el, graphics_type);
 
     doc
 }
@@ -197,7 +212,7 @@ mod tests {
     use uuid::Uuid;
 
     #[test]
-    fn no_disk_means_a_single_boot_entry_and_only_the_default_nic() {
+    fn no_disk_means_a_single_boot_entry_and_no_disk_device() {
         let doc = build_manual_document(
             "net-only",
             1048576,
@@ -212,6 +227,7 @@ mod tests {
                 emulator: None,
                 is_qemu: true,
             },
+            "spice",
         );
         let root = doc.root_element().unwrap();
 
@@ -226,6 +242,13 @@ mod tests {
         assert!(devices.find(&doc, "disk").is_none(), "no disk was given");
         let iface = devices.find(&doc, "interface").unwrap();
         assert_eq!(iface.attribute(&doc, "type"), Some("network"));
+        assert_eq!(
+            devices
+                .find(&doc, "graphics")
+                .unwrap()
+                .attribute(&doc, "type"),
+            Some("spice")
+        );
     }
 
     #[test]
@@ -244,6 +267,7 @@ mod tests {
                 emulator: None,
                 is_qemu: true,
             },
+            "spice",
         );
         let root = doc.root_element().unwrap();
 
@@ -281,6 +305,7 @@ mod tests {
                 emulator: None,
                 is_qemu: false,
             },
+            "spice",
         );
         let root = doc.root_element().unwrap();
         let os = root.find(&doc, "os").unwrap();
@@ -303,6 +328,7 @@ mod tests {
                 emulator: None,
                 is_qemu: false,
             },
+            "spice",
         );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
@@ -354,6 +380,7 @@ mod tests {
                 emulator: None,
                 is_qemu: conn.uri().is_qemu(),
             },
+            "spice",
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -366,6 +393,10 @@ mod tests {
         assert_eq!(refetched.name().unwrap(), "manual-end-to-end");
         let inactive_xml = refetched.inactive_xml().expect("fetch inactive XML");
         assert!(inactive_xml.contains("manual-end-to-end.img"));
+        assert!(
+            inactive_xml.contains("type='spice'"),
+            "the real driver kept the <graphics type='spice'> element we defined it with"
+        );
         // The point of this test over import.rs's: the two-entry boot
         // order actually round-tripped through libvirt, in order.
         // libvirt's own XMLDesc output uses single-quoted attributes
@@ -411,6 +442,7 @@ mod tests {
                 emulator: None,
                 is_qemu: true,
             },
+            "spice",
         );
 
         let initial_root = initial.root_element().unwrap();
@@ -498,6 +530,7 @@ mod tests {
                 emulator: None,
                 is_qemu: false,
             },
+            "spice",
         );
 
         let initial_root = initial.root_element().unwrap();
@@ -561,6 +594,7 @@ mod tests {
                 emulator: None,
                 is_qemu: conn.uri().is_qemu(),
             },
+            "spice",
         );
         let initial_xml = initial.write_str().expect("serializes");
         let final_xml = final_doc.write_str().expect("serializes");
