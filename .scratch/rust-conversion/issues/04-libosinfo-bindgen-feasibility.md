@@ -157,3 +157,24 @@ nightly toolchain (ASan needs one) available in this environment.
 The transfer-ownership review above is the real safety net for this
 slice; a sanitizer pass is worth running before this code carries
 much more weight, flagged rather than silently skipped.
+
+## First real caller: `--os-variant`, closing ticket 21's clock-offset gap
+
+`OsInfo` gained `family()`/`is_windows()`/`clock_offset()` (`osinfo_
+os_get_family`, `transfer-ownership="none"` per the real `.gir`, same
+verification discipline as the four calls above) and `OsDb` gained
+`os_by_id_or_short_id()` for `--os-variant`'s two accepted forms.
+`virt-install` gained a real `--os-variant <id>` flag, resolved once
+next to the `domcaps`/`cpu_mode` resolution and threaded into
+`push_default_clock`'s new `offset` parameter — closing the one gap
+ticket 21's own Resolution section called blocked "outright, no
+fallback branch at all." Full writeup of the wiring, the deliberate
+`<clock offset=...>`-always-emitted behavior change, and a real
+`is_qemu`-gate test gap hit and fixed on the first attempt: ticket 21's
+own "Post-close follow-up" section.
+
+Every other `OsInfo`-gated default ticket 21 named (disk-bus, video
+model, UEFI firmware) stays unbuilt — they need device-list/firmware-
+list query methods this slice didn't add, a distinct chunk of libosinfo
+API surface from the plain string/family getters `clock_offset()`
+needed.

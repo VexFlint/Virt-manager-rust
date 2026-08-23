@@ -231,6 +231,21 @@ impl OsDb {
             result
         }
     }
+
+    /// `--os-variant`-shaped lookup: tries `id` as a full libosinfo ID
+    /// first (`http://fedoraproject.org/fedora/40`), falling back to a
+    /// linear scan for a matching *primary* short-id (`fedora40`) —
+    /// the form users actually type on the CLI, upstream's own
+    /// `_OSDB.lookup_os` (short-id path) vs. `lookup_os_by_full_id`
+    /// split. Doesn't model an OS's full `short_id_list` (aliases
+    /// beyond the primary one) — `OsInfo::short_id` only exposes the
+    /// primary — a stated gap, not silently dropped, since libosinfo's
+    /// `_list` variant is a separate query this crate doesn't bind
+    /// yet.
+    pub fn os_by_id_or_short_id(&self, id: &str) -> Option<OsInfo> {
+        self.os(id)
+            .or_else(|| self.all_os().into_iter().find(|o| o.short_id() == id))
+    }
 }
 
 impl Drop for OsDb {
@@ -277,6 +292,47 @@ impl OsInfo {
             c_str_to_string(ffi::osinfo_product_get_name(
                 self.ptr as *mut ffi::OsinfoProduct,
             ))
+        }
+    }
+
+    /// The generic OS family this entry belongs to, e.g. `"linux"`/
+    /// `"winnt"`/`"solaris"`/`"freebsd"` — upstream's `osdict.py`'s
+    /// `_OsVariant._family` (`self._os.get_family()`). Empty when
+    /// libosinfo doesn't report one for this entry (the real getter is
+    /// `osinfo_os_get_family`, an `OsinfoOs`-level property — not
+    /// `OsinfoProduct`, despite `id`/`short_id`/`name` above all being
+    /// `OsinfoEntity`/`OsinfoProduct`-level; confirmed against the
+    /// generated bindings rather than assumed to follow the same
+    /// pattern).
+    pub fn family(&self) -> String {
+        unsafe { c_str_to_string(ffi::osinfo_os_get_family(self.ptr)) }
+    }
+
+    /// Upstream's `osdict.py`'s `is_windows()` — `_family in ["win9x",
+    /// "winnt", "win16"]`, ported literally rather than generalized
+    /// (upstream doesn't generalize it either).
+    pub fn is_windows(&self) -> bool {
+        matches!(self.family().as_str(), "win9x" | "winnt" | "win16")
+    }
+
+    /// Upstream's `osdict.py`'s `get_clock()` — `"localtime"` for
+    /// Windows or Solaris guests, `"utc"` otherwise. Pure logic over
+    /// `family()`/`is_windows()`, no separate libosinfo call: this is
+    /// exactly the piece ticket 21 flagged as blocked outright
+    /// (`clock.py`'s `offset` field, "blocked — no fallback branch at
+    /// all") — now unblocked now that `is_windows()`/`family()` exist,
+    /// closing that specific gap. The optional `hypervclock` timer
+    /// (`hyperv_supported()`) stays blocked regardless: it needs
+    /// `is_windows()` *and* `conn.support.conn_hyperv_clock()`, a
+    /// hypervisor-version support-check mechanism this crate still
+    /// doesn't have (the same class of gap that blocked slice (b)'s
+    /// q35-preferred machine branch) — `is_windows()` existing doesn't
+    /// make that second half reachable too.
+    pub fn clock_offset(&self) -> &'static str {
+        if self.is_windows() || self.family() == "solaris" {
+            "localtime"
+        } else {
+            "utc"
         }
     }
 }
@@ -365,5 +421,56 @@ mod tests {
         let cloned = original.clone();
         drop(original);
         assert_eq!(cloned.short_id(), "fedora25");
+    }
+
+    /// `family()`/`is_windows()`/`clock_offset()` against three real
+    /// entries spanning every branch `clock_offset()` has: a Linux
+    /// entry (family `linux`, not Windows/Solaris -> utc), a Windows
+    /// entry (family `winnt` -> localtime), and a Solaris entry
+    /// (family `solaris`, not Windows but still localtime). Windows
+    /// 10 and Solaris 11 are, like Fedora 25, real archived osinfo-db
+    /// entries stable enough to anchor a test on.
+    #[test]
+    fn clock_offset_matches_upstream_for_linux_windows_and_solaris() {
+        let db = OsDb::load_default().expect("osinfo-db is installed on this machine");
+
+        let fedora = db
+            .os("http://fedoraproject.org/fedora/25")
+            .expect("real entry");
+        assert_eq!(fedora.family(), "linux");
+        assert!(!fedora.is_windows());
+        assert_eq!(fedora.clock_offset(), "utc");
+
+        let windows = db.os("http://microsoft.com/win/10").expect("real entry");
+        assert_eq!(windows.family(), "winnt");
+        assert!(windows.is_windows());
+        assert_eq!(windows.clock_offset(), "localtime");
+
+        let solaris = db.os("http://oracle.com/solaris/11").expect("real entry");
+        assert_eq!(solaris.family(), "solaris");
+        assert!(!solaris.is_windows(), "solaris is not windows");
+        assert_eq!(
+            solaris.clock_offset(),
+            "localtime",
+            "solaris gets localtime too, despite not being windows"
+        );
+    }
+
+    /// `os_by_id_or_short_id`'s two paths -- the form users actually
+    /// type on the CLI (`--os-variant fedora25`) is the short-id one,
+    /// not the full libosinfo URL.
+    #[test]
+    fn os_by_id_or_short_id_resolves_both_forms_to_the_same_entry() {
+        let db = OsDb::load_default().expect("osinfo-db is installed on this machine");
+
+        let by_full_id = db
+            .os_by_id_or_short_id("http://fedoraproject.org/fedora/25")
+            .expect("full id resolves");
+        let by_short_id = db
+            .os_by_id_or_short_id("fedora25")
+            .expect("short id resolves");
+        assert_eq!(by_full_id.id(), by_short_id.id());
+
+        assert!(db.os_by_id_or_short_id("not-a-real-os-variant").is_none());
     }
 }

@@ -314,32 +314,42 @@ pub(super) fn push_default_graphics(doc: &mut Document, devices_el: Element, gra
 /// - `arch` not x86 (upstream's `is_x86()`: `x86_64`/`i686` only).
 /// - `!is_qemu` (upstream's `conn.is_qemu()`).
 ///
-/// `offset` (upstream's `osinfo.get_clock()`) is blocked on `OsInfo`
-/// same as everywhere else in this crate — omitted here entirely
-/// rather than guessed, letting libvirt's own hypervisor-specific
-/// default stand (qemu's own default offset is `utc`). A real,
-/// deliberate design choice flagged in ticket 21's own scoping pass
-/// rather than decided arbitrarily: the trio itself has zero `OsInfo`
-/// dependency and is upstream's real behavior on every guest this
-/// crate can build, so emitting it without `offset` is closer to
-/// upstream's actual shape than skipping `<clock>` outright until
-/// `offset` becomes resolvable. The optional `hypervclock` timer
-/// (`guest.hyperv_supported()` — needs `OsInfo`'s `is_windows()` check
-/// — `and` a hv-version support-check mechanism this crate doesn't
-/// have, `conn.support.conn_hyperv_clock()`) is left unbuilt for the
-/// same reason.
+/// `offset` (upstream's `osinfo.get_clock()`) was blocked on `OsInfo`
+/// not existing at all — now that `osinfo::OsInfo::clock_offset()`
+/// does (ticket 04, then wired here), always emitted rather than
+/// omitted, matching upstream's real shape: upstream's `guest.osinfo`
+/// is *never* absent, even with no `--os-variant` given — it falls
+/// back to a synthetic "generic" entry with no family set, which
+/// resolves to `"utc"` through the exact same `get_clock()` logic
+/// `clock_offset()` ports (not a special-cased default coded
+/// separately). Callers pass `None` for that same "no OS selected"
+/// case rather than constructing a synthetic generic `OsInfo` — the
+/// outcome is identical (no family info → `"utc"`), so there's nothing
+/// a synthetic object would add. This *is* a real, deliberate output
+/// change from this function's previous version, which omitted
+/// `offset` and let libvirt's own hypervisor-specific default
+/// (`utc` for qemu) stand implicitly — every domain this crate builds
+/// now gets an explicit `offset="utc"` (or `"localtime"` for a
+/// Windows/Solaris `--os-variant`) instead. The optional `hypervclock`
+/// timer (`guest.hyperv_supported()` — needs `is_windows()` **and** a
+/// hv-version support-check mechanism this crate still doesn't have,
+/// `conn.support.conn_hyperv_clock()`) stays unbuilt regardless:
+/// `is_windows()` existing doesn't make the *other* half of that `and`
+/// reachable too.
 pub(super) fn push_default_clock(
     doc: &mut Document,
     root: Element,
     os_type: &str,
     arch: &str,
     is_qemu: bool,
+    offset: &str,
 ) {
     if os_type != "hvm" || (arch != "x86_64" && arch != "i686") || !is_qemu {
         return;
     }
 
     let clock_el = Element::new(doc, "clock");
+    clock_el.set_attribute(doc, "offset", offset);
 
     let rtc_el = Element::new(doc, "timer");
     rtc_el.set_attribute(doc, "name", "rtc");

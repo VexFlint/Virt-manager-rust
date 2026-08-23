@@ -818,3 +818,60 @@ exact fetch-argument shape: resolved `domain_type="kvm"`,
 supports_safe_host_passthrough()` reads `true` against that real
 fetch — the live wiring resolves to `host-passthrough` as intended, not
 silently falling back to `Custom`.
+
+## Post-close follow-up: `clock`'s `offset` gap closed by ticket 04
+
+Ticket 21's own Resolution section named `osinfo.get_clock()` (`clock.py`'s
+`offset` field) as blocked outright — "no fallback branch at all." Ticket
+04 built real `libosinfo` bindings after this ticket closed;
+`osinfo::OsInfo::clock_offset()` ports `get_clock()`'s exact logic
+(Windows/Solaris family → `"localtime"`, else `"utc"`) with zero new
+libosinfo API surface beyond `get_family()` (no device-list/firmware-
+list queries needed for this one field). Wired in as `push_default_
+clock`'s new `offset` parameter, a `--os-variant <id>` CLI flag on
+`virt-install` (accepting both short-id and full-id forms), and an
+`OsDb::os_by_id_or_short_id` lookup helper.
+
+**A real, deliberate output change**: `<clock>` now always carries an
+explicit `offset` attribute (defaulting to `"utc"` with no `--os-
+variant` given), where it previously omitted the attribute entirely and
+let libvirt's own default stand. Matches upstream's actual behavior
+more closely — upstream's `guest.osinfo` is never absent, even absent
+`--os-variant` it falls back to a synthetic "generic" entry whose
+`get_clock()` resolves to `"utc"` through the same logic, not a
+separately-coded default. One pre-existing pinned test's assertion
+(`clock.attribute(&doc, "offset") == None`) needed updating to match —
+found and fixed via the full test suite, not silently left failing.
+
+**Hit the same `is_qemu`-gate coverage gap slice (d) already solved,
+on the first attempt at this test, not predicted in advance**: the new
+real end-to-end test (`os_variant_clock_offset_survives_a_real_libvirt_
+define`) initially ran against `test:///default` with the connection's
+own real (always-`false`) `is_qemu()`, so `push_default_clock`'s gate
+excluded the whole `<clock>` element and the test's "`localtime`
+survived" assertion actually observed the *test driver's own*
+synthesized `utc` default, not anything this crate emitted — caught by
+reading the failing assertion's printed XML rather than assuming the
+first failure was a real bug. Fixed with the same `VIRTINST_TEST_FAKE_
+URI` technique `clock_trio_survives_a_real_libvirt_define_when_is_qemu_
+is_true` already established.
+
+**What `--os-variant` does *not* unblock yet**: `hyperv_supported()`
+(needs `is_windows()` **and** `conn.support.conn_hyperv_clock()`, the
+hv-version mechanism that's still missing entirely) and every other
+`OsInfo`-gated default ticket 21's Resolution section named (disk-bus
+virtio-vs-ide, `supports_virtiogpu()`, `requires_firmware_efi()`) —
+those need `osinfo::OsInfo` query methods this slice didn't build
+(device-list and firmware-list queries, a real device-relationship API
+surface distinct from the plain string/family getters `clock_offset()`
+needed). Real future work, scoped but not started.
+
+**Verified**: 2 new tests in `osinfo::mod::tests` (`clock_offset`
+across Linux/Windows/Solaris family branches, `os_by_id_or_short_id`'s
+two lookup forms), 2 new tests in `import.rs` (`clock_offset` threading
+to the emitted attribute, the real end-to-end proof), 1 pinned
+assertion updated. 99/99 `virtinst-cli`, 188/188 `virtinst-core` (+4
+over the 184 ticket-04 baseline), harness 61/61, `fmt`/`clippy` clean.
+Manually confirmed the real CLI too: `--os-variant this-does-not-exist`
+errors cleanly, `--os-variant win10` (short-id form) resolves and
+defines successfully.

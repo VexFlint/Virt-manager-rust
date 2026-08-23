@@ -32,8 +32,9 @@
 //!   back to `osinfo`'s recommended-resources lookup when absent
 //!   (`get_recommended_ram`/`get_recommended_ncpus`); `virt-install`
 //!   here just requires `--memory` and defaults `--vcpus` to a flat
-//!   `1`, since `OsInfo` isn't built yet either (still blocked on the
-//!   `gir` codegen tool, same as libvirt-glib events).
+//!   `1` — `osinfo::OsInfo` exists now (ticket 04) but doesn't have a
+//!   `get_recommended_resources()`-equivalent query yet, a real gap
+//!   distinct from `OsInfo` not existing at all.
 //!
 //! Always gets one default NIC (`domain_skeleton::push_default_nic`) —
 //! upstream's own CLI default whenever `--network`/`--nonetworks` are
@@ -69,7 +70,13 @@ use super::domain_skeleton::{
 /// resolved [`DefaultCpuMode`] (or `None`), the same "resolve once,
 /// pass the answer in" pattern `graphics_type` uses — see `push_
 /// default_cpu`'s doc comment for why this one can't self-gate on
-/// primitives already in hand the way `<clock>` does.
+/// primitives already in hand the way `<clock>` does. `clock_offset`
+/// is `osinfo::OsInfo::clock_offset()`'s result (or `"utc"` when no
+/// `--os-variant` was given — see `push_default_clock`'s own doc
+/// comment for why that's the right no-OS-selected default, not a
+/// placeholder): unlike `os_type`/`arch`/`is_qemu`, `<clock>` itself
+/// can't derive this from anything already in `caps`, so it travels
+/// as its own parameter even though the rest of `<clock>` self-gates.
 ///
 /// Always stamps an explicit `<uuid>` (via the same `generate_uuid()`
 /// approach `cloner.rs` uses, matching upstream's own hand-rolled
@@ -82,6 +89,7 @@ use super::domain_skeleton::{
 /// libvirt-generated one, and the second call fails outright
 /// ("domain already exists with uuid ..." — hit this for real while
 /// writing this function's own test, not a theoretical concern).
+#[allow(clippy::too_many_arguments)]
 pub fn build_import_document(
     name: &str,
     memory_kib: u64,
@@ -90,6 +98,7 @@ pub fn build_import_document(
     caps: GuestCapsDefaults,
     graphics_type: &str,
     cpu_mode: Option<&DefaultCpuMode>,
+    clock_offset: &str,
 ) -> Document {
     let (mut doc, root, os_el, devices_el) = build_domain_skeleton(
         name,
@@ -98,7 +107,14 @@ pub fn build_import_document(
         &crate::cloner::generate_uuid(),
         &caps,
     );
-    push_default_clock(&mut doc, root, caps.os_type, caps.arch, caps.is_qemu);
+    push_default_clock(
+        &mut doc,
+        root,
+        caps.os_type,
+        caps.arch,
+        caps.is_qemu,
+        clock_offset,
+    );
     push_default_cpu(&mut doc, root, cpu_mode);
     push_boot_dev(&mut doc, os_el, "hd");
 
@@ -156,6 +172,7 @@ mod tests {
             },
             "spice",
             None,
+            "utc",
         );
         let root = doc.root_element().unwrap();
 
@@ -228,9 +245,12 @@ mod tests {
         assert_eq!(graphics.attribute(&doc, "tlsPort"), Some("-1"));
         assert_eq!(graphics.attribute(&doc, "autoport"), Some("yes"));
 
-        // Ticket 21 slice (d): the x86+qemu clock timer trio, no offset.
+        // Ticket 21 slice (d)+(f): the x86+qemu clock timer trio, plus
+        // the offset attribute ticket 04's real OsInfo bindings
+        // unblocked -- "utc" here since this test passes it as a
+        // literal, matching "no --os-variant selected".
         let clock = root.find(&doc, "clock").unwrap();
-        assert_eq!(clock.attribute(&doc, "offset"), None);
+        assert_eq!(clock.attribute(&doc, "offset"), Some("utc"));
         let timers = clock.find_all(&doc, "timer");
         assert_eq!(timers.len(), 3);
         let rtc = timers
@@ -272,6 +292,7 @@ mod tests {
             },
             "spice",
             None,
+            "utc",
         );
         let root = doc.root_element().unwrap();
         assert!(root.find(&doc, "clock").is_none());
@@ -297,9 +318,39 @@ mod tests {
             },
             "spice",
             None,
+            "utc",
         );
         let root = doc.root_element().unwrap();
         assert!(root.find(&doc, "clock").is_none());
+    }
+
+    /// Ticket 21 slice (f) follow-up: `clock_offset` threads through
+    /// to the emitted `<clock offset=...>` attribute -- a literal
+    /// `"localtime"` here proves the plumbing, not `OsInfo::
+    /// clock_offset()` itself (already proven directly against real
+    /// osinfo-db entries in `osinfo::mod::tests`).
+    #[test]
+    fn clock_offset_threads_through_to_the_emitted_attribute() {
+        let doc = build_import_document(
+            "x",
+            1048576,
+            1,
+            "/tmp/x.img",
+            GuestCapsDefaults {
+                domain_type: "qemu",
+                os_type: "hvm",
+                arch: "x86_64",
+                machine: None,
+                emulator: None,
+                is_qemu: true,
+            },
+            "spice",
+            None,
+            "localtime",
+        );
+        let root = doc.root_element().unwrap();
+        let clock = root.find(&doc, "clock").unwrap();
+        assert_eq!(clock.attribute(&doc, "offset"), Some("localtime"));
     }
 
     /// `push_default_graphics`'s other branch: `vnc` gets `port="-1"`
@@ -323,6 +374,7 @@ mod tests {
             },
             "vnc",
             None,
+            "utc",
         );
         let root = doc.root_element().unwrap();
         let graphics = root
@@ -357,6 +409,7 @@ mod tests {
             },
             "spice",
             None,
+            "utc",
         );
         let root = doc.root_element().unwrap();
         assert!(root.find(&doc, "cpu").is_none());
@@ -382,6 +435,7 @@ mod tests {
             },
             "spice",
             Some(&resolved),
+            "utc",
         );
         let root = doc.root_element().unwrap();
         let cpu = root.find(&doc, "cpu").unwrap();
@@ -412,6 +466,7 @@ mod tests {
             },
             "spice",
             Some(&resolved),
+            "utc",
         );
         let root = doc.root_element().unwrap();
         let cpu = root.find(&doc, "cpu").unwrap();
@@ -447,6 +502,7 @@ mod tests {
             },
             "spice",
             Some(&resolved),
+            "utc",
         );
         let root = doc.root_element().unwrap();
         let cpu = root.find(&doc, "cpu").unwrap();
@@ -475,6 +531,7 @@ mod tests {
             },
             "spice",
             None,
+            "utc",
         );
         let root = doc.root_element().unwrap();
         let mac = root
@@ -525,6 +582,7 @@ mod tests {
             },
             "spice",
             None,
+            "utc",
         );
         let root = doc.root_element().unwrap();
         let mac = root
@@ -565,6 +623,7 @@ mod tests {
             },
             "spice",
             None,
+            "utc",
         );
         let root = doc.root_element().unwrap();
         let type_el = root.find(&doc, "os").unwrap().find(&doc, "type").unwrap();
@@ -593,6 +652,7 @@ mod tests {
             },
             "spice",
             None,
+            "utc",
         );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
@@ -659,6 +719,7 @@ mod tests {
             },
             "spice",
             None,
+            "utc",
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -767,6 +828,7 @@ mod tests {
             },
             "spice",
             None,
+            "utc",
         );
         // Through the DOM, not a raw string match on the serialized
         // XML — a string match couples this test to `virtinst_xml`'s
@@ -865,6 +927,7 @@ mod tests {
             },
             "spice",
             None,
+            "utc",
         );
         let root = doc.root_element().unwrap();
         let type_el = root.find(&doc, "os").unwrap().find(&doc, "type").unwrap();
@@ -969,6 +1032,7 @@ mod tests {
             },
             "spice",
             None,
+            "utc",
         );
         let root = doc.root_element().unwrap();
         let mac = root
@@ -1049,6 +1113,7 @@ mod tests {
             },
             "spice",
             None,
+            "utc",
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -1140,6 +1205,7 @@ mod tests {
             },
             "spice",
             Some(&resolved),
+            "utc",
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -1152,6 +1218,85 @@ mod tests {
             inactive_xml.contains("mode='host-passthrough'"),
             "the real driver kept the <cpu mode='host-passthrough'> element we defined it \
              with, got: {inactive_xml}"
+        );
+
+        running
+            .destroy()
+            .expect("cleanup: destroy the transient instance");
+        persisted
+            .undefine()
+            .expect("cleanup: undefine the persistent config");
+    }
+
+    /// Ticket 04's real `libosinfo` bindings, first real end-to-end
+    /// proof: an `OsInfo` resolved from the real, installed `osinfo-db`
+    /// (Windows 10, `family = "winnt"`) produces `clock_offset() ==
+    /// "localtime"`, and that value survives a real `Domain::
+    /// create_new`/`define_new` round trip against `test:///default`
+    /// unchanged -- same "resolve for real, prove the resolved value
+    /// round-trips" split `cpu_mode_survives_a_real_libvirt_define`
+    /// established: `OsInfo::clock_offset()` is already proven directly
+    /// against real osinfo-db entries in `osinfo::mod::tests`, so this
+    /// test only needs the other half.
+    #[test]
+    fn os_variant_clock_offset_survives_a_real_libvirt_define() {
+        use crate::connection::{Connection, Domain};
+        use crate::osinfo::OsDb;
+        use crate::test_support::TEST_DOMAIN_LOCK;
+
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let db = OsDb::load_default().expect("osinfo-db is installed on this machine");
+        let windows = db
+            .os("http://microsoft.com/win/10")
+            .expect("Windows 10 is a real osinfo-db entry");
+        assert_eq!(windows.clock_offset(), "localtime");
+
+        // `push_default_clock`'s `is_qemu` gate strikes again — same
+        // gap `clock_trio_survives_a_real_libvirt_define_when_is_qemu_
+        // is_true` closed for the timer trio itself, hit for real here
+        // too on the first attempt at this test (`test:///default`'s
+        // own `is_qemu()` is structurally always `false`, so the whole
+        // `<clock>` element -- offset included -- would never even be
+        // pushed without this). Same fake-URI technique, same
+        // deliberate `domain_type: "test"` vs. faked `is_qemu: true`
+        // disagreement — see that test's own comment for why.
+        std::env::set_var("VIRTINST_TEST_FAKE_URI", "qemu:///system");
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        std::env::remove_var("VIRTINST_TEST_FAKE_URI");
+        assert!(
+            conn.uri().is_qemu(),
+            "the fake URI must make is_qemu() true"
+        );
+
+        let doc = build_import_document(
+            "os-variant-end-to-end",
+            1048576,
+            1,
+            "/guest/os-variant-end-to-end.img",
+            GuestCapsDefaults {
+                domain_type: "test",
+                os_type: "hvm",
+                arch: "x86_64",
+                machine: None,
+                emulator: None,
+                is_qemu: conn.uri().is_qemu(),
+            },
+            "spice",
+            None,
+            windows.clock_offset(),
+        );
+        let xml = doc.write_str().expect("serializes");
+
+        let running = Domain::create_new(&conn, &xml).expect("transient create succeeds");
+        let persisted = Domain::define_new(&conn, &xml).expect("define succeeds");
+        let refetched = Domain::lookup_by_name(&conn, "os-variant-end-to-end")
+            .expect("the domain is findable by the name we gave it");
+        let inactive_xml = refetched.inactive_xml().expect("fetch inactive XML");
+        assert!(
+            inactive_xml.contains("offset='localtime'"),
+            "the real driver kept the <clock offset='localtime'> we defined it with, got: \
+             {inactive_xml}"
         );
 
         running

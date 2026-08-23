@@ -110,8 +110,12 @@ pub fn build_container_os_document(
     // unconditionally too (`guest.py`'s `set_defaults()`), relying on
     // its own `os_type != "hvm"` self-gate rather than a container
     // exception at the call site — `push_default_clock` is a no-op
-    // here since `os_type` above is always `"exe"`.
-    push_default_clock(&mut doc, root, "exe", arch, is_qemu);
+    // here since `os_type` above is always `"exe"`. The literal `"utc"`
+    // offset below is never actually emitted for exactly that reason —
+    // not threaded as a real parameter on this function's own
+    // signature (unlike the other builders) since no container guest
+    // this crate builds could ever make it observable.
+    push_default_clock(&mut doc, root, "exe", arch, is_qemu, "utc");
     // Ticket 21 slice (f): always `None` here, deliberately — unlike
     // `push_default_clock`, `push_default_cpu` can't self-gate on
     // primitives already in hand (see its own doc comment), and no

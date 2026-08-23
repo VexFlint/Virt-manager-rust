@@ -51,9 +51,12 @@
 //!
 //! **Also not modeled**: `_remove_install_cdrom_media`'s "keep media
 //! attached for Windows, which has a multi-stage install" exception —
-//! this crate has no `OsInfo`/guest-OS detection at all yet (still
-//! blocked on the `gir` codegen tool), so the final document always
-//! strips the cdrom media, matching every non-Windows case.
+//! `osinfo::OsInfo::is_windows()` exists now (ticket 04), but nothing
+//! threads an `OsInfo` through this module's builders yet (only
+//! `import.rs`'s `<clock>` offset consumes one so far), so the final
+//! document always strips the cdrom media, matching every non-Windows
+//! case. A real remaining gap, not an `OsInfo`-doesn't-exist blocker
+//! anymore.
 //!
 //! **Real simplifications, flagged rather than built** (same posture as
 //! `import.rs`):
@@ -90,6 +93,7 @@ use super::domain_skeleton::{
 /// Builds and boots from the CD alone (`<boot dev="cdrom">`) with no
 /// persistent disk device at all — matches `live: true`'s own doc comment
 /// on `InstallMethod::Iso` ("no persistent disk attached").
+#[allow(clippy::too_many_arguments)]
 pub fn build_iso_document(
     name: &str,
     memory_kib: u64,
@@ -98,6 +102,7 @@ pub fn build_iso_document(
     caps: GuestCapsDefaults,
     graphics_type: &str,
     cpu_mode: Option<&DefaultCpuMode>,
+    clock_offset: &str,
 ) -> Document {
     let (mut doc, root, os_el, devices_el) = build_domain_skeleton(
         name,
@@ -106,7 +111,14 @@ pub fn build_iso_document(
         &crate::cloner::generate_uuid(),
         &caps,
     );
-    push_default_clock(&mut doc, root, caps.os_type, caps.arch, caps.is_qemu);
+    push_default_clock(
+        &mut doc,
+        root,
+        caps.os_type,
+        caps.arch,
+        caps.is_qemu,
+        clock_offset,
+    );
     push_default_cpu(&mut doc, root, cpu_mode);
     push_boot_dev(&mut doc, os_el, "cdrom");
 
@@ -145,6 +157,7 @@ pub fn build_iso_two_phase_documents(
     caps: GuestCapsDefaults,
     graphics_type: &str,
     cpu_mode: Option<&DefaultCpuMode>,
+    clock_offset: &str,
 ) -> (Document, Document) {
     let uuid = crate::cloner::generate_uuid();
     // Same device, same MAC in both documents — same reason the UUID is
@@ -163,6 +176,7 @@ pub fn build_iso_two_phase_documents(
         &mac,
         graphics_type,
         cpu_mode,
+        clock_offset,
         true,
     );
     let final_doc = build_iso_phase_document(
@@ -177,6 +191,7 @@ pub fn build_iso_two_phase_documents(
         &mac,
         graphics_type,
         cpu_mode,
+        clock_offset,
         false,
     );
     (initial, final_doc)
@@ -203,11 +218,19 @@ fn build_iso_phase_document(
     mac: &str,
     graphics_type: &str,
     cpu_mode: Option<&DefaultCpuMode>,
+    clock_offset: &str,
     is_initial: bool,
 ) -> Document {
     let (mut doc, root, os_el, devices_el) =
         build_domain_skeleton(name, memory_kib, vcpus, uuid, &caps);
-    push_default_clock(&mut doc, root, caps.os_type, caps.arch, caps.is_qemu);
+    push_default_clock(
+        &mut doc,
+        root,
+        caps.os_type,
+        caps.arch,
+        caps.is_qemu,
+        clock_offset,
+    );
     push_default_cpu(&mut doc, root, cpu_mode);
     if is_initial {
         push_on_reboot_destroy(&mut doc, root);
@@ -274,6 +297,7 @@ mod tests {
             },
             "spice",
             None,
+            "utc",
         );
         let root = doc.root_element().unwrap();
 
@@ -346,6 +370,7 @@ mod tests {
             },
             "vnc",
             None,
+            "utc",
         );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
@@ -391,6 +416,7 @@ mod tests {
             },
             "spice",
             None,
+            "utc",
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -438,6 +464,7 @@ mod tests {
             },
             "spice",
             None,
+            "utc",
         );
 
         let initial_root = initial.root_element().unwrap();
@@ -604,6 +631,7 @@ mod tests {
             },
             "spice",
             None,
+            "utc",
         );
         let initial_xml = initial.write_str().expect("serializes");
         let final_xml = final_doc.write_str().expect("serializes");

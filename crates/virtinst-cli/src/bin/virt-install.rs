@@ -58,11 +58,17 @@
 //! and `set_capabilities_defaults`'s plain `emulator` thread, not the
 //! full `set_defaults()` pipeline. `--container` deliberately excepted
 //! from `os_type`/`machine`/`emulator` (see `build_container_os_
-//! document`'s doc comment). `loader`/UEFI selection, the q35-preferred
-//! machine branch, CPU/clock/PM defaults, and the 9-file per-driver
-//! device-default matrix remain unbuilt — scoped in `.scratch/rust-
-//! conversion/issues/21-set-defaults-scope.md`, mostly blocked on
-//! `OsInfo` (still blocked on the `gir` codegen tool).
+//! document`'s doc comment). `graphics`/`clock`'s base trio/hostdev/
+//! CPU mode defaults are all built (ticket 21 slices (c)–(f)); `--os-
+//! variant` (ticket 04's real `libosinfo` bindings) now feeds `clock`'s
+//! `offset` attribute too. `loader`/UEFI selection, the q35-preferred
+//! machine branch, PM defaults, and the 9-file per-driver device-
+//! default matrix remain unbuilt — scoped in `.scratch/rust-conversion/
+//! issues/21-set-defaults-scope.md`; `loader`/UEFI selection and the
+//! per-driver disk-bus/video-model defaults need more `osinfo::OsInfo`
+//! query methods than `clock_offset()` alone (device-list and
+//! firmware-list queries, not built yet — see ticket 04's own doc
+//! comment for the minimal slice that exists today).
 
 use clap::Parser;
 use virtinst_core::capabilities::{Capabilities, DomainCapabilities};
@@ -72,6 +78,7 @@ use virtinst_core::install::{
     build_iso_two_phase_documents, build_manual_document, build_manual_two_phase_documents,
     GuestCapsDefaults,
 };
+use virtinst_core::osinfo::OsDb;
 
 #[derive(Parser)]
 #[command(name = "virt-install")]
@@ -134,9 +141,11 @@ struct Args {
 
     /// Number of virtual CPUs. Defaulting to a flat `1` when absent
     /// isn't upstream's real behavior — `--vcpus` is optional there
-    /// too, but falls back to `osinfo`'s recommended-resources lookup,
-    /// not a flat `1` (see `build_import_document`'s doc comment:
-    /// `OsInfo` isn't built yet).
+    /// too, but falls back to `osinfo`'s recommended-resources lookup
+    /// (`get_recommended_ncpus`, a query this crate's `osinfo::OsInfo`
+    /// doesn't have yet even though the underlying bindings now exist —
+    /// ticket 04's own doc comment scopes what's built so far), not a
+    /// flat `1`.
     #[arg(long, default_value_t = 1)]
     vcpus: u32,
 
@@ -154,6 +163,20 @@ struct Args {
     /// Connect to a non-default hypervisor.
     #[arg(short, long, default_value = "qemu:///system")]
     connect: String,
+
+    /// The OS being installed, as a libosinfo short-id (`fedora25`) or
+    /// full id (`http://fedoraproject.org/fedora/25`) — feeds the
+    /// `OsInfo`-gated defaults ticket 21 scoped and left blocked until
+    /// ticket 04 built real `libosinfo` bindings (`clock`'s `offset`
+    /// attribute so far; disk-bus/video-model/UEFI selection are still
+    /// unbuilt regardless of this flag, see `osinfo::OsInfo`'s own doc
+    /// comment for which query methods exist). Omitted entirely (not a
+    /// `"generic"` sentinel value the way upstream's CLI accepts) means
+    /// the same "no OS selected" defaults upstream's own synthetic
+    /// generic entry produces — see `push_default_clock`'s doc comment
+    /// for why that's equivalent, not a separate code path.
+    #[arg(long)]
+    os_variant: Option<String>,
 }
 
 fn main() {
@@ -290,6 +313,26 @@ fn main() {
         host_caps.host.cpu.model.as_deref(),
     );
 
+    // Ticket 04's real libosinfo bindings, first real consumer:
+    // `--os-variant` resolves to an `OsInfo` only when given (upstream
+    // always has one — a synthetic "generic" entry when no flag is
+    // passed — but `clock_offset()`'s outcome for that entry is
+    // identical to `None`'s fallback below, so there's nothing a
+    // synthetic object here would add; see `push_default_clock`'s doc
+    // comment). Accepts both the short-id and full-id forms — the
+    // short one (`fedora25`) is what users actually type.
+    let os_info = args.os_variant.as_deref().map(|variant| {
+        let db = OsDb::load_default().unwrap_or_else(|e| {
+            eprintln!("virt-install: failed to load osinfo-db: {e}");
+            std::process::exit(1);
+        });
+        db.os_by_id_or_short_id(variant).unwrap_or_else(|| {
+            eprintln!("virt-install: unknown --os-variant '{variant}'");
+            std::process::exit(1);
+        })
+    });
+    let clock_offset = os_info.as_ref().map_or("utc", |os| os.clock_offset());
+
     let memory_kib = args.memory.checked_mul(1024).unwrap_or_else(|| {
         eprintln!("virt-install: --memory {} MiB overflows", args.memory);
         std::process::exit(1);
@@ -328,6 +371,7 @@ fn main() {
             caps,
             graphics_type,
             cpu_mode.as_ref(),
+            clock_offset,
         ));
         (xml.clone(), xml)
     } else if let Some(media) = args.cdrom {
@@ -349,6 +393,7 @@ fn main() {
                 caps,
                 graphics_type,
                 cpu_mode.as_ref(),
+                clock_offset,
             ));
             (xml.clone(), xml)
         } else {
@@ -365,6 +410,7 @@ fn main() {
                 caps,
                 graphics_type,
                 cpu_mode.as_ref(),
+                clock_offset,
             );
             (write(initial), write(final_doc))
         }
@@ -387,6 +433,7 @@ fn main() {
             caps,
             graphics_type,
             cpu_mode.as_ref(),
+            clock_offset,
         );
         (write(initial), write(final_doc))
     } else if let Some(boot_dev) = args.boot {
@@ -408,6 +455,7 @@ fn main() {
             caps,
             graphics_type,
             cpu_mode.as_ref(),
+            clock_offset,
         ));
         (xml.clone(), xml)
     } else if args.container {
