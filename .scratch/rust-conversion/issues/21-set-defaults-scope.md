@@ -875,6 +875,48 @@ have yet, a materially bigger piece than threading one more string
 through the existing builders the way `clock_offset` was. Every
 builder in `install/` still hardcodes `bus="virtio"` unconditionally.
 
+## `default_disk_bus`: the decision tree itself landed, wiring deliberately deferred
+
+Built `domain_skeleton.rs`'s `is_hvm`/`is_xenpv`/`is_x86`/`is_q35`/
+`is_riscv_virt`/`is_pseries`/`is_s390x`/`is_loongarch64` (upstream's
+`domain/os.py` predicates, ported as free functions over the plain
+`os_type`/`arch`/`machine` strings `GuestCapsDefaults` already
+carries), `supports_virtio` (upstream's `guest.py`'s
+`_supports_virtio`), `default_disk_bus` (upstream's `disk.py`'s
+`_default_bus`, restricted to the two device shapes this crate's
+builders actually construct — no floppy device exists anywhere here),
+and `target_prefix_for_bus` (upstream's `get_target_prefix`, for
+output fidelity — confirmed against a real `test:///` `define` that
+libvirt itself doesn't reject a `bus`/target-`dev`-prefix mismatch, so
+this isn't a correctness requirement, just matching upstream's shape).
+8 new unit tests against synthetic `GuestCapsDefaults` values covering
+every branch: qemu+virtio-support, q35-without-virtio-support (proving
+virtio is checked *before* q35, not after), plain-x86-without-virtio
+(both disk and cdrom → `ide`), non-x86 cdrom-with-virtioscsi (→
+`scsi`), `!is_qemu` overriding a genuinely-virtio-capable OS (→ `ide`
+regardless), xenpv/non-hvm short-circuiting before virtio is ever
+considered, and `is_bhyve` winning over the plain-x86 `ide` default.
+197/197 `virtinst-core` (+8), harness 61/61, `fmt`/`clippy` clean.
+
+**Deliberately not wired to any real caller this turn** — advice taken
+mid-session (see the git log for this commit) not to combine "build
+the tree" and "flip every caller onto it" in one pass, since the
+second half isn't a small mechanical thread the way `clock_offset` was:
+`supports_virtio` returns `false` outright whenever `!is_qemu`, and
+every existing test in `import.rs`/`iso.rs`/`manual.rs` builds through
+`test:///`, whose connection is structurally never qemu. Wiring this in
+faithfully flips every one of those tests' disk bus from `virtio`/`vda`
+to `ide`/`hda` — upstream-correct, but a large, deliberate diff that
+deserves its own commit and its own failure-triage pass, not one that
+also has to ask "is the tree wrong, or did the assertion just need
+updating" at the same time. `is_bhyve` is a plain `bool` argument to
+`default_disk_bus` rather than derived from `caps.domain_type` — the
+exact `domain_type`-vs-`Uri::is_qemu()` conflation `push_default_nic`'s
+own doc comment already documents as a real, previously-shipped bug;
+the real caller-side value (`Uri::is_bhyve()`) already exists but isn't
+threaded through `GuestCapsDefaults` since nothing calls this function
+yet. Wiring this is the natural next OsInfo-related step, not started.
+
 **Verified**: 2 new tests in `osinfo::mod::tests` (`clock_offset`
 across Linux/Windows/Solaris family branches, `os_by_id_or_short_id`'s
 two lookup forms), 2 new tests in `import.rs` (`clock_offset` threading

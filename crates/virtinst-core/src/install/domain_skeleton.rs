@@ -216,6 +216,162 @@ pub(super) fn push_virtio_disk(doc: &mut Document, devices_el: Element, path: &s
         .expect("a freshly-created detached element always attaches cleanly");
 }
 
+/// Upstream's `domain/os.py`'s arch/`os_type`/`machine` predicates,
+/// ported as free functions over the plain strings `GuestCapsDefaults`
+/// already carries — matching how `push_default_clock` already treats
+/// `os_type`/`arch` as plain parameters rather than a wrapping
+/// `Guest`/`DomainOs` object. Only the ones `default_disk_bus` below
+/// actually needs are ported; upstream's `is_arm*`/`is_ppc64` (without
+/// the `pseries` machine check)/`is_riscv` (without the `virt` machine
+/// check) have no caller here and are omitted rather than spuriously
+/// added.
+fn is_hvm(os_type: &str) -> bool {
+    os_type == "hvm"
+}
+fn is_xenpv(os_type: &str) -> bool {
+    matches!(os_type, "xen" | "linux" | "xenpvh")
+}
+fn is_x86(arch: &str) -> bool {
+    arch == "x86_64" || arch == "i686"
+}
+fn is_q35(arch: &str, machine: Option<&str>) -> bool {
+    is_x86(arch) && machine.is_some_and(|m| m.contains("q35"))
+}
+fn is_riscv_virt(arch: &str, machine: Option<&str>) -> bool {
+    matches!(arch, "riscv64" | "riscv32") && machine.is_some_and(|m| m.starts_with("virt"))
+}
+fn is_pseries(arch: &str, machine: Option<&str>) -> bool {
+    matches!(arch, "ppc64" | "ppc64le") && machine.is_some_and(|m| m.starts_with("pseries"))
+}
+fn is_s390x(arch: &str) -> bool {
+    arch == "s390x"
+}
+fn is_loongarch64(arch: &str) -> bool {
+    arch == "loongarch64"
+}
+
+/// Upstream's `guest.py`'s `_supports_virtio` — the `conn.is_qemu()`
+/// gate first (non-qemu connections never get virtio, regardless of
+/// what the OS supports — upstream's own comment doesn't explain why,
+/// it just guards the whole method on it), then the four arches that
+/// *only* ever expose virtio controllers (no legacy IDE/e1000/etc.
+/// hardware exists for them at all), which short-circuit to `true`
+/// regardless of `os_support` before it's ever consulted. Everything
+/// else defers to the real per-OS `os_support` value (`OsInfo::
+/// supports_virtio{disk,scsi,net}()`, ticket 04's second caller).
+///
+/// `is_bhyve` isn't one of the four short-circuit arches upstream
+/// checks here — it's a separate, later branch in `_default_bus`
+/// itself (`self.conn.is_bhyve()`, a URI-scheme check like `is_qemu`,
+/// not an arch/machine check), kept out of this function to match
+/// upstream's own structure.
+fn supports_virtio(arch: &str, machine: Option<&str>, is_qemu: bool, os_support: bool) -> bool {
+    if !is_qemu {
+        return false;
+    }
+    if is_riscv_virt(arch, machine)
+        || is_s390x(arch)
+        || is_pseries(arch, machine)
+        || is_loongarch64(arch)
+    {
+        return true;
+    }
+    os_support
+}
+
+/// Upstream's `devices/disk.py`'s `_default_bus`, ported for the two
+/// device shapes this crate's builders actually construct
+/// (`device="disk"` and `device="cdrom"` — no floppy device exists
+/// anywhere in this crate, so upstream's `is_floppy()` branch has no
+/// analog here and is omitted rather than modeled unreachable).
+///
+/// **Built and unit-tested here, not yet wired to a real caller.**
+/// Every builder in this module still hardcodes `bus="virtio"`
+/// (`push_virtio_disk`) / `bus="ide"` (`iso.rs`'s `push_cdrom_disk`)
+/// unconditionally — wiring this in means flipping every existing
+/// `test:///`-based test's disk bus, since `test:///`'s connection is
+/// structurally never qemu (`is_qemu` is always `false` there) and
+/// `supports_virtio` above returns `false` outright whenever `!is_qemu`,
+/// matching upstream faithfully but changing this crate's *tested*
+/// default output (`bus="virtio"` → `bus="ide"`) for every case that
+/// doesn't go out of its way to fake a qemu connection
+/// (`VIRTINST_TEST_FAKE_URI`, the same technique `clock_offset`'s own
+/// real end-to-end test needed). That's a deliberate, large, separate
+/// diff — landing the decision tree first, verified in isolation
+/// against synthetic `GuestCapsDefaults` values, means a future test
+/// failure while wiring it can only be the wiring, not this function.
+///
+/// `is_bhyve` is a plain `bool` parameter here, not derived from
+/// `caps.domain_type` — `domain_type` is the capsinfo-reported
+/// hypervisor string (`"kvm"` on a real KVM host, not the literal
+/// `"qemu"`), the exact conflation `push_default_nic`'s own doc
+/// comment already documents as a real, previously-shipped bug for
+/// `is_qemu`. The real caller-side value is `Uri::is_bhyve()` (a
+/// URI-scheme check, same family as `Uri::is_qemu()` — both already
+/// exist on `connection::uri::Uri`), not yet threaded through
+/// `GuestCapsDefaults` since nothing calls this function yet.
+///
+/// Real libvirt is lenient about a `bus`/target-`dev`-prefix mismatch
+/// (confirmed against `test:///`: `<target dev='hda' bus='sata'/>`
+/// defines cleanly, libvirt even synthesizes the matching `<controller
+/// type='sata'>` for it) — `target_prefix_for_bus` below exists for
+/// output fidelity with upstream's own `generate_target`, not because
+/// a mismatch would be rejected.
+#[allow(dead_code)] // not yet wired to a real caller, see doc comment above
+pub(super) fn default_disk_bus(
+    caps: GuestCapsDefaults,
+    is_cdrom: bool,
+    is_bhyve: bool,
+    supports_virtiodisk: bool,
+    supports_virtioscsi: bool,
+) -> &'static str {
+    if is_xenpv(caps.os_type) {
+        return "xen";
+    }
+    if !is_hvm(caps.os_type) {
+        return "ide";
+    }
+    if !is_cdrom && supports_virtio(caps.arch, caps.machine, caps.is_qemu, supports_virtiodisk) {
+        return "virtio";
+    }
+    if is_q35(caps.arch, caps.machine) {
+        return "sata";
+    }
+    if is_bhyve {
+        return "sata";
+    }
+    if is_x86(caps.arch) {
+        return "ide";
+    }
+    if is_cdrom && supports_virtio(caps.arch, caps.machine, caps.is_qemu, supports_virtioscsi) {
+        return "scsi";
+    }
+    if caps.machine.is_some_and(|m| m.starts_with("vexpress")) {
+        return "sd";
+    }
+    "usb"
+}
+
+/// Upstream's `devices/disk.py`'s `get_target_prefix` — the
+/// bus-to-target-device-name-prefix table `generate_target` uses to
+/// name a disk's `<target dev=.../>` consistently with its `bus`.
+/// Ported for fidelity (see `default_disk_bus`'s doc comment on why
+/// libvirt itself doesn't require this), not modeling upstream's
+/// per-prefix numbering-limit table (`nummap`) since every caller here
+/// builds exactly one disk of each device kind — there's never a
+/// second one to number past `a`.
+#[allow(dead_code)] // not yet wired to a real caller, see default_disk_bus's doc comment
+pub(super) fn target_prefix_for_bus(bus: &str) -> &'static str {
+    match bus {
+        "virtio" => "vd",
+        "xen" => "xvd",
+        "fdc" => "fd",
+        "ide" => "hd",
+        // sata, scsi, usb, sd
+        _ => "sd",
+    }
+}
+
 /// `<interface type="network"><source network="default"/><mac
 /// address=mac/><model type="virtio"/></interface>`, pushed onto
 /// `devices_el` — upstream's own CLI default, not a `--pxe`-specific
@@ -446,4 +602,164 @@ pub(super) fn push_default_nic(doc: &mut Document, devices_el: Element, mac: &st
     devices_el
         .push_child(doc, iface_el)
         .expect("a freshly-created detached element always attaches cleanly");
+}
+
+#[cfg(test)]
+mod bus_selection_tests {
+    use super::*;
+
+    /// The common case this crate actually targets: a real qemu/KVM
+    /// x86_64 `pc-*` guest with an OS that reports virtio support —
+    /// `push_virtio_disk`'s hardcoded output, reached via the decision
+    /// tree instead of a fixed constant.
+    #[test]
+    fn qemu_x86_pc_with_virtio_support_picks_virtio_for_disk() {
+        let caps = GuestCapsDefaults {
+            domain_type: "kvm",
+            os_type: "hvm",
+            arch: "x86_64",
+            machine: Some("pc-q35-8.2"),
+            emulator: None,
+            is_qemu: true,
+        };
+        // machine contains "q35" here on purpose -- proves the
+        // virtio-disk branch is checked *before* the is_q35 branch,
+        // matching upstream's own ordering (virtio wins over q35/sata
+        // whenever the OS actually supports it).
+        assert_eq!(default_disk_bus(caps, false, false, true, true), "virtio");
+    }
+
+    /// Same guest, but the OS doesn't declare virtio-disk support
+    /// (e.g. a pre-virtio `--os-variant`) and the machine really is
+    /// q35 — falls through to `sata`, not `ide`, matching upstream's
+    /// branch order (q35 checked before the unconditional x86 `ide`).
+    #[test]
+    fn q35_without_virtio_support_picks_sata_for_disk() {
+        let caps = GuestCapsDefaults {
+            domain_type: "kvm",
+            os_type: "hvm",
+            arch: "x86_64",
+            machine: Some("pc-q35-8.2"),
+            emulator: None,
+            is_qemu: true,
+        };
+        assert_eq!(default_disk_bus(caps, false, false, false, false), "sata");
+    }
+
+    /// The i440fx (non-q35) x86 case without virtio support — the
+    /// long-standing IDE default, both for the persistent disk and
+    /// the cdrom (upstream's own comment: "x86 long time default has
+    /// been IDE CDROM").
+    #[test]
+    fn plain_x86_without_virtio_support_picks_ide_for_disk_and_cdrom() {
+        let caps = GuestCapsDefaults {
+            domain_type: "kvm",
+            os_type: "hvm",
+            arch: "x86_64",
+            machine: Some("pc-i440fx-8.2"),
+            emulator: None,
+            is_qemu: true,
+        };
+        assert_eq!(default_disk_bus(caps, false, false, false, false), "ide");
+        assert_eq!(default_disk_bus(caps, true, false, false, false), "ide");
+    }
+
+    /// A non-x86, non-q35 cdrom with virtio-scsi support gets `scsi` —
+    /// the branch upstream's own comment says only matters off x86,
+    /// since `is_x86()` returns `ide` unconditionally before it's ever
+    /// reached on x86. `riscv64`/`virt` also happens to be one of the
+    /// four virtio-only arches, so `supports_virtio` short-circuits to
+    /// `true` regardless of the `os_support` argument passed in.
+    #[test]
+    fn non_x86_cdrom_with_virtioscsi_support_picks_scsi() {
+        let caps = GuestCapsDefaults {
+            domain_type: "kvm",
+            os_type: "hvm",
+            arch: "riscv64",
+            machine: Some("virt"),
+            emulator: None,
+            is_qemu: true,
+        };
+        assert_eq!(default_disk_bus(caps, true, false, false, false), "scsi");
+    }
+
+    /// `!is_qemu` overrides every other signal, including an OS that
+    /// genuinely supports virtio — matches upstream's `_supports_virtio`
+    /// guarding the whole method on `conn.is_qemu()` first. This is the
+    /// exact behavior this function's own doc comment flags as the
+    /// large, deliberate diff wiring it in will cause: every
+    /// `test:///`-based existing test builds through a connection where
+    /// this is `false`.
+    #[test]
+    fn non_qemu_connection_never_gets_virtio_even_if_the_os_supports_it() {
+        let caps = GuestCapsDefaults {
+            domain_type: "test",
+            os_type: "hvm",
+            arch: "x86_64",
+            machine: None,
+            emulator: None,
+            is_qemu: false,
+        };
+        assert_eq!(default_disk_bus(caps, false, false, true, true), "ide");
+    }
+
+    /// `is_xenpv`/`!is_hvm` both short-circuit before virtio (or
+    /// anything else) is ever considered — the disk device on a
+    /// paravirtualized Xen guest, or any non-`hvm` `os_type`, never
+    /// gets a virtio bus regardless of what the OS or arch would
+    /// otherwise support.
+    #[test]
+    fn xenpv_and_non_hvm_short_circuit_before_virtio() {
+        let xenpv = GuestCapsDefaults {
+            domain_type: "xen",
+            os_type: "linux",
+            arch: "x86_64",
+            machine: None,
+            emulator: None,
+            is_qemu: false,
+        };
+        assert_eq!(default_disk_bus(xenpv, false, false, true, true), "xen");
+
+        // "exe" (a container os_type) is neither "hvm" nor one of the
+        // xenpv-family os_types -- picked specifically so this
+        // exercises the `!is_hvm` branch, not `is_xenpv` again.
+        let non_hvm = GuestCapsDefaults {
+            domain_type: "lxc",
+            os_type: "exe",
+            arch: "x86_64",
+            machine: None,
+            emulator: None,
+            is_qemu: false,
+        };
+        assert_eq!(default_disk_bus(non_hvm, false, false, true, true), "ide");
+    }
+
+    /// `is_bhyve` is a plain argument here (not derived from
+    /// `domain_type`, see this module's doc comment on why) — proven
+    /// by setting it `true` on an otherwise-plain-x86-without-q35 caps
+    /// value and confirming `sata` wins over the `is_x86` → `ide`
+    /// branch that would otherwise apply.
+    #[test]
+    fn is_bhyve_flag_picks_sata_ahead_of_the_plain_x86_ide_default() {
+        let caps = GuestCapsDefaults {
+            domain_type: "bhyve",
+            os_type: "hvm",
+            arch: "x86_64",
+            machine: Some("pc-i440fx-8.2"),
+            emulator: None,
+            is_qemu: false,
+        };
+        assert_eq!(default_disk_bus(caps, false, true, false, false), "sata");
+    }
+
+    #[test]
+    fn target_prefix_matches_upstreams_bus_to_prefix_table() {
+        assert_eq!(target_prefix_for_bus("virtio"), "vd");
+        assert_eq!(target_prefix_for_bus("xen"), "xvd");
+        assert_eq!(target_prefix_for_bus("fdc"), "fd");
+        assert_eq!(target_prefix_for_bus("ide"), "hd");
+        assert_eq!(target_prefix_for_bus("sata"), "sd");
+        assert_eq!(target_prefix_for_bus("scsi"), "sd");
+        assert_eq!(target_prefix_for_bus("usb"), "sd");
+    }
 }
