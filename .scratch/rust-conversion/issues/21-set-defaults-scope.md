@@ -958,12 +958,18 @@ full port, not a partial one, including the non-x86 branch
 reach yet but ported anyway for completeness against upstream's own
 disjoint `if`/`else`. 216/216 `virtinst-core`.
 
-Still not wired to a real caller — same deliberate build-then-wire
-split every `OsInfo`-adjacent default in this session has gone
-through — and even once wired, this crate can only ever reach
-`supports_firmware_efi()`'s fast path (`<os firmware="efi">` alone).
-The loader-path fallback for older libvirt (`_lookup_default_uefi_
-path()`, a real JSON-firmware-descriptor filesystem scan) stays a
-distinct, unbuilt subsystem — the one piece of "UEFI/loader selection"
-this section's original verdict named that still isn't buildable,
-not a corner this slice cut.
+**Now wired** (ticket 04's own file has the full writeup): `build_
+domain_skeleton` gained a `firmware: Option<&str>` parameter emitting
+`<os firmware=...>` directly, threaded through every builder the same
+way `disk_bus`/`nic_model` were; `virt-install.rs` computes it via
+`default_firmware`/`prefers_uefi`/`domcaps.supports_firmware_efi()` at
+each non-container call site. 217/217 `virtinst-core`, proven with a
+real Windows 11 `OsInfo` entry (a genuine UEFI-requirement fact)
+surviving a real libvirt define.
+
+Even wired, this crate can only ever reach `supports_firmware_efi()`'s
+fast path (`<os firmware="efi">` alone) — the loader-path fallback for
+older libvirt (`_lookup_default_uefi_path()`, a real JSON-firmware-
+descriptor filesystem scan) stays a distinct, unbuilt subsystem — the
+one piece of "UEFI/loader selection" this section's original verdict
+named that still isn't buildable, not a corner this slice cut.

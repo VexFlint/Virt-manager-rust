@@ -107,12 +107,20 @@ pub struct GuestCapsDefaults<'a> {
 /// Without a fixed UUID at all, each libvirt call invents its own and
 /// the second call fails outright ("domain already exists with uuid
 /// ..." — hit this for real, see `import.rs`'s doc comment).
+///
+/// `firmware` is the caller's already-resolved `default_firmware`
+/// answer (or a literal `None` for `--container`, which never reaches
+/// UEFI in practice — see `default_firmware`'s own doc comment) — sets
+/// `<os firmware=...>` directly on `os_el`, omitted entirely when
+/// `None`. Same "resolve once, pass the answer in" pattern as
+/// `disk_bus`/`nic_model`.
 pub(super) fn build_domain_skeleton(
     name: &str,
     memory_kib: u64,
     vcpus: u32,
     uuid: &str,
     caps: &GuestCapsDefaults,
+    firmware: Option<&str>,
 ) -> (Document, Element, Element, Element) {
     let mut doc = Document::new();
     let root = Element::new(&mut doc, "domain");
@@ -136,6 +144,9 @@ pub(super) fn build_domain_skeleton(
     push_text_child(&mut doc, root, "vcpu", &vcpus.to_string());
 
     let os_el = Element::new(&mut doc, "os");
+    if let Some(fw) = firmware {
+        os_el.set_attribute(&mut doc, "firmware", fw);
+    }
     let type_el = Element::new_with_text(&mut doc, "type", caps.os_type);
     type_el.set_attribute(&mut doc, "arch", caps.arch);
     if let Some(m) = caps.machine {
@@ -462,20 +473,14 @@ pub fn default_nic_model(
 /// nic`'s doc comment documents as a real, previously-shipped bug for
 /// `is_qemu`.
 ///
-/// **Built and unit-tested here, not yet wired to a real caller** —
-/// no builder in this module emits `<os firmware=...>` at all yet.
-/// Wiring this needs `DomainCapabilities::supports_firmware_efi()`
-/// (ticket 04/this slice's second real caller) threaded through
-/// alongside the `OsInfo`-derived `bool` this function takes, the same
-/// "resolve once in `virt-install.rs`, pass the answer in" shape
-/// `default_disk_bus`/`default_nic_model` both went through — kept as
-/// its own future slice per this session's "one slice, verified, per
-/// turn" discipline. Even once wired, this crate can only ever reach
-/// the fast path (`supports_firmware_efi() == true` → `<os
-/// firmware="efi">`, no `<loader>`/`<nvram>` needed) — the loader-path
-/// fallback (`_lookup_default_uefi_path()`, a real filesystem scan
-/// over JSON firmware-descriptor files) is a distinct subsystem this
-/// crate doesn't model, not a corner cut inside this function.
+/// **Wired** via `default_firmware` below — this function's own
+/// output feeds it, `DomainCapabilities::supports_firmware_efi()`'s
+/// the other input. This crate can only ever reach the fast path
+/// (`supports_firmware_efi() == true` → `<os firmware="efi">`, no
+/// `<loader>`/`<nvram>` needed) — the loader-path fallback for older
+/// libvirt (`_lookup_default_uefi_path()`, a real filesystem scan over
+/// JSON firmware-descriptor files) is a distinct subsystem this crate
+/// doesn't model, not a corner cut inside either function.
 pub fn prefers_uefi(
     caps: GuestCapsDefaults,
     is_test: bool,
@@ -489,6 +494,28 @@ pub fn prefers_uefi(
             || is_riscv_virt(caps.arch, caps.machine)
             || is_loongarch64(caps.arch)
             || is_bhyve
+    }
+}
+
+/// Upstream's `guest.py`'s `enable_uefi()`, restricted to its own fast
+/// path (`domcaps.supports_firmware_efi()` — see `prefers_uefi`'s doc
+/// comment for why the loader-path fallback isn't modeled). `None`
+/// when `!prefers_uefi` (no UEFI wanted at all) or when the fast path
+/// itself isn't available (`supports_firmware_efi() == false`) — this
+/// crate silently doesn't enable UEFI in that second case rather than
+/// erroring or guessing a loader path, a real, deliberate gap distinct
+/// from "UEFI not wanted."
+///
+/// Upstream's `_set_default_uefi` also checks `not self.os.kernel and
+/// not self.os.loader and self.os.loader_ro is None and self.os.nvram
+/// is None and self.os.firmware is None` before calling `enable_uefi`
+/// — none of this crate's builders ever set any of those fields, so
+/// that guard is always true here and isn't modeled as a check.
+pub fn default_firmware(prefers_uefi: bool, supports_firmware_efi: bool) -> Option<&'static str> {
+    if prefers_uefi && supports_firmware_efi {
+        Some("efi")
+    } else {
+        None
     }
 }
 

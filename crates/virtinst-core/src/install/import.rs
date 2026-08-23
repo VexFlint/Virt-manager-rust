@@ -103,6 +103,7 @@ pub fn build_import_document(
     clock_offset: &str,
     disk_bus: &str,
     nic_model: Option<&str>,
+    firmware: Option<&str>,
 ) -> Document {
     let (mut doc, root, os_el, devices_el) = build_domain_skeleton(
         name,
@@ -110,6 +111,7 @@ pub fn build_import_document(
         vcpus,
         &crate::cloner::generate_uuid(),
         &caps,
+        firmware,
     );
     push_default_clock(
         &mut doc,
@@ -164,6 +166,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let root = doc.root_element().unwrap();
 
@@ -286,6 +289,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let root = doc.root_element().unwrap();
         assert!(root.find(&doc, "clock").is_none());
@@ -314,6 +318,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let root = doc.root_element().unwrap();
         assert!(root.find(&doc, "clock").is_none());
@@ -344,6 +349,7 @@ mod tests {
             "localtime",
             "virtio",
             Some("virtio"),
+            None,
         );
         let root = doc.root_element().unwrap();
         let clock = root.find(&doc, "clock").unwrap();
@@ -374,6 +380,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let root = doc.root_element().unwrap();
         let graphics = root
@@ -411,6 +418,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let root = doc.root_element().unwrap();
         assert!(root.find(&doc, "cpu").is_none());
@@ -439,6 +447,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let root = doc.root_element().unwrap();
         let cpu = root.find(&doc, "cpu").unwrap();
@@ -472,6 +481,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let root = doc.root_element().unwrap();
         let cpu = root.find(&doc, "cpu").unwrap();
@@ -510,6 +520,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let root = doc.root_element().unwrap();
         let cpu = root.find(&doc, "cpu").unwrap();
@@ -541,6 +552,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let root = doc.root_element().unwrap();
         let mac = root
@@ -594,6 +606,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let root = doc.root_element().unwrap();
         let mac = root
@@ -637,6 +650,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let root = doc.root_element().unwrap();
         let type_el = root.find(&doc, "os").unwrap().find(&doc, "type").unwrap();
@@ -668,6 +682,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
@@ -737,6 +752,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -848,6 +864,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         // Through the DOM, not a raw string match on the serialized
         // XML — a string match couples this test to `virtinst_xml`'s
@@ -949,6 +966,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let root = doc.root_element().unwrap();
         let type_el = root.find(&doc, "os").unwrap().find(&doc, "type").unwrap();
@@ -1056,6 +1074,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let root = doc.root_element().unwrap();
         let mac = root
@@ -1139,6 +1158,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -1233,6 +1253,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -1314,6 +1335,7 @@ mod tests {
             windows.clock_offset(),
             "virtio",
             Some("virtio"),
+            None,
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -1419,6 +1441,7 @@ mod tests {
             "utc",
             disk_bus,
             nic_model,
+            None,
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -1476,6 +1499,7 @@ mod tests {
             "utc",
             "virtio",
             None,
+            None,
         );
         let root = doc.root_element().unwrap();
         let iface = root
@@ -1487,5 +1511,104 @@ mod tests {
             iface.find(&doc, "model").is_none(),
             "None must omit <model> entirely, not fall back to a constant"
         );
+    }
+
+    /// The `default_firmware`/`prefers_uefi` composition, proven end to
+    /// end from the start this time (learned from the disk-bus wiring's
+    /// missing-composition-test gap) — a real Windows 11 `OsInfo` entry
+    /// (`requires_firmware_efi("x86_64") == true`, a genuine hardware
+    /// fact) and a real `DomainCapabilities::supports_firmware_efi()`
+    /// answer (parsed from a literal fixture, not fetched — a plain
+    /// `capabilities::domcaps` parse needs no live connection) both
+    /// feed `prefers_uefi`/`default_firmware`, and the resulting
+    /// `<os firmware="efi">` survives a real `Domain::create_new`/
+    /// `define_new` round trip.
+    #[test]
+    fn default_firmware_from_a_real_osinfo_entry_and_domcaps_survives_a_real_libvirt_define() {
+        use crate::capabilities::DomainCapabilities;
+        use crate::connection::{Connection, Domain};
+        use crate::install::{default_firmware, prefers_uefi};
+        use crate::osinfo::OsDb;
+        use crate::test_support::TEST_DOMAIN_LOCK;
+
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let db = OsDb::load_default().expect("osinfo-db is installed on this machine");
+        let win11 = db
+            .os_by_id_or_short_id("win11")
+            .expect("win11 ships in every recent osinfo-db release");
+        assert!(
+            win11.requires_firmware_efi("x86_64"),
+            "windows 11 genuinely requires UEFI on x86_64 -- this test only proves \
+             something if this holds"
+        );
+
+        let domcaps = DomainCapabilities::parse(
+            r#"<domainCapabilities>
+  <os supported='yes'>
+    <enum name='firmware'><value>efi</value></enum>
+  </os>
+</domainCapabilities>"#,
+        )
+        .expect("parses");
+        assert!(domcaps.supports_firmware_efi());
+
+        std::env::set_var("VIRTINST_TEST_FAKE_URI", "qemu:///system");
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        std::env::remove_var("VIRTINST_TEST_FAKE_URI");
+
+        let caps = GuestCapsDefaults {
+            domain_type: "test",
+            os_type: "hvm",
+            arch: "x86_64",
+            machine: None,
+            emulator: None,
+            is_qemu: conn.uri().is_qemu(),
+        };
+        let wants_uefi = prefers_uefi(
+            caps,
+            conn.uri().is_test(),
+            false,
+            win11.requires_firmware_efi("x86_64"),
+        );
+        assert!(
+            wants_uefi,
+            "x86 + qemu defers entirely to requires_firmware_efi"
+        );
+        let firmware = default_firmware(wants_uefi, domcaps.supports_firmware_efi());
+        assert_eq!(firmware, Some("efi"));
+
+        let doc = build_import_document(
+            "firmware-end-to-end",
+            1048576,
+            1,
+            "/guest/firmware-end-to-end.img",
+            caps,
+            "spice",
+            None,
+            "utc",
+            "virtio",
+            Some("virtio"),
+            firmware,
+        );
+        let xml = doc.write_str().expect("serializes");
+
+        let running = Domain::create_new(&conn, &xml).expect("transient create succeeds");
+        let persisted = Domain::define_new(&conn, &xml).expect("define succeeds");
+        let refetched = Domain::lookup_by_name(&conn, "firmware-end-to-end")
+            .expect("the domain is findable by the name we gave it");
+        let inactive_xml = refetched.inactive_xml().expect("fetch inactive XML");
+        assert!(
+            inactive_xml.contains("firmware='efi'"),
+            "the real driver kept the firmware='efi' attribute we defined it with, got: \
+             {inactive_xml}"
+        );
+
+        running
+            .destroy()
+            .expect("cleanup: destroy the transient instance");
+        persisted
+            .undefine()
+            .expect("cleanup: undefine the persistent config");
     }
 }

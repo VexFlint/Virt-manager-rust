@@ -99,6 +99,7 @@ pub fn build_manual_document(
     clock_offset: &str,
     disk_bus: &str,
     nic_model: Option<&str>,
+    firmware: Option<&str>,
 ) -> Document {
     build_manual_phase_document(
         name,
@@ -114,6 +115,7 @@ pub fn build_manual_document(
         clock_offset,
         disk_bus,
         nic_model,
+        firmware,
         false,
     )
 }
@@ -140,6 +142,7 @@ pub fn build_manual_two_phase_documents(
     clock_offset: &str,
     disk_bus: &str,
     nic_model: Option<&str>,
+    firmware: Option<&str>,
 ) -> (Document, Document) {
     let uuid = crate::cloner::generate_uuid();
     // Same NIC, same MAC in both documents — same reason the UUID is
@@ -160,6 +163,7 @@ pub fn build_manual_two_phase_documents(
         clock_offset,
         disk_bus,
         nic_model,
+        firmware,
         true,
     );
 
@@ -181,6 +185,7 @@ pub fn build_manual_two_phase_documents(
         clock_offset,
         disk_bus,
         nic_model,
+        firmware,
         false,
     );
 
@@ -213,10 +218,11 @@ fn build_manual_phase_document(
     clock_offset: &str,
     disk_bus: &str,
     nic_model: Option<&str>,
+    firmware: Option<&str>,
     is_initial: bool,
 ) -> Document {
     let (mut doc, root, os_el, devices_el) =
-        build_domain_skeleton(name, memory_kib, vcpus, uuid, &caps);
+        build_domain_skeleton(name, memory_kib, vcpus, uuid, &caps, firmware);
     push_default_clock(
         &mut doc,
         root,
@@ -269,6 +275,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let root = doc.root_element().unwrap();
 
@@ -322,6 +329,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let root = doc.root_element().unwrap();
 
@@ -364,6 +372,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let root = doc.root_element().unwrap();
         let os = root.find(&doc, "os").unwrap();
@@ -391,6 +400,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
@@ -447,6 +457,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -513,6 +524,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
 
         let initial_root = initial.root_element().unwrap();
@@ -609,6 +621,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
 
         let initial_root = initial.root_element().unwrap();
@@ -677,6 +690,7 @@ mod tests {
             "utc",
             "virtio",
             Some("virtio"),
+            None,
         );
         let initial_xml = initial.write_str().expect("serializes");
         let final_xml = final_doc.write_str().expect("serializes");

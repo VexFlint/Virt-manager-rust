@@ -76,7 +76,7 @@ use virtinst_core::connection::{Connection, Domain};
 use virtinst_core::install::{
     build_container_os_document, build_import_document, build_iso_document,
     build_iso_two_phase_documents, build_manual_document, build_manual_two_phase_documents,
-    default_disk_bus, default_nic_model, GuestCapsDefaults,
+    default_disk_bus, default_firmware, default_nic_model, prefers_uefi, GuestCapsDefaults,
 };
 use virtinst_core::osinfo::OsDb;
 
@@ -284,6 +284,9 @@ fn main() {
     // the comment just above): `domain_type` is the capsinfo-reported
     // hypervisor string, not a URI scheme.
     let is_bhyve = conn.uri().is_bhyve();
+    // `prefers_uefi`'s `is_test` parameter — same URI-scheme-check
+    // family, same reasoning as `is_bhyve` just above.
+    let is_test = conn.uri().is_test();
 
     // Ticket 21 slice (c): `graphics` default type
     // (`DeviceGraphics._default_type`, `graphics.py:181`) —
@@ -360,6 +363,17 @@ fn main() {
         .as_ref()
         .map(|os| os.supported_netmodels())
         .unwrap_or_default();
+    // `prefers_uefi`'s `OsInfo`-derived input — `false` with no
+    // `--os-variant` given, matching upstream's synthetic "generic"
+    // entry (no `<firmware>` declarations at all, same `default`-
+    // fallback branch `requires_firmware_efi`'s own doc comment names).
+    let requires_firmware_efi = os_info
+        .as_ref()
+        .is_some_and(|os| os.requires_firmware_efi(&arch));
+    // `default_firmware`'s other input — the modern libvirt "firmware
+    // auto-select" capability, real per-driver data from `domcaps`
+    // (already fetched above for `graphics_type`/`cpu_mode`).
+    let supports_firmware_efi = domcaps.supports_firmware_efi();
 
     let memory_kib = args.memory.checked_mul(1024).unwrap_or_else(|| {
         eprintln!("virt-install: --memory {} MiB overflows", args.memory);
@@ -399,6 +413,10 @@ fn main() {
             supports_virtioscsi,
         );
         let nic_model = default_nic_model(caps, supports_virtionet, &supported_netmodels);
+        let firmware = default_firmware(
+            prefers_uefi(caps, is_test, is_bhyve, requires_firmware_efi),
+            supports_firmware_efi,
+        );
         let xml = write(build_import_document(
             &args.name,
             memory_kib,
@@ -410,6 +428,7 @@ fn main() {
             clock_offset,
             disk_bus,
             nic_model,
+            firmware,
         ));
         (xml.clone(), xml)
     } else if let Some(media) = args.cdrom {
@@ -430,6 +449,10 @@ fn main() {
             supports_virtioscsi,
         );
         let nic_model = default_nic_model(caps, supports_virtionet, &supported_netmodels);
+        let firmware = default_firmware(
+            prefers_uefi(caps, is_test, is_bhyve, requires_firmware_efi),
+            supports_firmware_efi,
+        );
         if args.livecd {
             let xml = write(build_iso_document(
                 &args.name,
@@ -442,6 +465,7 @@ fn main() {
                 clock_offset,
                 cdrom_bus,
                 nic_model,
+                firmware,
             ));
             (xml.clone(), xml)
         } else {
@@ -469,6 +493,7 @@ fn main() {
                 cdrom_bus,
                 disk_bus,
                 nic_model,
+                firmware,
             );
             (write(initial), write(final_doc))
         }
@@ -490,6 +515,10 @@ fn main() {
             supports_virtioscsi,
         );
         let nic_model = default_nic_model(caps, supports_virtionet, &supported_netmodels);
+        let firmware = default_firmware(
+            prefers_uefi(caps, is_test, is_bhyve, requires_firmware_efi),
+            supports_firmware_efi,
+        );
         let (initial, final_doc) = build_manual_two_phase_documents(
             &args.name,
             memory_kib,
@@ -502,6 +531,7 @@ fn main() {
             clock_offset,
             disk_bus,
             nic_model,
+            firmware,
         );
         (write(initial), write(final_doc))
     } else if let Some(boot_dev) = args.boot {
@@ -522,6 +552,10 @@ fn main() {
             supports_virtioscsi,
         );
         let nic_model = default_nic_model(caps, supports_virtionet, &supported_netmodels);
+        let firmware = default_firmware(
+            prefers_uefi(caps, is_test, is_bhyve, requires_firmware_efi),
+            supports_firmware_efi,
+        );
         let xml = write(build_manual_document(
             &args.name,
             memory_kib,
@@ -534,6 +568,7 @@ fn main() {
             clock_offset,
             disk_bus,
             nic_model,
+            firmware,
         ));
         (xml.clone(), xml)
     } else if args.container {

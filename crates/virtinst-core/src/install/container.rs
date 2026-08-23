@@ -105,6 +105,11 @@ pub fn build_container_os_document(
             emulator: None,
             is_qemu,
         },
+        // `default_firmware`'s own doc comment: a container's
+        // connection is never qemu/test/bhyve in practice, so
+        // `prefers_uefi` would resolve to `false` here regardless --
+        // no `DomainCapabilities` to build just to confirm it.
+        None,
     );
     // Ticket 21 slice (d): upstream calls `clock.set_defaults`
     // unconditionally too (`guest.py`'s `set_defaults()`), relying on

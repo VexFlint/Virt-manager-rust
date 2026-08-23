@@ -298,13 +298,28 @@ than one merged condition. Needed one new predicate, `is_arm_machvirt`
 ported since nothing needed it. 6 new unit tests. 216/216
 `virtinst-core`.
 
-**Not yet wired** — no builder emits `<os firmware=...>` yet. Even
-once wired, this crate can only ever reach `supports_firmware_efi()`'s
-fast path (`<os firmware="efi">` alone, no `<loader>`/`<nvram>`
-needed) — the loader-path fallback for older libvirt
-(`_lookup_default_uefi_path()`, a real JSON-firmware-descriptor
-filesystem scan) is a distinct, unbuilt subsystem, not a corner cut
-inside any of these three functions. Kept as its own future slice per
-this session's "one slice, verified, per turn" discipline, same
-build-then-wire split `default_disk_bus`/`default_nic_model` both went
-through.
+**Now wired** (a deliberately separate follow-up commit, composition
+test written alongside the wiring, same discipline as the NIC-model
+slice): `build_domain_skeleton` gained a `firmware: Option<&str>`
+parameter, setting `<os firmware=...>` directly (omitted on `None`);
+every public builder threads it the same way `disk_bus`/`nic_model`
+are threaded. `virt-install.rs` computes it via `default_firmware`
+(upstream's `enable_uefi()`, restricted to its fast path) fed by
+`prefers_uefi`/`domcaps.supports_firmware_efi()` at each of its 4
+non-container call sites; `--container`'s own call site passes `None`
+directly (its connection is never qemu/test/bhyve in practice, so
+`prefers_uefi` would resolve `false` regardless — no `DomainCapabilities`
+to build just to confirm it). 1 new composition test: a real Windows 11
+`OsInfo` entry (`requires_firmware_efi("x86_64") == true`, a genuine
+hardware fact) plus a real `supports_firmware_efi()` parse survive a
+real `Domain::create_new`/`define_new` round trip
+(`firmware='efi'` in the persisted XML). 217/217 `virtinst-core`.
+Manually confirmed no panics against `test:///default` with
+`VIRTINST_TEST_FAKE_URI=qemu:///system`, both with and without
+`--os-variant win11`.
+
+This crate can only ever reach `supports_firmware_efi()`'s fast path
+(`<os firmware="efi">` alone, no `<loader>`/`<nvram>` needed) — the
+loader-path fallback for older libvirt (`_lookup_default_uefi_path()`,
+a real JSON-firmware-descriptor filesystem scan) stays a distinct,
+unbuilt subsystem, not a corner cut inside any of these functions.
