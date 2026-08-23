@@ -458,6 +458,94 @@ impl OsInfo {
             result
         }
     }
+
+    /// Upstream's `osdict.py`'s `_get_firmware_list()` — every declared
+    /// `(architecture, firmware_type, is_supported)` triple, ported
+    /// without upstream's `hasattr(self._os, "get_complete_firmware_
+    /// list")` guard: that guard exists because upstream supports
+    /// arbitrarily old installed `libosinfo` versions at runtime, while
+    /// this crate's binding is generated at build time against whatever
+    /// `libosinfo` headers are actually installed (ticket 04) — the
+    /// function is either present in the generated bindings or this
+    /// crate wouldn't compile, so there's no "maybe absent at runtime"
+    /// case to guard against here the way upstream's dynamically-typed
+    /// `hasattr` check does.
+    ///
+    /// `osinfo_os_get_complete_firmware_list` is `transfer-ownership=
+    /// "full"` returning an `OsinfoFirmwareList*` (checked directly
+    /// against the real `.gir`); `OsinfoFirmwareList`'s parent is
+    /// `OsinfoList` (confirmed against the generated struct layout,
+    /// same as `OsinfoDeviceList` above), so it walks with the same
+    /// `osinfo_list_get_length`/`osinfo_list_get_nth` pair.
+    /// `osinfo_firmware_get_architecture`/`get_firmware_type`/
+    /// `is_supported` are all `transfer-ownership="none"` (the first
+    /// two) or a plain `gboolean` (the third) per the real `.gir` —
+    /// borrowed, safe to read without taking a ref. `OsinfoFirmware`'s
+    /// first field is `OsinfoEntity` (confirmed against the generated
+    /// struct layout), the same inheritance-by-embedding cast already
+    /// established elsewhere in this module.
+    fn firmware_list(&self) -> Vec<(String, String, bool)> {
+        unsafe {
+            let list = ffi::osinfo_os_get_complete_firmware_list(self.ptr, std::ptr::null_mut());
+            if list.is_null() {
+                return Vec::new();
+            }
+            let raw_list = list as *mut ffi::OsinfoList;
+            let len = ffi::osinfo_list_get_length(raw_list);
+            let mut result = Vec::with_capacity(len.max(0) as usize);
+            for i in 0..len {
+                let entity = ffi::osinfo_list_get_nth(raw_list, i);
+                if entity.is_null() {
+                    continue;
+                }
+                let fw = entity as *mut ffi::OsinfoFirmware;
+                result.push((
+                    c_str_to_string(ffi::osinfo_firmware_get_architecture(fw)),
+                    c_str_to_string(ffi::osinfo_firmware_get_firmware_type(fw)),
+                    ffi::osinfo_firmware_is_supported(fw) != 0,
+                ));
+            }
+            gobject_sys::g_object_unref(list as *mut gobject_sys::GObject);
+            result
+        }
+    }
+
+    /// Upstream's `osdict.py`'s `_supports_firmware_type` — the first
+    /// declared firmware entry matching both `arch` and `name`
+    /// (`"efi"`/`"bios"`) wins; `default` when no entry for this
+    /// `(arch, name)` pair exists at all (an absent `<firmware>`
+    /// declaration means "no opinion", not "unsupported").
+    fn supports_firmware_type(&self, name: &str, arch: &str, default: bool) -> bool {
+        for (fw_arch, fw_type, is_supported) in self.firmware_list() {
+            if fw_arch != arch {
+                continue;
+            }
+            if fw_type == name {
+                return is_supported;
+            }
+        }
+        default
+    }
+
+    /// Upstream's `osdict.py`'s `requires_firmware_efi(arch)` — `efi`
+    /// supported and `bios` explicitly *not* supported for this arch.
+    /// Ported literally, minus upstream's outer `try/except Exception`
+    /// (a defensive catch-all around dynamically-typed libosinfo calls
+    /// that could raise for reasons Python can't statically rule out —
+    /// this binding's calls can't raise at all, only return `false`/
+    /// empty data, so there's nothing here for a `try` to catch).
+    ///
+    /// Verified against a real, permanently-relevant `osinfo-db` fact:
+    /// Windows 11 requires UEFI (`<firmware arch="x86_64" type="efi"/>`
+    /// present, `<firmware arch="x86_64" type="bios" supported="false"/>`
+    /// explicit) — one of the few real hardware-requirement facts
+    /// unlikely to ever change in osinfo-db, unlike an EOL-date-based
+    /// fixture that stays stable only by being permanently archived.
+    pub fn requires_firmware_efi(&self, arch: &str) -> bool {
+        let supports_efi = self.supports_firmware_type("efi", arch, false);
+        let supports_bios = self.supports_firmware_type("bios", arch, true);
+        supports_efi && !supports_bios
+    }
 }
 
 impl Clone for OsInfo {
@@ -651,6 +739,37 @@ mod tests {
             winxp.supported_netmodels(),
             vec!["e1000".to_string()],
             "winxp's osinfo-db entry declares exactly one net device, e1000"
+        );
+    }
+
+    /// Real firmware-requirement proof against this machine's actual
+    /// `osinfo-db`: Windows 11 (`<firmware arch="x86_64" type="efi"/>`
+    /// present, `<firmware arch="x86_64" type="bios" supported="false"/>`
+    /// explicit) genuinely requires UEFI — a real hardware fact, not a
+    /// stand-in, and one unlikely to ever change in osinfo-db unlike a
+    /// permanently-archived EOL fixture. Fedora 25 (no `<firmware>`
+    /// declarations at all) proves the `default` fallback branch: no
+    /// declared opinion on either firmware type reads as "efi not
+    /// supported, bios supported" (upstream's own `_supports_firmware_
+    /// type` defaults), not "unknown" or a panic.
+    #[test]
+    fn requires_firmware_efi_matches_real_osinfo_db_firmware_declarations() {
+        let db = OsDb::load_default().expect("osinfo-db is installed on this machine");
+
+        let win11 = db
+            .os_by_id_or_short_id("win11")
+            .expect("win11 ships in every recent osinfo-db release");
+        assert!(
+            win11.requires_firmware_efi("x86_64"),
+            "windows 11 genuinely requires UEFI on x86_64"
+        );
+
+        let fedora = db
+            .os("http://fedoraproject.org/fedora/25")
+            .expect("real entry");
+        assert!(
+            !fedora.requires_firmware_efi("x86_64"),
+            "fedora25 declares no firmware requirements at all -- defaults to false"
         );
     }
 }

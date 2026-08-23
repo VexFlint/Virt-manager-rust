@@ -227,9 +227,9 @@ pub(super) fn push_disk(doc: &mut Document, devices_el: Element, path: &str, bus
 /// ported as free functions over the plain strings `GuestCapsDefaults`
 /// already carries — matching how `push_default_clock` already treats
 /// `os_type`/`arch` as plain parameters rather than a wrapping
-/// `Guest`/`DomainOs` object. Only the ones `default_disk_bus` below
-/// actually needs are ported; upstream's `is_arm*`/`is_ppc64` (without
-/// the `pseries` machine check)/`is_riscv` (without the `virt` machine
+/// `Guest`/`DomainOs` object. Only the ones a real caller below
+/// actually needs are ported; upstream's `is_ppc64` (without the
+/// `pseries` machine check)/`is_riscv` (without the `virt` machine
 /// check) have no caller here and are omitted rather than spuriously
 /// added.
 fn is_hvm(os_type: &str) -> bool {
@@ -255,6 +255,9 @@ fn is_s390x(arch: &str) -> bool {
 }
 fn is_loongarch64(arch: &str) -> bool {
     arch == "loongarch64"
+}
+fn is_arm_machvirt(arch: &str, machine: Option<&str>) -> bool {
+    matches!(arch, "armv7l" | "aarch64") && machine.is_some_and(|m| m.starts_with("virt"))
 }
 
 /// Upstream's `guest.py`'s `_supports_virtio` — the `conn.is_qemu()`
@@ -437,6 +440,56 @@ pub fn default_nic_model(
         }
     }
     Some("e1000")
+}
+
+/// Upstream's `guest.py`'s `prefers_uefi()`, ported. Two disjoint
+/// cases, matching upstream's own `if`/`else` exactly rather than one
+/// merged condition:
+/// - x86 on a qemu or test connection: defers entirely to `OsInfo`
+///   (`requires_firmware_efi`) — upstream's own comment: "if OS has
+///   dropped support for bios, we have no choice but to use EFI; for
+///   other OS still prefer BIOS since it's faster and doesn't break
+///   QEMU internal snapshots."
+/// - everything else: a fixed set of arch/machine combinations that
+///   only ever boot through UEFI in practice (arm/riscv/loongarch64
+///   `machvirt`-style machines, and bhyve), `OsInfo` not consulted at
+///   all — matches upstream exactly, not a simplification.
+///
+/// `is_test`/`is_bhyve` are plain `bool` parameters, same reasoning as
+/// `default_disk_bus`'s own `is_bhyve` — both are `Uri`-scheme checks
+/// (`Uri::is_test()`/`Uri::is_bhyve()`, already exist), not derivable
+/// from `caps.domain_type` without the same conflation `push_default_
+/// nic`'s doc comment documents as a real, previously-shipped bug for
+/// `is_qemu`.
+///
+/// **Built and unit-tested here, not yet wired to a real caller** —
+/// no builder in this module emits `<os firmware=...>` at all yet.
+/// Wiring this needs `DomainCapabilities::supports_firmware_efi()`
+/// (ticket 04/this slice's second real caller) threaded through
+/// alongside the `OsInfo`-derived `bool` this function takes, the same
+/// "resolve once in `virt-install.rs`, pass the answer in" shape
+/// `default_disk_bus`/`default_nic_model` both went through — kept as
+/// its own future slice per this session's "one slice, verified, per
+/// turn" discipline. Even once wired, this crate can only ever reach
+/// the fast path (`supports_firmware_efi() == true` → `<os
+/// firmware="efi">`, no `<loader>`/`<nvram>` needed) — the loader-path
+/// fallback (`_lookup_default_uefi_path()`, a real filesystem scan
+/// over JSON firmware-descriptor files) is a distinct subsystem this
+/// crate doesn't model, not a corner cut inside this function.
+pub fn prefers_uefi(
+    caps: GuestCapsDefaults,
+    is_test: bool,
+    is_bhyve: bool,
+    requires_firmware_efi: bool,
+) -> bool {
+    if is_x86(caps.arch) && (caps.is_qemu || is_test) {
+        requires_firmware_efi
+    } else {
+        is_arm_machvirt(caps.arch, caps.machine)
+            || is_riscv_virt(caps.arch, caps.machine)
+            || is_loongarch64(caps.arch)
+            || is_bhyve
+    }
 }
 
 /// `<graphics type=graphics_type port="-1" .../>` (`tlsPort="-1"
@@ -955,5 +1008,104 @@ mod default_selection_tests {
             is_qemu: false,
         };
         assert_eq!(default_nic_model(caps, true, &[]), Some("e1000"));
+    }
+
+    /// x86+qemu defers entirely to `OsInfo` -- `true`/`false` both
+    /// pass straight through, no arch/machine override in play.
+    #[test]
+    fn x86_qemu_defers_entirely_to_requires_firmware_efi() {
+        let caps = GuestCapsDefaults {
+            domain_type: "kvm",
+            os_type: "hvm",
+            arch: "x86_64",
+            machine: None,
+            emulator: None,
+            is_qemu: true,
+        };
+        assert!(prefers_uefi(caps, false, false, true));
+        assert!(!prefers_uefi(caps, false, false, false));
+    }
+
+    /// x86+`test:///` behaves the same as x86+qemu -- upstream's own
+    /// `or` explicitly includes `conn.is_test()`, not just qemu.
+    #[test]
+    fn x86_test_driver_also_defers_to_requires_firmware_efi() {
+        let caps = GuestCapsDefaults {
+            domain_type: "test",
+            os_type: "hvm",
+            arch: "x86_64",
+            machine: None,
+            emulator: None,
+            is_qemu: false,
+        };
+        assert!(prefers_uefi(caps, true, false, true));
+    }
+
+    /// x86 on neither qemu nor test (e.g. a real Xen connection) never
+    /// consults `OsInfo` at all -- falls to the second branch, which
+    /// has no x86 case, so `false` regardless of `requires_firmware_efi`.
+    #[test]
+    fn x86_on_neither_qemu_nor_test_never_consults_osinfo() {
+        let caps = GuestCapsDefaults {
+            domain_type: "xen",
+            os_type: "hvm",
+            arch: "x86_64",
+            machine: None,
+            emulator: None,
+            is_qemu: false,
+        };
+        assert!(
+            !prefers_uefi(caps, false, false, true),
+            "requires_firmware_efi=true must not leak through on a non-qemu/test x86 connection"
+        );
+    }
+
+    /// arm `machvirt` always prefers UEFI, `OsInfo` never consulted --
+    /// proven by passing `requires_firmware_efi=false` and still
+    /// getting `true`.
+    #[test]
+    fn arm_machvirt_always_prefers_uefi_regardless_of_osinfo() {
+        let caps = GuestCapsDefaults {
+            domain_type: "kvm",
+            os_type: "hvm",
+            arch: "aarch64",
+            machine: Some("virt-8.2"),
+            emulator: None,
+            is_qemu: true,
+        };
+        assert!(prefers_uefi(caps, false, false, false));
+    }
+
+    /// `is_bhyve` wins in the second branch the same way it does for
+    /// `default_disk_bus` -- a plain URI-scheme signal, not derived
+    /// from `caps.domain_type`.
+    #[test]
+    fn is_bhyve_prefers_uefi_regardless_of_arch_or_osinfo() {
+        let caps = GuestCapsDefaults {
+            domain_type: "bhyve",
+            os_type: "hvm",
+            arch: "x86_64",
+            machine: None,
+            emulator: None,
+            is_qemu: false,
+        };
+        // x86 without qemu/test falls to the second branch, where
+        // is_bhyve applies.
+        assert!(prefers_uefi(caps, false, true, false));
+    }
+
+    /// A plain x86 `pc-i440fx` qemu guest with no EFI requirement is
+    /// the common case this crate actually targets -- `false`.
+    #[test]
+    fn plain_x86_qemu_guest_with_no_efi_requirement_does_not_prefer_uefi() {
+        let caps = GuestCapsDefaults {
+            domain_type: "kvm",
+            os_type: "hvm",
+            arch: "x86_64",
+            machine: Some("pc-i440fx-8.2"),
+            emulator: None,
+            is_qemu: true,
+        };
+        assert!(!prefers_uefi(caps, false, false, false));
     }
 }

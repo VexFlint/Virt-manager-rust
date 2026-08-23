@@ -254,3 +254,57 @@ composition proof already used, since both resolve from the same real
 `OsInfo`/connection), plus a synthetic test proving `None` actually
 omits `<model>` rather than falling back to a constant — the one
 branch no existing test exercised at all. 207/207 `virtinst-core`.
+
+## Fourth `OsInfo` caller: `requires_firmware_efi`, plus `domcaps::supports_firmware_efi` and `domain_skeleton::prefers_uefi` (built, not yet wired)
+
+`OsInfo::requires_firmware_efi(arch)` ports `osdict.py`'s
+`_get_firmware_list`/`_supports_firmware_type`/`requires_firmware_efi`
+in full, minus upstream's `hasattr`/`try-except` guards (this crate's
+binding is generated at build time against whatever `libosinfo` is
+actually installed — ticket 04's own premise — so there's no "maybe
+absent at runtime" case a dynamically-typed `hasattr` check guards
+against). `osinfo_os_get_complete_firmware_list` is `transfer-
+ownership="full"` returning an `OsinfoFirmwareList*` whose parent is
+`OsinfoList` (both checked directly, same pattern `all_os()`/
+`supported_netmodels()` already established); `OsinfoFirmware`'s
+`get_architecture`/`get_firmware_type`/`is_supported` are all
+`transfer-ownership="none"`/plain `gboolean`. Verified against a real,
+permanently-relevant `osinfo-db` fact rather than a stand-in: Windows
+11 genuinely requires UEFI (`<firmware arch="x86_64" type="efi"/>`
+present, `<firmware arch="x86_64" type="bios" supported="false"/>`
+explicit) — one of the few hardware-requirement facts unlikely to ever
+change in osinfo-db. Fedora 25 (no `<firmware>` declarations at all)
+proves the `default`-fallback branch. 1 new test, 208/208
+`virtinst-core`.
+
+`DomainCapabilities` gained an `os: CapsBlock` field (a sibling of
+`devices`, not nested in it — confirmed against this machine's real
+`qemu:///session domcapabilities` capture) and `supports_firmware_efi()`
+(`self.os.get_enum("firmware").has_value("efi")`, ported literally) —
+the modern libvirt "firmware auto-select" capability, real and present
+on this machine's own QEMU/libvirt install (captured as a new fixture,
+`REAL_QEMU_OS_FIRMWARE_EXCERPT`). 2 new tests (advertised-true,
+absent-block-false — no pre-domcaps fallback heuristic exists here
+unlike `supports_graphics_spice`, since upstream's own fallback for an
+unadvertised driver is a real filesystem scan, not a guessable bool).
+
+`domain_skeleton::prefers_uefi` ports `guest.py`'s `prefers_uefi()` in
+full — x86 on a qemu/test connection defers entirely to `OsInfo`;
+every other case (arm/riscv/loongarch64 `machvirt`-style machines,
+bhyve) is a fixed arch/machine/URI-scheme check that never consults
+`OsInfo` at all, matching upstream's own disjoint `if`/`else` rather
+than one merged condition. Needed one new predicate, `is_arm_machvirt`
+(upstream's `is_arm() and machine.startswith("virt")`), not previously
+ported since nothing needed it. 6 new unit tests. 216/216
+`virtinst-core`.
+
+**Not yet wired** — no builder emits `<os firmware=...>` yet. Even
+once wired, this crate can only ever reach `supports_firmware_efi()`'s
+fast path (`<os firmware="efi">` alone, no `<loader>`/`<nvram>`
+needed) — the loader-path fallback for older libvirt
+(`_lookup_default_uefi_path()`, a real JSON-firmware-descriptor
+filesystem scan) is a distinct, unbuilt subsystem, not a corner cut
+inside any of these three functions. Kept as its own future slice per
+this session's "one slice, verified, per turn" discipline, same
+build-then-wire split `default_disk_bus`/`default_nic_model` both went
+through.

@@ -21,12 +21,19 @@
 //! class — not modeled, matching upstream's own gap rather than
 //! exceeding it.
 //!
-//! **Not yet built**: `os`/`features` — each a different, non-
-//! `_CapsBlock` shape upstream layers on top (`_OS` adds a nested
-//! `loader` sub-block, `_Features` mixes plain `_CapsBlock`s with a
-//! distinct `_SEV` shape) — added when ticket 17's per-driver chains
-//! actually need one, same "close the gap when it's real, not
-//! speculatively" pattern as everywhere else in this crate.
+//! **`os` built as of the UEFI-firmware-defaults slice, `features`
+//! still not built**: `_OS` upstream layers a nested `loader` sub-
+//! block plus a plain `firmware`/`firmwareFeatures`/`varstore` set of
+//! `_CapsBlock`s on top of its own `supported` flag — only the plain
+//! top-level `supported`/`<enum name="firmware">` shape this crate's
+//! one real caller (`supports_firmware_efi`) needs was modeled, reusing
+//! `CapsBlock` as-is rather than a dedicated `Os` struct — `<loader>`'s
+//! own nested shape (needed for the JSON-firmware-descriptor loader-
+//! path fallback, a distinct subsystem, see `domain_skeleton::
+//! prefers_uefi`'s doc comment) stays unbuilt, same "close the gap
+//! when it's real" pattern. `_Features` (`_SEV`, etc.) is unrelated and
+//! still not built — added when ticket 17's per-driver chains actually
+//! need one.
 //!
 //! **`cpu` built as of ticket 21 slice (f)**: `_CPU` is a list of
 //! `<mode>`s (`Cpu`/`CpuMode` below), each carrying its own `_CapsBlock`
@@ -286,6 +293,9 @@ impl Cpu {
 ///   <domain>kvm</domain>
 ///   <machine>pc-i440fx-resolute</machine>
 ///   <arch>x86_64</arch>
+///   <os supported="yes">
+///     <enum name="firmware"><value>efi</value></enum>
+///   </os>
 ///   <devices>
 ///     <disk supported="yes">
 ///       <enum name="bus"><value>ide</value><value>virtio</value></enum>
@@ -299,6 +309,12 @@ pub struct DomainCapabilities {
     pub domain: Option<String>,
     pub machine: Option<String>,
     pub arch: Option<String>,
+    /// `<domainCapabilities><os>` — a sibling of `<devices>`, not
+    /// nested inside it (unlike `disk`/`graphics`/etc.), but the exact
+    /// same `supported="yes"` + `<enum>` shape `CapsBlock` already
+    /// models, so no new struct was needed, just a field at the right
+    /// level.
+    pub os: CapsBlock,
     pub devices: DomainCapabilitiesDevices,
     pub cpu: Cpu,
 }
@@ -318,6 +334,7 @@ impl DomainCapabilities {
             domain: root.find(&doc, "domain").map(|e| e.text_content(&doc)),
             machine: root.find(&doc, "machine").map(|e| e.text_content(&doc)),
             arch: root.find(&doc, "arch").map(|e| e.text_content(&doc)),
+            os: CapsBlock::from_optional_child(&doc, root, "os"),
             devices: match root.find(&doc, "devices") {
                 Some(el) => DomainCapabilitiesDevices::from_element(&doc, el),
                 None => DomainCapabilitiesDevices::default(),
@@ -396,6 +413,26 @@ impl DomainCapabilities {
             .graphics
             .get_enum("type")
             .is_some_and(|e| e.has_value("spice"))
+    }
+
+    /// Upstream's `domcapabilities.py`'s `supports_firmware_efi` — the
+    /// modern libvirt "firmware auto-select" capability
+    /// (`<os supported="yes"><enum name="firmware"><value>efi</value>
+    /// </enum></os>`), confirmed against this machine's own real
+    /// `qemu:///session` capture (`REAL_QEMU_OS_FIRMWARE_EXCERPT`
+    /// below). When `true`, `<os firmware="efi">` alone is enough to
+    /// get a UEFI guest — no `<loader>`/`<nvram>` path resolution
+    /// needed at all, upstream's own fast path in `enable_uefi()`.
+    /// When `false` (older libvirt, or a driver that never gained this
+    /// capability), upstream falls back to `_lookup_default_uefi_path()`
+    /// — a real filesystem scan over JSON firmware-descriptor files
+    /// this crate doesn't model (a distinct subsystem, not a query
+    /// method away like `default_disk_bus`/`default_nic_model` were),
+    /// so this crate can only ever enable UEFI through this fast path.
+    pub fn supports_firmware_efi(&self) -> bool {
+        self.os
+            .get_enum("firmware")
+            .is_some_and(|e| e.has_value("efi"))
     }
 
     /// Upstream's `DeviceGraphics._default_type` (`graphics.py:181`).
@@ -716,6 +753,44 @@ mod tests {
   </devices>
 </domainCapabilities>"#;
 
+    /// A real `<os>` block, from this machine's own
+    /// `virsh -c qemu:///session domcapabilities` capture (`qemu:///
+    /// system` polkit rationale same as `REAL_QEMU_CPU_EXCERPT`'s own
+    /// comment below) — the modern firmware auto-select capability
+    /// (`<enum name='firmware'><value>efi</value></enum>`) genuinely
+    /// present on this host's real QEMU/libvirt install, not a
+    /// hand-constructed shape guessed from upstream's own source.
+    const REAL_QEMU_OS_FIRMWARE_EXCERPT: &str = r#"<domainCapabilities>
+  <os supported='yes'>
+    <enum name='firmware'>
+      <value>efi</value>
+    </enum>
+    <firmwareFeatures supported='yes'>
+      <enum name='secureBoot'>
+        <value>no</value>
+      </enum>
+      <enum name='enrolledKeys'>
+        <value>no</value>
+      </enum>
+    </firmwareFeatures>
+    <loader supported='yes'>
+      <value>/usr/share/edk2/x64/OVMF_CODE.4m.fd</value>
+      <enum name='type'>
+        <value>rom</value>
+        <value>pflash</value>
+      </enum>
+      <enum name='readonly'>
+        <value>yes</value>
+        <value>no</value>
+      </enum>
+      <enum name='secure'>
+        <value>no</value>
+      </enum>
+    </loader>
+    <varstore supported='no'/>
+  </os>
+</domainCapabilities>"#;
+
     /// A real `<cpu>` block, trimmed from this machine's own
     /// `virsh -c qemu:///session domcapabilities` capture (`custom`'s
     /// full model list runs to hundreds of entries — kept two real
@@ -846,6 +921,23 @@ mod tests {
             !caps.supports_graphics_spice(&Uri::parse("qemu:///system"), Some("aarch64")),
             "qemu on a non-x86 host arch must fall back to false"
         );
+    }
+
+    #[test]
+    fn supports_firmware_efi_reads_the_advertised_enum() {
+        let caps = DomainCapabilities::parse(REAL_QEMU_OS_FIRMWARE_EXCERPT).expect("parses");
+        assert!(caps.supports_firmware_efi());
+    }
+
+    #[test]
+    fn supports_firmware_efi_is_false_when_the_os_block_is_absent() {
+        // No <os> block at all -- same as talking to a libvirt too old
+        // to advertise the modern firmware auto-select capability.
+        // No fallback heuristic here (unlike supports_graphics_spice):
+        // upstream's own enable_uefi() falls to a real loader-path
+        // filesystem scan in this case, not a guessed bool.
+        let caps = DomainCapabilities::default();
+        assert!(!caps.supports_firmware_efi());
     }
 
     #[test]

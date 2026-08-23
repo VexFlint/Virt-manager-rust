@@ -943,3 +943,27 @@ over the 184 ticket-04 baseline), harness 61/61, `fmt`/`clippy` clean.
 Manually confirmed the real CLI too: `--os-variant this-does-not-exist`
 errors cleanly, `--os-variant win10` (short-id form) resolves and
 defines successfully.
+
+## Post-close follow-up: `prefers_uefi()`'s "blocked completely" verdict, unblocked
+
+This section's own Resolution called `prefers_uefi()` (and the UEFI/
+loader selection it feeds) blocked completely — not partially — since
+it routes straight to `osinfo.requires_firmware_efi(arch)` for the
+only driver/arch combination this crate reaches. That's no longer
+true: ticket 04's own file (`## Fourth OsInfo caller`) built
+`OsInfo::requires_firmware_efi()`, `DomainCapabilities::
+supports_firmware_efi()`, and `domain_skeleton::prefers_uefi()` — a
+full port, not a partial one, including the non-x86 branch
+(arm/riscv/loongarch64 `machvirt`, bhyve) this crate can't actually
+reach yet but ported anyway for completeness against upstream's own
+disjoint `if`/`else`. 216/216 `virtinst-core`.
+
+Still not wired to a real caller — same deliberate build-then-wire
+split every `OsInfo`-adjacent default in this session has gone
+through — and even once wired, this crate can only ever reach
+`supports_firmware_efi()`'s fast path (`<os firmware="efi">` alone).
+The loader-path fallback for older libvirt (`_lookup_default_uefi_
+path()`, a real JSON-firmware-descriptor filesystem scan) stays a
+distinct, unbuilt subsystem — the one piece of "UEFI/loader selection"
+this section's original verdict named that still isn't buildable,
+not a corner this slice cut.
