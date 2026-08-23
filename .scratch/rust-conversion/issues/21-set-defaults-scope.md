@@ -272,3 +272,86 @@ harness 61/61, `cargo fmt`/`clippy` clean workspace-wide.
 **Not done**: slices (c)–(f) — `graphics` default type, `clock`'s timer
 trio, `hostdev.set_defaults`, and CPU mode defaulting — remain exactly
 as scoped above, not started.
+
+## A real, unrelated bug found and fixed while continuing this ticket
+
+Not part of `set_defaults()`'s scope at all — surfaced while reasoning
+about the difference between `hypervisor_type` (`capsinfo`-derived,
+e.g. `"kvm"`) and `is_qemu()` (URI-scheme-derived) for slice (d)'s
+`conn.is_qemu()` guard, and traced to something already live in every
+builder.
+
+Every domain builder (`import`/`iso`/`manual`/`container`) derived
+`crate::cloner::generate_mac`'s `is_qemu` argument from `domain_type ==
+"qemu"` — a literal string match on `hypervisor_type`, the value
+`guest_lookup`/`DomainCapabilities` reports (`"qemu"`, `"kvm"`,
+`"test"`, ...). Upstream's own `interface.py:30` keys on
+`conn.is_qemu()` instead — the connection's URI scheme. These disagree
+on the single most common real invocation this crate builds:
+`--connect qemu:///system` (the CLI's own default) with KVM available
+resolves `hypervisor_type` to the literal string `"kvm"`, not
+`"qemu"` — confirmed against this machine's own real capture
+(`domcaps.rs`'s `QEMU_DOMCAPS_EXCERPT`: `<domain>kvm</domain>`, and
+`caps.rs`'s own pinned `guest_lookup` test asserting `hypervisor_type
+== Some("kvm")` on the same real data). So **every real, non-`test:///`
+domain this crate has ever built got the Xen OUI (`00:16:3e`) instead
+of qemu's (`52:54:00`)** — not a ticket-21 regression, a pre-existing
+bug dating to `virt-install.rs`'s first version, invisible in this
+crate's own test suite because `test:///default`'s domain type
+genuinely is the literal string `"test"` and never triggered it.
+
+An earlier version of `push_default_nic`'s own doc comment had already
+flagged the two sources "can disagree in principle" but claimed the
+divergence was "not reachable through this crate's current CLI surface"
+— false the entire time, since `--connect` has defaulted to
+`qemu:///system` since day one. Corrected rather than left standing.
+
+**Fix**: threaded a real `is_qemu: bool` (`conn.uri().is_qemu()`,
+computed once in `virt-install.rs`) through every builder instead of
+inferring it from `domain_type` — mechanically the same shape as
+`machine`/`emulator`'s threading above, except `--container` *does*
+get it (unlike `os_type`/`machine`/`emulator`, `is_qemu` isn't
+`capsinfo`-derived, so there's no "wrong guest" hazard to avoid
+there). `cloner.rs` was already correct (derives `is_qemu` from the
+connection directly) and untouched.
+
+**Tests**: the existing `nic_oui_follows_domain_type_not_just_qemu`
+was reframed to `nic_oui_follows_is_qemu_not_domain_type` — its old
+name and comment described the buggy proxy as the intended design.
+Added `nic_oui_is_correct_for_a_real_kvm_accelerated_install`
+(`domain_type = "kvm"` with `is_qemu = true` must still produce the
+qemu OUI). Every other builder test's call site mechanically threaded
+a matching `is_qemu` value (`true` for literal `"qemu"` domain types,
+`false` for `"test"`/unrelated tests, `conn.uri().is_qemu()` for the
+real end-to-end tests that have a live connection in scope).
+
+Caught on review: every one of those, including the new one, passes
+`is_qemu` as a literal (or as `conn.uri().is_qemu()` on `test:///`,
+which is always `false`) — none of them exercise the actual
+*derivation* the bug was in. The bug was never in `generate_mac`
+consuming `is_qemu` wrong; it was in what used to feed it
+(`hypervisor_type == "qemu"`). A literal at the call site proves the
+callee, not the composition. Closed that gap with a dedicated
+composition test in `import.rs`,
+`nic_oui_is_correct_when_domain_type_is_kvm_on_a_real_qemu_connection`:
+sets `VIRTINST_TEST_FAKE_URI=qemu:///system` *and*
+`VIRTINST_TEST_CAPS_FILE` (a `hypervisor_type=kvm` fixture) together on
+one `test:///default` connection, asserts both facts hold
+simultaneously (`capsinfo.hypervisor_type == Some("kvm")` and
+`conn.uri().is_qemu()` — the bug's actual precondition, stated nowhere
+else in the suite), then builds the document with `conn.uri()
+.is_qemu()` (not a literal) and checks the resulting MAC. Manually
+confirmed this test fails pre-fix (temporarily substituted the old
+`hypervisor_type == "qemu"` derivation at the call site — the run
+failed with the Xen OUI as expected) and passes with the real fix
+restored.
+
+**Verified**: 99/99 `virtinst-cli`, 140/140 `virtinst-core` (+2 new
+tests over the pre-fix baseline of 138), harness 61/61, `cargo
+fmt`/`clippy` clean workspace-wide. Also smoke-tested the compiled
+`virt-install` binary with `VIRTINST_TEST_CAPS_FILE` (a
+`hypervisor_type=kvm` fixture) and `VIRTINST_TEST_FAKE_URI=qemu:///
+system` together — the exact previously-mishandled combination — no
+crash (that binary run couldn't observe the MAC itself, since it's a
+separate process against `test:///`'s own state; the in-process
+composition test above is what actually proves the fix).

@@ -57,8 +57,9 @@ use super::domain_skeleton::{
     push_virtio_disk,
 };
 
-/// `name`/`memory_kib`/`vcpus`/`domain_type`/`os_type`/`arch` — see
-/// `build_import_document`'s doc comment, identical rationale. `boot_dev`
+/// `name`/`memory_kib`/`vcpus`/`domain_type`/`os_type`/`arch`/`machine`/
+/// `emulator`/`is_qemu` — see `build_import_document`'s doc comment,
+/// identical rationale. `boot_dev`
 /// is libvirt's own `<os><boot dev=...>` string (`"network"`, `"hd"`,
 /// …), passed straight through unvalidated, matching
 /// `InstallMethod::Manual::boot_dev`'s own doc comment. `disk_path` is
@@ -96,6 +97,7 @@ pub fn build_manual_document(
     arch: &str,
     machine: Option<&str>,
     emulator: Option<&str>,
+    is_qemu: bool,
 ) -> Document {
     build_manual_phase_document(
         name,
@@ -109,7 +111,7 @@ pub fn build_manual_document(
         emulator,
         boot_dev,
         disk_path,
-        &crate::cloner::generate_mac(domain_type == "qemu"),
+        &crate::cloner::generate_mac(is_qemu),
         false,
     )
 }
@@ -135,11 +137,12 @@ pub fn build_manual_two_phase_documents(
     arch: &str,
     machine: Option<&str>,
     emulator: Option<&str>,
+    is_qemu: bool,
 ) -> (Document, Document) {
     let uuid = crate::cloner::generate_uuid();
     // Same NIC, same MAC in both documents — same reason the UUID is
     // shared, see `push_default_nic`'s doc comment.
-    let mac = crate::cloner::generate_mac(domain_type == "qemu");
+    let mac = crate::cloner::generate_mac(is_qemu);
 
     let initial = build_manual_phase_document(
         name,
@@ -241,7 +244,7 @@ mod tests {
     #[test]
     fn no_disk_means_a_single_boot_entry_and_only_the_default_nic() {
         let doc = build_manual_document(
-            "net-only", 1048576, 1, "network", None, "qemu", "hvm", "x86_64", None, None,
+            "net-only", 1048576, 1, "network", None, "qemu", "hvm", "x86_64", None, None, true,
         );
         let root = doc.root_element().unwrap();
 
@@ -271,6 +274,7 @@ mod tests {
             "x86_64",
             None,
             None,
+            true,
         );
         let root = doc.root_element().unwrap();
 
@@ -305,6 +309,7 @@ mod tests {
             "i686",
             None,
             None,
+            false,
         );
         let root = doc.root_element().unwrap();
         let os = root.find(&doc, "os").unwrap();
@@ -324,6 +329,7 @@ mod tests {
             "i686",
             None,
             None,
+            false,
         );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
@@ -372,6 +378,7 @@ mod tests {
             &arch,
             None,
             None,
+            conn.uri().is_qemu(),
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -426,6 +433,7 @@ mod tests {
             "x86_64",
             None,
             None,
+            true,
         );
 
         let initial_root = initial.root_element().unwrap();
@@ -510,6 +518,7 @@ mod tests {
             "i686",
             None,
             None,
+            false,
         );
 
         let initial_root = initial.root_element().unwrap();
@@ -570,6 +579,7 @@ mod tests {
             &arch,
             None,
             None,
+            conn.uri().is_qemu(),
         );
         let initial_xml = initial.write_str().expect("serializes");
         let final_xml = final_doc.write_str().expect("serializes");

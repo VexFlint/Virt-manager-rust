@@ -53,10 +53,13 @@ use virtinst_xml::{Document, Element};
 
 use super::domain_skeleton::{build_domain_skeleton, push_default_nic, push_text_child};
 
-/// `name`/`memory_kib`/`vcpus`/`domain_type`/`arch` — see
-/// `build_import_document`'s doc comment, identical rationale.
-/// `source_dir` is `InstallMethod::ContainerOs::source`, the existing
-/// directory that becomes the container's `/`.
+/// `name`/`memory_kib`/`vcpus`/`domain_type`/`arch`/`is_qemu` — see
+/// `build_import_document`'s doc comment, identical rationale
+/// (`is_qemu` is the connection's URI scheme, not `capsinfo`-derived,
+/// so — unlike `os_type`/`machine`/`emulator` below — there's no "wrong
+/// guest" hazard threading it here too). `source_dir` is
+/// `InstallMethod::ContainerOs::source`, the existing directory that
+/// becomes the container's `/`.
 ///
 /// Builds `<filesystem type="mount" accessmode="mapped">
 /// <source dir=source_dir/><target dir="/"/></filesystem>` — `type=
@@ -78,6 +81,7 @@ pub fn build_container_os_document(
     source_dir: &str,
     domain_type: &str,
     arch: &str,
+    is_qemu: bool,
 ) -> Document {
     // `machine`/`emulator` are always `None` here, deliberately — see
     // `build_domain_skeleton`'s doc comment for why a container guest
@@ -122,11 +126,7 @@ pub fn build_container_os_document(
         .push_child(&mut doc, fs_el)
         .expect("a freshly-created detached element always attaches cleanly");
 
-    push_default_nic(
-        &mut doc,
-        devices_el,
-        &crate::cloner::generate_mac(domain_type == "qemu"),
-    );
+    push_default_nic(&mut doc, devices_el, &crate::cloner::generate_mac(is_qemu));
 
     doc
 }
@@ -144,6 +144,7 @@ mod tests {
             "/var/lib/containers/container-guest",
             "lxc",
             "x86_64",
+            true,
         );
         let root = doc.root_element().unwrap();
 
@@ -191,7 +192,8 @@ mod tests {
 
     #[test]
     fn serializes_and_reparses_cleanly() {
-        let doc = build_container_os_document("x", 1048576, 1, "/srv/rootfs", "test", "i686");
+        let doc =
+            build_container_os_document("x", 1048576, 1, "/srv/rootfs", "test", "i686", false);
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
         let root = reparsed.root_element().unwrap();
@@ -230,6 +232,7 @@ mod tests {
             "/guest/container-end-to-end-rootfs",
             &domain_type,
             &arch,
+            conn.uri().is_qemu(),
         );
         let xml = doc.write_str().expect("serializes");
 

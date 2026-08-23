@@ -80,9 +80,10 @@ use super::domain_skeleton::{
     push_virtio_disk,
 };
 
-/// `name`/`memory_kib`/`vcpus`/`domain_type`/`os_type`/`arch` — see
-/// `build_import_document`'s doc comment, identical rationale. `media` is
-/// `InstallMethod::Iso::media`, the path to the ISO/CD image.
+/// `name`/`memory_kib`/`vcpus`/`domain_type`/`os_type`/`arch`/`machine`/
+/// `emulator`/`is_qemu` — see `build_import_document`'s doc comment,
+/// identical rationale. `media` is `InstallMethod::Iso::media`, the
+/// path to the ISO/CD image.
 ///
 /// Builds and boots from the CD alone (`<boot dev="cdrom">`) with no
 /// persistent disk device at all — matches `live: true`'s own doc comment
@@ -98,6 +99,7 @@ pub fn build_iso_document(
     arch: &str,
     machine: Option<&str>,
     emulator: Option<&str>,
+    is_qemu: bool,
 ) -> Document {
     let (mut doc, _root, os_el, devices_el) = build_domain_skeleton(
         name,
@@ -113,11 +115,7 @@ pub fn build_iso_document(
     push_boot_dev(&mut doc, os_el, "cdrom");
 
     push_cdrom_disk(&mut doc, devices_el, Some(media));
-    push_default_nic(
-        &mut doc,
-        devices_el,
-        &crate::cloner::generate_mac(domain_type == "qemu"),
-    );
+    push_default_nic(&mut doc, devices_el, &crate::cloner::generate_mac(is_qemu));
 
     doc
 }
@@ -148,11 +146,12 @@ pub fn build_iso_two_phase_documents(
     arch: &str,
     machine: Option<&str>,
     emulator: Option<&str>,
+    is_qemu: bool,
 ) -> (Document, Document) {
     let uuid = crate::cloner::generate_uuid();
     // Same device, same MAC in both documents — same reason the UUID is
     // shared, see `push_default_nic`'s doc comment.
-    let mac = crate::cloner::generate_mac(domain_type == "qemu");
+    let mac = crate::cloner::generate_mac(is_qemu);
 
     let initial = build_iso_phase_document(
         name,
@@ -282,6 +281,7 @@ mod tests {
             "x86_64",
             None,
             None,
+            true,
         );
         let root = doc.root_element().unwrap();
 
@@ -337,6 +337,7 @@ mod tests {
             "i686",
             None,
             None,
+            false,
         );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
@@ -377,6 +378,7 @@ mod tests {
             &arch,
             None,
             None,
+            conn.uri().is_qemu(),
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -417,6 +419,7 @@ mod tests {
             "x86_64",
             None,
             None,
+            true,
         );
 
         let initial_root = initial.root_element().unwrap();
@@ -558,6 +561,7 @@ mod tests {
             &arch,
             None,
             None,
+            conn.uri().is_qemu(),
         );
         let initial_xml = initial.write_str().expect("serializes");
         let final_xml = final_doc.write_str().expect("serializes");

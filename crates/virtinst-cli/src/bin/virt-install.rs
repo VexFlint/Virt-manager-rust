@@ -235,6 +235,18 @@ fn main() {
     // value to give it.
     let machine = capsinfo.machines.first().cloned();
     let emulator = capsinfo.emulator.clone();
+    // A real bug, found and fixed: the default NIC's OUI used to be
+    // derived from `domain_type == "qemu"` — a literal string match on
+    // `hypervisor_type`, which is `"kvm"` on a real KVM-accelerated
+    // `qemu:///system` (confirmed against this machine's own real
+    // capture, `domcaps.rs`'s `QEMU_DOMCAPS_EXCERPT`), not `"qemu"`.
+    // That's not what upstream's `interface.py:30` keys on either — it
+    // checks `conn.is_qemu()`, the connection's URI scheme, which is
+    // what `Uri::is_qemu()` gives here. Unlike `os_type`/`machine`/
+    // `emulator` above, this *does* apply to `--container` too: it's
+    // not derived from `capsinfo` at all, so there's no "wrong guest"
+    // hazard to avoid.
+    let is_qemu = conn.uri().is_qemu();
 
     let memory_kib = args.memory.checked_mul(1024).unwrap_or_else(|| {
         eprintln!("virt-install: --memory {} MiB overflows", args.memory);
@@ -267,6 +279,7 @@ fn main() {
             &arch,
             machine.as_deref(),
             emulator.as_deref(),
+            is_qemu,
         ));
         (xml.clone(), xml)
     } else if let Some(media) = args.cdrom {
@@ -281,6 +294,7 @@ fn main() {
                 &arch,
                 machine.as_deref(),
                 emulator.as_deref(),
+                is_qemu,
             ));
             (xml.clone(), xml)
         } else {
@@ -299,6 +313,7 @@ fn main() {
                 &arch,
                 machine.as_deref(),
                 emulator.as_deref(),
+                is_qemu,
             );
             (write(initial), write(final_doc))
         }
@@ -314,6 +329,7 @@ fn main() {
             &arch,
             machine.as_deref(),
             emulator.as_deref(),
+            is_qemu,
         );
         (write(initial), write(final_doc))
     } else if let Some(boot_dev) = args.boot {
@@ -328,6 +344,7 @@ fn main() {
             &arch,
             machine.as_deref(),
             emulator.as_deref(),
+            is_qemu,
         ));
         (xml.clone(), xml)
     } else if args.container {
@@ -342,6 +359,7 @@ fn main() {
             &filesystem,
             &domain_type,
             &arch,
+            is_qemu,
         ));
         (xml.clone(), xml)
     } else {

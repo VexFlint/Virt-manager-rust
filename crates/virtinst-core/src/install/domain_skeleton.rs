@@ -199,15 +199,31 @@ pub(super) fn push_virtio_disk(doc: &mut Document, devices_el: Element, path: &s
 /// not two independently-randomized MACs. Reuses `crate::cloner::
 /// generate_mac` (`52:54:00`/`00:16:3E` OUI by driver) rather than
 /// duplicating it — the exact same function this crate's `virt-clone`
-/// support already uses for the same reason. Every caller here derives
-/// `generate_mac`'s `is_qemu` from `domain_type == "qemu"` (the string
-/// already threaded through from `DomainCapabilities`); `cloner.rs`
-/// derives it from the connection itself. The two can disagree in
-/// principle — a `qemu+ssh://`-style connection whose domcaps happens to
-/// report something other than the literal string `"qemu"` would get
-/// the wrong OUI — not reachable through this crate's current CLI
-/// surface, but worth knowing if `push_default_nic` ever gets a second
-/// caller with a real `Connection` in hand. Model is a fixed `virtio`
+/// support already uses for the same reason.
+///
+/// **A real bug, found and fixed, not a hypothetical one**: every
+/// caller used to derive `generate_mac`'s `is_qemu` from `domain_type
+/// == "qemu"` (the hypervisor-type string threaded through from
+/// `guest_lookup`/`DomainCapabilities`) instead of `cloner.rs`'s own
+/// correct `Uri::is_qemu()` (the connection's URI scheme). Those two
+/// disagree on the single most common real invocation this crate
+/// builds: `--connect qemu:///system` (the default) with KVM available
+/// resolves `hypervisor_type` to `"kvm"`, not the literal string
+/// `"qemu"` (confirmed against this machine's own real capture —
+/// `domcaps.rs`'s `QEMU_DOMCAPS_EXCERPT`: `<domain>kvm</domain>`) — so
+/// every real, non-`test:///` domain this crate ever built got the
+/// Xen OUI (`00:16:3E`) instead of qemu's (`52:54:00`). Not reachable
+/// through `test:///default` at all (its own domain type genuinely is
+/// the literal string `"test"`, coincidentally never triggering the
+/// bug in this crate's own test suite) — an earlier version of this
+/// comment claimed the divergence was "not reachable through this
+/// crate's current CLI surface," which was false the whole time:
+/// `--connect` has defaulted to `qemu:///system` since `virt-install`'s
+/// first commit. Fixed by threading a real `is_qemu: bool` (`conn.
+/// uri().is_qemu()`, computed once in `virt-install.rs`) through every
+/// caller instead of inferring it from `domain_type`.
+///
+/// Model is a fixed `virtio`
 /// default (`DeviceInterface.default_model`: `hvm` + `guest.
 /// supports_virtionet()`, the common qemu/kvm x86 case) — the non-virtio
 /// fallback chain (`e1000`/`rtl8139`/`ne2k_pci`/`pcnet`, chosen via

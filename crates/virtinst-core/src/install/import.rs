@@ -59,7 +59,12 @@ use super::domain_skeleton::{build_domain_skeleton, push_boot_dev, push_default_
 /// skeleton`'s own doc comment for exactly what's threaded (the
 /// fallback-only `capsinfo.machines.first()`/plain `capsinfo.emulator`)
 /// versus what stays unbuilt (the q35-preferred machine branch, real
-/// UEFI/loader selection).
+/// UEFI/loader selection). `is_qemu` is the connection's URI scheme
+/// (`Uri::is_qemu()`) for the default NIC's OUI — deliberately *not*
+/// derived from `domain_type` (see `push_default_nic`'s doc comment
+/// for the real bug that distinction fixes: `domain_type` is
+/// `hypervisor_type`, e.g. `"kvm"` on a real accelerated
+/// `qemu:///system`, not the literal string `"qemu"`).
 ///
 /// Always stamps an explicit `<uuid>` (via the same `generate_uuid()`
 /// approach `cloner.rs` uses, matching upstream's own hand-rolled
@@ -83,6 +88,7 @@ pub fn build_import_document(
     arch: &str,
     machine: Option<&str>,
     emulator: Option<&str>,
+    is_qemu: bool,
 ) -> Document {
     let (mut doc, _root, os_el, devices_el) = build_domain_skeleton(
         name,
@@ -114,11 +120,7 @@ pub fn build_import_document(
     devices_el
         .push_child(&mut doc, disk_el)
         .expect("a freshly-created detached element always attaches cleanly");
-    push_default_nic(
-        &mut doc,
-        devices_el,
-        &crate::cloner::generate_mac(domain_type == "qemu"),
-    );
+    push_default_nic(&mut doc, devices_el, &crate::cloner::generate_mac(is_qemu));
 
     doc
 }
@@ -145,6 +147,7 @@ mod tests {
             "x86_64",
             Some("q35"),
             Some("/usr/bin/qemu-system-x86_64"),
+            true,
         );
         let root = doc.root_element().unwrap();
 
@@ -211,12 +214,10 @@ mod tests {
     }
 
     #[test]
-    fn nic_oui_follows_domain_type_not_just_qemu() {
+    fn nic_oui_follows_is_qemu_not_domain_type() {
         // `builds_a_complete_bootable_domain` only exercises
-        // `domain_type == "qemu"` (the `52:54:00` OUI branch) — this
-        // pins the other branch (`push_default_nic`'s `domain_type ==
-        // "qemu"` proxy for `cloner::generate_mac`'s `is_qemu`), so a
-        // broken proxy wouldn't go unnoticed.
+        // `is_qemu == true` (the `52:54:00` OUI branch) — this pins the
+        // other branch with `is_qemu == false`.
         let doc = build_import_document(
             "x",
             1048576,
@@ -227,6 +228,7 @@ mod tests {
             "i686",
             None,
             None,
+            false,
         );
         let root = doc.root_element().unwrap();
         let mac = root
@@ -241,7 +243,53 @@ mod tests {
             .to_string();
         assert!(
             mac.starts_with("00:16:3e:"),
-            "non-qemu domain_type should get the other OUI, got {mac}"
+            "is_qemu = false should get the other OUI, got {mac}"
+        );
+    }
+
+    /// Regression for a real bug, found and fixed while continuing
+    /// ticket 21: `domain_type` (`hypervisor_type`, e.g. `"kvm"` on a
+    /// real accelerated `qemu:///system` — confirmed against this
+    /// machine's own real capture, `domcaps.rs`'s `QEMU_DOMCAPS_
+    /// EXCERPT`: `<domain>kvm</domain>`) is *not* the same thing as
+    /// `is_qemu` (the connection's URI scheme, `Uri::is_qemu()`). Every
+    /// builder used to derive `is_qemu` from `domain_type == "qemu"`
+    /// (a literal string match) instead of taking it as its own
+    /// parameter — meaning every real, non-`test:///` domain this
+    /// crate ever built (`domain_type = "kvm"`, the common
+    /// KVM-accelerated case) got the Xen OUI (`00:16:3e`) instead of
+    /// qemu's (`52:54:00`), silently, since `test:///default`'s own
+    /// domain type genuinely is the literal string `"test"` and never
+    /// triggered it. `domain_type = "kvm"` with `is_qemu = true` must
+    /// produce the qemu OUI.
+    #[test]
+    fn nic_oui_is_correct_for_a_real_kvm_accelerated_install() {
+        let doc = build_import_document(
+            "x",
+            1048576,
+            1,
+            "/tmp/x.img",
+            "kvm",
+            "hvm",
+            "x86_64",
+            None,
+            None,
+            true,
+        );
+        let root = doc.root_element().unwrap();
+        let mac = root
+            .find(&doc, "devices")
+            .unwrap()
+            .find(&doc, "interface")
+            .unwrap()
+            .find(&doc, "mac")
+            .unwrap()
+            .attribute(&doc, "address")
+            .unwrap()
+            .to_string();
+        assert!(
+            mac.starts_with("52:54:00:"),
+            "domain_type = \"kvm\" on a real qemu:// connection must still get qemu's OUI, got {mac}"
         );
     }
 
@@ -262,6 +310,7 @@ mod tests {
             "i686",
             None,
             None,
+            false,
         );
         let root = doc.root_element().unwrap();
         let type_el = root.find(&doc, "os").unwrap().find(&doc, "type").unwrap();
@@ -285,6 +334,7 @@ mod tests {
             "i686",
             None,
             None,
+            false,
         );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
@@ -346,6 +396,7 @@ mod tests {
             &arch,
             machine,
             capsinfo.emulator.as_deref(),
+            conn.uri().is_qemu(),
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -445,6 +496,7 @@ mod tests {
             &capsinfo.arch.unwrap(),
             capsinfo.machines.first().map(|s| s.as_str()),
             capsinfo.emulator.as_deref(),
+            false,
         );
         // Through the DOM, not a raw string match on the serialized
         // XML — a string match couples this test to `virtinst_xml`'s
@@ -538,6 +590,7 @@ mod tests {
             &capsinfo.arch.unwrap(),
             capsinfo.machines.first().map(|s| s.as_str()),
             capsinfo.emulator.as_deref(),
+            true,
         );
         let root = doc.root_element().unwrap();
         let type_el = root.find(&doc, "os").unwrap().find(&doc, "type").unwrap();
@@ -553,6 +606,107 @@ mod tests {
                 .unwrap()
                 .text_content(&doc),
             "/usr/bin/qemu-system-x86_64"
+        );
+    }
+
+    /// The actual regression test for the NIC-OUI bug: every prior test
+    /// in this file that exercises `is_qemu` passes it as a literal
+    /// (`true`/`false`/a real `conn.uri().is_qemu()` on `test:///`,
+    /// which is always `false`), so none of them can catch a wrong
+    /// *derivation* of `is_qemu` — only a wrong *consumption* of it.
+    /// The bug was in the derivation: `is_qemu` used to come from
+    /// `hypervisor_type == "qemu"`, a string match that's `false` for a
+    /// real KVM-accelerated connection (`hypervisor_type` there is the
+    /// literal string `"kvm"`, confirmed against `domcaps.rs`'s own
+    /// `QEMU_DOMCAPS_EXCERPT`). Upstream's real check
+    /// (`interface.py:30`, `conn.is_qemu()`) keys on the connection's
+    /// URI scheme instead, which is what `Uri::is_qemu()` gives.
+    ///
+    /// This test reproduces that exact precondition by combining both
+    /// env-var injection points at once: `VIRTINST_TEST_FAKE_URI` makes
+    /// `conn.uri()` report a real `qemu:///system` URI while still
+    /// physically opening `test:///default`, and
+    /// `VIRTINST_TEST_CAPS_FILE` makes the fetched capabilities report
+    /// `hypervisor_type = "kvm"` — the same "URI says qemu, driver name
+    /// says kvm" shape a real accelerated install hits. It asserts both
+    /// facts hold simultaneously (the bug's actual precondition, which
+    /// nothing else in this suite states), then checks the built
+    /// document's MAC to prove the fix threads `conn.uri().is_qemu()`,
+    /// not `hypervisor_type`, into `generate_mac`. Before the fix this
+    /// test fails (MAC gets the Xen OUI); after, it passes.
+    #[test]
+    fn nic_oui_is_correct_when_domain_type_is_kvm_on_a_real_qemu_connection() {
+        use crate::capabilities::Capabilities;
+        use crate::connection::Connection;
+        use crate::test_support::TEST_DOMAIN_LOCK;
+
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let fixture = r#"<capabilities>
+  <host><cpu><arch>x86_64</arch></cpu></host>
+  <guest>
+    <os_type>hvm</os_type>
+    <arch name='x86_64'>
+      <wordsize>64</wordsize>
+      <emulator>/usr/bin/qemu-system-x86_64</emulator>
+      <domain type='kvm'/>
+    </arch>
+  </guest>
+</capabilities>"#;
+        let fixture_path = std::env::temp_dir().join(format!(
+            "virtinst-core-test-is-qemu-caps-{}.xml",
+            std::process::id()
+        ));
+        std::fs::write(&fixture_path, fixture).expect("writes the fixture");
+        std::env::set_var("VIRTINST_TEST_CAPS_FILE", &fixture_path);
+        std::env::set_var("VIRTINST_TEST_FAKE_URI", "qemu:///system");
+
+        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
+        let host_caps =
+            Capabilities::fetch(&conn).expect("reads the injected fixture, not libvirt");
+        let capsinfo = host_caps
+            .guest_lookup(None, None, None, None)
+            .expect("the fixture's one guest matches");
+
+        std::env::remove_var("VIRTINST_TEST_CAPS_FILE");
+        std::env::remove_var("VIRTINST_TEST_FAKE_URI");
+        std::fs::remove_file(&fixture_path).ok();
+
+        // The bug's actual precondition: a driver-reported hypervisor
+        // type of "kvm" on a connection whose URI scheme is qemu.
+        assert_eq!(capsinfo.hypervisor_type.as_deref(), Some("kvm"));
+        assert!(
+            conn.uri().is_qemu(),
+            "the fake URI must make the connection report itself as qemu"
+        );
+
+        let doc = build_import_document(
+            "is-qemu-flow-check",
+            1048576,
+            1,
+            "/guest/whatever.img",
+            &capsinfo.hypervisor_type.unwrap(),
+            "hvm",
+            &capsinfo.arch.unwrap(),
+            None,
+            capsinfo.emulator.as_deref(),
+            conn.uri().is_qemu(),
+        );
+        let root = doc.root_element().unwrap();
+        let mac = root
+            .find(&doc, "devices")
+            .unwrap()
+            .find(&doc, "interface")
+            .unwrap()
+            .find(&doc, "mac")
+            .unwrap()
+            .attribute(&doc, "address")
+            .unwrap()
+            .to_string();
+        assert!(
+            mac.starts_with("52:54:00:"),
+            "hypervisor_type = \"kvm\" on a qemu:// connection must still get qemu's OUI \
+             (derived from the URI scheme, not hypervisor_type), got {mac}"
         );
     }
 }
