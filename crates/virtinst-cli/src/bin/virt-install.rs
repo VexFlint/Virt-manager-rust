@@ -76,7 +76,7 @@ use virtinst_core::connection::{Connection, Domain};
 use virtinst_core::install::{
     build_container_os_document, build_import_document, build_iso_document,
     build_iso_two_phase_documents, build_manual_document, build_manual_two_phase_documents,
-    default_disk_bus, GuestCapsDefaults,
+    default_disk_bus, default_nic_model, GuestCapsDefaults,
 };
 use virtinst_core::osinfo::OsDb;
 
@@ -168,19 +168,20 @@ struct Args {
     /// full id (`http://fedoraproject.org/fedora/25`) — feeds the
     /// `OsInfo`-gated defaults ticket 21 scoped and left blocked until
     /// ticket 04 built real `libosinfo` bindings: `clock`'s `offset`
-    /// attribute, and disk/cdrom `bus` selection (`default_disk_bus`)
-    /// now both consult it. Video-model/UEFI selection are still
-    /// unbuilt regardless of this flag, see `osinfo::OsInfo`'s own doc
-    /// comment for which query methods exist. Omitted entirely (not a
-    /// `"generic"` sentinel value the way upstream's CLI accepts) means
-    /// the same "no OS selected" defaults upstream's own synthetic
-    /// generic entry produces — see `push_default_clock`'s doc comment
-    /// for why that's equivalent, not a separate code path. Note: both
-    /// the clock-offset and disk-bus defaults this flag feeds are
+    /// attribute, disk/cdrom `bus` selection (`default_disk_bus`), and
+    /// NIC `model` selection (`default_nic_model`) now all consult it.
+    /// UEFI firmware selection is still unbuilt regardless of this
+    /// flag, see `osinfo::OsInfo`'s own doc comment for which query
+    /// methods exist. Omitted entirely (not a `"generic"` sentinel
+    /// value the way upstream's CLI accepts) means the same "no OS
+    /// selected" defaults upstream's own synthetic generic entry
+    /// produces — see `push_default_clock`'s doc comment for why
+    /// that's equivalent, not a separate code path. Note: the clock-
+    /// offset, disk-bus, and NIC-model defaults this flag feeds are all
     /// themselves gated on `is_qemu` (`supports_virtio*`'s own gate,
     /// upstream-faithful — see `domain_skeleton::default_disk_bus`'s
     /// doc comment), so on a non-qemu `--connect` (e.g. `test:///`,
-    /// `lxc:///`) this flag has no observable effect on either.
+    /// `lxc:///`) this flag has no observable effect on any of them.
     #[arg(long)]
     os_variant: Option<String>,
 }
@@ -351,6 +352,14 @@ fn main() {
     // already documents.
     let supports_virtiodisk = os_info.as_ref().is_some_and(|os| os.supports_virtiodisk());
     let supports_virtioscsi = os_info.as_ref().is_some_and(|os| os.supports_virtioscsi());
+    // `default_nic_model`'s own inputs, same fallback reasoning as
+    // above: `false`/empty `Vec` with no `--os-variant` given, matching
+    // upstream's synthetic "generic" entry (no devices declared).
+    let supports_virtionet = os_info.as_ref().is_some_and(|os| os.supports_virtionet());
+    let supported_netmodels = os_info
+        .as_ref()
+        .map(|os| os.supported_netmodels())
+        .unwrap_or_default();
 
     let memory_kib = args.memory.checked_mul(1024).unwrap_or_else(|| {
         eprintln!("virt-install: --memory {} MiB overflows", args.memory);
@@ -389,6 +398,7 @@ fn main() {
             supports_virtiodisk,
             supports_virtioscsi,
         );
+        let nic_model = default_nic_model(caps, supports_virtionet, &supported_netmodels);
         let xml = write(build_import_document(
             &args.name,
             memory_kib,
@@ -399,6 +409,7 @@ fn main() {
             cpu_mode.as_ref(),
             clock_offset,
             disk_bus,
+            nic_model,
         ));
         (xml.clone(), xml)
     } else if let Some(media) = args.cdrom {
@@ -418,6 +429,7 @@ fn main() {
             supports_virtiodisk,
             supports_virtioscsi,
         );
+        let nic_model = default_nic_model(caps, supports_virtionet, &supported_netmodels);
         if args.livecd {
             let xml = write(build_iso_document(
                 &args.name,
@@ -429,6 +441,7 @@ fn main() {
                 cpu_mode.as_ref(),
                 clock_offset,
                 cdrom_bus,
+                nic_model,
             ));
             (xml.clone(), xml)
         } else {
@@ -455,6 +468,7 @@ fn main() {
                 clock_offset,
                 cdrom_bus,
                 disk_bus,
+                nic_model,
             );
             (write(initial), write(final_doc))
         }
@@ -475,6 +489,7 @@ fn main() {
             supports_virtiodisk,
             supports_virtioscsi,
         );
+        let nic_model = default_nic_model(caps, supports_virtionet, &supported_netmodels);
         let (initial, final_doc) = build_manual_two_phase_documents(
             &args.name,
             memory_kib,
@@ -486,6 +501,7 @@ fn main() {
             cpu_mode.as_ref(),
             clock_offset,
             disk_bus,
+            nic_model,
         );
         (write(initial), write(final_doc))
     } else if let Some(boot_dev) = args.boot {
@@ -505,6 +521,7 @@ fn main() {
             supports_virtiodisk,
             supports_virtioscsi,
         );
+        let nic_model = default_nic_model(caps, supports_virtionet, &supported_netmodels);
         let xml = write(build_manual_document(
             &args.name,
             memory_kib,
@@ -516,6 +533,7 @@ fn main() {
             cpu_mode.as_ref(),
             clock_offset,
             disk_bus,
+            nic_model,
         ));
         (xml.clone(), xml)
     } else if args.container {

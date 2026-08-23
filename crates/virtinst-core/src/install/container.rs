@@ -153,7 +153,16 @@ pub fn build_container_os_document(
         .push_child(&mut doc, fs_el)
         .expect("a freshly-created detached element always attaches cleanly");
 
-    push_default_nic(&mut doc, devices_el, &crate::cloner::generate_mac(is_qemu));
+    // `default_nic_model`'s own `!is_hvm(os_type)` branch always
+    // resolves to `None` for a container's `os_type` ("exe") --
+    // deterministic regardless of arch/is_qemu, so there's no
+    // `GuestCapsDefaults` to build here just to ask.
+    push_default_nic(
+        &mut doc,
+        devices_el,
+        &crate::cloner::generate_mac(is_qemu),
+        None,
+    );
 
     doc
 }

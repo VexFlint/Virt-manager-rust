@@ -229,10 +229,28 @@ test, 200/200 `virtinst-core`.
 `is_x86`/`prefs` fallback chain, `None` meaning "omit `<model>`
 entirely" matching upstream's own `self.model = None`), reusing the
 same `supports_virtio` gate `default_disk_bus` already established. 7
-new unit tests, 206/206 `virtinst-core`. **Not yet wired** —
-`push_default_nic` still hardcodes `model type="virtio"`
-unconditionally; wiring this is the same mechanical "resolve once in
-`virt-install.rs`, pass into every builder" thread `default_disk_bus`
-already went through, kept as its own future slice rather than
-combined with building the primitive, per this session's "one slice,
-verified, per turn" discipline.
+new unit tests, 206/206 `virtinst-core`.
+
+**Now wired**, in a deliberately separate follow-up commit (same
+build-then-wire split, this time with the composition test written
+alongside the wiring instead of found missing afterward): `push_
+default_nic` takes the caller's resolved `Option<&str>` instead of a
+hardcoded `"virtio"` constant, omitting `<model>` entirely on `None`.
+Every builder (`build_import_document`/`build_iso_document`/`build_
+iso_two_phase_documents`/`build_manual_document`/`build_manual_two_
+phase_documents`) gained a `nic_model: Option<&str>` parameter, and
+`virt-install.rs` computes it via `default_nic_model` (fed by
+`OsInfo::supports_virtionet()`/`supported_netmodels()`, `false`/empty
+with no `--os-variant` given) at each of its 4 non-container call
+sites — `--container`'s own call site passes `None` directly instead
+(`default_nic_model`'s own `!is_hvm` branch always resolves to `None`
+for a container's `os_type`, so there's no `GuestCapsDefaults` to
+build just to ask). 2 new tests prove the composition end to end: a
+real Windows XP `OsInfo` entry (`supports_virtionet() == false`,
+`supported_netmodels() == ["e1000"]`) surviving a real `Domain::
+create_new`/`define_new` round trip (`model type="e1000"` in the
+persisted XML, folded into the same test `default_disk_bus`'s own
+composition proof already used, since both resolve from the same real
+`OsInfo`/connection), plus a synthetic test proving `None` actually
+omits `<model>` rather than falling back to a constant — the one
+branch no existing test exercised at all. 207/207 `virtinst-core`.

@@ -409,16 +409,10 @@ pub(super) fn target_prefix_for_bus(bus: &str) -> &'static str {
 /// like upstream's `guest.supports_virtionet()` wrapping `self.osinfo.
 /// supports_virtionet(..)` in `_supports_virtio`.
 ///
-/// **Built and unit-tested here, not yet wired to a real caller** —
-/// `push_default_nic` below still hardcodes `model type="virtio"`
-/// unconditionally. Deliberately narrower than `default_disk_bus`'s
-/// own build-then-wire split: wiring this one is the *same* "resolve
-/// once in `virt-install.rs`, pass a caller-resolved value into every
-/// builder" mechanical thread, no new blast-radius surprise expected —
-/// but it's still a separate, real diff (5 builder signatures, ~30
-/// call sites across builders' own tests, `virt-install.rs`'s own call
-/// sites), kept out of this commit on the same "one slice, verified,
-/// per turn" discipline the rest of this session has followed.
+/// **Wired** — `push_default_nic` below takes the caller's resolved
+/// `Option<&str>` from this function instead of a hardcoded
+/// `"virtio"` constant, same shape as `default_disk_bus`'s own
+/// wiring.
 pub fn default_nic_model(
     caps: GuestCapsDefaults,
     supports_virtionet: bool,
@@ -445,54 +439,6 @@ pub fn default_nic_model(
     Some("e1000")
 }
 
-/// `<interface type="network"><source network="default"/><mac
-/// address=mac/><model type="virtio"/></interface>`, pushed onto
-/// `devices_el` — upstream's own CLI default, not a `--pxe`-specific
-/// fix: `virtinstall.py`'s `convert_old_networks` synthesizes a single
-/// `"default"`-network entry whenever both `--network` and
-/// `--nonetworks` are absent, applied unconditionally before any
-/// install-method-specific logic runs. Every document this crate builds
-/// gets one, matching that. `--pxe` is just the one install method
-/// where omitting it makes the resulting domain outright inert (can't
-/// network-boot at all) rather than merely missing connectivity
-/// afterward — that's what prompted grounding this, but the fix is
-/// general.
-///
-/// `mac` is caller-supplied for the same reason `uuid` is: a two-phase
-/// pair's initial and final documents must describe the *same* device,
-/// not two independently-randomized MACs. Reuses `crate::cloner::
-/// generate_mac` (`52:54:00`/`00:16:3E` OUI by driver) rather than
-/// duplicating it — the exact same function this crate's `virt-clone`
-/// support already uses for the same reason.
-///
-/// **A real bug, found and fixed, not a hypothetical one**: every
-/// caller used to derive `generate_mac`'s `is_qemu` from `domain_type
-/// == "qemu"` (the hypervisor-type string threaded through from
-/// `guest_lookup`/`DomainCapabilities`) instead of `cloner.rs`'s own
-/// correct `Uri::is_qemu()` (the connection's URI scheme). Those two
-/// disagree on the single most common real invocation this crate
-/// builds: `--connect qemu:///system` (the default) with KVM available
-/// resolves `hypervisor_type` to `"kvm"`, not the literal string
-/// `"qemu"` (confirmed against this machine's own real capture —
-/// `domcaps.rs`'s `QEMU_DOMCAPS_EXCERPT`: `<domain>kvm</domain>`) — so
-/// every real, non-`test:///` domain this crate ever built got the
-/// Xen OUI (`00:16:3E`) instead of qemu's (`52:54:00`). Not reachable
-/// through `test:///default` at all (its own domain type genuinely is
-/// the literal string `"test"`, coincidentally never triggering the
-/// bug in this crate's own test suite) — an earlier version of this
-/// comment claimed the divergence was "not reachable through this
-/// crate's current CLI surface," which was false the whole time:
-/// `--connect` has defaulted to `qemu:///system` since `virt-install`'s
-/// first commit. Fixed by threading a real `is_qemu: bool` (`conn.
-/// uri().is_qemu()`, computed once in `virt-install.rs`) through every
-/// caller instead of inferring it from `domain_type`.
-///
-/// Model is a fixed `virtio`
-/// default (`DeviceInterface.default_model`: `hvm` + `guest.
-/// supports_virtionet()`, the common qemu/kvm x86 case) — the non-virtio
-/// fallback chain (`e1000`/`rtl8139`/`ne2k_pci`/`pcnet`, chosen via
-/// `guest.osinfo.supported_netmodels()`) needs `OsInfo`, unmodeled, same
-/// posture as this crate's disk-bus default.
 /// `<graphics type=graphics_type port="-1" .../>` (`tlsPort="-1"
 /// autoport="yes"` added only for `spice`) — ticket 21 slice (c):
 /// upstream's `_add_default_graphics` + `DeviceGraphics.set_defaults`'s
@@ -654,7 +600,59 @@ pub(super) fn push_default_cpu(
         .expect("a freshly-created detached element always attaches cleanly");
 }
 
-pub(super) fn push_default_nic(doc: &mut Document, devices_el: Element, mac: &str) {
+/// `<interface type="network"><source network="default"/><mac
+/// address=mac/>[<model type=model/>]</interface>`, pushed onto
+/// `devices_el` — upstream's own CLI default, not a `--pxe`-specific
+/// fix: `virtinstall.py`'s `convert_old_networks` synthesizes a single
+/// `"default"`-network entry whenever both `--network` and
+/// `--nonetworks` are absent, applied unconditionally before any
+/// install-method-specific logic runs. Every document this crate builds
+/// gets one, matching that. `--pxe` is just the one install method
+/// where omitting it makes the resulting domain outright inert (can't
+/// network-boot at all) rather than merely missing connectivity
+/// afterward — that's what prompted grounding this, but the fix is
+/// general.
+///
+/// `mac` is caller-supplied for the same reason `uuid` is: a two-phase
+/// pair's initial and final documents must describe the *same* device,
+/// not two independently-randomized MACs. Reuses `crate::cloner::
+/// generate_mac` (`52:54:00`/`00:16:3E` OUI by driver) rather than
+/// duplicating it — the exact same function this crate's `virt-clone`
+/// support already uses for the same reason.
+///
+/// **A real bug, found and fixed, not a hypothetical one**: every
+/// caller used to derive `generate_mac`'s `is_qemu` from `domain_type
+/// == "qemu"` (the hypervisor-type string threaded through from
+/// `guest_lookup`/`DomainCapabilities`) instead of `cloner.rs`'s own
+/// correct `Uri::is_qemu()` (the connection's URI scheme). Those two
+/// disagree on the single most common real invocation this crate
+/// builds: `--connect qemu:///system` (the default) with KVM available
+/// resolves `hypervisor_type` to `"kvm"`, not the literal string
+/// `"qemu"` (confirmed against this machine's own real capture —
+/// `domcaps.rs`'s `QEMU_DOMCAPS_EXCERPT`: `<domain>kvm</domain>`) — so
+/// every real, non-`test:///` domain this crate ever built got the
+/// Xen OUI (`00:16:3E`) instead of qemu's (`52:54:00`). Not reachable
+/// through `test:///default` at all (its own domain type genuinely is
+/// the literal string `"test"`, coincidentally never triggering the
+/// bug in this crate's own test suite) — an earlier version of this
+/// comment claimed the divergence was "not reachable through this
+/// crate's current CLI surface," which was false the whole time:
+/// `--connect` has defaulted to `qemu:///system` since `virt-install`'s
+/// first commit. Fixed by threading a real `is_qemu: bool` (`conn.
+/// uri().is_qemu()`, computed once in `virt-install.rs`) through every
+/// caller instead of inferring it from `domain_type`.
+///
+/// `model` is the caller's already-resolved `default_nic_model`
+/// answer — `None` omits `<model>` entirely, matching upstream's own
+/// `self.model = None` (non-`hvm`, or non-x86 with neither virtio nor
+/// q35 available). Used to be a hardcoded `model type="virtio"`
+/// constant; wired the same way `push_disk`'s `bus` parameter was.
+pub(super) fn push_default_nic(
+    doc: &mut Document,
+    devices_el: Element,
+    mac: &str,
+    model: Option<&str>,
+) {
     let iface_el = Element::new(doc, "interface");
     iface_el.set_attribute(doc, "type", "network");
     let source_el = Element::new(doc, "source");
@@ -667,11 +665,13 @@ pub(super) fn push_default_nic(doc: &mut Document, devices_el: Element, mac: &st
     iface_el
         .push_child(doc, mac_el)
         .expect("a freshly-created detached element always attaches cleanly");
-    let model_el = Element::new(doc, "model");
-    model_el.set_attribute(doc, "type", "virtio");
-    iface_el
-        .push_child(doc, model_el)
-        .expect("a freshly-created detached element always attaches cleanly");
+    if let Some(model) = model {
+        let model_el = Element::new(doc, "model");
+        model_el.set_attribute(doc, "type", model);
+        iface_el
+            .push_child(doc, model_el)
+            .expect("a freshly-created detached element always attaches cleanly");
+    }
     devices_el
         .push_child(doc, iface_el)
         .expect("a freshly-created detached element always attaches cleanly");

@@ -102,6 +102,7 @@ pub fn build_import_document(
     cpu_mode: Option<&DefaultCpuMode>,
     clock_offset: &str,
     disk_bus: &str,
+    nic_model: Option<&str>,
 ) -> Document {
     let (mut doc, root, os_el, devices_el) = build_domain_skeleton(
         name,
@@ -126,6 +127,7 @@ pub fn build_import_document(
         &mut doc,
         devices_el,
         &crate::cloner::generate_mac(caps.is_qemu),
+        nic_model,
     );
     push_default_graphics(&mut doc, devices_el, graphics_type);
 
@@ -161,6 +163,7 @@ mod tests {
             None,
             "utc",
             "virtio",
+            Some("virtio"),
         );
         let root = doc.root_element().unwrap();
 
@@ -282,6 +285,7 @@ mod tests {
             None,
             "utc",
             "virtio",
+            Some("virtio"),
         );
         let root = doc.root_element().unwrap();
         assert!(root.find(&doc, "clock").is_none());
@@ -309,6 +313,7 @@ mod tests {
             None,
             "utc",
             "virtio",
+            Some("virtio"),
         );
         let root = doc.root_element().unwrap();
         assert!(root.find(&doc, "clock").is_none());
@@ -338,6 +343,7 @@ mod tests {
             None,
             "localtime",
             "virtio",
+            Some("virtio"),
         );
         let root = doc.root_element().unwrap();
         let clock = root.find(&doc, "clock").unwrap();
@@ -367,6 +373,7 @@ mod tests {
             None,
             "utc",
             "virtio",
+            Some("virtio"),
         );
         let root = doc.root_element().unwrap();
         let graphics = root
@@ -403,6 +410,7 @@ mod tests {
             None,
             "utc",
             "virtio",
+            Some("virtio"),
         );
         let root = doc.root_element().unwrap();
         assert!(root.find(&doc, "cpu").is_none());
@@ -430,6 +438,7 @@ mod tests {
             Some(&resolved),
             "utc",
             "virtio",
+            Some("virtio"),
         );
         let root = doc.root_element().unwrap();
         let cpu = root.find(&doc, "cpu").unwrap();
@@ -462,6 +471,7 @@ mod tests {
             Some(&resolved),
             "utc",
             "virtio",
+            Some("virtio"),
         );
         let root = doc.root_element().unwrap();
         let cpu = root.find(&doc, "cpu").unwrap();
@@ -499,6 +509,7 @@ mod tests {
             Some(&resolved),
             "utc",
             "virtio",
+            Some("virtio"),
         );
         let root = doc.root_element().unwrap();
         let cpu = root.find(&doc, "cpu").unwrap();
@@ -529,6 +540,7 @@ mod tests {
             None,
             "utc",
             "virtio",
+            Some("virtio"),
         );
         let root = doc.root_element().unwrap();
         let mac = root
@@ -581,6 +593,7 @@ mod tests {
             None,
             "utc",
             "virtio",
+            Some("virtio"),
         );
         let root = doc.root_element().unwrap();
         let mac = root
@@ -623,6 +636,7 @@ mod tests {
             None,
             "utc",
             "virtio",
+            Some("virtio"),
         );
         let root = doc.root_element().unwrap();
         let type_el = root.find(&doc, "os").unwrap().find(&doc, "type").unwrap();
@@ -653,6 +667,7 @@ mod tests {
             None,
             "utc",
             "virtio",
+            Some("virtio"),
         );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
@@ -721,6 +736,7 @@ mod tests {
             None,
             "utc",
             "virtio",
+            Some("virtio"),
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -831,6 +847,7 @@ mod tests {
             None,
             "utc",
             "virtio",
+            Some("virtio"),
         );
         // Through the DOM, not a raw string match on the serialized
         // XML — a string match couples this test to `virtinst_xml`'s
@@ -931,6 +948,7 @@ mod tests {
             None,
             "utc",
             "virtio",
+            Some("virtio"),
         );
         let root = doc.root_element().unwrap();
         let type_el = root.find(&doc, "os").unwrap().find(&doc, "type").unwrap();
@@ -1037,6 +1055,7 @@ mod tests {
             None,
             "utc",
             "virtio",
+            Some("virtio"),
         );
         let root = doc.root_element().unwrap();
         let mac = root
@@ -1119,6 +1138,7 @@ mod tests {
             None,
             "utc",
             "virtio",
+            Some("virtio"),
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -1212,6 +1232,7 @@ mod tests {
             Some(&resolved),
             "utc",
             "virtio",
+            Some("virtio"),
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -1292,6 +1313,7 @@ mod tests {
             None,
             windows.clock_offset(),
             "virtio",
+            Some("virtio"),
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -1317,23 +1339,27 @@ mod tests {
     /// The other half of the `default_disk_bus` wiring commit that had
     /// no composition test at all — advisor-flagged after the fact:
     /// every builder's own unit test passes a literal `bus` string, and
-    /// `virt-install.rs` (the only real caller of `default_disk_bus`)
-    /// has no tests of its own, so nothing proved `caps + OsInfo →
-    /// default_disk_bus → build_import_document → XML` actually
-    /// composes correctly end to end. Same "resolve for real, prove
-    /// the resolved value round-trips" split as `os_variant_clock_
-    /// offset_survives_a_real_libvirt_define` just above.
+    /// `virt-install.rs` (the only real caller of `default_disk_bus`/
+    /// `default_nic_model`) has no tests of its own, so nothing proved
+    /// `caps + OsInfo → default_disk_bus/default_nic_model →
+    /// build_import_document → XML` actually composes correctly end to
+    /// end. Same "resolve for real, prove the resolved value
+    /// round-trips" split as `os_variant_clock_offset_survives_a_real_
+    /// libvirt_define` above. Covers both defaults in one test (one
+    /// real `create_new`/`define_new` round trip, not two) since they
+    /// share the same real `OsInfo` entry and connection.
     ///
     /// Windows XP (real osinfo-db entry, predates virtio outright) is
     /// the interesting case here, not Fedora — it's the one that
     /// actually changes this crate's *tested* output (`bus="virtio"` →
-    /// `bus="ide"`, `dev="vda"` → `dev="hda"`), the exact behavior
-    /// change the wiring commit's own message described but never
-    /// exercised through an assertion.
+    /// `bus="ide"`, `dev="vda"` → `dev="hda"`; NIC `model type="virtio"`
+    /// → `type="e1000"`, its one real declared net device), the exact
+    /// behavior change the wiring commits' own messages described but
+    /// never exercised through an assertion.
     #[test]
-    fn default_disk_bus_from_a_real_osinfo_entry_survives_a_real_libvirt_define() {
+    fn default_disk_bus_and_nic_model_from_a_real_osinfo_entry_survive_a_real_libvirt_define() {
         use crate::connection::{Connection, Domain};
-        use crate::install::default_disk_bus;
+        use crate::install::{default_disk_bus, default_nic_model};
         use crate::osinfo::OsDb;
         use crate::test_support::TEST_DOMAIN_LOCK;
 
@@ -1349,7 +1375,8 @@ mod tests {
         );
 
         // Same is_qemu-gate fake-URI technique the test above needs --
-        // default_disk_bus's own supports_virtio also gates on is_qemu.
+        // default_disk_bus/default_nic_model's own supports_virtio
+        // also gates on is_qemu.
         std::env::set_var("VIRTINST_TEST_FAKE_URI", "qemu:///system");
         let conn = Connection::open("test:///default").expect("test:/// driver always opens");
         std::env::remove_var("VIRTINST_TEST_FAKE_URI");
@@ -1373,6 +1400,13 @@ mod tests {
             disk_bus, "ide",
             "no q35/bhyve override, plain x86 falls to ide"
         );
+        let netmodels = winxp.supported_netmodels();
+        let nic_model = default_nic_model(caps, winxp.supports_virtionet(), &netmodels);
+        assert_eq!(
+            nic_model,
+            Some("e1000"),
+            "winxp's one real net device is e1000, first in the prefs chain"
+        );
 
         let doc = build_import_document(
             "disk-bus-end-to-end",
@@ -1384,6 +1418,7 @@ mod tests {
             None,
             "utc",
             disk_bus,
+            nic_model,
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -1400,6 +1435,10 @@ mod tests {
             inactive_xml.contains("dev='hda'"),
             "target dev follows bus via target_prefix_for_bus, got: {inactive_xml}"
         );
+        assert!(
+            inactive_xml.contains("type='e1000'"),
+            "the real driver kept the e1000 NIC model we defined it with, got: {inactive_xml}"
+        );
 
         running
             .destroy()
@@ -1407,5 +1446,46 @@ mod tests {
         persisted
             .undefine()
             .expect("cleanup: undefine the persistent config");
+    }
+
+    /// The other branch `default_nic_model` can return — `None`,
+    /// meaning omit `<model>` entirely — has no coverage at all in the
+    /// tests above (they always pass `Some(..)`). Synthetic, not a
+    /// real end-to-end proof: `None` only depends on `caps`'s plain
+    /// strings (`!is_hvm`, or non-x86 with no virtio/q35), already
+    /// exhaustively covered by `domain_skeleton`'s own unit tests --
+    /// this just proves `push_default_nic` actually honors `None` by
+    /// omitting the element, not reintroducing a fallback constant.
+    #[test]
+    fn nic_model_none_omits_the_model_element_entirely() {
+        let doc = build_import_document(
+            "no-nic-model",
+            1048576,
+            1,
+            "/guest/no-nic-model.img",
+            GuestCapsDefaults {
+                domain_type: "kvm",
+                os_type: "hvm",
+                arch: "aarch64",
+                machine: Some("virt"),
+                emulator: None,
+                is_qemu: true,
+            },
+            "spice",
+            None,
+            "utc",
+            "virtio",
+            None,
+        );
+        let root = doc.root_element().unwrap();
+        let iface = root
+            .find(&doc, "devices")
+            .unwrap()
+            .find(&doc, "interface")
+            .unwrap();
+        assert!(
+            iface.find(&doc, "model").is_none(),
+            "None must omit <model> entirely, not fall back to a constant"
+        );
     }
 }
