@@ -525,12 +525,34 @@ otherwise pass the other two gates, isolating the `os_type` gate
 specifically. 99/99 `virtinst-cli`, 151/151 `virtinst-core` (+3 over
 the 148 slice-(c) baseline), harness 61/61, `fmt`/`clippy` clean.
 
-**Not done**: slices (e)–(f) — `hostdev.set_defaults` and CPU mode
-defaulting — remain exactly as scoped above, not started. (a)/(b)/(c)/
-(d) are now all built. (e) is still explicitly unreachable from any
-`virt-install` CLI flag (no `--hostdev` flag exists) — (f), CPU mode
-defaulting, is the higher-value pick despite being nominally last:
-it's the single most user-visible default on this list (host-
-passthrough/host-model CPU vs. qemu's bare default), but needs
-`domcaps.rs`'s `<cpu>` section built first, a real sub-piece not a
-one-liner.
+## (e) built: `hostdev.set_defaults`
+
+`DeviceHostdev::set_defaults` (`devices/hostdev.rs`) ports upstream's
+`DeviceHostdev.set_defaults` (`hostdev.py:154`) exactly: `managed`
+defaults to `!uri.is_xen()` (upstream: `self.conn.is_xen() and "no" or
+"yes"`), `mode` defaults to `"subsystem"` — both only when unset,
+neither touching an explicit value. Takes `uri: &Uri` rather than a
+bare `is_xen: bool`, matching the correction slice (c) already applied
+to `domcaps.rs`'s query methods (a same-typed `bool` here is a smaller
+version of the same "wrong argument, no test catches it" risk, and
+`Uri::parse` costs nothing to construct). One deliberate narrowing from
+upstream, stated rather than left silent: gates on `self.mode.is_none()`,
+not upstream's `if not self.mode` (which also treats `Some("")` as
+falsy) — matches every other `Option` gate already in this crate, and
+an empty-string `mode=""` attribute doesn't arise from real libvirt
+XML.
+
+**No real caller yet, built anyway**: this crate's `virt-install`/
+`virt-xml` have no `--hostdev` flag, so nothing constructs a
+`DeviceHostdev` to call this on — the ticket's own scoping pass already
+flagged this as lowest priority for exactly that reason. Built and
+tested regardless, the same precedent slice (c) set for `domcaps.rs`'s
+query methods (real logic landing before its real caller in the same
+slice) — wiring it into a builder is real future work once `--hostdev`
+exists, not dropped by oversight.
+
+**Verified**: 5 new tests on `DeviceHostdev::set_defaults` (managed
+defaults for xen/non-xen, an explicit `managed` surviving, mode
+defaulting, an explicit `mode` surviving). 99/99 `virtinst-cli`,
+156/156 `virtinst-core` (+5 over the 151 slice-(d) baseline), harness
+61/61, `fmt`/`clippy` clean.

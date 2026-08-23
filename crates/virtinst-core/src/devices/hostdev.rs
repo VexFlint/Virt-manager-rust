@@ -66,3 +66,92 @@ pub struct DeviceHostdev {
     #[xml(path = "source/interface", text)]
     pub net_interface: Option<String>,
 }
+
+impl DeviceHostdev {
+    /// Ticket 21 slice (e): upstream's `DeviceHostdev.set_defaults`
+    /// (`hostdev.py:154`) — `managed`/`mode`, two unconditional/
+    /// URI-scheme-only lines, zero `OsInfo` dependency at all (the
+    /// easiest item on ticket 21's whole list, by the scoping pass's
+    /// own account).
+    ///
+    /// **No real caller yet**: this crate's `virt-install`/`virt-xml`
+    /// have no `--hostdev` flag, so nothing builds a `DeviceHostdev` to
+    /// call this on. Built ahead of that consumer anyway — the same
+    /// precedent `domcaps.rs`'s `supports_graphics_spice`/`default_
+    /// graphics_type` set under ticket 21 slice (c) (real logic, real
+    /// tests, landed before their `virt-install.rs` wiring in the same
+    /// slice) — rather than left unbuilt and unverifiable until a CLI
+    /// flag happens to show up.
+    ///
+    /// `uri: &crate::connection::Uri`, not a bare `is_xen: bool` — same
+    /// reasoning as `domcaps.rs`'s query methods: a single same-typed
+    /// `bool` here is a smaller version of the "wrong argument, no test
+    /// catches it" shape that review flagged there, and `Uri` costs
+    /// nothing to construct (`Uri::parse` is a pure, connection-free
+    /// parser, no libvirt call).
+    ///
+    /// `self.mode.is_none()`, not upstream's `if not self.mode` (which
+    /// also treats `Some("")` as falsy) — every other `Option` gate in
+    /// this crate reads absence the same way, and an empty-string
+    /// `mode=""` attribute doesn't arise from real libvirt XML, so this
+    /// is a deliberate match to this crate's existing convention, not
+    /// an unnoticed narrowing.
+    pub fn set_defaults(&mut self, uri: &crate::connection::Uri) {
+        if self.managed.is_none() {
+            self.managed = Some(!uri.is_xen());
+        }
+        if self.mode.is_none() {
+            self.mode = Some("subsystem".to_string());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connection::Uri;
+
+    #[test]
+    fn defaults_managed_to_yes_for_a_non_xen_connection() {
+        let mut dev = DeviceHostdev::default();
+        dev.set_defaults(&Uri::parse("qemu:///system"));
+        assert_eq!(dev.managed, Some(true));
+    }
+
+    #[test]
+    fn defaults_managed_to_no_for_a_real_xen_connection() {
+        let mut dev = DeviceHostdev::default();
+        dev.set_defaults(&Uri::parse("xen+ssh://root@example.com/"));
+        assert_eq!(dev.managed, Some(false));
+    }
+
+    #[test]
+    fn does_not_override_an_explicit_managed_value() {
+        let mut dev = DeviceHostdev {
+            managed: Some(false),
+            ..Default::default()
+        };
+        // A non-xen URI would otherwise default `managed` to `true` —
+        // proves the explicit `false` survives, not just that some
+        // value ends up set.
+        dev.set_defaults(&Uri::parse("qemu:///system"));
+        assert_eq!(dev.managed, Some(false));
+    }
+
+    #[test]
+    fn defaults_mode_to_subsystem() {
+        let mut dev = DeviceHostdev::default();
+        dev.set_defaults(&Uri::parse("qemu:///system"));
+        assert_eq!(dev.mode.as_deref(), Some("subsystem"));
+    }
+
+    #[test]
+    fn does_not_override_an_explicit_mode() {
+        let mut dev = DeviceHostdev {
+            mode: Some("capabilities".to_string()),
+            ..Default::default()
+        };
+        dev.set_defaults(&Uri::parse("qemu:///system"));
+        assert_eq!(dev.mode.as_deref(), Some("capabilities"));
+    }
+}
