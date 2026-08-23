@@ -30,9 +30,19 @@
 //! Only `siblings` (`_NUMACellSibling`, the distance table) actually
 //! nests under an individual cell's own `<distances>`.
 //!
-//! Not modeled: `set_defaults`/`set_special_mode`/the security-mitigation
-//! helpers (`_add_security_features` etc.) — all business logic over
-//! the bound fields, ticket 17 territory, same as everywhere else.
+//! Not modeled on this struct: `set_special_mode`/the security-
+//! mitigation helpers (`_add_security_features` etc.) — business logic
+//! over the bound fields, ticket 17 territory, same as everywhere
+//! else. **`set_defaults`'s actual logic is built, but lives in
+//! `capabilities::domcaps::DomainCapabilities::default_cpu_mode`
+//! instead of here** (ticket 21 slice (f)) — this crate builds domain
+//! XML through direct `edit_xml::Document`/`Element` construction
+//! (`install/domain_skeleton.rs`'s `push_default_cpu`), not through
+//! `DomainCpu`'s bound-struct setters, so there's no `self.mode =` on
+//! `DomainCpu` for a `set_defaults` here to mutate. A future consumer
+//! of this struct (e.g. a `virt-xml --cpu` editor) should look there
+//! first rather than re-porting `domain/cpu.py`'s defaulting chain a
+//! second time onto this type.
 //! `match` is a Rust keyword; the field is `cpu_match`, bound to the
 //! `match` attribute by string, same as every other field's name
 //! already differing freely from its XML attribute name.

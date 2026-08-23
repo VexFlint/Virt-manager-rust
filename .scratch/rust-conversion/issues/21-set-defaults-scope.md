@@ -797,3 +797,24 @@ upstream's `set_defaults()` also touches were flagged in this ticket's
 scoping pass as "not individually traced this pass" — still true, and
 still real future work, but out of this ticket's six-slice scope as
 decided.
+
+**Gap caught on final review, closed before declaring done**: every
+test up to this point either passed `cpu_mode: None` or hand-built a
+`DefaultCpuMode` from a literal fixture — the actual live path
+(`virt-install.rs`'s real `DomainCapabilities::fetch(...).unwrap_or_
+default()` call, with the exact `emulator`/`arch`/`machine`/
+`domain_type` arguments it passes) had never run end to end. This
+mattered specifically because `.unwrap_or_default()` fails *silently*:
+a wrong argument shape wouldn't error, it would just make `domcaps`
+empty, which sends `default_cpu_mode` down a different-but-still-
+successful branch (`Custom` fallback using the host's raw `<capabilities>`
+model, since both `supports_safe_*` checks read `false` on empty
+domcaps) instead of erroring loudly. Checked with a throwaway test
+(same pattern as piece 1's full-capture sanity pass, removed before
+committing) against a real `qemu:///session`, using `virt-install.rs`'s
+exact fetch-argument shape: resolved `domain_type="kvm"`,
+`arch="x86_64"`, `machine="pc-i440fx-11.1"`,
+`emulator="/usr/bin/qemu-system-x86_64"`, and confirmed `domcaps.
+supports_safe_host_passthrough()` reads `true` against that real
+fetch — the live wiring resolves to `host-passthrough` as intended, not
+silently falling back to `Custom`.
