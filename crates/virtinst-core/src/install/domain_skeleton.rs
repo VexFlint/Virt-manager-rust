@@ -12,7 +12,7 @@
 //! callers' doc comments for the full rationale.
 //!
 //! Also home to the fixed-default device pushers shared across builders
-//! once a third caller needed them (`push_virtio_disk`,
+//! once a third caller needed them (`push_disk`,
 //! `push_default_nic`) and the two-phase-only elements
 //! (`push_on_reboot_destroy`).
 
@@ -190,13 +190,20 @@ pub(super) fn push_on_reboot_destroy(doc: &mut Document, root: Element) {
     push_text_child(doc, root, "on_reboot", "destroy");
 }
 
-/// `<disk type="file" device="disk"><source file=.../><target dev="vda"
-/// bus="virtio"/></disk>`, pushed onto `devices_el` — the fixed-defaults
-/// persistent disk shape shared by `import.rs`, `iso.rs`'s two-phase
-/// case, and `manual.rs` (real driver/OS-aware bus selection isn't
-/// ported, see `import.rs`'s doc comment for the gap). Moved here once
-/// `iso.rs` and `manual.rs` became the second and third copies.
-pub(super) fn push_virtio_disk(doc: &mut Document, devices_el: Element, path: &str) {
+/// `<disk type="file" device="disk"><source file=.../><target dev=.../
+/// bus=bus/></disk>`, pushed onto `devices_el` — the persistent disk
+/// shape shared by `import.rs`, `iso.rs`'s two-phase case, and
+/// `manual.rs`. `bus` is the caller's already-resolved answer
+/// (`default_disk_bus`, or a literal in tests that don't care about the
+/// decision tree) — same "resolve once, pass the answer in" pattern
+/// `clock_offset`/`graphics_type` already use, not computed here.
+/// `target dev`'s prefix follows `bus` via `target_prefix_for_bus`
+/// (`"vda"` for `bus="virtio"`, `"hda"` for `bus="ide"`, etc.) — this
+/// function used to hardcode both `bus="virtio"` and `dev="vda"`
+/// unconditionally; renamed from `push_virtio_disk` once bus stopped
+/// being a foregone conclusion. Moved here once `iso.rs` and
+/// `manual.rs` became the second and third copies.
+pub(super) fn push_disk(doc: &mut Document, devices_el: Element, path: &str, bus: &str) {
     let disk_el = Element::new(doc, "disk");
     disk_el.set_attribute(doc, "type", "file");
     disk_el.set_attribute(doc, "device", "disk");
@@ -206,8 +213,8 @@ pub(super) fn push_virtio_disk(doc: &mut Document, devices_el: Element, path: &s
         .push_child(doc, source_el)
         .expect("a freshly-created detached element always attaches cleanly");
     let target_el = Element::new(doc, "target");
-    target_el.set_attribute(doc, "dev", "vda");
-    target_el.set_attribute(doc, "bus", "virtio");
+    target_el.set_attribute(doc, "dev", format!("{}a", target_prefix_for_bus(bus)));
+    target_el.set_attribute(doc, "bus", bus);
     disk_el
         .push_child(doc, target_el)
         .expect("a freshly-created detached element always attaches cleanly");
@@ -285,21 +292,26 @@ fn supports_virtio(arch: &str, machine: Option<&str>, is_qemu: bool, os_support:
 /// anywhere in this crate, so upstream's `is_floppy()` branch has no
 /// analog here and is omitted rather than modeled unreachable).
 ///
-/// **Built and unit-tested here, not yet wired to a real caller.**
-/// Every builder in this module still hardcodes `bus="virtio"`
-/// (`push_virtio_disk`) / `bus="ide"` (`iso.rs`'s `push_cdrom_disk`)
-/// unconditionally — wiring this in means flipping every existing
-/// `test:///`-based test's disk bus, since `test:///`'s connection is
-/// structurally never qemu (`is_qemu` is always `false` there) and
-/// `supports_virtio` above returns `false` outright whenever `!is_qemu`,
-/// matching upstream faithfully but changing this crate's *tested*
-/// default output (`bus="virtio"` → `bus="ide"`) for every case that
-/// doesn't go out of its way to fake a qemu connection
-/// (`VIRTINST_TEST_FAKE_URI`, the same technique `clock_offset`'s own
-/// real end-to-end test needed). That's a deliberate, large, separate
-/// diff — landing the decision tree first, verified in isolation
-/// against synthetic `GuestCapsDefaults` values, means a future test
-/// failure while wiring it can only be the wiring, not this function.
+/// **Wired as of the commit that added this line** — every builder's
+/// `disk_bus`/`cdrom_bus` parameter is now the caller's already-resolved
+/// answer from this function (`virt-install.rs`'s own call sites), not a
+/// hardcoded `"virtio"`/`"ide"` constant. Unit-tested in isolation first
+/// (this file's own `bus_selection_tests`, against synthetic
+/// `GuestCapsDefaults`) before any caller wired it, specifically so a
+/// test failure at either stage could only be the tree or the wiring —
+/// never both at once, see this crate's git history for that split.
+///
+/// Every builder function's own unit tests still pass a literal `bus`
+/// string (`"virtio"`, `"ide"`) rather than routing through this
+/// function — they're proving each builder places `bus`/`dev`/`readonly`
+/// correctly for whatever value it's given, not re-testing the decision
+/// tree itself (already covered here). Only `virt-install.rs`'s real
+/// call sites compute a bus through this function, so this is the one
+/// place in this crate where `!is_qemu` genuinely does now flip the
+/// real, observable default (`bus="virtio"` → `bus="ide"` for a
+/// `--os-variant`-less, non-qemu-connection invocation) — upstream-
+/// faithful (`_supports_virtio` gates the whole thing on
+/// `conn.is_qemu()` first too), not a regression.
 ///
 /// `is_bhyve` is a plain `bool` parameter here, not derived from
 /// `caps.domain_type` — `domain_type` is the capsinfo-reported
@@ -308,8 +320,8 @@ fn supports_virtio(arch: &str, machine: Option<&str>, is_qemu: bool, os_support:
 /// comment already documents as a real, previously-shipped bug for
 /// `is_qemu`. The real caller-side value is `Uri::is_bhyve()` (a
 /// URI-scheme check, same family as `Uri::is_qemu()` — both already
-/// exist on `connection::uri::Uri`), not yet threaded through
-/// `GuestCapsDefaults` since nothing calls this function yet.
+/// exist on `connection::uri::Uri`), threaded through from
+/// `virt-install.rs` the same way `is_qemu` already is.
 ///
 /// Real libvirt is lenient about a `bus`/target-`dev`-prefix mismatch
 /// (confirmed against `test:///`: `<target dev='hda' bus='sata'/>`
@@ -317,8 +329,7 @@ fn supports_virtio(arch: &str, machine: Option<&str>, is_qemu: bool, os_support:
 /// type='sata'>` for it) — `target_prefix_for_bus` below exists for
 /// output fidelity with upstream's own `generate_target`, not because
 /// a mismatch would be rejected.
-#[allow(dead_code)] // not yet wired to a real caller, see doc comment above
-pub(super) fn default_disk_bus(
+pub fn default_disk_bus(
     caps: GuestCapsDefaults,
     is_cdrom: bool,
     is_bhyve: bool,
@@ -360,7 +371,6 @@ pub(super) fn default_disk_bus(
 /// per-prefix numbering-limit table (`nummap`) since every caller here
 /// builds exactly one disk of each device kind — there's never a
 /// second one to number past `a`.
-#[allow(dead_code)] // not yet wired to a real caller, see default_disk_bus's doc comment
 pub(super) fn target_prefix_for_bus(bus: &str) -> &'static str {
     match bus {
         "virtio" => "vd",
@@ -610,8 +620,8 @@ mod bus_selection_tests {
 
     /// The common case this crate actually targets: a real qemu/KVM
     /// x86_64 `pc-*` guest with an OS that reports virtio support —
-    /// `push_virtio_disk`'s hardcoded output, reached via the decision
-    /// tree instead of a fixed constant.
+    /// `push_disk`'s previously-hardcoded output, now reached via the
+    /// decision tree instead of a fixed constant.
     #[test]
     fn qemu_x86_pc_with_virtio_support_picks_virtio_for_disk() {
         let caps = GuestCapsDefaults {

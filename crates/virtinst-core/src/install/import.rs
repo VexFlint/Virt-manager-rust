@@ -17,12 +17,14 @@
 //! identical copies.
 //!
 //! **Real simplifications, flagged rather than built:**
-//! - The disk is given fixed defaults (`type="file"`, `device="disk"`,
-//!   `target dev="vda" bus="virtio"`) instead of upstream's
-//!   `guest.set_defaults()` — real driver/OS-aware bus selection
-//!   (e.g. IDE for very old guest OS profiles, SCSI/virtio otherwise)
-//!   isn't ported. Same gap already flagged for `virt-xml
-//!   --add-device`.
+//! - The disk's `type="file"`/`device="disk"` shape is fixed, but its
+//!   `bus`/target `dev` prefix are no longer a hardcoded `"virtio"`/
+//!   `"vda"` — `disk_bus` is the caller's already-resolved
+//!   `domain_skeleton::default_disk_bus` answer (upstream's
+//!   `guest.set_defaults()`/`disk.py`'s `_default_bus`, ported), see
+//!   that function's own doc comment for the decision tree and why
+//!   `virt-install.rs` resolves it rather than this function computing
+//!   it internally.
 //! - No storage validation (`DeviceDisk.path_definitely_exists`) —
 //!   upstream requires the import path already exist; this crate
 //!   doesn't check, matching every other field in this module (a
@@ -40,13 +42,13 @@
 //! upstream's own CLI default whenever `--network`/`--nonetworks` are
 //! both absent, not something specific to this install method.
 
-use virtinst_xml::{Document, Element};
+use virtinst_xml::Document;
 
 use crate::capabilities::DefaultCpuMode;
 
 use super::domain_skeleton::{
     build_domain_skeleton, push_boot_dev, push_default_clock, push_default_cpu,
-    push_default_graphics, push_default_nic, GuestCapsDefaults,
+    push_default_graphics, push_default_nic, push_disk, GuestCapsDefaults,
 };
 
 /// `name`/`memory_kib`/`vcpus` are the wizard's Name/Memory pages'
@@ -99,6 +101,7 @@ pub fn build_import_document(
     graphics_type: &str,
     cpu_mode: Option<&DefaultCpuMode>,
     clock_offset: &str,
+    disk_bus: &str,
 ) -> Document {
     let (mut doc, root, os_el, devices_el) = build_domain_skeleton(
         name,
@@ -118,23 +121,7 @@ pub fn build_import_document(
     push_default_cpu(&mut doc, root, cpu_mode);
     push_boot_dev(&mut doc, os_el, "hd");
 
-    let disk_el = Element::new(&mut doc, "disk");
-    disk_el.set_attribute(&mut doc, "type", "file");
-    disk_el.set_attribute(&mut doc, "device", "disk");
-    let source_el = Element::new(&mut doc, "source");
-    source_el.set_attribute(&mut doc, "file", disk_path);
-    disk_el
-        .push_child(&mut doc, source_el)
-        .expect("a freshly-created detached element always attaches cleanly");
-    let target_el = Element::new(&mut doc, "target");
-    target_el.set_attribute(&mut doc, "dev", "vda");
-    target_el.set_attribute(&mut doc, "bus", "virtio");
-    disk_el
-        .push_child(&mut doc, target_el)
-        .expect("a freshly-created detached element always attaches cleanly");
-    devices_el
-        .push_child(&mut doc, disk_el)
-        .expect("a freshly-created detached element always attaches cleanly");
+    push_disk(&mut doc, devices_el, disk_path, disk_bus);
     push_default_nic(
         &mut doc,
         devices_el,
@@ -173,6 +160,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
         let root = doc.root_element().unwrap();
 
@@ -293,6 +281,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
         let root = doc.root_element().unwrap();
         assert!(root.find(&doc, "clock").is_none());
@@ -319,6 +308,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
         let root = doc.root_element().unwrap();
         assert!(root.find(&doc, "clock").is_none());
@@ -347,6 +337,7 @@ mod tests {
             "spice",
             None,
             "localtime",
+            "virtio",
         );
         let root = doc.root_element().unwrap();
         let clock = root.find(&doc, "clock").unwrap();
@@ -375,6 +366,7 @@ mod tests {
             "vnc",
             None,
             "utc",
+            "virtio",
         );
         let root = doc.root_element().unwrap();
         let graphics = root
@@ -410,6 +402,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
         let root = doc.root_element().unwrap();
         assert!(root.find(&doc, "cpu").is_none());
@@ -436,6 +429,7 @@ mod tests {
             "spice",
             Some(&resolved),
             "utc",
+            "virtio",
         );
         let root = doc.root_element().unwrap();
         let cpu = root.find(&doc, "cpu").unwrap();
@@ -467,6 +461,7 @@ mod tests {
             "spice",
             Some(&resolved),
             "utc",
+            "virtio",
         );
         let root = doc.root_element().unwrap();
         let cpu = root.find(&doc, "cpu").unwrap();
@@ -503,6 +498,7 @@ mod tests {
             "spice",
             Some(&resolved),
             "utc",
+            "virtio",
         );
         let root = doc.root_element().unwrap();
         let cpu = root.find(&doc, "cpu").unwrap();
@@ -532,6 +528,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
         let root = doc.root_element().unwrap();
         let mac = root
@@ -583,6 +580,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
         let root = doc.root_element().unwrap();
         let mac = root
@@ -624,6 +622,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
         let root = doc.root_element().unwrap();
         let type_el = root.find(&doc, "os").unwrap().find(&doc, "type").unwrap();
@@ -653,6 +652,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
@@ -720,6 +720,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -829,6 +830,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
         // Through the DOM, not a raw string match on the serialized
         // XML — a string match couples this test to `virtinst_xml`'s
@@ -928,6 +930,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
         let root = doc.root_element().unwrap();
         let type_el = root.find(&doc, "os").unwrap().find(&doc, "type").unwrap();
@@ -1033,6 +1036,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
         let root = doc.root_element().unwrap();
         let mac = root
@@ -1114,6 +1118,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -1206,6 +1211,7 @@ mod tests {
             "spice",
             Some(&resolved),
             "utc",
+            "virtio",
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -1285,6 +1291,7 @@ mod tests {
             "spice",
             None,
             windows.clock_offset(),
+            "virtio",
         );
         let xml = doc.write_str().expect("serializes");
 

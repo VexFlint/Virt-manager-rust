@@ -898,24 +898,41 @@ regardless), xenpv/non-hvm short-circuiting before virtio is ever
 considered, and `is_bhyve` winning over the plain-x86 `ide` default.
 197/197 `virtinst-core` (+8), harness 61/61, `fmt`/`clippy` clean.
 
-**Deliberately not wired to any real caller this turn** — advice taken
-mid-session (see the git log for this commit) not to combine "build
-the tree" and "flip every caller onto it" in one pass, since the
-second half isn't a small mechanical thread the way `clock_offset` was:
-`supports_virtio` returns `false` outright whenever `!is_qemu`, and
-every existing test in `import.rs`/`iso.rs`/`manual.rs` builds through
-`test:///`, whose connection is structurally never qemu. Wiring this in
-faithfully flips every one of those tests' disk bus from `virtio`/`vda`
-to `ide`/`hda` — upstream-correct, but a large, deliberate diff that
-deserves its own commit and its own failure-triage pass, not one that
-also has to ask "is the tree wrong, or did the assertion just need
-updating" at the same time. `is_bhyve` is a plain `bool` argument to
-`default_disk_bus` rather than derived from `caps.domain_type` — the
-exact `domain_type`-vs-`Uri::is_qemu()` conflation `push_default_nic`'s
-own doc comment already documents as a real, previously-shipped bug;
-the real caller-side value (`Uri::is_bhyve()`) already exists but isn't
-threaded through `GuestCapsDefaults` since nothing calls this function
-yet. Wiring this is the natural next OsInfo-related step, not started.
+**Wired, in a deliberately separate follow-up commit** — the split
+advised mid-session (build the tree, verify it in isolation, then wire
+it) meant a future test failure while wiring could only be the wiring,
+never the tree, and that's exactly how it played out: wiring hit zero
+tree bugs. `push_virtio_disk`/`push_cdrom_disk` (renamed to `push_disk`,
+`push_cdrom_disk` kept) now take a caller-resolved `bus: &str` argument
+instead of a hardcoded `"virtio"`/`"ide"` constant, and every one of
+`build_import_document`/`build_iso_document`/`build_iso_two_phase_
+documents`/`build_manual_document`/`build_manual_two_phase_documents`
+gained a `disk_bus`/`cdrom_bus` parameter to match — `virt-install.rs`
+computes them via `default_disk_bus` (plus `Uri::is_bhyve()`,
+`OsInfo::supports_virtiodisk()`/`supports_virtioscsi()`) at each of its
+4 non-container call sites, the same "resolve once, pass the answer
+in" pattern `clock_offset` already established. `is_bhyve` is threaded
+as `Uri::is_bhyve()` exactly as flagged (not `caps.domain_type`,
+avoiding the exact conflation `push_default_nic`'s own doc comment
+already documents as a real, previously-shipped bug for `is_qemu`).
+
+The blast radius stayed contained to `virt-install.rs`'s real output,
+not the test suite: every builder's own unit tests pass a literal
+`bus` string (`"virtio"`, `"ide"`) rather than routing through
+`default_disk_bus`, so 0 existing assertions needed updating — 197/197
+`virtinst-core` unchanged before and after. The one place `!is_qemu`
+now genuinely flips a real default is `virt-install.rs`'s own output
+for a non-qemu, `--os-variant`-less invocation (`bus="virtio"` →
+`bus="ide"`) — upstream-faithful, confirmed with manual CLI runs
+against `test:///default` (real connection: `ide`; `VIRTINST_TEST_
+FAKE_URI=qemu:///system` with `--os-variant fedora25`: virtio-capable
+path exercised without a panic). Not re-verified via a persisted
+`inactive_xml()` round-trip the way `clock_offset` was, since
+`test:///`'s per-connection state doesn't survive across separate
+`virt-install` process invocations — the decision tree itself is
+already exhaustively unit-tested (ticket 04's own file, 8 tests), and
+`push_disk`/`push_cdrom_disk` placing whatever `bus` they're given
+correctly is covered by every existing builder test.
 
 **Verified**: 2 new tests in `osinfo::mod::tests` (`clock_offset`
 across Linux/Windows/Solaris family branches, `os_by_id_or_short_id`'s

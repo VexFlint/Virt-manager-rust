@@ -51,22 +51,22 @@
 //!
 //! **Also not modeled**: `_remove_install_cdrom_media`'s "keep media
 //! attached for Windows, which has a multi-stage install" exception —
-//! `osinfo::OsInfo::is_windows()` exists now (ticket 04), but nothing
-//! threads an `OsInfo` through this module's builders yet (only
-//! `import.rs`'s `<clock>` offset consumes one so far), so the final
-//! document always strips the cdrom media, matching every non-Windows
-//! case. A real remaining gap, not an `OsInfo`-doesn't-exist blocker
-//! anymore.
+//! `osinfo::OsInfo::is_windows()` exists now (ticket 04), but no
+//! `--keep-cdrom-media`-equivalent decision threads it through this
+//! module's builders yet (`disk_bus`/`cdrom_bus` below are informed by
+//! `OsInfo` via `default_disk_bus`, but that's a different decision
+//! from whether to strip the media), so the final document always
+//! strips the cdrom media, matching every non-Windows case. A real
+//! remaining gap, not an `OsInfo`-doesn't-exist blocker anymore.
 //!
-//! **Real simplifications, flagged rather than built** (same posture as
-//! `import.rs`):
-//! - The cdrom device is given upstream's actual x86/hvm defaults
-//!   (`_default_bus`: `bus="ide"`, `generate_target`: `target="hda"` — the
-//!   first free `hd*` slot when nothing else claims it — `read_only`
-//!   always true for cdrom, per `set_defaults`), not derived generally —
-//!   a non-x86 `arch` or non-hvm guest would get a different bus upstream
-//!   (`fdc`/`xen`/`scsi`/`sd`/`usb` depending on machine type), unmodeled
-//!   here same as `import.rs`'s disk-bus gap.
+//! **Real simplifications, flagged rather than built:**
+//! - The cdrom device's `bus`/target `dev` prefix are the caller's
+//!   already-resolved `default_disk_bus(caps, is_cdrom: true, ..)`
+//!   answer (`cdrom_bus` below) — no longer a hardcoded `"ide"`/`"hda"`
+//!   constant, see `domain_skeleton::default_disk_bus`'s doc comment
+//!   for the full decision tree. `read_only` stays a fixed `true` for
+//!   every cdrom regardless of bus, matching upstream's own
+//!   unconditional `set_defaults`.
 //! - No media-existence validation, matching every other path field in
 //!   this module.
 //!
@@ -82,13 +82,17 @@ use crate::capabilities::DefaultCpuMode;
 
 use super::domain_skeleton::{
     build_domain_skeleton, push_boot_dev, push_default_clock, push_default_cpu,
-    push_default_graphics, push_default_nic, push_on_reboot_destroy, push_virtio_disk,
-    GuestCapsDefaults,
+    push_default_graphics, push_default_nic, push_disk, push_on_reboot_destroy, GuestCapsDefaults,
 };
 
 /// `name`/`memory_kib`/`vcpus`/`caps`/`graphics_type` — see
 /// `build_import_document`'s doc comment, identical rationale. `media`
 /// is `InstallMethod::Iso::media`, the path to the ISO/CD image.
+/// `cdrom_bus` is the caller's already-resolved `default_disk_bus(caps,
+/// is_cdrom: true, ..)` answer — same "resolve once, pass the answer
+/// in" pattern `clock_offset` uses, see `domain_skeleton::
+/// default_disk_bus`'s doc comment for why this crate doesn't compute
+/// it internally.
 ///
 /// Builds and boots from the CD alone (`<boot dev="cdrom">`) with no
 /// persistent disk device at all — matches `live: true`'s own doc comment
@@ -103,6 +107,7 @@ pub fn build_iso_document(
     graphics_type: &str,
     cpu_mode: Option<&DefaultCpuMode>,
     clock_offset: &str,
+    cdrom_bus: &str,
 ) -> Document {
     let (mut doc, root, os_el, devices_el) = build_domain_skeleton(
         name,
@@ -122,7 +127,7 @@ pub fn build_iso_document(
     push_default_cpu(&mut doc, root, cpu_mode);
     push_boot_dev(&mut doc, os_el, "cdrom");
 
-    push_cdrom_disk(&mut doc, devices_el, Some(media));
+    push_cdrom_disk(&mut doc, devices_el, Some(media), cdrom_bus);
     push_default_nic(
         &mut doc,
         devices_el,
@@ -147,6 +152,10 @@ pub fn build_iso_document(
 /// `build_domain_skeleton` calls — required for the same reason a single
 /// document always needed one: two libvirt-generated UUIDs would collide
 /// on the second call.
+///
+/// `cdrom_bus`/`disk_bus` are the caller's already-resolved
+/// `default_disk_bus(caps, is_cdrom, ..)` answers for the two device
+/// kinds this method builds — see `build_iso_document`'s doc comment.
 #[allow(clippy::too_many_arguments)]
 pub fn build_iso_two_phase_documents(
     name: &str,
@@ -158,6 +167,8 @@ pub fn build_iso_two_phase_documents(
     graphics_type: &str,
     cpu_mode: Option<&DefaultCpuMode>,
     clock_offset: &str,
+    cdrom_bus: &str,
+    disk_bus: &str,
 ) -> (Document, Document) {
     let uuid = crate::cloner::generate_uuid();
     // Same device, same MAC in both documents — same reason the UUID is
@@ -177,6 +188,8 @@ pub fn build_iso_two_phase_documents(
         graphics_type,
         cpu_mode,
         clock_offset,
+        cdrom_bus,
+        disk_bus,
         true,
     );
     let final_doc = build_iso_phase_document(
@@ -192,6 +205,8 @@ pub fn build_iso_two_phase_documents(
         graphics_type,
         cpu_mode,
         clock_offset,
+        cdrom_bus,
+        disk_bus,
         false,
     );
     (initial, final_doc)
@@ -219,6 +234,8 @@ fn build_iso_phase_document(
     graphics_type: &str,
     cpu_mode: Option<&DefaultCpuMode>,
     clock_offset: &str,
+    cdrom_bus: &str,
+    disk_bus: &str,
     is_initial: bool,
 ) -> Document {
     let (mut doc, root, os_el, devices_el) =
@@ -237,19 +254,22 @@ fn build_iso_phase_document(
     }
     push_boot_dev(&mut doc, os_el, boot_dev);
 
-    push_cdrom_disk(&mut doc, devices_el, cdrom_source);
-    push_virtio_disk(&mut doc, devices_el, disk_path);
+    push_cdrom_disk(&mut doc, devices_el, cdrom_source, cdrom_bus);
+    push_disk(&mut doc, devices_el, disk_path, disk_bus);
     push_default_nic(&mut doc, devices_el, mac);
     push_default_graphics(&mut doc, devices_el, graphics_type);
 
     doc
 }
 
-/// `<disk type="file" device="cdrom"><source file=.../><target dev="hda"
-/// bus="ide"/><readonly/></disk>` — `source` omitted entirely when
-/// `media` is `None` (an empty drive, matching upstream's `_remove_
-/// install_cdrom_media`: the device stays, the media doesn't).
-fn push_cdrom_disk(doc: &mut Document, devices_el: Element, media: Option<&str>) {
+/// `<disk type="file" device="cdrom"><source file=.../><target dev=.../
+/// bus=bus/></disk>` — `source` omitted entirely when `media` is `None`
+/// (an empty drive, matching upstream's `_remove_install_cdrom_media`:
+/// the device stays, the media doesn't). `bus` is the caller's already-
+/// resolved answer (`default_disk_bus(caps, is_cdrom: true, ..)`), same
+/// as `push_disk`'s `bus` parameter — this function used to hardcode
+/// `bus="ide"`/`dev="hda"` unconditionally.
+fn push_cdrom_disk(doc: &mut Document, devices_el: Element, media: Option<&str>, bus: &str) {
     let disk_el = Element::new(doc, "disk");
     disk_el.set_attribute(doc, "type", "file");
     disk_el.set_attribute(doc, "device", "cdrom");
@@ -261,8 +281,12 @@ fn push_cdrom_disk(doc: &mut Document, devices_el: Element, media: Option<&str>)
             .expect("a freshly-created detached element always attaches cleanly");
     }
     let target_el = Element::new(doc, "target");
-    target_el.set_attribute(doc, "dev", "hda");
-    target_el.set_attribute(doc, "bus", "ide");
+    target_el.set_attribute(
+        doc,
+        "dev",
+        format!("{}a", super::domain_skeleton::target_prefix_for_bus(bus)),
+    );
+    target_el.set_attribute(doc, "bus", bus);
     disk_el
         .push_child(doc, target_el)
         .expect("a freshly-created detached element always attaches cleanly");
@@ -298,6 +322,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "ide",
         );
         let root = doc.root_element().unwrap();
 
@@ -371,6 +396,7 @@ mod tests {
             "vnc",
             None,
             "utc",
+            "ide",
         );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
@@ -417,6 +443,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "ide",
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -465,6 +492,8 @@ mod tests {
             "spice",
             None,
             "utc",
+            "ide",
+            "virtio",
         );
 
         let initial_root = initial.root_element().unwrap();
@@ -632,6 +661,8 @@ mod tests {
             "spice",
             None,
             "utc",
+            "ide",
+            "virtio",
         );
         let initial_xml = initial.write_str().expect("serializes");
         let final_xml = final_doc.write_str().expect("serializes");

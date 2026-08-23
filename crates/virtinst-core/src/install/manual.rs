@@ -56,8 +56,7 @@ use crate::capabilities::DefaultCpuMode;
 
 use super::domain_skeleton::{
     build_domain_skeleton, push_boot_dev, push_default_clock, push_default_cpu,
-    push_default_graphics, push_default_nic, push_on_reboot_destroy, push_virtio_disk,
-    GuestCapsDefaults,
+    push_default_graphics, push_default_nic, push_disk, push_on_reboot_destroy, GuestCapsDefaults,
 };
 
 /// `name`/`memory_kib`/`vcpus`/`caps`/`graphics_type` — see
@@ -98,6 +97,7 @@ pub fn build_manual_document(
     graphics_type: &str,
     cpu_mode: Option<&DefaultCpuMode>,
     clock_offset: &str,
+    disk_bus: &str,
 ) -> Document {
     build_manual_phase_document(
         name,
@@ -111,6 +111,7 @@ pub fn build_manual_document(
         graphics_type,
         cpu_mode,
         clock_offset,
+        disk_bus,
         false,
     )
 }
@@ -135,6 +136,7 @@ pub fn build_manual_two_phase_documents(
     graphics_type: &str,
     cpu_mode: Option<&DefaultCpuMode>,
     clock_offset: &str,
+    disk_bus: &str,
 ) -> (Document, Document) {
     let uuid = crate::cloner::generate_uuid();
     // Same NIC, same MAC in both documents — same reason the UUID is
@@ -153,6 +155,7 @@ pub fn build_manual_two_phase_documents(
         graphics_type,
         cpu_mode,
         clock_offset,
+        disk_bus,
         true,
     );
 
@@ -172,6 +175,7 @@ pub fn build_manual_two_phase_documents(
         graphics_type,
         cpu_mode,
         clock_offset,
+        disk_bus,
         false,
     );
 
@@ -202,6 +206,7 @@ fn build_manual_phase_document(
     graphics_type: &str,
     cpu_mode: Option<&DefaultCpuMode>,
     clock_offset: &str,
+    disk_bus: &str,
     is_initial: bool,
 ) -> Document {
     let (mut doc, root, os_el, devices_el) =
@@ -224,7 +229,7 @@ fn build_manual_phase_document(
     }
 
     if let Some(disk_path) = disk_path {
-        push_virtio_disk(&mut doc, devices_el, disk_path);
+        push_disk(&mut doc, devices_el, disk_path, disk_bus);
     }
     push_default_nic(&mut doc, devices_el, mac);
     push_default_graphics(&mut doc, devices_el, graphics_type);
@@ -256,6 +261,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
         let root = doc.root_element().unwrap();
 
@@ -307,6 +313,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
         let root = doc.root_element().unwrap();
 
@@ -347,6 +354,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
         let root = doc.root_element().unwrap();
         let os = root.find(&doc, "os").unwrap();
@@ -372,6 +380,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
@@ -426,6 +435,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -490,6 +500,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
 
         let initial_root = initial.root_element().unwrap();
@@ -584,6 +595,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
 
         let initial_root = initial.root_element().unwrap();
@@ -650,6 +662,7 @@ mod tests {
             "spice",
             None,
             "utc",
+            "virtio",
         );
         let initial_xml = initial.write_str().expect("serializes");
         let final_xml = final_doc.write_str().expect("serializes");

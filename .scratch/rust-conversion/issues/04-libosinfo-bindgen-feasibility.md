@@ -179,7 +179,7 @@ list query methods this slice didn't add, a distinct chunk of libosinfo
 API surface from the plain string/family getters `clock_offset()`
 needed.
 
-## Second caller built, not yet wired: `supports_virtiodisk`/`supports_virtioscsi`/`supports_virtionet`
+## Second caller: `supports_virtiodisk`/`supports_virtioscsi`/`supports_virtionet`
 
 Added `OsInfo::has_device_id` (private) + the three public
 `supports_virtio*` methods, porting upstream's `osdict.py`
@@ -200,12 +200,17 @@ modern entry (Fedora 25) that declares all three device ids, and a
 real pre-virtio entry (Windows XP, EOL 2014, predates virtio outright)
 that declares none. 1 new test, 189/189 `virtinst-core`.
 
-**Not wired to a real caller yet** — unlike `clock_offset`, wiring
-these into actual bus/model selection means porting upstream's
-`disk.py`'s `_default_bus` decision tree (`is_floppy`/`is_xenpv`/
-`is_hvm`/`is_q35`/`is_bhyve`/`is_x86`/machine-string checks), most of
-which this crate doesn't have yet and which ticket 21 already scoped
-as separate, larger pieces than a single OsInfo getter. Every builder
-in `install/` still hardcodes `bus="virtio"`/`model type="virtio"`
-unconditionally — these three methods exist and are tested but nothing
-calls them, a deliberately narrower slice than `--os-variant`'s.
+**Now wired to disk/cdrom bus selection** (a follow-up commit, not this
+one — see ticket 21's own "Wired, in a deliberately separate follow-up
+commit" section for the full writeup): `supports_virtiodisk`/
+`supports_virtioscsi` feed `domain_skeleton::default_disk_bus`
+(upstream's `disk.py`'s `_default_bus`, ported in full — `is_floppy`/
+`is_xenpv`/`is_hvm`/`is_q35`/`is_bhyve`/`is_x86` and all), which
+`virt-install.rs` now calls at every non-container document-builder
+call site instead of hardcoding `bus="virtio"`. `supports_virtionet`
+remains the one method with no caller yet — NIC `model type` is still
+a fixed `"virtio"` constant in `domain_skeleton::push_default_nic`,
+unwired for the same reason `hyperv_supported()` stays unwired: no
+second, larger piece (upstream's non-virtio NIC-model fallback chain,
+`supported_netmodels()`) has been built to make the wiring worthwhile
+on its own yet.

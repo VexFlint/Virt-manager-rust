@@ -76,7 +76,7 @@ use virtinst_core::connection::{Connection, Domain};
 use virtinst_core::install::{
     build_container_os_document, build_import_document, build_iso_document,
     build_iso_two_phase_documents, build_manual_document, build_manual_two_phase_documents,
-    GuestCapsDefaults,
+    default_disk_bus, GuestCapsDefaults,
 };
 use virtinst_core::osinfo::OsDb;
 
@@ -167,17 +167,20 @@ struct Args {
     /// The OS being installed, as a libosinfo short-id (`fedora25`) or
     /// full id (`http://fedoraproject.org/fedora/25`) — feeds the
     /// `OsInfo`-gated defaults ticket 21 scoped and left blocked until
-    /// ticket 04 built real `libosinfo` bindings (`clock`'s `offset`
-    /// attribute so far; disk-bus/video-model/UEFI selection are still
+    /// ticket 04 built real `libosinfo` bindings: `clock`'s `offset`
+    /// attribute, and disk/cdrom `bus` selection (`default_disk_bus`)
+    /// now both consult it. Video-model/UEFI selection are still
     /// unbuilt regardless of this flag, see `osinfo::OsInfo`'s own doc
-    /// comment for which query methods exist). Omitted entirely (not a
+    /// comment for which query methods exist. Omitted entirely (not a
     /// `"generic"` sentinel value the way upstream's CLI accepts) means
     /// the same "no OS selected" defaults upstream's own synthetic
     /// generic entry produces — see `push_default_clock`'s doc comment
-    /// for why that's equivalent, not a separate code path. Note: the
-    /// clock-offset default this flag feeds is itself gated on
-    /// `is_qemu`, so on a non-qemu `--connect` (e.g. `test:///`,
-    /// `lxc:///`) this flag has no observable effect at all.
+    /// for why that's equivalent, not a separate code path. Note: both
+    /// the clock-offset and disk-bus defaults this flag feeds are
+    /// themselves gated on `is_qemu` (`supports_virtio*`'s own gate,
+    /// upstream-faithful — see `domain_skeleton::default_disk_bus`'s
+    /// doc comment), so on a non-qemu `--connect` (e.g. `test:///`,
+    /// `lxc:///`) this flag has no observable effect on either.
     #[arg(long)]
     os_variant: Option<String>,
 }
@@ -274,6 +277,12 @@ fn main() {
     // not derived from `capsinfo` at all, so there's no "wrong guest"
     // hazard to avoid.
     let is_qemu = conn.uri().is_qemu();
+    // `default_disk_bus`'s `is_bhyve` parameter — same URI-scheme-check
+    // family as `is_qemu` above (`Uri::is_bhyve()`), not derived from
+    // `domain_type` for the exact reason `is_qemu` isn't either (see
+    // the comment just above): `domain_type` is the capsinfo-reported
+    // hypervisor string, not a URI scheme.
+    let is_bhyve = conn.uri().is_bhyve();
 
     // Ticket 21 slice (c): `graphics` default type
     // (`DeviceGraphics._default_type`, `graphics.py:181`) —
@@ -335,6 +344,13 @@ fn main() {
         })
     });
     let clock_offset = os_info.as_ref().map_or("utc", |os| os.clock_offset());
+    // `default_disk_bus`'s `supports_virtiodisk`/`supports_virtioscsi`
+    // inputs — `false` with no `--os-variant` given, exactly matching
+    // upstream's own synthetic "generic" `OsInfo` entry (no devices
+    // declared), same reasoning `clock_offset`'s `None` fallback above
+    // already documents.
+    let supports_virtiodisk = os_info.as_ref().is_some_and(|os| os.supports_virtiodisk());
+    let supports_virtioscsi = os_info.as_ref().is_some_and(|os| os.supports_virtioscsi());
 
     let memory_kib = args.memory.checked_mul(1024).unwrap_or_else(|| {
         eprintln!("virt-install: --memory {} MiB overflows", args.memory);
@@ -366,6 +382,13 @@ fn main() {
             emulator: emulator.as_deref(),
             is_qemu,
         };
+        let disk_bus = default_disk_bus(
+            caps,
+            false,
+            is_bhyve,
+            supports_virtiodisk,
+            supports_virtioscsi,
+        );
         let xml = write(build_import_document(
             &args.name,
             memory_kib,
@@ -375,6 +398,7 @@ fn main() {
             graphics_type,
             cpu_mode.as_ref(),
             clock_offset,
+            disk_bus,
         ));
         (xml.clone(), xml)
     } else if let Some(media) = args.cdrom {
@@ -387,6 +411,13 @@ fn main() {
             emulator: emulator.as_deref(),
             is_qemu,
         };
+        let cdrom_bus = default_disk_bus(
+            caps,
+            true,
+            is_bhyve,
+            supports_virtiodisk,
+            supports_virtioscsi,
+        );
         if args.livecd {
             let xml = write(build_iso_document(
                 &args.name,
@@ -397,6 +428,7 @@ fn main() {
                 graphics_type,
                 cpu_mode.as_ref(),
                 clock_offset,
+                cdrom_bus,
             ));
             (xml.clone(), xml)
         } else {
@@ -404,6 +436,13 @@ fn main() {
                 eprintln!("virt-install: --cdrom without --livecd requires --disk");
                 std::process::exit(1);
             });
+            let disk_bus = default_disk_bus(
+                caps,
+                false,
+                is_bhyve,
+                supports_virtiodisk,
+                supports_virtioscsi,
+            );
             let (initial, final_doc) = build_iso_two_phase_documents(
                 &args.name,
                 memory_kib,
@@ -414,6 +453,8 @@ fn main() {
                 graphics_type,
                 cpu_mode.as_ref(),
                 clock_offset,
+                cdrom_bus,
+                disk_bus,
             );
             (write(initial), write(final_doc))
         }
@@ -427,6 +468,13 @@ fn main() {
             emulator: emulator.as_deref(),
             is_qemu,
         };
+        let disk_bus = default_disk_bus(
+            caps,
+            false,
+            is_bhyve,
+            supports_virtiodisk,
+            supports_virtioscsi,
+        );
         let (initial, final_doc) = build_manual_two_phase_documents(
             &args.name,
             memory_kib,
@@ -437,6 +485,7 @@ fn main() {
             graphics_type,
             cpu_mode.as_ref(),
             clock_offset,
+            disk_bus,
         );
         (write(initial), write(final_doc))
     } else if let Some(boot_dev) = args.boot {
@@ -449,6 +498,13 @@ fn main() {
             emulator: emulator.as_deref(),
             is_qemu,
         };
+        let disk_bus = default_disk_bus(
+            caps,
+            false,
+            is_bhyve,
+            supports_virtiodisk,
+            supports_virtioscsi,
+        );
         let xml = write(build_manual_document(
             &args.name,
             memory_kib,
@@ -459,6 +515,7 @@ fn main() {
             graphics_type,
             cpu_mode.as_ref(),
             clock_offset,
+            disk_bus,
         ));
         (xml.clone(), xml)
     } else if args.container {
