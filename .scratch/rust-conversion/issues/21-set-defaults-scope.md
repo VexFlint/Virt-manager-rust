@@ -866,6 +866,15 @@ those need `osinfo::OsInfo` query methods this slice didn't build
 surface distinct from the plain string/family getters `clock_offset()`
 needed). Real future work, scoped but not started.
 
+**`supports_virtiodisk`/`supports_virtioscsi`/`supports_virtionet` now
+exist on `OsInfo` (ticket 04's own file, "Second caller built, not yet
+wired" section) but still aren't wired into `disk.py`'s `_default_bus`
+decision tree** — that needs `is_floppy`/`is_xenpv`/`is_hvm`/`is_q35`/
+`is_bhyve`/`is_x86`/machine-string checks this crate mostly doesn't
+have yet, a materially bigger piece than threading one more string
+through the existing builders the way `clock_offset` was. Every
+builder in `install/` still hardcodes `bus="virtio"` unconditionally.
+
 **Verified**: 2 new tests in `osinfo::mod::tests` (`clock_offset`
 across Linux/Windows/Solaris family branches, `os_by_id_or_short_id`'s
 two lookup forms), 2 new tests in `import.rs` (`clock_offset` threading

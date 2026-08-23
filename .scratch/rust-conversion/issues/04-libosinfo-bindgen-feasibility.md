@@ -178,3 +178,34 @@ model, UEFI firmware) stays unbuilt — they need device-list/firmware-
 list query methods this slice didn't add, a distinct chunk of libosinfo
 API surface from the plain string/family getters `clock_offset()`
 needed.
+
+## Second caller built, not yet wired: `supports_virtiodisk`/`supports_virtioscsi`/`supports_virtionet`
+
+Added `OsInfo::has_device_id` (private) + the three public
+`supports_virtio*` methods, porting upstream's `osdict.py`
+`supports_virtiodisk`/`supports_virtioscsi`/`supports_virtionet` PCI
+device-id lists (`http://pcisig.com/pci/1af4/*`) literally. Uses
+`osinfo_os_get_all_devices(os, NULL)` — `transfer-ownership="full"`
+returning an `OsinfoDeviceList*` (checked against the real `.gir`, not
+inferred), whose parent class is `OsinfoList` (confirmed against the
+generated struct layout), so it walks with the exact same
+`osinfo_list_get_length`/`osinfo_list_get_nth` pair `all_os()` already
+established — no new container-iteration shape needed, contrary to one
+plausible-sounding concern raised before checking (upstream's own
+`_OsinfoIter` wraps this call the same `get_length`/`get_nth` way it
+wraps `Db.get_os_list()`).
+
+Verified against this machine's real `osinfo-db`, both branches: a
+modern entry (Fedora 25) that declares all three device ids, and a
+real pre-virtio entry (Windows XP, EOL 2014, predates virtio outright)
+that declares none. 1 new test, 189/189 `virtinst-core`.
+
+**Not wired to a real caller yet** — unlike `clock_offset`, wiring
+these into actual bus/model selection means porting upstream's
+`disk.py`'s `_default_bus` decision tree (`is_floppy`/`is_xenpv`/
+`is_hvm`/`is_q35`/`is_bhyve`/`is_x86`/machine-string checks), most of
+which this crate doesn't have yet and which ticket 21 already scoped
+as separate, larger pieces than a single OsInfo getter. Every builder
+in `install/` still hardcodes `bus="virtio"`/`model type="virtio"`
+unconditionally — these three methods exist and are tested but nothing
+calls them, a deliberately narrower slice than `--os-variant`'s.

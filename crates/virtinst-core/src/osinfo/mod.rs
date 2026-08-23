@@ -342,6 +342,76 @@ impl OsInfo {
             "utc"
         }
     }
+
+    /// `osinfo_os_get_all_devices(self, NULL)` — every device this OS
+    /// (and, per libosinfo's own doc comment on this call vs. plain
+    /// `get_devices`, every OS it derives from or clones) declares
+    /// support for, with no property filter. Upstream's `osdict.py`
+    /// builds an `OsinfoFilter` for the `devids`-only case anyway
+    /// (`_device_filter`) but never actually calls
+    /// `osinfo_filter_add_constraint` with anything before iterating —
+    /// it filters client-side by walking every device and checking
+    /// `dev.get_id()` — so passing `NULL` here and matching client-side
+    /// too is the same behavior via the same libosinfo call, not a
+    /// simplification of it.
+    ///
+    /// `osinfo_os_get_all_devices` is `transfer-ownership="full"`
+    /// returning an `OsinfoDeviceList*` (checked directly against the
+    /// real `.gir`, not inferred from the `get_` prefix — see this
+    /// module's doc comment on why that inference isn't trustworthy).
+    /// `OsinfoDeviceList`'s parent is `OsinfoList` (confirmed against
+    /// the generated struct layout), so it walks with the exact same
+    /// `osinfo_list_get_length`/`osinfo_list_get_nth` pair `all_os()`
+    /// already uses on `OsinfoDb`'s os list, each element
+    /// `transfer-ownership="none"` per `.gir`.
+    fn has_device_id(&self, device_id: &str) -> bool {
+        unsafe {
+            let list = ffi::osinfo_os_get_all_devices(self.ptr, std::ptr::null_mut());
+            if list.is_null() {
+                return false;
+            }
+            let list = list as *mut ffi::OsinfoList;
+            let len = ffi::osinfo_list_get_length(list);
+            let mut found = false;
+            for i in 0..len {
+                let entity = ffi::osinfo_list_get_nth(list, i);
+                if !entity.is_null()
+                    && c_str_to_string(ffi::osinfo_entity_get_id(entity)) == device_id
+                {
+                    found = true;
+                    break;
+                }
+            }
+            gobject_sys::g_object_unref(list as *mut gobject_sys::GObject);
+            found
+        }
+    }
+
+    /// Upstream's `osdict.py`'s `supports_virtiodisk()` — the exact two
+    /// PCI device ids it hardcodes (`virtio-block` and `virtio1.0-block`),
+    /// ported literally. Doesn't model the `extra_devs` parameter
+    /// (locally-added device driver overrides from a
+    /// `--disk driver.name=...`-style CLI knob this crate hasn't built)
+    /// — upstream's own default call site passes `self._extra_drivers`,
+    /// which stays empty absent that knob, so this is the same
+    /// observable result for every caller this crate has today.
+    pub fn supports_virtiodisk(&self) -> bool {
+        self.has_device_id("http://pcisig.com/pci/1af4/1001")
+            || self.has_device_id("http://pcisig.com/pci/1af4/1042")
+    }
+
+    /// Upstream's `osdict.py`'s `supports_virtioscsi()` — same two-id,
+    /// `extra_devs`-unmodeled shape as `supports_virtiodisk()` above.
+    pub fn supports_virtioscsi(&self) -> bool {
+        self.has_device_id("http://pcisig.com/pci/1af4/1004")
+            || self.has_device_id("http://pcisig.com/pci/1af4/1048")
+    }
+
+    /// Upstream's `osdict.py`'s `supports_virtionet()` — same shape.
+    pub fn supports_virtionet(&self) -> bool {
+        self.has_device_id("http://pcisig.com/pci/1af4/1000")
+            || self.has_device_id("http://pcisig.com/pci/1af4/1041")
+    }
 }
 
 impl Clone for OsInfo {
@@ -479,5 +549,30 @@ mod tests {
         assert_eq!(by_full_id.id(), by_short_id.id());
 
         assert!(db.os_by_id_or_short_id("not-a-real-os-variant").is_none());
+    }
+
+    /// Real device-list lookup against this machine's actual `osinfo-db`
+    /// (same no-fixture posture as the rest of this module): a modern
+    /// entry that declares virtio devices vs. a real pre-virtio entry
+    /// (Windows XP, EOL 2014, predates virtio entirely) that doesn't —
+    /// proves both the true and the false branch of `has_device_id`,
+    /// not just the happy path.
+    #[test]
+    fn virtio_support_matches_upstream_device_ids() {
+        let db = OsDb::load_default().expect("osinfo-db is installed on this machine");
+
+        let fedora = db
+            .os("http://fedoraproject.org/fedora/25")
+            .expect("real entry");
+        assert!(fedora.supports_virtiodisk());
+        assert!(fedora.supports_virtioscsi());
+        assert!(fedora.supports_virtionet());
+
+        let winxp = db
+            .os_by_id_or_short_id("winxp")
+            .expect("winxp ships in every osinfo-db release");
+        assert!(!winxp.supports_virtiodisk());
+        assert!(!winxp.supports_virtioscsi());
+        assert!(!winxp.supports_virtionet());
     }
 }
