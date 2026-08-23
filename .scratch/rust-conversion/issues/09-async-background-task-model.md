@@ -40,9 +40,13 @@ re-litigated here.
 **Two separate problems, two separate (but related) answers:**
 
 1. **libvirt's own event loop** (needed for ticket 02's domain/network/etc.
-   event-registration gap): bind `libvirt-glib` via `gir` — same approach as
-   `libosinfo` (ticket 04). It's what upstream actually uses, it's already
-   installed and gir-bound on this machine, and it's pure GObject/GLib so it
+   event-registration gap): bind `libvirt-glib` via `gir` — a different
+   binding approach from `libosinfo` (ticket 04), which reasserted plain
+   `bindgen` after an empirical comparison (see that ticket's amendment) —
+   `libvirt-glib`'s event/signal-heavy API is exactly the shape gir's
+   idiomatic-wrapper generation is built for, unlike libosinfo's
+   out-param/custom-list-type shape. It's what upstream actually uses, it's
+   already installed and gir-bound on this machine, and it's pure GObject/GLib so it
    carries none of ticket 01's GTK-version binding risk. Once registered, it
    pumps natively on the same `GMainContext` the GTK app already runs — no
    dedicated thread, no hand-written FFI shim for the loop-pumping half of

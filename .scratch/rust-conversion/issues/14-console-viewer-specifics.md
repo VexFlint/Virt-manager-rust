@@ -65,8 +65,13 @@ GTK-independent protocol/session cores ticket 05 already confirmed exist
 separately from the GTK3 widget layer (ticket 01's finding), so this
 still doesn't reopen any GTK3-widget-in-a-GTK4-app risk; it's the same
 "bind the mature C library via `gir`" pattern already used for
-`libosinfo` (04) and `libvirt-glib` (09), just applied here too instead
-of the pure-Rust-crate path ticket 05 had hoped would hold. **Amends
+`libvirt-glib` (09), just applied here too instead of the pure-Rust-
+crate path ticket 05 had hoped would hold — `libosinfo` (04) went the
+other way, reasserting plain `bindgen` after an empirical comparison
+found gir's idiomatic-wrapper generation stubs out most of that API's
+init/list-getter/matching functions (see that ticket's amendment); VNC/
+SPICE's signal-and-property-heavy session APIs don't share that shape.
+**Amends
 ticket 05** — its "pure-Rust protocol crates first, escalate only if
 needed" framing was the right starting hypothesis, but in practice both
 channels escalate immediately once actually checked against real crate

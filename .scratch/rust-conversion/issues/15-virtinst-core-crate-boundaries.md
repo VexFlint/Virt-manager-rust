@@ -46,7 +46,8 @@ virtinst/                    →  Rust module              →  decided by
                                  gir-bound `libvirt-glib`       gap), 09 (libvirt-glib
                                  event registration             binds it)
   osdict.py                  →  osinfo::{OsDb, OsInfo}       →  04 (libosinfo
-                                 wraps gir-bound `libosinfo`     gir-bound)
+                                 wraps bindgen-bound             bindgen-bound,
+                                 `libosinfo`                     not gir)
   install/*.py                →  install::{CloudInit,        →  08's InstallMethod
                                  Unattended, UrlDetect, …}       variants' backing
                                                                   logic
