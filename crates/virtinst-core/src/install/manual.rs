@@ -54,12 +54,11 @@ use virtinst_xml::Document;
 
 use super::domain_skeleton::{
     build_domain_skeleton, push_boot_dev, push_default_nic, push_on_reboot_destroy,
-    push_virtio_disk,
+    push_virtio_disk, GuestCapsDefaults,
 };
 
-/// `name`/`memory_kib`/`vcpus`/`domain_type`/`os_type`/`arch`/`machine`/
-/// `emulator`/`is_qemu` — see `build_import_document`'s doc comment,
-/// identical rationale. `boot_dev`
+/// `name`/`memory_kib`/`vcpus`/`caps` — see `build_import_document`'s doc
+/// comment, identical rationale. `boot_dev`
 /// is libvirt's own `<os><boot dev=...>` string (`"network"`, `"hd"`,
 /// …), passed straight through unvalidated, matching
 /// `InstallMethod::Manual::boot_dev`'s own doc comment. `disk_path` is
@@ -85,33 +84,23 @@ use super::domain_skeleton::{
 /// `--import --disk X` are genuinely the same domain, not a bug worth
 /// deduplicating away (the two CLI flags mean different things to a
 /// user even when they land on the same XML).
-#[allow(clippy::too_many_arguments)]
 pub fn build_manual_document(
     name: &str,
     memory_kib: u64,
     vcpus: u32,
     boot_dev: &str,
     disk_path: Option<&str>,
-    domain_type: &str,
-    os_type: &str,
-    arch: &str,
-    machine: Option<&str>,
-    emulator: Option<&str>,
-    is_qemu: bool,
+    caps: GuestCapsDefaults,
 ) -> Document {
     build_manual_phase_document(
         name,
         memory_kib,
         vcpus,
         &crate::cloner::generate_uuid(),
-        domain_type,
-        os_type,
-        arch,
-        machine,
-        emulator,
+        caps,
         boot_dev,
         disk_path,
-        &crate::cloner::generate_mac(is_qemu),
+        &crate::cloner::generate_mac(caps.is_qemu),
         false,
     )
 }
@@ -125,39 +114,21 @@ pub fn build_manual_document(
 ///
 /// Returns `(initial, final)` — pass `initial`'s XML to `Domain::
 /// create_new` and `final`'s to `Domain::define_new`, in that order.
-#[allow(clippy::too_many_arguments)]
 pub fn build_manual_two_phase_documents(
     name: &str,
     memory_kib: u64,
     vcpus: u32,
     boot_dev: &str,
     disk_path: Option<&str>,
-    domain_type: &str,
-    os_type: &str,
-    arch: &str,
-    machine: Option<&str>,
-    emulator: Option<&str>,
-    is_qemu: bool,
+    caps: GuestCapsDefaults,
 ) -> (Document, Document) {
     let uuid = crate::cloner::generate_uuid();
     // Same NIC, same MAC in both documents — same reason the UUID is
     // shared, see `push_default_nic`'s doc comment.
-    let mac = crate::cloner::generate_mac(is_qemu);
+    let mac = crate::cloner::generate_mac(caps.is_qemu);
 
     let initial = build_manual_phase_document(
-        name,
-        memory_kib,
-        vcpus,
-        &uuid,
-        domain_type,
-        os_type,
-        arch,
-        machine,
-        emulator,
-        boot_dev,
-        disk_path,
-        &mac,
-        true,
+        name, memory_kib, vcpus, &uuid, caps, boot_dev, disk_path, &mac, true,
     );
 
     // _get_postinstall_bootdev: a present disk always wins back to "hd"
@@ -169,11 +140,7 @@ pub fn build_manual_two_phase_documents(
         memory_kib,
         vcpus,
         &uuid,
-        domain_type,
-        os_type,
-        arch,
-        machine,
-        emulator,
+        caps,
         final_boot_dev,
         disk_path,
         &mac,
@@ -192,34 +159,22 @@ pub fn build_manual_two_phase_documents(
 /// el` (and the default NIC on it) is always built now, even with no
 /// disk — a disk-less `Manual` document used to return before `<devices>`
 /// existed at all; that's no longer true since the NIC needs somewhere
-/// to attach.
+/// to attach. `caps` is `Copy`, same reasoning as `iso::build_iso_phase_
+/// document`.
 #[allow(clippy::too_many_arguments)]
 fn build_manual_phase_document(
     name: &str,
     memory_kib: u64,
     vcpus: u32,
     uuid: &str,
-    domain_type: &str,
-    os_type: &str,
-    arch: &str,
-    machine: Option<&str>,
-    emulator: Option<&str>,
+    caps: GuestCapsDefaults,
     boot_dev: &str,
     disk_path: Option<&str>,
     mac: &str,
     is_initial: bool,
 ) -> Document {
-    let (mut doc, root, os_el, devices_el) = build_domain_skeleton(
-        name,
-        memory_kib,
-        vcpus,
-        uuid,
-        domain_type,
-        os_type,
-        arch,
-        machine,
-        emulator,
-    );
+    let (mut doc, root, os_el, devices_el) =
+        build_domain_skeleton(name, memory_kib, vcpus, uuid, &caps);
     if is_initial {
         push_on_reboot_destroy(&mut doc, root);
     }
@@ -244,7 +199,19 @@ mod tests {
     #[test]
     fn no_disk_means_a_single_boot_entry_and_only_the_default_nic() {
         let doc = build_manual_document(
-            "net-only", 1048576, 1, "network", None, "qemu", "hvm", "x86_64", None, None, true,
+            "net-only",
+            1048576,
+            1,
+            "network",
+            None,
+            GuestCapsDefaults {
+                domain_type: "qemu",
+                os_type: "hvm",
+                arch: "x86_64",
+                machine: None,
+                emulator: None,
+                is_qemu: true,
+            },
         );
         let root = doc.root_element().unwrap();
 
@@ -269,12 +236,14 @@ mod tests {
             2,
             "network",
             Some("/var/lib/libvirt/images/x.qcow2"),
-            "qemu",
-            "hvm",
-            "x86_64",
-            None,
-            None,
-            true,
+            GuestCapsDefaults {
+                domain_type: "qemu",
+                os_type: "hvm",
+                arch: "x86_64",
+                machine: None,
+                emulator: None,
+                is_qemu: true,
+            },
         );
         let root = doc.root_element().unwrap();
 
@@ -304,12 +273,14 @@ mod tests {
             1,
             "hd",
             Some("/tmp/x.img"),
-            "test",
-            "hvm",
-            "i686",
-            None,
-            None,
-            false,
+            GuestCapsDefaults {
+                domain_type: "test",
+                os_type: "hvm",
+                arch: "i686",
+                machine: None,
+                emulator: None,
+                is_qemu: false,
+            },
         );
         let root = doc.root_element().unwrap();
         let os = root.find(&doc, "os").unwrap();
@@ -324,12 +295,14 @@ mod tests {
             1,
             "network",
             Some("/tmp/x.img"),
-            "test",
-            "hvm",
-            "i686",
-            None,
-            None,
-            false,
+            GuestCapsDefaults {
+                domain_type: "test",
+                os_type: "hvm",
+                arch: "i686",
+                machine: None,
+                emulator: None,
+                is_qemu: false,
+            },
         );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
@@ -362,10 +335,10 @@ mod tests {
         let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let conn = Connection::open("test:///default").expect("test:/// driver always opens");
-        let caps = DomainCapabilities::fetch(&conn, None, None, None, None)
+        let domcaps = DomainCapabilities::fetch(&conn, None, None, None, None)
             .expect("domcaps fetch succeeds");
-        let domain_type = caps.domain.expect("test driver reports a domain type");
-        let arch = caps.arch.expect("test driver reports a default arch");
+        let domain_type = domcaps.domain.expect("test driver reports a domain type");
+        let arch = domcaps.arch.expect("test driver reports a default arch");
 
         let doc = build_manual_document(
             "manual-end-to-end",
@@ -373,12 +346,14 @@ mod tests {
             1,
             "network",
             Some("/guest/manual-end-to-end.img"),
-            &domain_type,
-            "hvm",
-            &arch,
-            None,
-            None,
-            conn.uri().is_qemu(),
+            GuestCapsDefaults {
+                domain_type: &domain_type,
+                os_type: "hvm",
+                arch: &arch,
+                machine: None,
+                emulator: None,
+                is_qemu: conn.uri().is_qemu(),
+            },
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -428,12 +403,14 @@ mod tests {
             2,
             "network",
             Some("/var/lib/libvirt/images/disk.qcow2"),
-            "qemu",
-            "hvm",
-            "x86_64",
-            None,
-            None,
-            true,
+            GuestCapsDefaults {
+                domain_type: "qemu",
+                os_type: "hvm",
+                arch: "x86_64",
+                machine: None,
+                emulator: None,
+                is_qemu: true,
+            },
         );
 
         let initial_root = initial.root_element().unwrap();
@@ -513,12 +490,14 @@ mod tests {
             1,
             "network",
             None,
-            "test",
-            "hvm",
-            "i686",
-            None,
-            None,
-            false,
+            GuestCapsDefaults {
+                domain_type: "test",
+                os_type: "hvm",
+                arch: "i686",
+                machine: None,
+                emulator: None,
+                is_qemu: false,
+            },
         );
 
         let initial_root = initial.root_element().unwrap();
@@ -563,10 +542,10 @@ mod tests {
         let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let conn = Connection::open("test:///default").expect("test:/// driver always opens");
-        let caps = DomainCapabilities::fetch(&conn, None, None, None, None)
+        let domcaps = DomainCapabilities::fetch(&conn, None, None, None, None)
             .expect("domcaps fetch succeeds");
-        let domain_type = caps.domain.expect("test driver reports a domain type");
-        let arch = caps.arch.expect("test driver reports a default arch");
+        let domain_type = domcaps.domain.expect("test driver reports a domain type");
+        let arch = domcaps.arch.expect("test driver reports a default arch");
 
         let (initial, final_doc) = build_manual_two_phase_documents(
             "pxe-two-phase-end-to-end",
@@ -574,12 +553,14 @@ mod tests {
             1,
             "network",
             Some("/guest/pxe-two-phase-end-to-end.img"),
-            &domain_type,
-            "hvm",
-            &arch,
-            None,
-            None,
-            conn.uri().is_qemu(),
+            GuestCapsDefaults {
+                domain_type: &domain_type,
+                os_type: "hvm",
+                arch: &arch,
+                machine: None,
+                emulator: None,
+                is_qemu: conn.uri().is_qemu(),
+            },
         );
         let initial_xml = initial.write_str().expect("serializes");
         let final_xml = final_doc.write_str().expect("serializes");

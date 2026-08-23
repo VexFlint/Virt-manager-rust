@@ -256,6 +256,66 @@ impl DomainCapabilities {
             .get_domain_capabilities(emulator, arch, machine, virttype, 0)?;
         Ok(DomainCapabilities::parse(&xml)?)
     }
+
+    /// Upstream's `supports_graphics_spice` (`domcapabilities.py:464`) —
+    /// the first `supports_*` query method ported for this struct, since
+    /// ticket 21 slice (c) is its first real caller. This struct has no
+    /// connection reference of its own (unlike upstream's `DomainCapabilities`,
+    /// which keeps `self.conn` from construction) — `fetch`'s only real
+    /// use for a connection is making the libvirt call itself (see its
+    /// own doc comment), so the two URI-scheme predicates upstream reads
+    /// off `self.conn` (`is_qemu()`/`is_test()`) and the host's own CPU
+    /// arch upstream reads off `self.conn.caps.host.cpu.arch` (the
+    /// *host's* arch — deliberately not this struct's own `arch` field,
+    /// which is the *domain's* target arch instead) come in as plain
+    /// parameters instead.
+    pub fn supports_graphics_spice(
+        &self,
+        is_qemu: bool,
+        is_test: bool,
+        host_arch: Option<&str>,
+    ) -> bool {
+        if self.devices.graphics.supported != Some(true) {
+            // domcaps is too old, or the driver doesn't advertise
+            // graphics support at all. Use the pre-domcaps heuristic
+            // upstream still carries for that case.
+            if !is_qemu && !is_test {
+                return false;
+            }
+            return matches!(host_arch, Some("i686") | Some("x86_64"));
+        }
+        self.devices
+            .graphics
+            .get_enum("type")
+            .is_some_and(|e| e.has_value("spice"))
+    }
+
+    /// Upstream's `DeviceGraphics._default_type` (`graphics.py:181`).
+    /// `DEFAULT_GRAPHICS_TYPE` stands in for `BuildConfig.default_graphics`
+    /// (`meson_options.txt`'s `default-graphics` option, shipped default
+    /// `"spice"`) — this crate has no equivalent build-time config, so a
+    /// fixed constant matching upstream's own shipped default.
+    pub fn default_graphics_type(
+        &self,
+        is_xen: bool,
+        is_qemu: bool,
+        is_test: bool,
+        host_arch: Option<&str>,
+    ) -> &'static str {
+        const DEFAULT_GRAPHICS_TYPE: &str = "spice";
+        if is_xen {
+            // Xen domcaps can advertise spice support, but upstream has
+            // historically not defaulted to it for xen — forced to vnc
+            // unconditionally.
+            return "vnc";
+        }
+        if DEFAULT_GRAPHICS_TYPE == "spice"
+            && !self.supports_graphics_spice(is_qemu, is_test, host_arch)
+        {
+            return "vnc";
+        }
+        DEFAULT_GRAPHICS_TYPE
+    }
 }
 
 #[cfg(test)]
@@ -406,5 +466,86 @@ mod tests {
         // fields, but this excerpt's <devices> doesn't include them.
         assert_eq!(caps.devices.video, CapsBlock::default());
         assert_eq!(caps.devices.tpm.supported, None);
+    }
+
+    /// A real driver that advertises graphics support but only offers
+    /// `vnc`, not `spice` — the branch `QEMU_DOMCAPS_EXCERPT` alone can't
+    /// exercise (it offers all three types).
+    const VNC_ONLY_DOMCAPS_EXCERPT: &str = r#"<domainCapabilities>
+  <devices>
+    <graphics supported='yes'>
+      <enum name='type'>
+        <value>vnc</value>
+      </enum>
+    </graphics>
+  </devices>
+</domainCapabilities>"#;
+
+    #[test]
+    fn supports_graphics_spice_reads_the_advertised_enum_when_present() {
+        let caps = DomainCapabilities::parse(QEMU_DOMCAPS_EXCERPT).expect("parses");
+        // The advertised enum settles it regardless of the URI-scheme/
+        // arch fallback inputs -- pass values that would fail the
+        // fallback heuristic to prove they're never consulted.
+        assert!(caps.supports_graphics_spice(false, false, None));
+    }
+
+    #[test]
+    fn supports_graphics_spice_is_false_when_the_advertised_enum_lacks_spice() {
+        let caps = DomainCapabilities::parse(VNC_ONLY_DOMCAPS_EXCERPT).expect("parses");
+        // Same reasoning in reverse: pass fallback inputs that would
+        // succeed, to prove the advertised (negative) answer wins.
+        assert!(!caps.supports_graphics_spice(true, false, Some("x86_64")));
+    }
+
+    #[test]
+    fn supports_graphics_spice_falls_back_to_the_pre_domcaps_heuristic_when_unadvertised() {
+        // No <graphics> block at all -- `supported` stays `None`, same
+        // as talking to a libvirt too old to advertise it.
+        let caps = DomainCapabilities::default();
+        assert!(
+            caps.supports_graphics_spice(true, false, Some("x86_64")),
+            "qemu + x86_64 must fall back to true"
+        );
+        assert!(
+            caps.supports_graphics_spice(false, true, Some("i686")),
+            "the test driver + i686 must fall back to true too"
+        );
+        assert!(
+            !caps.supports_graphics_spice(false, false, Some("x86_64")),
+            "neither qemu nor test -- e.g. a real Xen connection -- must fall back to false"
+        );
+        assert!(
+            !caps.supports_graphics_spice(true, false, Some("aarch64")),
+            "qemu on a non-x86 host arch must fall back to false"
+        );
+    }
+
+    #[test]
+    fn default_graphics_type_forces_vnc_for_xen_even_when_spice_is_supported() {
+        let caps = DomainCapabilities::parse(QEMU_DOMCAPS_EXCERPT).expect("parses");
+        assert_eq!(
+            caps.default_graphics_type(true, false, false, None),
+            "vnc",
+            "xen must be forced to vnc regardless of what domcaps advertises"
+        );
+    }
+
+    #[test]
+    fn default_graphics_type_stays_spice_when_the_hv_supports_it() {
+        let caps = DomainCapabilities::parse(QEMU_DOMCAPS_EXCERPT).expect("parses");
+        assert_eq!(
+            caps.default_graphics_type(false, true, false, Some("x86_64")),
+            "spice"
+        );
+    }
+
+    #[test]
+    fn default_graphics_type_downgrades_to_vnc_when_the_hv_lacks_spice_support() {
+        let caps = DomainCapabilities::parse(VNC_ONLY_DOMCAPS_EXCERPT).expect("parses");
+        assert_eq!(
+            caps.default_graphics_type(false, true, false, Some("x86_64")),
+            "vnc"
+        );
     }
 }

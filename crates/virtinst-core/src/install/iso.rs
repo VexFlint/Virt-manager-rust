@@ -77,45 +77,38 @@ use virtinst_xml::{Document, Element};
 
 use super::domain_skeleton::{
     build_domain_skeleton, push_boot_dev, push_default_nic, push_on_reboot_destroy,
-    push_virtio_disk,
+    push_virtio_disk, GuestCapsDefaults,
 };
 
-/// `name`/`memory_kib`/`vcpus`/`domain_type`/`os_type`/`arch`/`machine`/
-/// `emulator`/`is_qemu` — see `build_import_document`'s doc comment,
-/// identical rationale. `media` is `InstallMethod::Iso::media`, the
-/// path to the ISO/CD image.
+/// `name`/`memory_kib`/`vcpus`/`caps` — see `build_import_document`'s doc
+/// comment, identical rationale. `media` is `InstallMethod::Iso::media`,
+/// the path to the ISO/CD image.
 ///
 /// Builds and boots from the CD alone (`<boot dev="cdrom">`) with no
 /// persistent disk device at all — matches `live: true`'s own doc comment
 /// on `InstallMethod::Iso` ("no persistent disk attached").
-#[allow(clippy::too_many_arguments)]
 pub fn build_iso_document(
     name: &str,
     memory_kib: u64,
     vcpus: u32,
     media: &str,
-    domain_type: &str,
-    os_type: &str,
-    arch: &str,
-    machine: Option<&str>,
-    emulator: Option<&str>,
-    is_qemu: bool,
+    caps: GuestCapsDefaults,
 ) -> Document {
     let (mut doc, _root, os_el, devices_el) = build_domain_skeleton(
         name,
         memory_kib,
         vcpus,
         &crate::cloner::generate_uuid(),
-        domain_type,
-        os_type,
-        arch,
-        machine,
-        emulator,
+        &caps,
     );
     push_boot_dev(&mut doc, os_el, "cdrom");
 
     push_cdrom_disk(&mut doc, devices_el, Some(media));
-    push_default_nic(&mut doc, devices_el, &crate::cloner::generate_mac(is_qemu));
+    push_default_nic(
+        &mut doc,
+        devices_el,
+        &crate::cloner::generate_mac(caps.is_qemu),
+    );
 
     doc
 }
@@ -134,35 +127,25 @@ pub fn build_iso_document(
 /// `build_domain_skeleton` calls — required for the same reason a single
 /// document always needed one: two libvirt-generated UUIDs would collide
 /// on the second call.
-#[allow(clippy::too_many_arguments)]
 pub fn build_iso_two_phase_documents(
     name: &str,
     memory_kib: u64,
     vcpus: u32,
     media: &str,
     disk_path: &str,
-    domain_type: &str,
-    os_type: &str,
-    arch: &str,
-    machine: Option<&str>,
-    emulator: Option<&str>,
-    is_qemu: bool,
+    caps: GuestCapsDefaults,
 ) -> (Document, Document) {
     let uuid = crate::cloner::generate_uuid();
     // Same device, same MAC in both documents — same reason the UUID is
     // shared, see `push_default_nic`'s doc comment.
-    let mac = crate::cloner::generate_mac(is_qemu);
+    let mac = crate::cloner::generate_mac(caps.is_qemu);
 
     let initial = build_iso_phase_document(
         name,
         memory_kib,
         vcpus,
         &uuid,
-        domain_type,
-        os_type,
-        arch,
-        machine,
-        emulator,
+        caps,
         "cdrom",
         Some(media),
         disk_path,
@@ -170,20 +153,7 @@ pub fn build_iso_two_phase_documents(
         true,
     );
     let final_doc = build_iso_phase_document(
-        name,
-        memory_kib,
-        vcpus,
-        &uuid,
-        domain_type,
-        os_type,
-        arch,
-        machine,
-        emulator,
-        "hd",
-        None,
-        disk_path,
-        &mac,
-        false,
+        name, memory_kib, vcpus, &uuid, caps, "hd", None, disk_path, &mac, false,
     );
     (initial, final_doc)
 }
@@ -193,35 +163,24 @@ pub fn build_iso_two_phase_documents(
 /// differing in `boot_dev`, whether the cdrom has media inserted
 /// (`cdrom_source: Option<&str>`), and `is_initial` (`<on_reboot>
 /// destroy</on_reboot>` — see this module's own doc comment for why
-/// only the initial document gets it).
+/// only the initial document gets it). `caps` is `Copy`, so both calls in
+/// `build_iso_two_phase_documents` pass their own copy rather than a
+/// shared reference.
 #[allow(clippy::too_many_arguments)]
 fn build_iso_phase_document(
     name: &str,
     memory_kib: u64,
     vcpus: u32,
     uuid: &str,
-    domain_type: &str,
-    os_type: &str,
-    arch: &str,
-    machine: Option<&str>,
-    emulator: Option<&str>,
+    caps: GuestCapsDefaults,
     boot_dev: &str,
     cdrom_source: Option<&str>,
     disk_path: &str,
     mac: &str,
     is_initial: bool,
 ) -> Document {
-    let (mut doc, root, os_el, devices_el) = build_domain_skeleton(
-        name,
-        memory_kib,
-        vcpus,
-        uuid,
-        domain_type,
-        os_type,
-        arch,
-        machine,
-        emulator,
-    );
+    let (mut doc, root, os_el, devices_el) =
+        build_domain_skeleton(name, memory_kib, vcpus, uuid, &caps);
     if is_initial {
         push_on_reboot_destroy(&mut doc, root);
     }
@@ -276,12 +235,14 @@ mod tests {
             2097152,
             2,
             "/var/lib/libvirt/images/rescue.iso",
-            "qemu",
-            "hvm",
-            "x86_64",
-            None,
-            None,
-            true,
+            GuestCapsDefaults {
+                domain_type: "qemu",
+                os_type: "hvm",
+                arch: "x86_64",
+                machine: None,
+                emulator: None,
+                is_qemu: true,
+            },
         );
         let root = doc.root_element().unwrap();
 
@@ -332,12 +293,14 @@ mod tests {
             1048576,
             1,
             "/tmp/x.iso",
-            "test",
-            "hvm",
-            "i686",
-            None,
-            None,
-            false,
+            GuestCapsDefaults {
+                domain_type: "test",
+                os_type: "hvm",
+                arch: "i686",
+                machine: None,
+                emulator: None,
+                is_qemu: false,
+            },
         );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
@@ -363,22 +326,24 @@ mod tests {
         let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let conn = Connection::open("test:///default").expect("test:/// driver always opens");
-        let caps = DomainCapabilities::fetch(&conn, None, None, None, None)
+        let domcaps = DomainCapabilities::fetch(&conn, None, None, None, None)
             .expect("domcaps fetch succeeds");
-        let domain_type = caps.domain.expect("test driver reports a domain type");
-        let arch = caps.arch.expect("test driver reports a default arch");
+        let domain_type = domcaps.domain.expect("test driver reports a domain type");
+        let arch = domcaps.arch.expect("test driver reports a default arch");
 
         let doc = build_iso_document(
             "livecd-end-to-end",
             1048576,
             1,
             "/guest/livecd-end-to-end.iso",
-            &domain_type,
-            "hvm",
-            &arch,
-            None,
-            None,
-            conn.uri().is_qemu(),
+            GuestCapsDefaults {
+                domain_type: &domain_type,
+                os_type: "hvm",
+                arch: &arch,
+                machine: None,
+                emulator: None,
+                is_qemu: conn.uri().is_qemu(),
+            },
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -414,12 +379,14 @@ mod tests {
             2,
             "/var/lib/libvirt/images/install.iso",
             "/var/lib/libvirt/images/disk.qcow2",
-            "qemu",
-            "hvm",
-            "x86_64",
-            None,
-            None,
-            true,
+            GuestCapsDefaults {
+                domain_type: "qemu",
+                os_type: "hvm",
+                arch: "x86_64",
+                machine: None,
+                emulator: None,
+                is_qemu: true,
+            },
         );
 
         let initial_root = initial.root_element().unwrap();
@@ -545,10 +512,10 @@ mod tests {
         let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let conn = Connection::open("test:///default").expect("test:/// driver always opens");
-        let caps = DomainCapabilities::fetch(&conn, None, None, None, None)
+        let domcaps = DomainCapabilities::fetch(&conn, None, None, None, None)
             .expect("domcaps fetch succeeds");
-        let domain_type = caps.domain.expect("test driver reports a domain type");
-        let arch = caps.arch.expect("test driver reports a default arch");
+        let domain_type = domcaps.domain.expect("test driver reports a domain type");
+        let arch = domcaps.arch.expect("test driver reports a default arch");
 
         let (initial, final_doc) = build_iso_two_phase_documents(
             "two-phase-end-to-end",
@@ -556,12 +523,14 @@ mod tests {
             1,
             "/guest/two-phase-end-to-end.iso",
             "/guest/two-phase-end-to-end.img",
-            &domain_type,
-            "hvm",
-            &arch,
-            None,
-            None,
-            conn.uri().is_qemu(),
+            GuestCapsDefaults {
+                domain_type: &domain_type,
+                os_type: "hvm",
+                arch: &arch,
+                machine: None,
+                emulator: None,
+                is_qemu: conn.uri().is_qemu(),
+            },
         );
         let initial_xml = initial.write_str().expect("serializes");
         let final_xml = final_doc.write_str().expect("serializes");

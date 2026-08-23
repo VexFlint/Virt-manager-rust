@@ -70,6 +70,7 @@ use virtinst_core::connection::{Connection, Domain};
 use virtinst_core::install::{
     build_container_os_document, build_import_document, build_iso_document,
     build_iso_two_phase_documents, build_manual_document, build_manual_two_phase_documents,
+    GuestCapsDefaults,
 };
 
 #[derive(Parser)]
@@ -269,32 +270,32 @@ fn main() {
             eprintln!("virt-install: --import requires --disk");
             std::process::exit(1);
         });
-        let xml = write(build_import_document(
-            &args.name,
-            memory_kib,
-            args.vcpus,
-            &disk,
-            &domain_type,
-            &require_os_type(),
-            &arch,
-            machine.as_deref(),
-            emulator.as_deref(),
+        let os_type = require_os_type();
+        let caps = GuestCapsDefaults {
+            domain_type: &domain_type,
+            os_type: &os_type,
+            arch: &arch,
+            machine: machine.as_deref(),
+            emulator: emulator.as_deref(),
             is_qemu,
+        };
+        let xml = write(build_import_document(
+            &args.name, memory_kib, args.vcpus, &disk, caps,
         ));
         (xml.clone(), xml)
     } else if let Some(media) = args.cdrom {
+        let os_type = require_os_type();
+        let caps = GuestCapsDefaults {
+            domain_type: &domain_type,
+            os_type: &os_type,
+            arch: &arch,
+            machine: machine.as_deref(),
+            emulator: emulator.as_deref(),
+            is_qemu,
+        };
         if args.livecd {
             let xml = write(build_iso_document(
-                &args.name,
-                memory_kib,
-                args.vcpus,
-                &media,
-                &domain_type,
-                &require_os_type(),
-                &arch,
-                machine.as_deref(),
-                emulator.as_deref(),
-                is_qemu,
+                &args.name, memory_kib, args.vcpus, &media, caps,
             ));
             (xml.clone(), xml)
         } else {
@@ -303,48 +304,46 @@ fn main() {
                 std::process::exit(1);
             });
             let (initial, final_doc) = build_iso_two_phase_documents(
-                &args.name,
-                memory_kib,
-                args.vcpus,
-                &media,
-                &disk,
-                &domain_type,
-                &require_os_type(),
-                &arch,
-                machine.as_deref(),
-                emulator.as_deref(),
-                is_qemu,
+                &args.name, memory_kib, args.vcpus, &media, &disk, caps,
             );
             (write(initial), write(final_doc))
         }
     } else if args.pxe {
+        let os_type = require_os_type();
+        let caps = GuestCapsDefaults {
+            domain_type: &domain_type,
+            os_type: &os_type,
+            arch: &arch,
+            machine: machine.as_deref(),
+            emulator: emulator.as_deref(),
+            is_qemu,
+        };
         let (initial, final_doc) = build_manual_two_phase_documents(
             &args.name,
             memory_kib,
             args.vcpus,
             "network",
             args.disk.as_deref(),
-            &domain_type,
-            &require_os_type(),
-            &arch,
-            machine.as_deref(),
-            emulator.as_deref(),
-            is_qemu,
+            caps,
         );
         (write(initial), write(final_doc))
     } else if let Some(boot_dev) = args.boot {
+        let os_type = require_os_type();
+        let caps = GuestCapsDefaults {
+            domain_type: &domain_type,
+            os_type: &os_type,
+            arch: &arch,
+            machine: machine.as_deref(),
+            emulator: emulator.as_deref(),
+            is_qemu,
+        };
         let xml = write(build_manual_document(
             &args.name,
             memory_kib,
             args.vcpus,
             &boot_dev,
             args.disk.as_deref(),
-            &domain_type,
-            &require_os_type(),
-            &arch,
-            machine.as_deref(),
-            emulator.as_deref(),
-            is_qemu,
+            caps,
         ));
         (xml.clone(), xml)
     } else if args.container {

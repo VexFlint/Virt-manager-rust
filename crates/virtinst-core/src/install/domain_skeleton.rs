@@ -18,6 +18,44 @@
 
 use virtinst_xml::{Document, Element};
 
+/// The `capsinfo`/URI-derived defaults shared by every non-container
+/// document builder — upstream's `set_capabilities_defaults`'s
+/// `domain_type`/`os_type`/`arch`/`machine`/`emulator` cluster, plus
+/// `is_qemu` (URI-scheme-derived, not `capsinfo`-derived, but resolved
+/// at the same `virt-install.rs` call site and needed by every one of
+/// these same callers for `push_default_nic`, then — as of ticket 21
+/// slice (c) — `push_default_graphics` too).
+///
+/// Collapsed from 6 individual parameters into one struct once a 3rd
+/// field (`graphics_type`, threaded separately, see slice (c) below)
+/// was about to join `machine`/`emulator`/`is_qemu` as yet another
+/// mechanical addition to every affected builder's already-`#[allow(
+/// clippy::too_many_arguments)]` signature — the third such threading
+/// in a row (`.scratch/rust-conversion/issues/21-set-defaults-scope.md`
+/// has the first two: `machine`/`emulator`, then `is_qemu`), each
+/// paying the same "add a param, fix N call sites" tax. Pure refactor,
+/// no behavior change — every existing test's assertions are untouched,
+/// only call sites' argument lists changed shape.
+///
+/// Deliberately **not** used by `--container`: it only ever needs 3 of
+/// these 6 fields (`domain_type`/`arch`/`is_qemu`), and forcing the
+/// same struct on it would either silently ignore 3 fields or invite
+/// exactly the "wrong guest" hazard `build_container_os_document`'s own
+/// doc comment already warns against for `os_type`/`machine`/
+/// `emulator` (no driver this crate reaches ever resolves a real
+/// `capsinfo` for an `exe` guest, so there's no correct value to give
+/// those fields, only a wrong one borrowed from the `hvm`/`xen` guest a
+/// plain, unfiltered `guest_lookup` would actually return).
+#[derive(Debug, Clone, Copy)]
+pub struct GuestCapsDefaults<'a> {
+    pub domain_type: &'a str,
+    pub os_type: &'a str,
+    pub arch: &'a str,
+    pub machine: Option<&'a str>,
+    pub emulator: Option<&'a str>,
+    pub is_qemu: bool,
+}
+
 /// Builds `<domain type=domain_type><name/><uuid/><memory/>
 /// <currentMemory/><vcpu/><os><type arch=arch machine=machine>os_type
 /// </type></os><devices><emulator>emulator</emulator></devices></domain>`
@@ -29,30 +67,32 @@ use virtinst_xml::{Document, Element};
 /// element (already attached to `root`, same "push into an already-
 /// attached element" pattern `os_el` has always used for `<boot>`).
 ///
-/// `os_type` is `<os><type>`'s text content — `"hvm"` for every install
-/// method except containers (`"exe"`, `DomainOs.is_container()`'s check).
-/// `arch` is still always passed through from `DomainCapabilities` even
-/// for containers — confirmed directly in `guest.py`'s `set_capabilities_
-/// defaults`: `self.os.arch = capsinfo.arch` runs unconditionally, no
-/// container exception, so this isn't guessed.
+/// `caps.os_type` is `<os><type>`'s text content — `"hvm"` for every
+/// install method except containers (`"exe"`, `DomainOs.is_container()`'s
+/// check, hardcoded by `container.rs` directly rather than threaded
+/// through here). `caps.arch` is still always passed through from
+/// `DomainCapabilities` even for containers — confirmed directly in
+/// `guest.py`'s `set_capabilities_defaults`: `self.os.arch = capsinfo.
+/// arch` runs unconditionally, no container exception, so this isn't
+/// guessed.
 ///
-/// `machine`/`emulator` are ticket 21 slice (a): `capsinfo.machines.
-/// first()`/`capsinfo.emulator` threaded through when the caller has
-/// them, `None` when it doesn't — `container.rs` always passes `None`
-/// for both, deliberately, matching the same reasoning that already
-/// keeps its `os_type` hardcoded to `"exe"` rather than sourced from
-/// `capsinfo` (see `build_container_os_document`'s doc comment: no
-/// driver this crate reaches ever resolves a real `capsinfo` for an
-/// `exe` guest, so there's no correct value to thread, only a wrong
-/// one borrowed from the `hvm`/`xen` guest a plain `guest_lookup` would
-/// actually return). Neither attribute/element is emitted when absent
-/// — `machine` omitted from `<type>` (matches upstream's own `_set_
-/// default_machine`, whose *fallback-only* branch this ports:
-/// `capsinfo.machines and capsinfo.machines[0] or None`; the q35-
-/// preferred branch above it needs `OsInfo` plus an unbuilt hypervisor-
-/// version support-check mechanism, both out of scope per ticket 21),
-/// `<emulator>` omitted from `<devices>` entirely rather than emitted
-/// empty.
+/// `caps.machine`/`caps.emulator` are ticket 21 slice (a): `capsinfo.
+/// machines.first()`/`capsinfo.emulator` threaded through when the
+/// caller has them, `None` when it doesn't. Neither attribute/element
+/// is emitted when absent — `machine` omitted from `<type>` (matches
+/// upstream's own `_set_default_machine`, whose *fallback-only* branch
+/// this ports: `capsinfo.machines and capsinfo.machines[0] or None`;
+/// the q35-preferred branch above it needs `OsInfo` plus an unbuilt
+/// hypervisor-version support-check mechanism, both out of scope per
+/// ticket 21), `<emulator>` omitted from `<devices>` entirely rather
+/// than emitted empty.
+///
+/// `caps.is_qemu` isn't used by this function at all (only `caps.
+/// domain_type`/`os_type`/`arch`/`machine`/`emulator` are) — it rides
+/// along in the same struct because every caller needs it a few lines
+/// later for `push_default_nic`/`push_default_graphics`, and passing
+/// two separate params where callers already have one bundle would be
+/// the pointless split, not this.
 ///
 /// `uuid` is caller-supplied rather than generated here — required
 /// because `virt-install`'s default sequence calls `Domain::create_new`
@@ -67,21 +107,16 @@ use virtinst_xml::{Document, Element};
 /// Without a fixed UUID at all, each libvirt call invents its own and
 /// the second call fails outright ("domain already exists with uuid
 /// ..." — hit this for real, see `import.rs`'s doc comment).
-#[allow(clippy::too_many_arguments)]
 pub(super) fn build_domain_skeleton(
     name: &str,
     memory_kib: u64,
     vcpus: u32,
     uuid: &str,
-    domain_type: &str,
-    os_type: &str,
-    arch: &str,
-    machine: Option<&str>,
-    emulator: Option<&str>,
+    caps: &GuestCapsDefaults,
 ) -> (Document, Element, Element, Element) {
     let mut doc = Document::new();
     let root = Element::new(&mut doc, "domain");
-    root.set_attribute(&mut doc, "type", domain_type);
+    root.set_attribute(&mut doc, "type", caps.domain_type);
     doc.push_root_node(root)
         .expect("a freshly-created detached element always attaches cleanly");
 
@@ -101,9 +136,9 @@ pub(super) fn build_domain_skeleton(
     push_text_child(&mut doc, root, "vcpu", &vcpus.to_string());
 
     let os_el = Element::new(&mut doc, "os");
-    let type_el = Element::new_with_text(&mut doc, "type", os_type);
-    type_el.set_attribute(&mut doc, "arch", arch);
-    if let Some(m) = machine {
+    let type_el = Element::new_with_text(&mut doc, "type", caps.os_type);
+    type_el.set_attribute(&mut doc, "arch", caps.arch);
+    if let Some(m) = caps.machine {
         type_el.set_attribute(&mut doc, "machine", m);
     }
     os_el
@@ -113,7 +148,7 @@ pub(super) fn build_domain_skeleton(
         .expect("a freshly-created detached element always attaches cleanly");
 
     let devices_el = Element::new(&mut doc, "devices");
-    if let Some(e) = emulator {
+    if let Some(e) = caps.emulator {
         push_text_child(&mut doc, devices_el, "emulator", e);
     }
     root.push_child(&mut doc, devices_el)
@@ -229,6 +264,37 @@ pub(super) fn push_virtio_disk(doc: &mut Document, devices_el: Element, path: &s
 /// fallback chain (`e1000`/`rtl8139`/`ne2k_pci`/`pcnet`, chosen via
 /// `guest.osinfo.supported_netmodels()`) needs `OsInfo`, unmodeled, same
 /// posture as this crate's disk-bus default.
+/// `<graphics type=graphics_type port="-1" .../>` (`tlsPort="-1"
+/// autoport="yes"` added only for `spice`) — ticket 21 slice (c):
+/// upstream's `_add_default_graphics` + `DeviceGraphics.set_defaults`'s
+/// port/tlsPort/autoport resolution (`graphics.py`'s `_get_default_port`/
+/// `_get_default_tlsport`/`_get_default_autoport`), restricted to the one
+/// case every builder here actually reaches: no caller ever adds a
+/// `<listen>` element, so `_listen_need_port()` is always `True` and the
+/// full listen-aware branching collapses to a fixed shape per type.
+/// `graphics_type` (`"spice"`/`"vnc"`) is caller-resolved via
+/// `DomainCapabilities::default_graphics_type` — this function just
+/// materializes the XML for whichever type won, it doesn't decide.
+///
+/// Not called by `--container` at all: upstream's own guard
+/// (`self.os.is_container() and not self.conn.is_vz()`) skips the whole
+/// device unconditionally on every driver this crate can reach
+/// (`is_vz()` is never true here), matching `build_container_os_
+/// document`'s existing container-only omissions for `os_type`/
+/// `machine`/`emulator`.
+pub(super) fn push_default_graphics(doc: &mut Document, devices_el: Element, graphics_type: &str) {
+    let graphics_el = Element::new(doc, "graphics");
+    graphics_el.set_attribute(doc, "type", graphics_type);
+    graphics_el.set_attribute(doc, "port", "-1");
+    if graphics_type == "spice" {
+        graphics_el.set_attribute(doc, "tlsPort", "-1");
+        graphics_el.set_attribute(doc, "autoport", "yes");
+    }
+    devices_el
+        .push_child(doc, graphics_el)
+        .expect("a freshly-created detached element always attaches cleanly");
+}
+
 pub(super) fn push_default_nic(doc: &mut Document, devices_el: Element, mac: &str) {
     let iface_el = Element::new(doc, "interface");
     iface_el.set_attribute(doc, "type", "network");

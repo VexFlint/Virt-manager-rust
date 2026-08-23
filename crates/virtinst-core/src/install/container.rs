@@ -51,7 +51,9 @@
 
 use virtinst_xml::{Document, Element};
 
-use super::domain_skeleton::{build_domain_skeleton, push_default_nic, push_text_child};
+use super::domain_skeleton::{
+    build_domain_skeleton, push_default_nic, push_text_child, GuestCapsDefaults,
+};
 
 /// `name`/`memory_kib`/`vcpus`/`domain_type`/`arch`/`is_qemu` — see
 /// `build_import_document`'s doc comment, identical rationale
@@ -94,11 +96,14 @@ pub fn build_container_os_document(
         memory_kib,
         vcpus,
         &crate::cloner::generate_uuid(),
-        domain_type,
-        "exe",
-        arch,
-        None,
-        None,
+        &GuestCapsDefaults {
+            domain_type,
+            os_type: "exe",
+            arch,
+            machine: None,
+            emulator: None,
+            is_qemu,
+        },
     );
     // Real, load-bearing finding, hit for real writing this module's own
     // test: libvirt itself rejects an `exe`-type domain with no `<init>`

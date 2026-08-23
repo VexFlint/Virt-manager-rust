@@ -355,3 +355,45 @@ system` together — the exact previously-mishandled combination — no
 crash (that binary run couldn't observe the MAC itself, since it's a
 separate process against `test:///`'s own state; the in-process
 composition test above is what actually proves the fix).
+
+## Refactor before (c): `GuestCapsDefaults` collapses the 6-arg cluster
+
+Before starting slice (c), an advisor review flagged that `graphics_
+type` would be the *third* individual field threaded onto every
+affected builder's argument list in a row (`machine`/`emulator`, then
+`is_qemu`, now this) — paying the same "add a param, fix N call sites"
+tax a third time, each already past `#[allow(clippy::too_many_
+arguments)]`. Collapsed `domain_type`/`os_type`/`arch`/`machine`/
+`emulator`/`is_qemu` into one `GuestCapsDefaults<'a>` struct
+(`domain_skeleton.rs`, re-exported at `install::GuestCapsDefaults`),
+used by `build_domain_skeleton` and all five non-container builders'
+public signatures (`build_import_document`, `build_iso_document`/
+`build_iso_two_phase_documents`, `build_manual_document`/
+`build_manual_two_phase_documents`). `--container` deliberately kept
+its 3 individual params (`domain_type`/`arch`/`is_qemu`) rather than
+being forced onto the same struct — it only needs half of it, and
+giving it the rest would invite exactly the "wrong guest" hazard
+already flagged for `os_type`/`machine`/`emulator` there; internally it
+still builds a `GuestCapsDefaults` to hand to `build_domain_skeleton`,
+with `os_type: "exe"`/`machine: None`/`emulator: None` hardcoded.
+
+Pure refactor, verified as such: every existing test's assertions are
+byte-for-byte unchanged, only call sites' argument lists changed shape
+(positional args → a `GuestCapsDefaults { .. }` literal, or an already-
+in-scope struct value for the real end-to-end tests). Re-ran the full
+suite after — 99/99 `virtinst-cli`, 146/146 `virtinst-core` (the 6 new
+`domcaps.rs` tests below, no regressions), harness 61/61, `fmt`/
+`clippy` clean — with zero assertion changes as the actual proof the
+refactor didn't alter behavior.
+
+`domcaps.rs` also gained its first two `supports_*`-style query
+methods ahead of wiring them into any builder yet:
+`supports_graphics_spice(is_qemu, is_test, host_arch)` (upstream's
+`domcapabilities.py:464`) and `default_graphics_type(is_xen, is_qemu,
+is_test, host_arch)` (upstream's `DeviceGraphics._default_type`,
+`graphics.py:181`, with `"spice"` standing in for the unconfigurable
+`BuildConfig.default_graphics`) — 6 new tests (advertised-enum hit/
+miss, pre-domcaps heuristic fallback across qemu/test/arch
+combinations, xen-forces-vnc, spice-stays, spice-downgrades-to-vnc),
+146/146 `virtinst-core` total. Slice (c) itself (actually pushing a
+default `<graphics>` element from `virt-install.rs`) continues below.

@@ -41,30 +41,21 @@
 
 use virtinst_xml::{Document, Element};
 
-use super::domain_skeleton::{build_domain_skeleton, push_boot_dev, push_default_nic};
+use super::domain_skeleton::{
+    build_domain_skeleton, push_boot_dev, push_default_nic, GuestCapsDefaults,
+};
 
 /// `name`/`memory_kib`/`vcpus` are the wizard's Name/Memory pages'
 /// worth of data — not `InstallMethod`'s job to carry (ticket 08 keeps
-/// them off the enum entirely, see its own doc comment). `domain_type`
-/// (`<domain type=...>`, e.g. `"qemu"`/`"test"`), `os_type` (`<os><type>`'s
-/// text content, e.g. `"hvm"`), and `arch` (`<os><type arch=...>`) come
-/// from the connection's own host `capabilities::Capabilities::
-/// guest_lookup` rather than being guessed — upstream gets all three
-/// (plus `loader`, not modeled yet) from `guest.
-/// set_capabilities_defaults()`, and hardcoding any of them would be a
+/// them off the enum entirely, see its own doc comment). `caps` bundles
+/// the rest — see `GuestCapsDefaults`'s own doc comment for what each
+/// field is and why they travel together; `domain_type`/`os_type`/
+/// `arch` come from the connection's own host `capabilities::
+/// Capabilities::guest_lookup` rather than being guessed (upstream gets
+/// all three, plus `loader`, not modeled yet, from `guest.
+/// set_capabilities_defaults()`), and hardcoding any of them would be a
 /// real, connection-specific-shaped divergence (`test:///` defaults to
 /// `i686`, a real `qemu:///system` to `x86_64`).
-///
-/// `machine`/`emulator` are ticket 21 slice (a) — see `build_domain_
-/// skeleton`'s own doc comment for exactly what's threaded (the
-/// fallback-only `capsinfo.machines.first()`/plain `capsinfo.emulator`)
-/// versus what stays unbuilt (the q35-preferred machine branch, real
-/// UEFI/loader selection). `is_qemu` is the connection's URI scheme
-/// (`Uri::is_qemu()`) for the default NIC's OUI — deliberately *not*
-/// derived from `domain_type` (see `push_default_nic`'s doc comment
-/// for the real bug that distinction fixes: `domain_type` is
-/// `hypervisor_type`, e.g. `"kvm"` on a real accelerated
-/// `qemu:///system`, not the literal string `"qemu"`).
 ///
 /// Always stamps an explicit `<uuid>` (via the same `generate_uuid()`
 /// approach `cloner.rs` uses, matching upstream's own hand-rolled
@@ -77,29 +68,19 @@ use super::domain_skeleton::{build_domain_skeleton, push_boot_dev, push_default_
 /// libvirt-generated one, and the second call fails outright
 /// ("domain already exists with uuid ..." — hit this for real while
 /// writing this function's own test, not a theoretical concern).
-#[allow(clippy::too_many_arguments)]
 pub fn build_import_document(
     name: &str,
     memory_kib: u64,
     vcpus: u32,
     disk_path: &str,
-    domain_type: &str,
-    os_type: &str,
-    arch: &str,
-    machine: Option<&str>,
-    emulator: Option<&str>,
-    is_qemu: bool,
+    caps: GuestCapsDefaults,
 ) -> Document {
     let (mut doc, _root, os_el, devices_el) = build_domain_skeleton(
         name,
         memory_kib,
         vcpus,
         &crate::cloner::generate_uuid(),
-        domain_type,
-        os_type,
-        arch,
-        machine,
-        emulator,
+        &caps,
     );
     push_boot_dev(&mut doc, os_el, "hd");
 
@@ -120,7 +101,11 @@ pub fn build_import_document(
     devices_el
         .push_child(&mut doc, disk_el)
         .expect("a freshly-created detached element always attaches cleanly");
-    push_default_nic(&mut doc, devices_el, &crate::cloner::generate_mac(is_qemu));
+    push_default_nic(
+        &mut doc,
+        devices_el,
+        &crate::cloner::generate_mac(caps.is_qemu),
+    );
 
     doc
 }
@@ -142,12 +127,14 @@ mod tests {
             2097152,
             2,
             "/var/lib/libvirt/images/imported.qcow2",
-            "qemu",
-            "hvm",
-            "x86_64",
-            Some("q35"),
-            Some("/usr/bin/qemu-system-x86_64"),
-            true,
+            GuestCapsDefaults {
+                domain_type: "qemu",
+                os_type: "hvm",
+                arch: "x86_64",
+                machine: Some("q35"),
+                emulator: Some("/usr/bin/qemu-system-x86_64"),
+                is_qemu: true,
+            },
         );
         let root = doc.root_element().unwrap();
 
@@ -223,12 +210,14 @@ mod tests {
             1048576,
             1,
             "/tmp/x.img",
-            "test",
-            "hvm",
-            "i686",
-            None,
-            None,
-            false,
+            GuestCapsDefaults {
+                domain_type: "test",
+                os_type: "hvm",
+                arch: "i686",
+                machine: None,
+                emulator: None,
+                is_qemu: false,
+            },
         );
         let root = doc.root_element().unwrap();
         let mac = root
@@ -269,12 +258,14 @@ mod tests {
             1048576,
             1,
             "/tmp/x.img",
-            "kvm",
-            "hvm",
-            "x86_64",
-            None,
-            None,
-            true,
+            GuestCapsDefaults {
+                domain_type: "kvm",
+                os_type: "hvm",
+                arch: "x86_64",
+                machine: None,
+                emulator: None,
+                is_qemu: true,
+            },
         );
         let root = doc.root_element().unwrap();
         let mac = root
@@ -305,12 +296,14 @@ mod tests {
             1048576,
             1,
             "/tmp/x.img",
-            "test",
-            "hvm",
-            "i686",
-            None,
-            None,
-            false,
+            GuestCapsDefaults {
+                domain_type: "test",
+                os_type: "hvm",
+                arch: "i686",
+                machine: None,
+                emulator: None,
+                is_qemu: false,
+            },
         );
         let root = doc.root_element().unwrap();
         let type_el = root.find(&doc, "os").unwrap().find(&doc, "type").unwrap();
@@ -329,12 +322,14 @@ mod tests {
             1048576,
             1,
             "/tmp/x.img",
-            "test",
-            "hvm",
-            "i686",
-            None,
-            None,
-            false,
+            GuestCapsDefaults {
+                domain_type: "test",
+                os_type: "hvm",
+                arch: "i686",
+                machine: None,
+                emulator: None,
+                is_qemu: false,
+            },
         );
         let xml = doc.write_str().expect("serializes");
         let reparsed = virtinst_xml::parse_libvirt_xml(&xml).expect("re-parses");
@@ -391,12 +386,14 @@ mod tests {
             1048576,
             1,
             "/guest/import-end-to-end.img",
-            &domain_type,
-            "hvm",
-            &arch,
-            machine,
-            capsinfo.emulator.as_deref(),
-            conn.uri().is_qemu(),
+            GuestCapsDefaults {
+                domain_type: &domain_type,
+                os_type: "hvm",
+                arch: &arch,
+                machine,
+                emulator: capsinfo.emulator.as_deref(),
+                is_qemu: conn.uri().is_qemu(),
+            },
         );
         let xml = doc.write_str().expect("serializes");
 
@@ -491,12 +488,14 @@ mod tests {
             1048576,
             1,
             "/guest/whatever.img",
-            &capsinfo.hypervisor_type.unwrap(),
-            &capsinfo.os_type.unwrap(),
-            &capsinfo.arch.unwrap(),
-            capsinfo.machines.first().map(|s| s.as_str()),
-            capsinfo.emulator.as_deref(),
-            false,
+            GuestCapsDefaults {
+                domain_type: &capsinfo.hypervisor_type.unwrap(),
+                os_type: &capsinfo.os_type.unwrap(),
+                arch: &capsinfo.arch.unwrap(),
+                machine: capsinfo.machines.first().map(|s| s.as_str()),
+                emulator: capsinfo.emulator.as_deref(),
+                is_qemu: false,
+            },
         );
         // Through the DOM, not a raw string match on the serialized
         // XML — a string match couples this test to `virtinst_xml`'s
@@ -585,12 +584,14 @@ mod tests {
             1048576,
             1,
             "/guest/whatever.img",
-            &capsinfo.hypervisor_type.unwrap(),
-            "hvm",
-            &capsinfo.arch.unwrap(),
-            capsinfo.machines.first().map(|s| s.as_str()),
-            capsinfo.emulator.as_deref(),
-            true,
+            GuestCapsDefaults {
+                domain_type: &capsinfo.hypervisor_type.unwrap(),
+                os_type: "hvm",
+                arch: &capsinfo.arch.unwrap(),
+                machine: capsinfo.machines.first().map(|s| s.as_str()),
+                emulator: capsinfo.emulator.as_deref(),
+                is_qemu: true,
+            },
         );
         let root = doc.root_element().unwrap();
         let type_el = root.find(&doc, "os").unwrap().find(&doc, "type").unwrap();
@@ -685,12 +686,14 @@ mod tests {
             1048576,
             1,
             "/guest/whatever.img",
-            &capsinfo.hypervisor_type.unwrap(),
-            "hvm",
-            &capsinfo.arch.unwrap(),
-            None,
-            capsinfo.emulator.as_deref(),
-            conn.uri().is_qemu(),
+            GuestCapsDefaults {
+                domain_type: &capsinfo.hypervisor_type.unwrap(),
+                os_type: "hvm",
+                arch: &capsinfo.arch.unwrap(),
+                machine: None,
+                emulator: capsinfo.emulator.as_deref(),
+                is_qemu: conn.uri().is_qemu(),
+            },
         );
         let root = doc.root_element().unwrap();
         let mac = root
