@@ -242,6 +242,13 @@ impl OsDb {
     /// primary — a stated gap, not silently dropped, since libosinfo's
     /// `_list` variant is a separate query this crate doesn't bind
     /// yet.
+    ///
+    /// ponytail: the short-id fallback walks every entry in the db
+    /// (`all_os()`'s full ref/unref pass) on every miss -- O(n) per
+    /// lookup, fine for `virt-install`'s one call per run, quadratic
+    /// if a future caller (e.g. a GUI OS-picker) calls this in a loop.
+    /// Upstream avoids it with `Libosinfo.Filter` + `PRODUCT_PROP_SHORT_ID`;
+    /// switch to that if this ever shows up in a loop.
     pub fn os_by_id_or_short_id(&self, id: &str) -> Option<OsInfo> {
         self.os(id)
             .or_else(|| self.all_os().into_iter().find(|o| o.short_id() == id))

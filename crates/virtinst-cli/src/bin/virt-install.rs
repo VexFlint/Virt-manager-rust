@@ -174,7 +174,10 @@ struct Args {
     /// `"generic"` sentinel value the way upstream's CLI accepts) means
     /// the same "no OS selected" defaults upstream's own synthetic
     /// generic entry produces — see `push_default_clock`'s doc comment
-    /// for why that's equivalent, not a separate code path.
+    /// for why that's equivalent, not a separate code path. Note: the
+    /// clock-offset default this flag feeds is itself gated on
+    /// `is_qemu`, so on a non-qemu `--connect` (e.g. `test:///`,
+    /// `lxc:///`) this flag has no observable effect at all.
     #[arg(long)]
     os_variant: Option<String>,
 }
