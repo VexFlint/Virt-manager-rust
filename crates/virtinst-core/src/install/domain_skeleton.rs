@@ -389,6 +389,62 @@ pub(super) fn target_prefix_for_bus(bus: &str) -> &'static str {
     }
 }
 
+/// Upstream's `devices/interface.py`'s `DeviceInterface.default_model`,
+/// ported. `None` means upstream's own `None` branches (non-`hvm`, or
+/// non-x86 with neither virtio nor q35 available) — omit the
+/// `<model>` element entirely in that case, matching `self.model =
+/// self.default_model(guest)` leaving `self.model` unset when the
+/// right-hand side is `None`, not a fallback to some other constant.
+///
+/// `supports_virtionet`/`supported_netmodels` are the caller's already-
+/// fetched `OsInfo` answers (`OsInfo::supports_virtionet()`/
+/// `supported_netmodels()`, ticket 04) — same "resolve once, pass the
+/// answer in" shape `default_disk_bus` uses, and the same `false`/
+/// empty-`Vec` fallback with no `--os-variant` given (upstream's
+/// synthetic "generic" entry declares no devices at all, so both
+/// resolve the same way whether or not a real `OsInfo` exists).
+/// `supports_virtio` (this file's own helper, same one `default_disk_
+/// bus` uses) applies the `is_qemu` gate and the four virtio-only-arch
+/// overrides before `supports_virtionet` is ever consulted, exactly
+/// like upstream's `guest.supports_virtionet()` wrapping `self.osinfo.
+/// supports_virtionet(..)` in `_supports_virtio`.
+///
+/// **Built and unit-tested here, not yet wired to a real caller** —
+/// `push_default_nic` below still hardcodes `model type="virtio"`
+/// unconditionally. Deliberately narrower than `default_disk_bus`'s
+/// own build-then-wire split: wiring this one is the *same* "resolve
+/// once in `virt-install.rs`, pass a caller-resolved value into every
+/// builder" mechanical thread, no new blast-radius surprise expected —
+/// but it's still a separate, real diff (5 builder signatures, ~30
+/// call sites across builders' own tests, `virt-install.rs`'s own call
+/// sites), kept out of this commit on the same "one slice, verified,
+/// per turn" discipline the rest of this session has followed.
+pub fn default_nic_model(
+    caps: GuestCapsDefaults,
+    supports_virtionet: bool,
+    supported_netmodels: &[String],
+) -> Option<&'static str> {
+    if !is_hvm(caps.os_type) {
+        return None;
+    }
+    if supports_virtio(caps.arch, caps.machine, caps.is_qemu, supports_virtionet) {
+        return Some("virtio");
+    }
+    if is_q35(caps.arch, caps.machine) {
+        return Some("e1000e");
+    }
+    if !is_x86(caps.arch) {
+        return None;
+    }
+    const PREFS: [&str; 4] = ["e1000", "rtl8139", "ne2k_pci", "pcnet"];
+    for pref in PREFS {
+        if supported_netmodels.iter().any(|m| m == pref) {
+            return Some(pref);
+        }
+    }
+    Some("e1000")
+}
+
 /// `<interface type="network"><source network="default"/><mac
 /// address=mac/><model type="virtio"/></interface>`, pushed onto
 /// `devices_el` — upstream's own CLI default, not a `--pxe`-specific
@@ -622,7 +678,7 @@ pub(super) fn push_default_nic(doc: &mut Document, devices_el: Element, mac: &st
 }
 
 #[cfg(test)]
-mod bus_selection_tests {
+mod default_selection_tests {
     use super::*;
 
     /// The common case this crate actually targets: a real qemu/KVM
@@ -778,5 +834,126 @@ mod bus_selection_tests {
         assert_eq!(target_prefix_for_bus("sata"), "sd");
         assert_eq!(target_prefix_for_bus("scsi"), "sd");
         assert_eq!(target_prefix_for_bus("usb"), "sd");
+    }
+
+    /// The common qemu/KVM x86 case with an OS that reports virtio-net
+    /// support — the `virtio` branch wins even on a q35 machine,
+    /// mirroring `default_disk_bus`'s own "virtio checked before q35"
+    /// ordering proof.
+    #[test]
+    fn qemu_x86_q35_with_virtionet_support_picks_virtio() {
+        let caps = GuestCapsDefaults {
+            domain_type: "kvm",
+            os_type: "hvm",
+            arch: "x86_64",
+            machine: Some("pc-q35-8.2"),
+            emulator: None,
+            is_qemu: true,
+        };
+        assert_eq!(default_nic_model(caps, true, &[]), Some("virtio"));
+    }
+
+    /// q35 without virtio-net support falls to `e1000e`, not the
+    /// `prefs` fallback chain — upstream checks `is_q35()` before
+    /// `is_x86()`'s fallback-chain branch, so q35 never reaches the
+    /// `prefs` loop at all regardless of what `supported_netmodels`
+    /// contains.
+    #[test]
+    fn q35_without_virtionet_support_picks_e1000e_regardless_of_supported_netmodels() {
+        let caps = GuestCapsDefaults {
+            domain_type: "kvm",
+            os_type: "hvm",
+            arch: "x86_64",
+            machine: Some("pc-q35-8.2"),
+            emulator: None,
+            is_qemu: true,
+        };
+        let netmodels = vec!["rtl8139".to_string()];
+        assert_eq!(default_nic_model(caps, false, &netmodels), Some("e1000e"));
+    }
+
+    /// Plain (non-q35) x86 without virtio-net support walks `prefs` in
+    /// order and returns the first one `supported_netmodels` actually
+    /// contains — not the first entry in `supported_netmodels` itself.
+    #[test]
+    fn plain_x86_without_virtionet_support_walks_prefs_in_order() {
+        let caps = GuestCapsDefaults {
+            domain_type: "kvm",
+            os_type: "hvm",
+            arch: "x86_64",
+            machine: Some("pc-i440fx-8.2"),
+            emulator: None,
+            is_qemu: true,
+        };
+        // rtl8139 comes first in this list but e1000 is earlier in
+        // `PREFS` -- proves the fixed preference order wins, not
+        // input order.
+        let netmodels = vec!["rtl8139".to_string(), "e1000".to_string()];
+        assert_eq!(default_nic_model(caps, false, &netmodels), Some("e1000"));
+    }
+
+    /// None of `PREFS` present in `supported_netmodels` (e.g. no
+    /// `--os-variant` given, so it's empty) still returns `e1000` —
+    /// upstream's own unconditional fallback after the loop, not a
+    /// `None`.
+    #[test]
+    fn plain_x86_with_no_matching_netmodels_still_falls_back_to_e1000() {
+        let caps = GuestCapsDefaults {
+            domain_type: "kvm",
+            os_type: "hvm",
+            arch: "x86_64",
+            machine: Some("pc-i440fx-8.2"),
+            emulator: None,
+            is_qemu: true,
+        };
+        assert_eq!(default_nic_model(caps, false, &[]), Some("e1000"));
+    }
+
+    /// Non-x86, non-virtio-capable arch with no q35 gets `None` — no
+    /// `<model>` element at all, matching upstream's `self.model =
+    /// None` rather than a guessed constant.
+    #[test]
+    fn non_x86_without_virtio_support_and_no_q35_gets_no_model() {
+        let caps = GuestCapsDefaults {
+            domain_type: "kvm",
+            os_type: "hvm",
+            arch: "aarch64",
+            machine: Some("virt"),
+            emulator: None,
+            is_qemu: true,
+        };
+        assert_eq!(default_nic_model(caps, false, &[]), None);
+    }
+
+    /// `!is_hvm` short-circuits before virtio/q35/x86 are ever
+    /// considered, same as `default_disk_bus`'s own `!is_hvm` branch.
+    #[test]
+    fn non_hvm_gets_no_model_regardless_of_virtio_support() {
+        let caps = GuestCapsDefaults {
+            domain_type: "lxc",
+            os_type: "exe",
+            arch: "x86_64",
+            machine: None,
+            emulator: None,
+            is_qemu: true,
+        };
+        assert_eq!(default_nic_model(caps, true, &[]), None);
+    }
+
+    /// `!is_qemu` overrides a genuinely virtio-capable OS on x86,
+    /// falling to the `prefs` chain instead — same `supports_virtio`
+    /// gate `default_disk_bus`'s own `non_qemu_connection_never_gets_
+    /// virtio_even_if_the_os_supports_it` test proves.
+    #[test]
+    fn non_qemu_connection_never_gets_virtio_for_nic_model_either() {
+        let caps = GuestCapsDefaults {
+            domain_type: "test",
+            os_type: "hvm",
+            arch: "x86_64",
+            machine: None,
+            emulator: None,
+            is_qemu: false,
+        };
+        assert_eq!(default_nic_model(caps, true, &[]), Some("e1000"));
     }
 }

@@ -412,6 +412,52 @@ impl OsInfo {
         self.has_device_id("http://pcisig.com/pci/1af4/1000")
             || self.has_device_id("http://pcisig.com/pci/1af4/1041")
     }
+
+    /// Upstream's `osdict.py`'s `supported_netmodels()` — `self.
+    /// _device_filter(cls="net")`: every declared device whose
+    /// `get_class()` is `"net"`, by display name (`get_name()`, e.g.
+    /// `"e1000"`), not id. Confirmed against real `osinfo-db` XML
+    /// (`/usr/share/osinfo/device/pcisig.com/pci-1af4-1000.d/*.xml`)
+    /// that `<class>` is a plain literal string (`"net"`), not a
+    /// hierarchical/prefixed value — upstream's `re.match(cls, ...)`
+    /// (a prefix match, not equality) degrades to plain equality here
+    /// for that reason, not as an unchecked simplification.
+    ///
+    /// `osinfo_device_get_class`/`osinfo_device_get_name` are both
+    /// `transfer-ownership="none"` per the real `.gir` (checked
+    /// directly) — borrowed C strings, safe to read without taking a
+    /// ref. `OsinfoDevice`'s first field is `OsinfoEntity` (confirmed
+    /// against the generated struct layout, same inheritance-by-
+    /// embedding cast already established elsewhere in this module),
+    /// so `osinfo_list_get_nth`'s `*mut OsinfoEntity` is a safe cast to
+    /// `*mut OsinfoDevice` here — this device list has no other entity
+    /// type in it.
+    ///
+    /// Doesn't model `extra_devs`, same posture and same reason as
+    /// `supports_virtiodisk()` above.
+    pub fn supported_netmodels(&self) -> Vec<String> {
+        unsafe {
+            let list = ffi::osinfo_os_get_all_devices(self.ptr, std::ptr::null_mut());
+            if list.is_null() {
+                return Vec::new();
+            }
+            let raw_list = list as *mut ffi::OsinfoList;
+            let len = ffi::osinfo_list_get_length(raw_list);
+            let mut result = Vec::new();
+            for i in 0..len {
+                let entity = ffi::osinfo_list_get_nth(raw_list, i);
+                if entity.is_null() {
+                    continue;
+                }
+                let dev = entity as *mut ffi::OsinfoDevice;
+                if c_str_to_string(ffi::osinfo_device_get_class(dev)) == "net" {
+                    result.push(c_str_to_string(ffi::osinfo_device_get_name(dev)));
+                }
+            }
+            gobject_sys::g_object_unref(list as *mut gobject_sys::GObject);
+            result
+        }
+    }
 }
 
 impl Clone for OsInfo {
@@ -574,5 +620,37 @@ mod tests {
         assert!(!winxp.supports_virtiodisk());
         assert!(!winxp.supports_virtioscsi());
         assert!(!winxp.supports_virtionet());
+    }
+
+    /// Real device-class-filter proof against the same two entries:
+    /// Fedora 25's declared net devices include `virtio-net` (proving
+    /// the `"net"`-class filter, not just id lookups); Windows XP (its
+    /// own osinfo-db entry declares exactly one net device,
+    /// `http://pcisig.com/pci/8086/100e`) resolves to `["e1000"]` —
+    /// the real device upstream's own fallback chain in `interface.py`
+    /// is built to find on a pre-virtio OS.
+    #[test]
+    fn supported_netmodels_matches_real_osinfo_db_device_classes() {
+        let db = OsDb::load_default().expect("osinfo-db is installed on this machine");
+
+        let fedora = db
+            .os("http://fedoraproject.org/fedora/25")
+            .expect("real entry");
+        assert!(
+            fedora
+                .supported_netmodels()
+                .iter()
+                .any(|m| m == "virtio-net"),
+            "fedora25 declares virtio-net among its net-class devices"
+        );
+
+        let winxp = db
+            .os_by_id_or_short_id("winxp")
+            .expect("winxp ships in every osinfo-db release");
+        assert_eq!(
+            winxp.supported_netmodels(),
+            vec!["e1000".to_string()],
+            "winxp's osinfo-db entry declares exactly one net device, e1000"
+        );
     }
 }

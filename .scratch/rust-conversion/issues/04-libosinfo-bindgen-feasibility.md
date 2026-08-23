@@ -207,10 +207,32 @@ commit" section for the full writeup): `supports_virtiodisk`/
 (upstream's `disk.py`'s `_default_bus`, ported in full — `is_floppy`/
 `is_xenpv`/`is_hvm`/`is_q35`/`is_bhyve`/`is_x86` and all), which
 `virt-install.rs` now calls at every non-container document-builder
-call site instead of hardcoding `bus="virtio"`. `supports_virtionet`
-remains the one method with no caller yet — NIC `model type` is still
-a fixed `"virtio"` constant in `domain_skeleton::push_default_nic`,
-unwired for the same reason `hyperv_supported()` stays unwired: no
-second, larger piece (upstream's non-virtio NIC-model fallback chain,
-`supported_netmodels()`) has been built to make the wiring worthwhile
-on its own yet.
+call site instead of hardcoding `bus="virtio"`.
+
+**Third `OsInfo` caller: `supported_netmodels()`, plus `default_nic_
+model` (built, not yet wired)**. `OsInfo::supported_netmodels()` ports
+`osdict.py`'s `_device_filter(cls="net")` — walks `osinfo_os_get_all_
+devices` (same call/container-type `supports_virtiodisk()` already
+established) but filters by `osinfo_device_get_class() == "net"`
+instead of matching device ids, collecting `osinfo_device_get_name()`
+(both `transfer-ownership="none"` per the real `.gir`, checked
+directly). Confirmed against real `osinfo-db` XML that `<class>` is a
+plain literal (`"net"`), not a hierarchical value, so equality
+faithfully replaces upstream's `re.match` prefix check here. Verified
+against Fedora 25 (declares `virtio-net` among its net devices) and
+Windows XP (exactly one net device, resolves to `["e1000"]` — the real
+target upstream's own `prefs` fallback chain is built to find). 1 new
+test, 200/200 `virtinst-core`.
+
+`domain_skeleton::default_nic_model` ports `interface.py`'s
+`DeviceInterface.default_model` in full (`is_hvm`/virtio/`is_q35`/
+`is_x86`/`prefs` fallback chain, `None` meaning "omit `<model>`
+entirely" matching upstream's own `self.model = None`), reusing the
+same `supports_virtio` gate `default_disk_bus` already established. 7
+new unit tests, 206/206 `virtinst-core`. **Not yet wired** —
+`push_default_nic` still hardcodes `model type="virtio"`
+unconditionally; wiring this is the same mechanical "resolve once in
+`virt-install.rs`, pass into every builder" thread `default_disk_bus`
+already went through, kept as its own future slice rather than
+combined with building the primitive, per this session's "one slice,
+verified, per turn" discipline.
