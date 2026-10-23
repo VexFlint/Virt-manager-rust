@@ -23,6 +23,25 @@ use crate::statsmanager::PollFlags;
 
 const SCHEMA_ID: &str = "org.virt-manager.virt-manager";
 
+/// `BuildConfig.default_graphics` (meson's `default-graphics` option).
+pub const DEFAULT_GRAPHICS_FROM_CONFIG: &str = "spice";
+/// `default_storage_format_from_config`.
+pub const DEFAULT_STORAGE_FORMAT_FROM_CONFIG: &str = "qcow2";
+/// `default_console_resizeguest`.
+pub const DEFAULT_CONSOLE_RESIZEGUEST: i32 = 0;
+
+/// virtinst's `DomainCpu.SPECIAL_MODES`.
+pub const CPU_SPECIAL_MODES: &[&str] = &[
+    "host-model-only",
+    "hv-default",
+    "host-copy",
+    "host-model",
+    "host-passthrough",
+    "maximum",
+    "clear",
+    "default",
+];
+
 /// The manager's stats columns (upstream's `COL_GUEST_CPU` … `COL_NETWORK`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatsColumn {
@@ -67,6 +86,8 @@ pub struct Config {
     connections: gio::Settings,
     vmlist_fields: gio::Settings,
     stats: gio::Settings,
+    console: gio::Settings,
+    new_vm: gio::Settings,
     confirm: gio::Settings,
 }
 
@@ -101,6 +122,8 @@ impl Config {
             connections: open("org.virt-manager.virt-manager.connections"),
             vmlist_fields: open("org.virt-manager.virt-manager.vmlist-fields"),
             stats: open("org.virt-manager.virt-manager.stats"),
+            console: open("org.virt-manager.virt-manager.console"),
+            new_vm: open("org.virt-manager.virt-manager.new-vm"),
             confirm: open("org.virt-manager.virt-manager.confirm"),
         }
     }
@@ -116,6 +139,32 @@ impl Config {
     pub fn set_manager_window_size(&self, w: i32, h: i32) {
         let _ = self.root.set_int("manager-window-width", w);
         let _ = self.root.set_int("manager-window-height", h);
+    }
+
+    // System tray visibility
+    pub fn get_view_system_tray(&self) -> bool {
+        self.root.boolean("system-tray")
+    }
+    pub fn set_view_system_tray(&self, val: bool) {
+        let _ = self.root.set_boolean("system-tray", val);
+    }
+
+    // XML editor enabled
+    pub fn get_xmleditor_enabled(&self) -> bool {
+        self.root.boolean("xmleditor-enabled")
+    }
+    pub fn set_xmleditor_enabled(&self, val: bool) {
+        let _ = self.root.set_boolean("xmleditor-enabled", val);
+    }
+
+    // Libguestfs VM inspection
+    pub fn get_libguestfs_inspect_vms(&self) -> bool {
+        self.root.boolean("enable-libguestfs-vm-inspection")
+    }
+    pub fn set_libguestfs_inspect_vms(&self, val: bool) {
+        let _ = self
+            .root
+            .set_boolean("enable-libguestfs-vm-inspection", val);
     }
 
     // Saved connections
@@ -164,6 +213,10 @@ impl Config {
         self.stats.int("update-interval").max(1) as u32
     }
 
+    pub fn set_stats_update_interval(&self, val: i32) {
+        let _ = self.stats.set_int("update-interval", val);
+    }
+
     pub fn on_stats_update_interval_changed(&self, cb: impl Fn() + 'static) {
         self.stats
             .connect_changed(Some("update-interval"), move |_, _| cb());
@@ -188,6 +241,10 @@ impl Config {
         self.stats.boolean(col.poll_key())
     }
 
+    pub fn set_stats_enable_poll(&self, col: StatsColumn, val: bool) {
+        let _ = self.stats.set_boolean(col.poll_key(), val);
+    }
+
     pub fn on_stats_enable_poll_changed(&self, cb: impl Fn() + 'static) {
         self.stats.connect_changed(None, move |_, key| {
             if key.starts_with("enable-") {
@@ -203,6 +260,103 @@ impl Config {
             disk: self.get_stats_enable_poll(StatsColumn::Disk),
             net: self.get_stats_enable_poll(StatsColumn::Network),
         }
+    }
+
+    // Graphical console
+    pub fn get_console_scaling(&self) -> i32 {
+        self.console.int("scaling")
+    }
+    pub fn set_console_scaling(&self, val: i32) {
+        let _ = self.console.set_int("scaling", val);
+    }
+
+    /// The raw key: -1 means "system default"
+    /// ([`DEFAULT_CONSOLE_RESIZEGUEST`]).
+    pub fn get_console_resizeguest_raw(&self) -> i32 {
+        self.console.int("resize-guest")
+    }
+    pub fn set_console_resizeguest(&self, val: i32) {
+        let _ = self.console.set_int("resize-guest", val);
+    }
+
+    pub fn get_auto_usbredir(&self) -> bool {
+        self.console.boolean("auto-redirect")
+    }
+    pub fn set_auto_usbredir(&self, val: bool) {
+        let _ = self.console.set_boolean("auto-redirect", val);
+    }
+
+    pub fn get_console_autoconnect(&self) -> bool {
+        self.console.boolean("autoconnect")
+    }
+    pub fn set_console_autoconnect(&self, val: bool) {
+        let _ = self.console.set_boolean("autoconnect", val);
+    }
+
+    /// Comma separated GDK keyvals; Left Control + Left Alt when unset.
+    pub fn get_keys_combination(&self) -> String {
+        let ret = self.console.string("grab-keys");
+        if ret.is_empty() {
+            return "65507,65513".to_string();
+        }
+        ret.to_string()
+    }
+    pub fn set_keys_combination(&self, keyvals: &[u32]) {
+        let val: Vec<String> = keyvals.iter().map(u32::to_string).collect();
+        let _ = self.console.set_string("grab-keys", &val.join(","));
+    }
+
+    // New VM defaults
+    /// `get_graphics_type(raw=True)`.
+    pub fn get_graphics_type_raw(&self) -> String {
+        let ret = self.new_vm.string("graphics-type").to_string();
+        if ["system", "vnc", "spice"].contains(&ret.as_str()) {
+            ret
+        } else {
+            "system".to_string()
+        }
+    }
+    pub fn set_graphics_type(&self, val: &str) {
+        let _ = self.new_vm.set_string("graphics-type", &val.to_lowercase());
+    }
+
+    /// `get_default_storage_format(raw=True)`.
+    pub fn get_default_storage_format_raw(&self) -> String {
+        let ret = self.new_vm.string("storage-format").to_string();
+        if ["default", "raw", "qcow2"].contains(&ret.as_str()) {
+            ret
+        } else {
+            "default".to_string()
+        }
+    }
+    pub fn set_storage_format(&self, val: &str) {
+        let _ = self
+            .new_vm
+            .set_string("storage-format", &val.to_lowercase());
+    }
+
+    pub fn get_default_cpu_setting(&self) -> String {
+        let ret = self.new_vm.string("cpu-default").to_string();
+        if CPU_SPECIAL_MODES.contains(&ret.as_str()) {
+            ret
+        } else {
+            "default".to_string()
+        }
+    }
+    pub fn set_default_cpu_setting(&self, val: &str) {
+        let _ = self.new_vm.set_string("cpu-default", &val.to_lowercase());
+    }
+
+    pub fn get_default_firmware_setting(&self) -> String {
+        let ret = self.new_vm.string("firmware").to_string();
+        if ["default", "uefi"].contains(&ret.as_str()) {
+            ret
+        } else {
+            "default".to_string()
+        }
+    }
+    pub fn set_firmware_setting(&self, val: &str) {
+        let _ = self.new_vm.set_string("firmware", &val.to_lowercase());
     }
 
     // Confirmation dialogs
@@ -223,6 +377,24 @@ impl Config {
     }
     pub fn set_confirm_pause(&self, val: bool) {
         let _ = self.confirm.set_boolean("pause", val);
+    }
+    pub fn get_confirm_removedev(&self) -> bool {
+        self.confirm.boolean("removedev")
+    }
+    pub fn set_confirm_removedev(&self, val: bool) {
+        let _ = self.confirm.set_boolean("removedev", val);
+    }
+    pub fn get_confirm_unapplied(&self) -> bool {
+        self.confirm.boolean("unapplied-dev")
+    }
+    pub fn set_confirm_unapplied(&self, val: bool) {
+        let _ = self.confirm.set_boolean("unapplied-dev", val);
+    }
+    pub fn get_confirm_delstorage(&self) -> bool {
+        self.confirm.boolean("delete-storage")
+    }
+    pub fn set_confirm_delstorage(&self, val: bool) {
+        let _ = self.confirm.set_boolean("delete-storage", val);
     }
 }
 

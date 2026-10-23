@@ -27,6 +27,7 @@ use crate::engine;
 use crate::error;
 use crate::graphwidgets::Sparkline;
 use crate::manager_row::{ManagerRow, RowHandle};
+use crate::preferences;
 use crate::statsmanager::StatsRecord;
 use crate::vmmenu;
 
@@ -524,7 +525,9 @@ impl VmmManager {
                 ("new-vm", |_| {}),
                 ("host-details", |_| {}),
                 ("vm-details", |_| {}),
-                ("preferences", |_| {}),
+                ("preferences", |m| {
+                    preferences::VmmPreferences::show_instance(&m.window())
+                }),
             ] {
                 simple_action(&win_actions, name, weak, cb);
             }
@@ -690,7 +693,7 @@ impl VmmManager {
     /// Windows not ported yet: their entry points stay visible (same
     /// menus as upstream) but insensitive.
     fn set_unported_actions(&self) {
-        for name in ["new-vm", "host-details", "vm-details", "preferences"] {
+        for name in ["new-vm", "host-details", "vm-details"] {
             set_enabled(&self.0.win_actions, name, false);
         }
         set_enabled(&self.0.conn_actions, "create", false);
