@@ -373,6 +373,30 @@ fn icon_for_device(doc: &Document, tag: &str, el: Element) -> &'static str {
     }
 }
 
+/// `get_serialcon_devices`'s two lists, `(xml index, element)`:
+/// every `<serial>`, then every `<console>` except a first one that
+/// mirrors the first serial (`serial_is_console_dup`).
+pub type IndexedElements = Vec<(usize, Element)>;
+pub fn serial_console_lists(
+    doc: &Document,
+    devices: Element,
+) -> (IndexedElements, IndexedElements) {
+    let all = |tag: &str| -> IndexedElements {
+        devices.find_all(doc, tag).into_iter().enumerate().collect()
+    };
+    let serials = all("serial");
+    let mut consoles = all("console");
+    if let (Some(&(_, serial)), Some(&(_, console))) = (serials.first(), consoles.first()) {
+        let ctarget = child_attr(doc, console, &["target"], "type");
+        if attr(doc, console, "type") == attr(doc, serial, "type")
+            && ctarget.as_deref().map_or(true, |t| t == "serial")
+        {
+            consoles.remove(0);
+        }
+    }
+    (serials, consoles)
+}
+
 /// `_repopulate_hw_list`'s device half: every device row, in the
 /// order upstream lists them (by type, then document order).
 pub fn device_rows(x: &DomainXml) -> Vec<HwRow> {
@@ -412,18 +436,7 @@ pub fn device_rows(x: &DomainXml) -> Vec<HwRow> {
         push(HwType::Disk, "disk", idx, el, n);
     }
 
-    let serials = all("serial");
-    let mut consoles = all("console");
-    // serial_is_console_dup: the first <console> mirroring the first
-    // <serial> isn't listed twice.
-    if let (Some(&(_, serial)), Some(&(_, console))) = (serials.first(), consoles.first()) {
-        let ctarget = child_attr(doc, console, &["target"], "type");
-        if attr(doc, console, "type") == attr(doc, serial, "type")
-            && ctarget.as_deref().map_or(true, |t| t == "serial")
-        {
-            consoles.remove(0);
-        }
-    }
+    let (serials, consoles) = serial_console_lists(doc, devices);
 
     for (tag, hwtype) in [
         ("interface", HwType::Nic),

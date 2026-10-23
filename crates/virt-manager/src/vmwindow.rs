@@ -16,7 +16,7 @@ use gtk::glib;
 use gtk::prelude::*;
 
 use crate::config::{CONSOLE_SCALE_ALWAYS, CONSOLE_SCALE_FULLSCREEN, CONSOLE_SCALE_NEVER};
-use crate::console::VmmConsolePages;
+use crate::console::{ConsoleEvent, VmmConsolePages};
 use crate::details::VmmDetails;
 use crate::domain::VmmDomain;
 use crate::engine;
@@ -226,7 +226,7 @@ impl VmmVMWindow {
         app.set_accels_for_action("vmwin.close", &["<Control><Shift>w"]);
         app.set_accels_for_action("vmwin.quit", &["<Control><Shift>q"]);
 
-        let console = VmmConsolePages::new(vm);
+        let console = VmmConsolePages::new(vm, &window);
         let details = VmmDetails::new(vm, false);
 
         let menubar = gtk::PopoverMenuBar::from_model(Some(&build_menubar(vm, &console)));
@@ -315,9 +315,16 @@ impl VmmVMWindow {
             });
             simple(&win_actions, "close", weak, VmmVMWindow::close);
             simple(&win_actions, "quit", weak, |_| engine::get().exit_app());
-            simple(&win_actions, "screenshot", weak, |_| {});
+            simple(
+                &win_actions,
+                "screenshot",
+                weak,
+                VmmVMWindow::control_vm_screenshot,
+            );
             simple(&win_actions, "usb-redirection", weak, |_| {});
-            simple(&win_actions, "size-to-vm", weak, |_| {});
+            simple(&win_actions, "size-to-vm", weak, |w| {
+                w.0.console.vmwindow_set_size_to_vm()
+            });
             stateful(
                 &win_actions,
                 "page",
@@ -354,7 +361,8 @@ impl VmmVMWindow {
                 weak,
                 |w, v| {
                     w.0.vm
-                        .set_console_resizeguest(v.get::<bool>().unwrap_or(false) as i32)
+                        .set_console_resizeguest(v.get::<bool>().unwrap_or(false) as i32);
+                    w.0.console.vmwindow_sync_resizeguest_with_display();
                 },
             );
             stateful(
@@ -462,6 +470,18 @@ impl VmmVMWindow {
                 if action.state().and_then(|s| s.get::<bool>()) != Some(b.is_active()) {
                     action.change_state(&b.is_active().to_variant());
                 }
+            }
+        });
+
+        let weak = Rc::downgrade(&self.0);
+        i.console.connect_event(move |ev| {
+            let Some(inner) = weak.upgrade() else { return };
+            let this = VmmVMWindow(inner);
+            match ev {
+                ConsoleEvent::PageChanged => this.sync_console_page_menu_state(),
+                // This will trigger de-fullscreening in a roundabout way
+                ConsoleEvent::LeaveFullscreen => this.0.control_fullscreen.set_active(false),
+                ConsoleEvent::ChangeTitle => this.refresh_title(),
             }
         });
 
@@ -663,11 +683,11 @@ impl VmmVMWindow {
     fn refresh_title(&self) {
         let vm = &self.0.vm;
         let conn_desc = vm.conn().map(|c| c.get_pretty_desc()).unwrap_or_default();
-        self.0.window.set_title(Some(&format!(
-            "{} on {}",
-            vm.get_name_or_title(),
-            conn_desc
-        )));
+        let mut title = format!("{} on {}", vm.get_name_or_title(), conn_desc);
+        if let Some(grabmsg) = self.0.console.vmwindow_get_title_message() {
+            title = format!("{grabmsg} {title}");
+        }
+        self.0.window.set_title(Some(&title));
     }
 
     /// `_refresh_vm_state`.
@@ -794,11 +814,13 @@ impl VmmVMWindow {
     fn console_refresh_scaling_from_settings(&self) {
         let scale = self.0.vm.get_console_scaling();
         action(&self.0.win_actions, "scale").set_state(&scale.to_variant());
+        self.0.console.vmwindow_sync_scaling_with_display();
     }
 
     fn console_refresh_resizeguest_from_settings(&self) {
         let val = self.0.vm.get_console_resizeguest() != 0;
         action(&self.0.win_actions, "resizeguest").set_state(&val.to_variant());
+        self.0.console.vmwindow_sync_resizeguest_with_display();
     }
 
     fn console_refresh_autoconnect_from_settings(&self) {
@@ -814,6 +836,7 @@ impl VmmVMWindow {
         } else {
             i.window.unfullscreen();
         }
+        i.console.vmwindow_set_fullscreen(do_fullscreen);
         i.menubar.set_visible(!do_fullscreen);
         let show_toolbar = !do_fullscreen
             && action(&i.win_actions, "toolbar")
@@ -821,6 +844,86 @@ impl VmmVMWindow {
                 .and_then(|s| s.get::<bool>())
                 .unwrap_or(true);
         i.toolbar_box.set_visible(show_toolbar);
+    }
+
+    fn control_vm_screenshot(&self) {
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            if let Err(e) = this.take_screenshot().await {
+                error::show_err(
+                    Some(this.0.window.upcast_ref()),
+                    &format!("Error taking screenshot: {e}"),
+                    None,
+                    "",
+                )
+                .await;
+            }
+        });
+    }
+
+    /// `_take_screenshot`: the display as PNG, with upstream's tEXt
+    /// metadata, saved where the user picks.
+    async fn take_screenshot(&self) -> Result<(), String> {
+        let i = &self.0;
+        let fb = i
+            .console
+            .vmwindow_viewer_get_framebuffer()
+            .ok_or("No graphical console is connected")?;
+        let pixbuf = framebuffer_to_pixbuf(&fb);
+        let uri = i.vm.conn().map(|c| c.get_uri()).unwrap_or_default();
+        let metadata = [
+            ("tEXt::Hypervisor URI", uri),
+            ("tEXt::Domain Name", i.vm.get_name()),
+            ("tEXt::Domain UUID", i.vm.get_uuid()),
+            ("tEXt::Generator App", "virt-manager".to_string()),
+            (
+                "tEXt::Generator Version",
+                env!("CARGO_PKG_VERSION").to_string(),
+            ),
+        ];
+        let options: Vec<(&str, &str)> = metadata.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let data = pixbuf
+            .save_to_bufferv("png", &options)
+            .map_err(|e| e.to_string())?;
+
+        let now = glib::DateTime::now_local()
+            .and_then(|d| d.format("%Y-%m-%d_%H:%M:%S"))
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let default = format!("Screenshot_{}_{}.png", i.vm.get_name(), now);
+        let config = engine::get().config();
+        let start_folder = config.get_default_directory("screenshot");
+
+        let filter = gtk::FileFilter::new();
+        filter.set_name(Some("PNG files"));
+        filter.add_suffix("png");
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter);
+        let dialog = gtk::FileDialog::builder()
+            .title("Save Virtual Machine Screenshot")
+            .accept_label("_Save")
+            .modal(true)
+            .initial_name(default.as_str())
+            .filters(&filters)
+            .build();
+        if !start_folder.is_empty() {
+            dialog.set_initial_folder(Some(&gio::File::for_path(&start_folder)));
+        }
+        let Ok(file) = dialog.save_future(Some(&i.window)).await else {
+            // No screenshot path given, skipping save.
+            return Ok(());
+        };
+        let Some(mut path) = file.path() else {
+            return Ok(());
+        };
+        if path.extension().and_then(|e| e.to_str()) != Some("png") {
+            path.as_mut_os_string().push(".png");
+        }
+        std::fs::write(&path, data).map_err(|e| e.to_string())?;
+        if let Some(dir) = path.parent().and_then(|d| d.to_str()) {
+            config.set_default_directory("screenshot", dir);
+        }
+        Ok(())
     }
 
     fn vm_state_changed(&self) {
@@ -831,4 +934,25 @@ impl VmmVMWindow {
             self.refresh_xml();
         }
     }
+}
+
+/// The console's xRGB framebuffer as an RGB pixbuf.
+fn framebuffer_to_pixbuf(fb: &crate::gvnc::Framebuffer) -> gtk::gdk_pixbuf::Pixbuf {
+    let (w, h) = (fb.width(), fb.height());
+    let mut rgb = Vec::with_capacity((w * h * 3) as usize);
+    for row in fb.pixels().chunks(fb.stride()).take(h as usize) {
+        for px in row[..(w as usize * 4)].chunks_exact(4) {
+            let v = u32::from_ne_bytes([px[0], px[1], px[2], px[3]]);
+            rgb.extend_from_slice(&[(v >> 16) as u8, (v >> 8) as u8, v as u8]);
+        }
+    }
+    gtk::gdk_pixbuf::Pixbuf::from_bytes(
+        &glib::Bytes::from_owned(rgb),
+        gtk::gdk_pixbuf::Colorspace::Rgb,
+        false,
+        8,
+        w,
+        h,
+        w * 3,
+    )
 }

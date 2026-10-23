@@ -459,6 +459,22 @@ impl VmmDomain {
         conn.tick();
         res.map_err(|e| e.message().to_string())
     }
+
+    /// `open_graphics_fd`: a connected socket to the `idx`th graphical
+    /// console (`virDomainOpenGraphicsFD`), which the caller owns.
+    pub async fn open_graphics_fd(&self, idx: u32) -> Result<i32, String> {
+        let conn = self.conn().ok_or("Connection closed")?;
+        let handle = conn.handle().ok_or("Not connected")?;
+        let uuid = self.get_uuid();
+        gio::spawn_blocking(move || {
+            let dom = Domain::lookup_by_uuid_string(handle.connect(), &uuid)?;
+            dom.open_graphics_fd(idx, 0)
+        })
+        .await
+        .map_err(|_| "Worker thread panicked".to_string())?
+        .map(|fd| fd as i32)
+        .map_err(|e| e.message().to_string())
+    }
 }
 
 #[cfg(test)]

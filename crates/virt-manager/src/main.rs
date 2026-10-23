@@ -23,13 +23,18 @@ mod domain;
 mod engine;
 mod error;
 mod graphwidgets;
+mod gvnc;
+mod keymap;
 mod libvirtenummap;
 mod manager;
 mod manager_row;
 mod preferences;
+mod sshtunnels;
 mod statsmanager;
+mod viewers;
 mod vmmenu;
 mod vmwindow;
+mod vncdisplay;
 
 use clap::Parser;
 
