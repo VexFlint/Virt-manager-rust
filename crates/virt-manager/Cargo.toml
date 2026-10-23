@@ -21,6 +21,7 @@ gtk = { version = "0.11", package = "gtk4", features = ["v4_14"] }
 # `virtManager/object/domain.py` makes — that layer lives in the GUI app
 # upstream too, not in virtinst.
 virt = "0.4"
+virtinst-xml = { path = "../virtinst-xml" }
 clap = { version = "4.5.61", features = ["derive"] }
 futures-channel = "0.3"
 #

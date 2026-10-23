@@ -3,9 +3,11 @@
 //! Shut Down), and the connection → VM list, ported per ticket 13 to
 //! `GtkColumnView` + `GtkTreeListModel` + `GtkTreeExpander`.
 //!
-//! Still to come, each with its own port: the stats columns and their
-//! sparklines (View > Graph), and the windows the disabled actions open
-//! (New VM, VM/Connection details, Delete, Clone,
+//! The stats columns (CPU, host CPU, memory, disk, network) draw
+//! upstream's sparklines and follow View > Graph.
+//!
+//! Still to come, each with its own port: the windows the disabled
+//! actions open (New VM, VM/Connection details, Delete, Clone,
 //! Migrate, Preferences).
 
 use std::cell::Cell;
@@ -17,12 +19,15 @@ use gtk::glib;
 use gtk::prelude::*;
 
 use crate::about;
+use crate::config::StatsColumn;
 use crate::connection::VmmConnection;
 use crate::createconn;
 use crate::domain::VmmDomain;
 use crate::engine;
 use crate::error;
+use crate::graphwidgets::Sparkline;
 use crate::manager_row::{ManagerRow, RowHandle};
+use crate::statsmanager::StatsRecord;
 use crate::vmmenu;
 
 /// `_build_conn_markup`.
@@ -91,6 +96,136 @@ impl SelectionState {
     }
 }
 
+/// Number of data points for performance graphs
+const GRAPH_LEN: usize = 40;
+
+fn stats_action_name(col: StatsColumn) -> &'static str {
+    match col {
+        StatsColumn::GuestCpu => "stats-guest-cpu",
+        StatsColumn::HostCpu => "stats-host-cpu",
+        StatsColumn::Memory => "stats-memory",
+        StatsColumn::Disk => "stats-disk",
+        StatsColumn::Network => "stats-network",
+    }
+}
+
+fn stats_title(col: StatsColumn) -> &'static str {
+    match col {
+        StatsColumn::GuestCpu => "CPU usage",
+        StatsColumn::HostCpu => "Host CPU usage",
+        StatsColumn::Memory => "Memory usage",
+        StatsColumn::Disk => "Disk I/O",
+        StatsColumn::Network => "Network I/O",
+    }
+}
+
+/// The value each column's sorter compares (`vmlist_*_sorter`).
+fn stats_sort_value(col: StatsColumn, r: &StatsRecord) -> f64 {
+    match col {
+        StatsColumn::GuestCpu => r.cpu_guest_percent,
+        StatsColumn::HostCpu => r.cpu_host_percent,
+        StatsColumn::Memory => r.curmem as f64,
+        StatsColumn::Disk => r.disk_rd_rate + r.disk_wr_rate,
+        StatsColumn::Network => r.net_rx_rate + r.net_tx_rate,
+    }
+}
+
+/// Manager-wide disk/net graph ceilings (`max_disk_rate`/`max_net_rate`):
+/// they only ever grow, so every VM's graph shares one scale.
+#[derive(Default)]
+struct MaxRates {
+    disk: Cell<f64>,
+    net: Cell<f64>,
+}
+
+/// The `*_img` cell data funcs: one column's sparkline points for `vm`.
+fn stats_data(col: StatsColumn, vm: &VmmDomain, max: &MaxRates) -> Vec<f64> {
+    let stats = vm.stats();
+    match col {
+        StatsColumn::GuestCpu => stats.get_vector(|r| r.cpu_guest_percent, GRAPH_LEN, 100.0),
+        StatsColumn::HostCpu => stats.get_vector(|r| r.cpu_host_percent, GRAPH_LEN, 100.0),
+        StatsColumn::Memory => stats.get_vector(|r| r.curr_mem_percent, GRAPH_LEN, 100.0),
+        StatsColumn::Disk => {
+            max.disk.set(max.disk.get().max(stats.disk_io_max_rate()));
+            stats.get_in_out_avg(
+                |r| r.disk_rd_rate,
+                |r| r.disk_wr_rate,
+                GRAPH_LEN,
+                max.disk.get(),
+            )
+        }
+        StatsColumn::Network => {
+            max.net
+                .set(max.net.get().max(stats.network_traffic_max_rate()));
+            stats.get_in_out_avg(
+                |r| r.net_rx_rate,
+                |r| r.net_tx_rate,
+                GRAPH_LEN,
+                max.net.get(),
+            )
+        }
+    }
+}
+
+fn row_of(item: &gtk::ListItem) -> Option<ManagerRow> {
+    item.item()
+        .and_downcast::<gtk::TreeListRow>()
+        .and_then(|r| r.item())
+        .and_downcast::<ManagerRow>()
+}
+
+/// `make_stats_column`: a sparkline for VM rows, empty for connections.
+fn make_stats_column(col: StatsColumn, max: Rc<MaxRates>) -> gtk::ColumnViewColumn {
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(|_, obj| {
+        let item = obj.downcast_ref::<gtk::ListItem>().expect("ListItem");
+        let spark = Sparkline::new_for_vmlist();
+        spark.set_hexpand(true);
+        item.set_child(Some(&spark));
+    });
+    factory.connect_bind(move |_, obj| {
+        let item = obj.downcast_ref::<gtk::ListItem>().expect("ListItem");
+        let Some(spark) = item.child().and_downcast::<Sparkline>() else {
+            return;
+        };
+        let vm = row_of(item).and_then(|r| r.vm());
+        spark.set_visible(vm.is_some());
+        let Some(vm) = vm else {
+            return;
+        };
+        spark.set_data_array(stats_data(col, &vm, &max));
+        let weak_spark = spark.downgrade();
+        let max = max.clone();
+        let id = vm.connect_local("resources-sampled", false, move |args| {
+            let vm = args[0].get::<VmmDomain>().ok()?;
+            weak_spark
+                .upgrade()?
+                .set_data_array(stats_data(col, &vm, &max));
+            None
+        });
+        spark.set_binding(vm.upcast(), id);
+    });
+    factory.connect_unbind(|_, obj| {
+        let item = obj.downcast_ref::<gtk::ListItem>().expect("ListItem");
+        if let Some(spark) = item.child().and_downcast::<Sparkline>() {
+            spark.clear_binding();
+        }
+    });
+
+    let column = gtk::ColumnViewColumn::new(Some(stats_title(col)), Some(factory));
+    column.set_fixed_width(140);
+    column.set_sorter(Some(&gtk::CustomSorter::new(move |a, b| {
+        let key = |o: &glib::Object| {
+            o.downcast_ref::<ManagerRow>()
+                .and_then(|r| r.vm())
+                .map(|vm| stats_sort_value(col, &vm.stats().latest()))
+                .unwrap_or(0.0)
+        };
+        key(a).total_cmp(&key(b)).into()
+    })));
+    column
+}
+
 struct Inner {
     window: gtk::ApplicationWindow,
     stack: gtk::Stack,
@@ -104,6 +239,7 @@ struct Inner {
     shutdown_btn: gtk::Button,
     shutdown_menu_btn: gtk::MenuButton,
     win_actions: gio::SimpleActionGroup,
+    stats_columns: Vec<(StatsColumn, gtk::ColumnViewColumn)>,
     vm_actions: gio::SimpleActionGroup,
     conn_actions: gio::SimpleActionGroup,
     visible: Cell<bool>,
@@ -341,6 +477,17 @@ impl VmmManager {
             key(a).cmp(&key(b)).into()
         })));
         columnview.append_column(&name_col);
+        let max_rates = Rc::new(MaxRates {
+            disk: Cell::new(10.0),
+            net: Cell::new(10.0),
+        });
+        let stats_columns: Vec<_> = StatsColumn::ALL
+            .into_iter()
+            .map(|c| (c, make_stats_column(c, max_rates.clone())))
+            .collect();
+        for (_, column) in &stats_columns {
+            columnview.append_column(column);
+        }
         columnview.sort_by_column(Some(&name_col), gtk::SortType::Ascending);
 
         let scrolled = gtk::ScrolledWindow::new();
@@ -378,11 +525,6 @@ impl VmmManager {
                 ("host-details", |_| {}),
                 ("vm-details", |_| {}),
                 ("preferences", |_| {}),
-                ("stats-guest-cpu", |_| {}),
-                ("stats-host-cpu", |_| {}),
-                ("stats-memory", |_| {}),
-                ("stats-disk", |_| {}),
-                ("stats-network", |_| {}),
             ] {
                 simple_action(&win_actions, name, weak, cb);
             }
@@ -413,6 +555,7 @@ impl VmmManager {
                 shutdown_btn,
                 shutdown_menu_btn,
                 win_actions,
+                stats_columns,
                 vm_actions,
                 conn_actions,
                 visible: Cell::new(false),
@@ -421,6 +564,7 @@ impl VmmManager {
         let this = VmmManager(inner);
         this.wire_signals();
         this.set_unported_actions();
+        this.init_stats();
 
         let cm = engine::get().connmanager();
         for conn in cm.conns() {
@@ -546,21 +690,74 @@ impl VmmManager {
     /// Windows not ported yet: their entry points stay visible (same
     /// menus as upstream) but insensitive.
     fn set_unported_actions(&self) {
-        for name in [
-            "new-vm",
-            "host-details",
-            "vm-details",
-            "preferences",
-            "stats-guest-cpu",
-            "stats-host-cpu",
-            "stats-memory",
-            "stats-disk",
-            "stats-network",
-        ] {
+        for name in ["new-vm", "host-details", "vm-details", "preferences"] {
             set_enabled(&self.0.win_actions, name, false);
         }
         set_enabled(&self.0.conn_actions, "create", false);
         set_enabled(&self.0.conn_actions, "details", false);
+    }
+
+    /// `init_stats`: View > Graph toggles mirror the `vmlist-fields`
+    /// settings, and are forced off and insensitive while the matching
+    /// poller is disabled in Preferences (`_config_polling_change_cb`).
+    fn init_stats(&self) {
+        let config = engine::get().config();
+        for col in StatsColumn::ALL {
+            let action = gio::SimpleAction::new_stateful(
+                stats_action_name(col),
+                None,
+                &config.is_vmlist_visible(col).to_variant(),
+            );
+            let config2 = config.clone();
+            action.connect_change_state(move |_, state| {
+                if let Some(v) = state.and_then(|s| s.get::<bool>()) {
+                    config2.set_vmlist_visible(col, v);
+                }
+            });
+            self.0.win_actions.add_action(&action);
+        }
+        let weak = self.downgrade();
+        config.on_vmlist_visible_changed(move || {
+            if let Some(m) = Self::upgrade(&weak) {
+                m.toggle_stats_visible_widgets();
+            }
+        });
+        let weak = self.downgrade();
+        config.on_stats_enable_poll_changed(move || {
+            if let Some(m) = Self::upgrade(&weak) {
+                m.config_polling_changed();
+            }
+        });
+        self.config_polling_changed();
+        self.toggle_stats_visible_widgets();
+    }
+
+    fn config_polling_changed(&self) {
+        let config = engine::get().config();
+        for col in StatsColumn::ALL {
+            let enabled = config.get_stats_enable_poll(col);
+            set_enabled(&self.0.win_actions, stats_action_name(col), enabled);
+            if !enabled && config.is_vmlist_visible(col) {
+                config.set_vmlist_visible(col, false);
+            }
+        }
+    }
+
+    /// `_toggle_graph_helper` for every column.
+    fn toggle_stats_visible_widgets(&self) {
+        let config = engine::get().config();
+        for (col, column) in &self.0.stats_columns {
+            let show = config.is_vmlist_visible(*col);
+            column.set_visible(show);
+            if let Some(action) = self
+                .0
+                .win_actions
+                .lookup_action(stats_action_name(*col))
+                .and_then(|a| a.downcast::<gio::SimpleAction>().ok())
+            {
+                action.set_state(&show.to_variant());
+            }
+        }
     }
 
     fn position_of_row(&self, row: &gtk::TreeListRow) -> Option<u32> {

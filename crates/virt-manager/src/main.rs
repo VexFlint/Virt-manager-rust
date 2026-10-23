@@ -19,9 +19,11 @@ mod createconn;
 mod domain;
 mod engine;
 mod error;
+mod graphwidgets;
 mod libvirtenummap;
 mod manager;
 mod manager_row;
+mod statsmanager;
 mod vmmenu;
 
 use clap::Parser;

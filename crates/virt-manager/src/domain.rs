@@ -10,7 +10,8 @@
 //! (ticket 09) and ask the connection for a priority tick afterwards,
 //! same as upstream's post-action `self._update_status()`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, Ref, RefCell};
+use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use gtk::gio;
@@ -24,6 +25,7 @@ use virt::sys;
 
 use crate::connection::VmmConnection;
 use crate::libvirtenummap::{self as enummap, DomainState};
+use crate::statsmanager::{self, PollFlags, RawSample, StatsList};
 
 /// One poll's worth of what the UI shows about a domain.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -64,6 +66,26 @@ impl DomainSnapshot {
         conn.list_all_domains(0)?
             .iter()
             .map(DomainSnapshot::fetch)
+            .collect()
+    }
+
+    /// Blocking: one tick's poll — every domain's snapshot plus its
+    /// stats sample. `mem_period_set` lists the UUIDs whose memory
+    /// stats period was already set.
+    pub fn fetch_all_with_stats(
+        conn: &Connect,
+        flags: PollFlags,
+        is_lxc: bool,
+        mem_period_set: &HashSet<String>,
+    ) -> Result<Vec<(DomainSnapshot, RawSample)>, virt::error::Error> {
+        conn.list_all_domains(0)?
+            .iter()
+            .map(|dom| {
+                let snap = DomainSnapshot::fetch(dom)?;
+                let set_period = !mem_period_set.contains(&snap.uuid);
+                let raw = statsmanager::sample(dom, flags, is_lxc, set_period);
+                Ok((snap, raw))
+            })
             .collect()
     }
 }
@@ -107,6 +129,8 @@ mod imp {
     pub struct VmmDomain {
         pub snapshot: RefCell<DomainSnapshot>,
         pub conn: glib::WeakRef<VmmConnection>,
+        pub stats: RefCell<StatsList>,
+        pub mem_period_set: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -118,7 +142,12 @@ mod imp {
     impl ObjectImpl for VmmDomain {
         fn signals() -> &'static [Signal] {
             static SIGNALS: OnceLock<Vec<Signal>> = OnceLock::new();
-            SIGNALS.get_or_init(|| vec![Signal::builder("state-changed").build()])
+            SIGNALS.get_or_init(|| {
+                vec![
+                    Signal::builder("state-changed").build(),
+                    Signal::builder("resources-sampled").build(),
+                ]
+            })
         }
     }
 }
@@ -142,6 +171,27 @@ impl VmmDomain {
         }
         self.imp().snapshot.replace(snapshot);
         self.emit_by_name::<()>("state-changed", &[]);
+    }
+
+    /// `statsmanager.refresh_vm_stats` with this tick's raw sample, then
+    /// upstream's `resources-sampled` signal.
+    pub fn apply_sample(&self, raw: &RawSample, flags: PollFlags, hostcpus: u32) {
+        self.imp()
+            .stats
+            .borrow_mut()
+            .append_sample(raw, flags, hostcpus);
+        self.imp().mem_period_set.set(
+            flags.mem && !matches!(raw.state, sys::VIR_DOMAIN_SHUTOFF | sys::VIR_DOMAIN_CRASHED),
+        );
+        self.emit_by_name::<()>("resources-sampled", &[]);
+    }
+
+    pub fn mem_period_set(&self) -> bool {
+        self.imp().mem_period_set.get()
+    }
+
+    pub fn stats(&self) -> Ref<'_, StatsList> {
+        self.imp().stats.borrow()
     }
 
     pub fn conn(&self) -> Option<VmmConnection> {
