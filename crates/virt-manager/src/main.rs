@@ -9,14 +9,16 @@
 //!
 //! Ported so far: the manager window (ticket 13) and what it needs —
 //! engine, connection manager, connection/domain objects, the error
-//! dialogs, the VM action menus, Add Connection, Preferences, and the
-//! About dialog.
+//! dialogs, the VM action menus, Add Connection, Preferences, the About
+//! dialog, and the VM window's first slice (ticket 10).
 
 mod about;
 mod config;
 mod connection;
 mod connmanager;
+mod console;
 mod createconn;
+mod details;
 mod domain;
 mod engine;
 mod error;
@@ -27,6 +29,7 @@ mod manager_row;
 mod preferences;
 mod statsmanager;
 mod vmmenu;
+mod vmwindow;
 
 use clap::Parser;
 
