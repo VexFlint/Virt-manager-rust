@@ -13,12 +13,14 @@ use gtk::prelude::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MessageType {
+    Question,
     Warning,
     Error,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Buttons {
+    Ok,
     Close,
     YesNo,
 }
@@ -102,6 +104,7 @@ pub async fn run_dialog(parent: Option<&gtk::Window>, spec: DialogSpec<'_>) -> (
 
     let top = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     let icon = gtk::Image::from_icon_name(match spec.kind {
+        MessageType::Question => "dialog-question",
         MessageType::Warning => "dialog-warning",
         MessageType::Error => "dialog-error",
     });
@@ -154,6 +157,7 @@ pub async fn run_dialog(parent: Option<&gtk::Window>, spec: DialogSpec<'_>) -> (
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     row.set_halign(gtk::Align::End);
     let labels: &[(&str, bool)] = match spec.buttons {
+        Buttons::Ok => &[("_OK", true)],
         Buttons::Close => &[("_Close", false)],
         Buttons::YesNo => &[("_No", false), ("_Yes", true)],
     };
@@ -215,6 +219,23 @@ pub async fn show_err(
             text2: None,
             title,
             details: Some(&details),
+            chktext: None,
+        },
+    )
+    .await;
+}
+
+/// `vmmErrorDialog.val_err`: an "Input Error" box for form validation.
+pub async fn val_err(parent: Option<&gtk::Window>, text1: &str) {
+    run_dialog(
+        parent,
+        DialogSpec {
+            kind: MessageType::Error,
+            buttons: Buttons::Ok,
+            text1,
+            text2: None,
+            title: "Input Error",
+            details: None,
             chktext: None,
         },
     )
