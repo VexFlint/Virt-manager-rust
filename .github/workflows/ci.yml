@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # libvirt-dev links the `virt` crate; libosinfo-1.0-dev + libclang-dev
+      # feed virtinst-core's bindgen build script; libxml2-utils gives the
+      # harness its xmllint.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvirt-dev libosinfo-1.0-dev libclang-dev pkg-config libxml2-utils
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build --workspace
+
+      - name: Test
+        run: cargo test --workspace --no-fail-fast
+
+      # Golden-corpus harness (ticket 19) against upstream's own fixtures,
+      # pinned to the upstream release the port tracks.
+      - name: Fetch upstream virt-manager reference
+        run: git clone --depth 1 --branch v5.1.0 https://github.com/virt-manager/virt-manager "$RUNNER_TEMP/virt-manager-upstream"
+
+      - name: Upstream comparison harness
+        run: bash .scratch/rust-conversion/harness/run.sh
+        env:
+          UPSTREAM_REF: ${{ runner.temp }}/virt-manager-upstream

@@ -231,14 +231,20 @@ impl Domain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::devices::{DeviceDisk, DeviceRng};
+    use crate::devices::{DeviceHostdev, DeviceRng};
     use crate::test_support::TEST_DOMAIN_LOCK;
 
     /// Real libvirt calls against the `test` domain libvirt's builtin
     /// `test:///default` driver always defines and starts running -
     /// same no-daemon guarantee `connection.rs`'s own tests rely on.
+    ///
+    /// Uses a PCI `<hostdev>`, not a `<disk>`: the test driver's live
+    /// attach only implements hostdev (libvirt 10.0 rejects disk,
+    /// interface, rng and watchdog with "live attach of device '...'
+    /// is not supported"), so hostdev is the device that proves the
+    /// hotplug path on every libvirt version CI may run.
     #[test]
-    fn attach_device_hotplugs_a_disk_onto_the_running_test_domain() {
+    fn attach_device_hotplugs_a_hostdev_onto_the_running_test_domain() {
         let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let conn = Connection::open("test:///default").expect("test:/// driver always opens");
         let domain = Domain::lookup_by_name(&conn, "test").expect("the default test domain");
@@ -247,17 +253,19 @@ mod tests {
             "test domain starts running"
         );
 
-        let disk = DeviceDisk {
-            disk_type: Some("file".into()),
-            device: Some("disk".into()),
-            source_file: Some("/guest/attach-device-test.img".into()),
-            target_dev: Some("vdz".into()),
-            target_bus: Some("virtio".into()),
+        let hostdev = DeviceHostdev {
+            mode: Some("subsystem".into()),
+            hostdev_type: Some("pci".into()),
+            managed: Some(true),
+            pci_domain: Some("0x0000".into()),
+            pci_bus: Some("0x00".into()),
+            pci_slot: Some("0x1f".into()),
+            pci_function: Some("0x0".into()),
             ..Default::default()
         };
         domain
-            .attach_device(&disk)
-            .expect("the test driver accepts disk hotplug");
+            .attach_device(&hostdev)
+            .expect("the test driver accepts hostdev hotplug");
     }
 
     #[test]
