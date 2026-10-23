@@ -21,6 +21,7 @@ use std::collections::HashMap;
 
 use gtk::gio;
 use gtk::gio::prelude::*;
+use gtk::glib;
 
 use crate::statsmanager::PollFlags;
 
@@ -93,6 +94,7 @@ pub struct Config {
     new_vm: gio::Settings,
     details: gio::Settings,
     confirm: gio::Settings,
+    paths: gio::Settings,
     source: gio::SettingsSchemaSource,
     backend: Option<gio::SettingsBackend>,
     /// Per-VM relocatable `.vm` schemas, keyed by UUID.
@@ -139,6 +141,7 @@ impl Config {
             new_vm: open("org.virt-manager.virt-manager.new-vm"),
             details: open("org.virt-manager.virt-manager.details"),
             confirm: open("org.virt-manager.virt-manager.confirm"),
+            paths: open("org.virt-manager.virt-manager.paths"),
             source: source.clone(),
             backend: backend.clone(),
             pervm: RefCell::default(),
@@ -357,6 +360,27 @@ impl Config {
     pub fn set_keys_combination(&self, keyvals: &[u32]) {
         let val: Vec<String> = keyvals.iter().map(u32::to_string).collect();
         let _ = self.console.set_string("grab-keys", &val.join(","));
+    }
+    pub fn on_keys_combination_changed(
+        &self,
+        cb: impl Fn() + 'static,
+    ) -> (gio::Settings, glib::SignalHandlerId) {
+        let id = self
+            .console
+            .connect_changed(Some("grab-keys"), move |_, _| cb());
+        (self.console.clone(), id)
+    }
+
+    // Default directories
+    /// `get_default_directory`: `/paths/<key>-default`.
+    pub fn get_default_directory(&self, key: &str) -> String {
+        self.paths.string(&format!("{key}-default")).to_string()
+    }
+    pub fn set_default_directory(&self, key: &str, folder: &str) {
+        if folder.is_empty() || folder.starts_with("/dev") {
+            return;
+        }
+        let _ = self.paths.set_string(&format!("{key}-default"), folder);
     }
 
     // New VM defaults

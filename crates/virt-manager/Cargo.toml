@@ -33,8 +33,10 @@ futures-channel = "0.3"
 #   - libvirt-glib (Connection/Domain event signals) — until then the
 #     engine's tick polls, which is also upstream's fallback when a
 #     driver has no event support.
-#   - libgvnc, libspice-client-glib (console viewer — both channels ended
-#     up gir-bound per ticket 14's amendment to ticket 05)
+#   - libspice-client-glib (SPICE console viewer, ticket 14)
+#
+# libgvnc-1.0 (VNC console) is linked directly by the hand-written
+# bindings in src/gvnc.rs.
 
 [build-dependencies]
 glib-build-tools = "0.22"
