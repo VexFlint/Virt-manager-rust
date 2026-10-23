@@ -4,8 +4,8 @@ A from-scratch Rust rewrite of [virt-manager](https://github.com/virt-manager/vi
 (the GTK/Python libvirt VM management app) — full feature parity, same GUI
 layout, full libvirt driver parity (QEMU/KVM, Xen, LXC, bhyve), Linux only.
 
-**Status: early. No GUI yet. Three CLI tools exist with partial flag
-coverage.** This is not yet a usable replacement for upstream virt-manager —
+**Status: early. The GUI has its main window; the other windows are still
+being ported. Three CLI tools exist with partial flag coverage.** This is not yet a usable replacement for upstream virt-manager —
 see [Status](#status) below before expecting it to do what the real
 virt-manager does.
 
@@ -22,7 +22,7 @@ the Python original, without changing how it looks or where anything is.
 | `virt-install` | Working binary. `--import`, `--cdrom`/`--livecd`, `--boot`, `--cdrom --disk` (two-phase), `--pxe`, `--container --filesystem`. Most of upstream's flags aren't implemented yet. |
 | `virt-clone` | Working binary. `--preserve-data` mode only (rewrites XML — name/UUID/MACs/disk paths — no disk-content copying). |
 | `virt-xml` | Working binary. `--build-xml`/`--edit`/`--add-device`/`--remove-device`/`--print-xml`, wired up for eleven device options (`--watchdog`, `--vsock`, `--disk` — a deliberately partial slice of upstream's real 40+-field `--disk`, `--memballoon`, `--sound`, `--video`, `--controller`, `--tpm`, `--smartcard`, `--redirdev`, `--filesystem`) as the pattern to extend. `--edit`/`--remove-device` also support upstream's field-match selector form (e.g. `--remove-device --sound ich6`), not just index/`all`. |
-| `virt-manager` (GUI) | **Not started.** `fn main() {}`. |
+| `virt-manager` (GUI) | **Main window only.** GTK4. Connection list with VMs, connect/disconnect/remove connection, Run/Pause/Resume/Shut Down/Reboot/Force Reset/Force Off/Save, confirmation and error dialogs, About. Shares upstream's GSettings, so saved connections carry over. Menu entries for windows not yet ported (New VM, Add Connection, details, console, preferences, …) are shown but disabled. |
 
 Run any binary with `--help` for its exact current flag set — the help text
 says what's implemented and what upstream does differently, per flag.
@@ -34,8 +34,15 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-Needs a Rust toolchain (stable) and a libvirt dev environment (`libvirt-dev`
-or equivalent) to link the `virt` crate.
+Needs a Rust toolchain (stable), a libvirt dev environment (`libvirt-dev`
+or equivalent) to link the `virt` crate, `libosinfo-1.0-dev` + `libclang-dev`
+for `virtinst-core`, and `libgtk-4-dev` (GTK 4.14+) for the GUI.
+
+Try the GUI against libvirt's built-in test driver, no daemon needed:
+
+```sh
+cargo run -p virt-manager -- --connect test:///default
+```
 
 ## Design decisions
 
