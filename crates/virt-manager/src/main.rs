@@ -9,12 +9,13 @@
 //!
 //! Ported so far: the manager window (ticket 13) and what it needs —
 //! engine, connection manager, connection/domain objects, the error
-//! dialogs, the VM action menus, and the About dialog.
+//! dialogs, the VM action menus, Add Connection, and the About dialog.
 
 mod about;
 mod config;
 mod connection;
 mod connmanager;
+mod createconn;
 mod domain;
 mod engine;
 mod error;

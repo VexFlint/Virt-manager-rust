@@ -5,7 +5,7 @@
 //!
 //! Still to come, each with its own port: the stats columns and their
 //! sparklines (View > Graph), and the windows the disabled actions open
-//! (Add Connection, New VM, VM/Connection details, Delete, Clone,
+//! (New VM, VM/Connection details, Delete, Clone,
 //! Migrate, Preferences).
 
 use std::cell::Cell;
@@ -18,6 +18,7 @@ use gtk::prelude::*;
 
 use crate::about;
 use crate::connection::VmmConnection;
+use crate::createconn;
 use crate::domain::VmmDomain;
 use crate::engine;
 use crate::error;
@@ -351,6 +352,8 @@ impl VmmManager {
         error_label.set_wrap(true);
         error_label.set_selectable(true);
         error_label.set_max_width_chars(40);
+        // GTK4 sizes a wrapping label to its minimum; GTK3 used max-width.
+        error_label.set_width_chars(40);
         error_label.update_property(&[gtk::accessible::Property::Label("error-label")]);
 
         let stack = gtk::Stack::new();
@@ -368,7 +371,9 @@ impl VmmManager {
                 ("quit", |_| engine::get().exit_app()),
                 ("delete", VmmManager::do_delete),
                 ("about", |m| about::show(m.window().upcast_ref())),
-                ("add-connection", |_| {}),
+                ("add-connection", |m| {
+                    createconn::VmmCreateConn::show_instance(&m.window())
+                }),
                 ("new-vm", |_| {}),
                 ("host-details", |_| {}),
                 ("vm-details", |_| {}),
@@ -542,7 +547,6 @@ impl VmmManager {
     /// menus as upstream) but insensitive.
     fn set_unported_actions(&self) {
         for name in [
-            "add-connection",
             "new-vm",
             "host-details",
             "vm-details",
