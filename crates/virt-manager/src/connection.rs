@@ -9,10 +9,11 @@
 //! — plain `virConnectOpen` covers local URIs and polkit agents),
 //! libvirt event callbacks (needs the libvirt-glib gir binding, ticket
 //! 09 — the tick polls instead, which is upstream's own fallback for
-//! drivers without events), networks/pools/nodedevs, stats sampling,
-//! and the per-connection `pretty-name` setting.
+//! drivers without events), networks/pools/nodedevs, and the
+//! per-connection `pretty-name` setting.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::sync::{Arc, OnceLock};
 
 use gtk::gio;
@@ -24,6 +25,8 @@ use virt::connect::Connect;
 use virtinst_core::connection::Uri;
 
 use crate::domain::{DomainSnapshot, VmmDomain};
+use crate::engine;
+use crate::statsmanager::{PollFlags, RawSample};
 
 /// Owns one libvirt connection reference and closes it on drop — the
 /// `virt` crate's `Connect` has no `Drop` of its own. Shared via `Arc`
@@ -137,6 +140,7 @@ mod imp {
         pub handle: RefCell<Option<Arc<ConnHandle>>>,
         pub vms: RefCell<Vec<VmmDomain>>,
         pub ticking: Cell<bool>,
+        pub hostcpus: Cell<u32>,
     }
 
     #[glib::object_subclass]
@@ -231,12 +235,16 @@ impl VmmConnection {
         glib::spawn_future_local(async move {
             let uri2 = uri.clone();
             let res = gio::spawn_blocking(move || {
-                Connect::open(Some(&uri2)).map_err(|e| e.message().to_string())
+                let conn = Connect::open(Some(&uri2)).map_err(|e| e.message().to_string())?;
+                // `_hostinfo = getInfo()`; [2] is the active CPU count.
+                let hostcpus = conn.get_node_info().map(|i| i.cpus).unwrap_or(0);
+                Ok((conn, hostcpus))
             })
             .await
             .unwrap_or_else(|_| Err("Connect thread panicked".to_string()));
             match res {
-                Ok(conn) => {
+                Ok((conn, hostcpus)) => {
+                    this.imp().hostcpus.set(hostcpus);
                     this.imp().handle.replace(Some(Arc::new(ConnHandle(conn))));
                     this.change_state(ConnState::Active);
                     this.tick();
@@ -271,17 +279,30 @@ impl VmmConnection {
         if self.imp().ticking.replace(true) {
             return;
         }
+        let flags = engine::get().config().get_poll_flags();
+        let is_lxc = Uri::parse(&self.get_uri()).scheme == "lxc";
+        let mem_period_set: HashSet<String> = self
+            .list_vms()
+            .iter()
+            .filter(|v| v.mem_period_set())
+            .map(|v| v.get_uuid())
+            .collect();
         let this = self.clone();
         glib::spawn_future_local(async move {
             let res = gio::spawn_blocking(move || {
-                let res = DomainSnapshot::fetch_all(handle.connect());
+                let res = DomainSnapshot::fetch_all_with_stats(
+                    handle.connect(),
+                    flags,
+                    is_lxc,
+                    &mem_period_set,
+                );
                 let alive = handle.connect().is_alive().unwrap_or(false);
                 (res, alive)
             })
             .await;
             this.imp().ticking.set(false);
             match res {
-                Ok((Ok(snaps), _)) => this.reconcile(snaps),
+                Ok((Ok(polled), _)) => this.reconcile(polled, flags),
                 Ok((Err(_), false)) => this.close(),
                 // A transient listing error on a live connection (a
                 // domain vanishing mid-list): try again next tick.
@@ -290,27 +311,33 @@ impl VmmConnection {
         });
     }
 
-    fn reconcile(&self, snaps: Vec<DomainSnapshot>) {
+    fn reconcile(&self, polled: Vec<(DomainSnapshot, RawSample)>, flags: PollFlags) {
         if !self.is_active() {
             return;
         }
+        let hostcpus = self.imp().hostcpus.get();
         let existing = self.list_vms();
         for vm in &existing {
-            if !snaps.iter().any(|s| s.uuid == vm.get_uuid()) {
+            if !polled.iter().any(|(s, _)| s.uuid == vm.get_uuid()) {
                 self.imp().vms.borrow_mut().retain(|v| v != vm);
                 self.emit_by_name::<()>("vm-removed", &[vm]);
             }
         }
-        for snap in snaps {
+        for (snap, raw) in polled {
             let found = existing.iter().find(|v| v.get_uuid() == snap.uuid);
-            match found {
-                Some(vm) => vm.update(snap),
+            let vm = match found {
+                Some(vm) => {
+                    vm.update(snap);
+                    vm.clone()
+                }
                 None => {
                     let vm = VmmDomain::new(self, snap);
                     self.imp().vms.borrow_mut().push(vm.clone());
                     self.emit_by_name::<()>("vm-added", &[&vm]);
+                    vm
                 }
-            }
+            };
+            vm.apply_sample(&raw, flags, hostcpus);
         }
     }
 }

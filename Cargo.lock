@@ -1118,6 +1118,7 @@ dependencies = [
  "gtk4",
  "virt",
  "virtinst-core",
+ "virtinst-xml",
 ]
 
 [[package]]
