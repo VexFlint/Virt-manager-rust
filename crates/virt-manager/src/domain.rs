@@ -15,8 +15,8 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use gtk::gio;
+use gtk::gio::prelude::*;
 use gtk::glib;
-use gtk::glib::prelude::*;
 use gtk::glib::subclass::prelude::*;
 use gtk::glib::subclass::Signal;
 use virt::connect::Connect;
@@ -26,6 +26,10 @@ use virt::sys;
 use crate::connection::VmmConnection;
 use crate::libvirtenummap::{self as enummap, DomainState};
 use crate::statsmanager::{self, PollFlags, RawSample, StatsList};
+use std::rc::Rc;
+use virtinst_core::capabilities::domcaps::DomainCapabilities;
+use virtinst_core::Guest;
+use virtinst_xml::XmlBound;
 
 /// One poll's worth of what the UI shows about a domain.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -36,6 +40,7 @@ pub struct DomainSnapshot {
     pub description: Option<String>,
     pub id: Option<u32>,
     pub state: DomainState,
+    pub reason: i32,
     pub has_managed_save: bool,
 }
 
@@ -47,7 +52,7 @@ impl DomainSnapshot {
                 .ok()
                 .filter(|s| !s.is_empty())
         };
-        let (state, _reason) = dom.get_state()?;
+        let (state, reason) = dom.get_state()?;
         Ok(DomainSnapshot {
             uuid: dom.get_uuid_string()?,
             name: dom.get_name()?,
@@ -55,6 +60,7 @@ impl DomainSnapshot {
             description: metadata(sys::VIR_DOMAIN_METADATA_DESCRIPTION),
             id: dom.get_id(),
             state,
+            reason,
             // Not every driver implements managed save; upstream gates
             // this on `managedsave_supported` and treats it as False.
             has_managed_save: dom.has_managed_save(0).unwrap_or(false),
@@ -87,6 +93,52 @@ impl DomainSnapshot {
                 Ok((snap, raw))
             })
             .collect()
+    }
+}
+
+/// The domain's XML, parsed: upstream's `vm.get_xmlobj()`. `xml` is
+/// kept for re-parsing into an editable DOM (ticket 06), `guest` is the
+/// typed read view, `doc` the raw tree for the bits `Guest` doesn't
+/// bind yet (`<emulator>`, every device's attributes for the hw list).
+pub struct DomainXml {
+    pub xml: String,
+    pub doc: virtinst_xml::Document,
+    pub guest: Guest,
+}
+
+impl DomainXml {
+    pub fn parse(xml: String) -> Result<DomainXml, String> {
+        let doc = virtinst_xml::parse_libvirt_xml(&xml).map_err(|e| e.to_string())?;
+        let root = doc.root_element().ok_or("Empty domain XML")?;
+        let guest = Guest::from_element(&doc, root);
+        Ok(DomainXml { xml, doc, guest })
+    }
+
+    pub fn root(&self) -> virtinst_xml::Element {
+        self.doc.root_element().expect("parsed with a root")
+    }
+
+    /// `./devices/emulator`.
+    pub fn emulator(&self) -> Option<String> {
+        virtinst_xml::resolve_path(&self.doc, self.root(), &["devices", "emulator"])
+            .map(|e| e.text_content(&self.doc))
+            .filter(|s| !s.is_empty())
+    }
+}
+
+/// `vmmConnection.pretty_hv`: `<domain type>` + `<os><type>` to a label.
+pub fn pretty_hv(gtype: &str, domtype: &str) -> String {
+    let gtype = gtype.to_lowercase();
+    let domtype = domtype.to_lowercase();
+    match (domtype.as_str(), gtype.as_str()) {
+        ("xen", "xen") => "xen (paravirt)".into(),
+        ("xen", "hvm") => "xen (fullvirt)".into(),
+        ("test", "xen") => "test (xen)".into(),
+        ("test", "hvm") => "test (hvm)".into(),
+        ("qemu", _) => "QEMU TCG".into(),
+        ("kvm", _) => "KVM".into(),
+        ("hvf", _) => "Hypervisor.framework".into(),
+        _ => domtype,
     }
 }
 
@@ -131,6 +183,8 @@ mod imp {
         pub conn: glib::WeakRef<VmmConnection>,
         pub stats: RefCell<StatsList>,
         pub mem_period_set: Cell<bool>,
+        pub xmlobj: RefCell<Option<Rc<DomainXml>>>,
+        pub domcaps: RefCell<Option<Rc<DomainCapabilities>>>,
     }
 
     #[glib::object_subclass]
@@ -214,6 +268,9 @@ impl VmmDomain {
     pub fn get_name_or_title(&self) -> String {
         self.snap(|s| s.title.clone().unwrap_or_else(|| s.name.clone()))
     }
+    pub fn get_title(&self) -> Option<String> {
+        self.snap(|s| s.title.clone())
+    }
     pub fn get_description(&self) -> String {
         self.snap(|s| s.description.clone().unwrap_or_default())
     }
@@ -226,6 +283,13 @@ impl VmmDomain {
 
     pub fn run_status(&self) -> &'static str {
         enummap::pretty_run_status(self.status(), self.has_managed_save())
+    }
+    /// `run_status_reason`.
+    pub fn run_status_reason(&self) -> Option<&'static str> {
+        self.snap(|s| enummap::pretty_status_reason(s.state, s.reason))
+    }
+    pub fn is_crashed(&self) -> bool {
+        enummap::is_crashed(self.status())
     }
     pub fn run_status_icon_name(&self) -> &'static str {
         enummap::run_status_icon_name(self.status())
@@ -253,6 +317,129 @@ impl VmmDomain {
     }
     pub fn is_cloneable(&self) -> bool {
         enummap::is_cloneable(self.status())
+    }
+
+    /// The last fetched XML; `None` until [`Self::refresh_xml`] ran once.
+    pub fn xmlobj(&self) -> Option<Rc<DomainXml>> {
+        self.imp().xmlobj.borrow().clone()
+    }
+
+    /// Re-reads the domain XML on a worker (upstream refreshes it on
+    /// libvirt's XML-changed events; without libvirt-glib this happens
+    /// when the VM window shows or the state changes). Returns whether
+    /// it changed.
+    pub async fn refresh_xml(&self) -> Result<bool, String> {
+        let conn = self.conn().ok_or("Connection closed")?;
+        let handle = conn.handle().ok_or("Not connected")?;
+        let uuid = self.get_uuid();
+        let xml = gio::spawn_blocking(move || {
+            let dom = Domain::lookup_by_uuid_string(handle.connect(), &uuid)?;
+            dom.get_xml_desc(0)
+        })
+        .await
+        .map_err(|_| "Worker thread panicked".to_string())?
+        .map_err(|e| e.message().to_string())?;
+        if self.xmlobj().is_some_and(|x| x.xml == xml) {
+            return Ok(false);
+        }
+        let parsed = DomainXml::parse(xml)?;
+        self.imp().xmlobj.replace(Some(Rc::new(parsed)));
+        Ok(true)
+    }
+
+    /// `get_domain_capabilities`, fetched once per domain from the
+    /// emulator/arch/machine/type in its XML.
+    pub async fn get_domain_capabilities(&self) -> Option<Rc<DomainCapabilities>> {
+        if let Some(caps) = self.imp().domcaps.borrow().clone() {
+            return Some(caps);
+        }
+        let x = self.xmlobj()?;
+        let handle = self.conn()?.handle()?;
+        let emulator = x.emulator();
+        let arch = x.guest.os.arch.clone();
+        let machine = x.guest.os.machine.clone();
+        let virttype = x.guest.domain_type.clone();
+        let xml = gio::spawn_blocking(move || {
+            handle.connect().get_domain_capabilities(
+                emulator.as_deref(),
+                arch.as_deref(),
+                machine.as_deref(),
+                virttype.as_deref(),
+                0,
+            )
+        })
+        .await
+        .ok()?
+        .ok()?;
+        let caps = Rc::new(DomainCapabilities::parse(&xml).ok()?);
+        self.imp().domcaps.replace(Some(caps.clone()));
+        Some(caps)
+    }
+
+    /// `get_pretty_hv_type`.
+    pub fn get_pretty_hv_type(&self) -> String {
+        let Some(x) = self.xmlobj() else {
+            return String::new();
+        };
+        let gtype = x.guest.os.os_type.clone().unwrap_or_default();
+        let domtype = x.guest.domain_type.clone().unwrap_or_default();
+        pretty_hv(&gtype, &domtype)
+    }
+
+    // Per-VM console settings: -1 means "use the global preference".
+    fn pervm(&self) -> gio::Settings {
+        crate::engine::get().config().vm_settings(&self.get_uuid())
+    }
+
+    pub fn get_console_scaling(&self) -> i32 {
+        match self.pervm().int("scaling") {
+            -1 => crate::engine::get().config().get_console_scaling(),
+            v => v,
+        }
+    }
+    pub fn set_console_scaling(&self, val: i32) {
+        let _ = self.pervm().set_int("scaling", val);
+    }
+    pub fn on_console_scaling_changed(&self, cb: impl Fn() + 'static) -> glib::SignalHandlerId {
+        self.pervm()
+            .connect_changed(Some("scaling"), move |_, _| cb())
+    }
+
+    pub fn get_console_resizeguest(&self) -> i32 {
+        match self.pervm().int("resize-guest") {
+            -1 => crate::engine::get().config().get_console_resizeguest(),
+            v => v,
+        }
+    }
+    pub fn set_console_resizeguest(&self, val: i32) {
+        let _ = self.pervm().set_int("resize-guest", val);
+    }
+    pub fn on_console_resizeguest_changed(&self, cb: impl Fn() + 'static) -> glib::SignalHandlerId {
+        self.pervm()
+            .connect_changed(Some("resize-guest"), move |_, _| cb())
+    }
+
+    pub fn get_console_autoconnect(&self) -> bool {
+        match self.pervm().int("autoconnect") {
+            -1 => crate::engine::get().config().get_console_autoconnect(),
+            v => v != 0,
+        }
+    }
+    pub fn set_console_autoconnect(&self, val: bool) {
+        let _ = self.pervm().set_int("autoconnect", val as i32);
+    }
+    /// Upstream listens on `/resize-guest` here, a copy/paste slip; this
+    /// listens on the key it's named after.
+    pub fn on_console_autoconnect_changed(&self, cb: impl Fn() + 'static) -> glib::SignalHandlerId {
+        self.pervm()
+            .connect_changed(Some("autoconnect"), move |_, _| cb())
+    }
+
+    pub fn get_details_window_size(&self) -> (i32, i32) {
+        self.pervm().get::<(i32, i32)>("vm-window-size")
+    }
+    pub fn set_details_window_size(&self, w: i32, h: i32) {
+        let _ = self.pervm().set("vm-window-size", (w, h));
     }
 
     /// Runs `action` on a worker thread, then schedules a priority tick

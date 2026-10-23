@@ -33,6 +33,57 @@ pub fn run_status_icon_name(status: DomainState) -> &'static str {
     }
 }
 
+/// `pretty_status_reason`: the `(reason)` suffix the details window's
+/// status line shows. libvirt's reason enums are per-state.
+pub fn pretty_status_reason(status: DomainState, reason: i32) -> Option<&'static str> {
+    let reasons: &[&str] = match status {
+        sys::VIR_DOMAIN_RUNNING => &[
+            "Booted",
+            "Migrated",
+            "Restored",
+            "From snapshot",
+            "Unpaused",
+            "Migration canceled",
+            "Save canceled",
+            "Event wakeup",
+            "Crashed",
+        ],
+        sys::VIR_DOMAIN_PAUSED => &[
+            "User",
+            "Migrating",
+            "Saving",
+            "Dumping",
+            "I/O error",
+            "Watchdog",
+            "From snapshot",
+            "Shutting down",
+            "Creating snapshot",
+            "Crashed",
+        ],
+        sys::VIR_DOMAIN_SHUTDOWN => &["User"],
+        sys::VIR_DOMAIN_SHUTOFF => &[
+            "Shut Down",
+            "Destroyed",
+            "Crashed",
+            "Migrated",
+            "Saved",
+            "Failed",
+            "From snapshot",
+        ],
+        sys::VIR_DOMAIN_CRASHED => &["Panicked"],
+        _ => &[],
+    };
+    // Reason 0 is always "unknown", which upstream leaves out.
+    usize::try_from(reason)
+        .ok()
+        .and_then(|r| r.checked_sub(1))
+        .and_then(|r| reasons.get(r).copied())
+}
+
+pub fn is_crashed(status: DomainState) -> bool {
+    status == sys::VIR_DOMAIN_CRASHED
+}
+
 pub fn is_shutoff(status: DomainState) -> bool {
     status == sys::VIR_DOMAIN_SHUTOFF
 }
@@ -90,6 +141,20 @@ mod tests {
             "Suspended"
         );
         assert_eq!(pretty_run_status(999, false), "Unknown");
+    }
+
+    #[test]
+    fn status_reasons_match_upstream() {
+        assert_eq!(
+            pretty_status_reason(sys::VIR_DOMAIN_RUNNING, 1),
+            Some("Booted")
+        );
+        assert_eq!(
+            pretty_status_reason(sys::VIR_DOMAIN_SHUTOFF, 2),
+            Some("Destroyed")
+        );
+        assert_eq!(pretty_status_reason(sys::VIR_DOMAIN_RUNNING, 0), None);
+        assert_eq!(pretty_status_reason(sys::VIR_DOMAIN_SHUTDOWN, 2), None);
     }
 
     #[test]

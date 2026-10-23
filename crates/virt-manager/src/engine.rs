@@ -143,6 +143,10 @@ impl Engine {
         engine.handle_cli_command(opts.uri);
     }
 
+    pub fn app(&self) -> gtk::Application {
+        self.app.clone()
+    }
+
     pub fn config(&self) -> Rc<Config> {
         self.config.clone()
     }

@@ -30,6 +30,7 @@ use crate::manager_row::{ManagerRow, RowHandle};
 use crate::preferences;
 use crate::statsmanager::StatsRecord;
 use crate::vmmenu;
+use crate::vmwindow;
 
 /// `_build_conn_markup`.
 pub fn build_conn_markup(name: &str, disconnected: bool, connecting: bool) -> String {
@@ -335,7 +336,7 @@ fn build_conn_menu() -> gio::Menu {
 
 /// A toolbar button: large-toolbar (24px) icon, label only for the
 /// "is-important" Open button, as GTK3's default toolbar style showed.
-fn tool_button(icon: &str, label: Option<&str>, tooltip: &str) -> gtk::Button {
+pub fn tool_button(icon: &str, label: Option<&str>, tooltip: &str) -> gtk::Button {
     let btn = gtk::Button::new();
     btn.set_child(Some(&tool_content(icon, label)));
     btn.set_tooltip_text(Some(tooltip));
@@ -343,7 +344,7 @@ fn tool_button(icon: &str, label: Option<&str>, tooltip: &str) -> gtk::Button {
     btn
 }
 
-fn tool_content(icon: &str, label: Option<&str>) -> gtk::Box {
+pub fn tool_content(icon: &str, label: Option<&str>) -> gtk::Box {
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let image = gtk::Image::from_icon_name(icon);
     image.set_pixel_size(24);
@@ -524,7 +525,11 @@ impl VmmManager {
                 }),
                 ("new-vm", |_| {}),
                 ("host-details", |_| {}),
-                ("vm-details", |_| {}),
+                ("vm-details", |m| {
+                    if let Some(vm) = m.current_vm() {
+                        vmwindow::VmmVMWindow::show_instance(&vm);
+                    }
+                }),
                 ("preferences", |m| {
                     preferences::VmmPreferences::show_instance(&m.window())
                 }),
@@ -693,7 +698,7 @@ impl VmmManager {
     /// Windows not ported yet: their entry points stay visible (same
     /// menus as upstream) but insensitive.
     fn set_unported_actions(&self) {
-        for name in ["new-vm", "host-details", "vm-details"] {
+        for name in ["new-vm", "host-details"] {
             set_enabled(&self.0.win_actions, name, false);
         }
         set_enabled(&self.0.conn_actions, "create", false);
@@ -884,7 +889,6 @@ impl VmmManager {
             return;
         };
         if self.current_vm().is_some() {
-            // show_vm: the VM window isn't ported yet.
             self.0.vm_actions.activate_action("show", None);
         } else if conn.is_disconnected() {
             self.open_conn();
@@ -1157,6 +1161,7 @@ impl VmmManager {
         // Edit > Delete: VM deletion waits on the Delete dialog port;
         // a connection can be removed now.
         set_enabled(&i.win_actions, "delete", st.can_delete && vm.is_none());
+        set_enabled(&i.win_actions, "vm-details", st.show_details);
     }
 }
 

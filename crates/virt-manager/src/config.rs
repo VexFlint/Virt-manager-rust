@@ -16,6 +16,9 @@
 //! Only the keys the ported screens use are wrapped so far; each new
 //! screen adds its own accessors here, named after upstream's.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use gtk::gio;
 use gtk::gio::prelude::*;
 
@@ -88,8 +91,18 @@ pub struct Config {
     stats: gio::Settings,
     console: gio::Settings,
     new_vm: gio::Settings,
+    details: gio::Settings,
     confirm: gio::Settings,
+    source: gio::SettingsSchemaSource,
+    backend: Option<gio::SettingsBackend>,
+    /// Per-VM relocatable `.vm` schemas, keyed by UUID.
+    pervm: RefCell<HashMap<String, gio::Settings>>,
 }
+
+/// `CONSOLE_SCALE_NEVER/FULLSCREEN/ALWAYS`.
+pub const CONSOLE_SCALE_NEVER: i32 = 0;
+pub const CONSOLE_SCALE_FULLSCREEN: i32 = 1;
+pub const CONSOLE_SCALE_ALWAYS: i32 = 2;
 
 fn schema_source() -> Option<gio::SettingsSchemaSource> {
     if let Some(src) = gio::SettingsSchemaSource::default() {
@@ -124,7 +137,11 @@ impl Config {
             stats: open("org.virt-manager.virt-manager.stats"),
             console: open("org.virt-manager.virt-manager.console"),
             new_vm: open("org.virt-manager.virt-manager.new-vm"),
+            details: open("org.virt-manager.virt-manager.details"),
             confirm: open("org.virt-manager.virt-manager.confirm"),
+            source: source.clone(),
+            backend: backend.clone(),
+            pervm: RefCell::default(),
         }
     }
 
@@ -139,6 +156,35 @@ impl Config {
     pub fn set_manager_window_size(&self, w: i32, h: i32) {
         let _ = self.root.set_int("manager-window-width", w);
         let _ = self.root.set_int("manager-window-height", h);
+    }
+
+    /// `make_vm_settings`: the `.vm` schema relocated to
+    /// `/org/virt-manager/virt-manager/vms/<uuid without dashes>/`,
+    /// the same path upstream uses.
+    pub fn vm_settings(&self, uuid: &str) -> gio::Settings {
+        self.pervm
+            .borrow_mut()
+            .entry(uuid.to_string())
+            .or_insert_with(|| {
+                let schema = self
+                    .source
+                    .lookup(&format!("{SCHEMA_ID}.vm"), true)
+                    .expect("vm schema missing");
+                let path = format!(
+                    "/org/virt-manager/virt-manager/vms/{}/",
+                    uuid.replace('-', "")
+                );
+                gio::Settings::new_full(&schema, self.backend.as_ref(), Some(&path))
+            })
+            .clone()
+    }
+
+    // Show VM details toolbar
+    pub fn get_details_show_toolbar(&self) -> bool {
+        self.details.boolean("show-toolbar")
+    }
+    pub fn set_details_show_toolbar(&self, val: bool) {
+        let _ = self.details.set_boolean("show-toolbar", val);
     }
 
     // System tray visibility
@@ -274,6 +320,13 @@ impl Config {
     /// ([`DEFAULT_CONSOLE_RESIZEGUEST`]).
     pub fn get_console_resizeguest_raw(&self) -> i32 {
         self.console.int("resize-guest")
+    }
+    /// `get_console_resizeguest`: -1 resolved to the default.
+    pub fn get_console_resizeguest(&self) -> i32 {
+        match self.get_console_resizeguest_raw() {
+            -1 => DEFAULT_CONSOLE_RESIZEGUEST,
+            v => v,
+        }
     }
     pub fn set_console_resizeguest(&self, val: i32) {
         let _ = self.console.set_int("resize-guest", val);
