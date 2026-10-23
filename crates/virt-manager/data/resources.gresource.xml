@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Upstream's data/icons/ tree, copied as-is (virt-manager v5.1.0). GTK picks
+     these up automatically: the Application's resource base path is
+     /org/virt-manager/virt-manager, and GTK adds <base>/icons to the icon
+     theme search path. -->
+<gresources>
+  <gresource prefix="/org/virt-manager/virt-manager">
+    <file>icons/16x16/actions/icon_console.png</file>
+    <file>icons/16x16/actions/vm_new.png</file>
+    <file>icons/16x16/apps/virt-manager.png</file>
+    <file>icons/22x22/actions/icon_console.png</file>
+    <file>icons/22x22/actions/icon_details.png</file>
+    <file>icons/22x22/actions/vm_new.png</file>
+    <file>icons/22x22/apps/virt-manager.png</file>
+    <file>icons/22x22/devices/device_cpu.png</file>
+    <file>icons/22x22/devices/device_mem.png</file>
+    <file>icons/22x22/devices/device_pci.png</file>
+    <file>icons/22x22/devices/device_serial.png</file>
+    <file>icons/22x22/devices/device_usb.png</file>
+    <file>icons/22x22/status/state_paused.png</file>
+    <file>icons/22x22/status/state_running.png</file>
+    <file>icons/22x22/status/state_shutoff.png</file>
+    <file>icons/24x24/actions/icon_console.png</file>
+    <file>icons/24x24/actions/vm_clone_wizard.png</file>
+    <file>icons/24x24/actions/vm_new.png</file>
+    <file>icons/24x24/apps/virt-manager.png</file>
+    <file>icons/256x256/apps/virt-manager.png</file>
+    <file>icons/32x32/actions/icon_console.png</file>
+    <file>icons/32x32/actions/vm_new.png</file>
+    <file>icons/32x32/apps/virt-manager.png</file>
+    <file>icons/32x32/status/state_paused.png</file>
+    <file>icons/32x32/status/state_running.png</file>
+    <file>icons/32x32/status/state_shutoff.png</file>
+    <file>icons/48x48/actions/vm_clone_wizard.png</file>
+    <file>icons/48x48/actions/vm_delete_wizard.png</file>
+    <file>icons/48x48/actions/vm_import_wizard.png</file>
+    <file>icons/48x48/actions/vm_new_wizard.png</file>
+    <file>icons/48x48/apps/virt-manager.png</file>
+  </gresource>
+</gresources>

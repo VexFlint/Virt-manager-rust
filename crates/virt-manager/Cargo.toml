@@ -13,11 +13,27 @@ path = "src/main.rs"
 
 [dependencies]
 virtinst-core = { path = "../virtinst-core" }
-# gtk4 = "*"    # ticket 05 — pin once a toolchain is available to check current version.
-# glib = "*"    # async/background-task bridging (ticket 09): std::thread +
-#               # glib::MainContext::channel(), no tokio.
+# Ticket 05. `v4_14` is what Ubuntu 24.04 (the CI runner) ships; nothing
+# here needs anything newer yet.
+gtk = { version = "0.11", package = "gtk4", features = ["v4_14"] }
+# Same libvirt bindings virtinst-core wraps (ticket 02). The GUI talks to
+# `virt` directly for the polling/lifecycle calls upstream's
+# `virtManager/object/domain.py` makes — that layer lives in the GUI app
+# upstream too, not in virtinst.
+virt = "0.4"
+clap = { version = "4.5.61", features = ["derive"] }
+futures-channel = "0.3"
+#
+# Ticket 09's async model: blocking libvirt calls run on OS threads via
+# `gio::spawn_blocking`, awaited from `glib::spawn_future_local` on the
+# GTK main loop. No tokio.
 #
 # gir-generated, not yet vendored/generated (tickets 09, 14):
-#   - libvirt-glib (Connection/Domain event signals)
+#   - libvirt-glib (Connection/Domain event signals) — until then the
+#     engine's tick polls, which is also upstream's fallback when a
+#     driver has no event support.
 #   - libgvnc, libspice-client-glib (console viewer — both channels ended
 #     up gir-bound per ticket 14's amendment to ticket 05)
+
+[build-dependencies]
+glib-build-tools = "0.22"

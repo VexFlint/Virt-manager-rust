@@ -1,4 +1,5 @@
-//! GTK4 desktop GUI entry point.
+//! GTK4 desktop GUI entry point — upstream's `virt-manager` script
+//! (`virtManager/virtmanager.py`).
 //!
 //! Screen tickets resolved so far (`.scratch/rust-conversion/issues/`):
 //! 08 (Create VM wizard), 10 (VM details window), 11 (Snapshot
@@ -6,11 +7,50 @@
 //! 14 (console-viewer specifics). Remaining screens: see the map's
 //! "Not yet specified" section — ticket 07's inventory has the full list.
 //!
-//! The shared async-job wrapper (ticket 09) lives in this crate, not
-//! `virtinst-core` — it shows a modal, `virtinst-core` has no GTK
-//! dependency at all.
+//! Ported so far: the manager window (ticket 13) and what it needs —
+//! engine, connection manager, connection/domain objects, the error
+//! dialogs, the VM action menus, and the About dialog.
 
-fn main() {
-    // TODO: gtk4::Application bootstrap, LibvirtGLib event-loop hookup
-    // (ticket 09), vmmEngine-equivalent app lifecycle.
+mod about;
+mod config;
+mod connection;
+mod connmanager;
+mod domain;
+mod engine;
+mod error;
+mod libvirtenummap;
+mod manager;
+mod manager_row;
+mod vmmenu;
+
+use clap::Parser;
+
+/// Upstream's argparse options that the ported windows can honor. The
+/// `--show-*` window launchers arrive with the windows they open.
+#[derive(Parser, Debug)]
+#[command(name = "virt-manager", version, about = "Virtual Machine Manager")]
+struct Cli {
+    /// Connect to hypervisor at URI
+    #[arg(short = 'c', long = "connect", value_name = "URI")]
+    uri: Option<String>,
+
+    /// Print debug output to stdout (implies --no-fork)
+    #[arg(long)]
+    debug: bool,
+
+    /// Don't fork into background on startup
+    #[arg(long)]
+    no_fork: bool,
+
+    /// Force fork into background on startup (this is the default)
+    #[arg(long, conflicts_with = "no_fork")]
+    fork: bool,
+}
+
+fn main() -> gtk::glib::ExitCode {
+    let cli = Cli::parse();
+    // Forking into the background isn't ported: the process always stays
+    // in the foreground, which is what `--no-fork`/`--debug` ask for.
+    let _ = (cli.debug, cli.no_fork, cli.fork);
+    engine::run(engine::StartupOptions { uri: cli.uri })
 }
