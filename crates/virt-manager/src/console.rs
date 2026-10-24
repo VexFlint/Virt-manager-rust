@@ -1,9 +1,8 @@
 //! Upstream's `virtManager/details/console.py` (`vmmConsolePages`): the
 //! VM window's Console page, around the graphical viewer.
 //!
-//! VNC and SPICE go through [`crate::viewers::Viewer`]; the serial
-//! consoles (VTE) are the next slice, and until then report that their
-//! viewer isn't available.
+//! VNC and SPICE go through [`crate::viewers::Viewer`], serial and text
+//! consoles through [`crate::serialcon::SerialConsole`] (VTE).
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -16,6 +15,7 @@ use gtk::prelude::*;
 use crate::details::{graphics_pretty_type_simple, serial_console_lists};
 use crate::domain::VmmDomain;
 use crate::error;
+use crate::serialcon::{self, SerialConsole};
 use crate::sshtunnels::{ConnectionInfo, GraphicsDev};
 use crate::viewers::{Viewer, ViewerEvent};
 
@@ -169,13 +169,7 @@ fn build_serial_menu_items(vm: &VmmDomain) -> Vec<MenuEntry> {
                 };
                 // vmmSerialConsole.can_connect
                 let ctype = el.attribute(doc, "type").unwrap_or_default().to_string();
-                let tooltip = if ctype != "pty" {
-                    Some(format!(
-                        "Console for device type '{ctype}' is not supported"
-                    ))
-                } else {
-                    Some("The serial console is not available in this version yet.".into())
-                };
+                let tooltip = serialcon::can_connect(&ctype);
                 ret.push(MenuEntry {
                     label,
                     dev: Some(ConsoleDev::Serial(tag.into(), idx)),
@@ -227,6 +221,8 @@ struct Inner {
     menu_selected: RefCell<Option<String>>,
     actions: gio::SimpleActionGroup,
     viewer: RefCell<Option<Viewer>>,
+    serial_pages: gtk::Stack,
+    serial_consoles: RefCell<Vec<SerialConsole>>,
     viewer_connect_clicked: Cell<bool>,
     in_fullscreen: Cell<bool>,
     pointer_is_grabbed: Cell<bool>,
@@ -257,9 +253,8 @@ impl VmmConsolePages {
         let unavailable = centered_label();
         console_pages.add_named(&unavailable, Some(CONSOLE_PAGE_UNAVAILABLE));
 
-        // serial-pages: VTE terminals arrive with the serial console port.
-        let serial = centered_label();
-        console_pages.add_named(&serial, Some(CONSOLE_PAGE_SERIAL));
+        let serial_pages = gtk::Stack::new();
+        console_pages.add_named(&serial_pages, Some(CONSOLE_PAGE_SERIAL));
 
         // console-gfx-pages
         let gfx_pages = gtk::Stack::new();
@@ -341,6 +336,8 @@ impl VmmConsolePages {
             menu_selected: RefCell::default(),
             actions,
             viewer: RefCell::default(),
+            serial_pages,
+            serial_consoles: RefCell::default(),
             viewer_connect_clicked: Cell::new(false),
             in_fullscreen: Cell::new(false),
             pointer_is_grabbed: Cell::new(false),
@@ -611,6 +608,9 @@ impl VmmConsolePages {
             self.emit(ConsoleEvent::LeaveFullscreen);
         }
         self.0.viewer_connect_clicked.set(false);
+        for serial in self.0.serial_consoles.borrow().iter() {
+            serial.close();
+        }
         let Some(viewer) = self.0.viewer.take() else {
             return;
         };
@@ -929,10 +929,32 @@ impl VmmConsolePages {
             return;
         }
         match entry.dev {
-            Some(ConsoleDev::Serial(..)) if entry.tooltip.is_none() => {
+            Some(ConsoleDev::Serial(_, target_port)) if entry.tooltip.is_none() => {
+                let name = entry.label.clone();
+                let existing = self
+                    .0
+                    .serial_consoles
+                    .borrow()
+                    .iter()
+                    .find(|s| s.name() == name)
+                    .cloned();
+                let serial = existing.unwrap_or_else(|| {
+                    let serial = SerialConsole::new(&self.0.vm, target_port, &name);
+                    self.0
+                        .serial_pages
+                        .add_named(&serial.get_box(), Some(&name));
+                    self.0.serial_consoles.borrow_mut().push(serial.clone());
+                    serial
+                });
+                if !self.0.vm.get_console_autoconnect() && !self.0.viewer_connect_clicked.get() {
+                    self.activate_console_connect_page();
+                    return;
+                }
+                serial.open_console();
                 self.0
                     .console_pages
                     .set_visible_child_name(CONSOLE_PAGE_SERIAL);
+                self.0.serial_pages.set_visible_child_name(&name);
             }
             dev => {
                 self.0
@@ -1004,6 +1026,13 @@ impl VmmConsolePages {
 
     pub fn vmwindow_viewer_get_framebuffer(&self) -> Option<crate::display::FrameCopy> {
         self.viewer().and_then(|v| v.console_get_framebuffer())
+    }
+
+    /// `_cleanup`'s serial consoles.
+    pub fn vmwindow_cleanup(&self) {
+        for serial in self.0.serial_consoles.take() {
+            serial.cleanup();
+        }
     }
 
     pub fn vmwindow_close(&self) {
