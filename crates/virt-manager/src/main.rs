@@ -27,9 +27,11 @@ mod graphwidgets;
 mod gvnc;
 mod keymap;
 mod libvirtenummap;
+mod libvirtglib;
 mod manager;
 mod manager_row;
 mod preferences;
+mod serialcon;
 mod spice;
 mod spicedisplay;
 mod sshtunnels;
@@ -68,5 +70,7 @@ fn main() -> gtk::glib::ExitCode {
     // Forking into the background isn't ported: the process always stays
     // in the foreground, which is what `--no-fork`/`--debug` ask for.
     let _ = (cli.debug, cli.no_fork, cli.fork);
+    // LibvirtGLib.event_register()
+    libvirtglib::event_register();
     engine::run(engine::StartupOptions { uri: cli.uri })
 }

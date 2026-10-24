@@ -462,6 +462,35 @@ impl VmmDomain {
 
     /// `open_graphics_fd`: a connected socket to the `idx`th graphical
     /// console (`virDomainOpenGraphicsFD`), which the caller owns.
+    /// `open_console`: a new non-blocking stream on the named console
+    /// device (the first one when `None`). The caller owns the stream.
+    pub fn open_console(&self, devname: Option<&str>) -> Result<sys::virStreamPtr, String> {
+        let conn = self.conn().ok_or("Connection closed")?;
+        let handle = conn.handle().ok_or("Not connected")?;
+        let dom = Domain::lookup_by_uuid_string(handle.connect(), &self.get_uuid())
+            .map_err(|e| e.message().to_string())?;
+        let name = devname.and_then(|n| std::ffi::CString::new(n).ok());
+        let last_error = || virt::error::Error::last_error().message().to_string();
+        unsafe {
+            let stream = sys::virStreamNew(handle.connect().as_ptr(), sys::VIR_STREAM_NONBLOCK);
+            if stream.is_null() {
+                return Err(last_error());
+            }
+            let ret = sys::virDomainOpenConsole(
+                dom.as_ptr(),
+                name.as_ref().map_or(std::ptr::null(), |n| n.as_ptr()),
+                stream,
+                0,
+            );
+            if ret < 0 {
+                let err = last_error();
+                sys::virStreamFree(stream);
+                return Err(err);
+            }
+            Ok(stream)
+        }
+    }
+
     pub async fn open_graphics_fd(&self, idx: u32) -> Result<i32, String> {
         let conn = self.conn().ok_or("Connection closed")?;
         let handle = conn.handle().ok_or("Not connected")?;
