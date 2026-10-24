@@ -937,10 +937,10 @@ impl VmmVMWindow {
 }
 
 /// The console's xRGB framebuffer as an RGB pixbuf.
-fn framebuffer_to_pixbuf(fb: &crate::gvnc::Framebuffer) -> gtk::gdk_pixbuf::Pixbuf {
-    let (w, h) = (fb.width(), fb.height());
+fn framebuffer_to_pixbuf(fb: &crate::display::FrameCopy) -> gtk::gdk_pixbuf::Pixbuf {
+    let (w, h) = (fb.width, fb.height);
     let mut rgb = Vec::with_capacity((w * h * 3) as usize);
-    for row in fb.pixels().chunks(fb.stride()).take(h as usize) {
+    for row in fb.pixels.chunks(fb.stride).take(h as usize) {
         for px in row[..(w as usize * 4)].chunks_exact(4) {
             let v = u32::from_ne_bytes([px[0], px[1], px[2], px[3]]);
             rgb.extend_from_slice(&[(v >> 16) as u8, (v >> 8) as u8, v as u8]);

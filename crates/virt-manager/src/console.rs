@@ -1,9 +1,9 @@
 //! Upstream's `virtManager/details/console.py` (`vmmConsolePages`): the
 //! VM window's Console page, around the graphical viewer.
 //!
-//! VNC goes through [`crate::viewers::Viewer`]; SPICE (spice-gtk is
-//! GTK3-only too) and the serial consoles (VTE) are the next slices,
-//! and until then report that their viewer isn't available.
+//! VNC and SPICE go through [`crate::viewers::Viewer`]; the serial
+//! consoles (VTE) are the next slice, and until then report that their
+//! viewer isn't available.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -730,19 +730,10 @@ impl VmmConsolePages {
         self.activate_gfx_unavailable_page("Connecting to graphical console for guest");
 
         eprintln!("Starting connect process for {}", ginfo.logstring());
-        let viewer = match ginfo.gtype.as_str() {
-            "vnc" => Viewer::new_vnc(&self.0.vm, ginfo),
-            _ => {
-                // We do this here and not in the embed check, since the
-                // user is probably expecting their SPICE console to
-                // work, so show an explicit failure.
-                self.activate_gfx_unavailable_page(
-                    "Error connecting to graphical console:\n\
-                     Error opening SPICE console: the SPICE viewer is not available \
-                     in this version yet.",
-                );
-                return;
-            }
+        let viewer = if ginfo.gtype == "vnc" {
+            Viewer::new_vnc(&self.0.vm, ginfo)
+        } else {
+            Viewer::new_spice(&self.0.vm, ginfo)
         };
         self.0.viewer.replace(Some(viewer.clone()));
         self.connect_viewer_signals(&viewer);
@@ -1011,7 +1002,7 @@ impl VmmConsolePages {
         self.viewer_can_usb_redirect()
     }
 
-    pub fn vmwindow_viewer_get_framebuffer(&self) -> Option<crate::gvnc::Framebuffer> {
+    pub fn vmwindow_viewer_get_framebuffer(&self) -> Option<crate::display::FrameCopy> {
         self.viewer().and_then(|v| v.console_get_framebuffer())
     }
 
