@@ -321,7 +321,12 @@ impl VmmVMWindow {
                 weak,
                 VmmVMWindow::control_vm_screenshot,
             );
-            simple(&win_actions, "usb-redirection", weak, |_| {});
+            simple(
+                &win_actions,
+                "usb-redirection",
+                weak,
+                VmmVMWindow::control_vm_usb_redirection,
+            );
             simple(&win_actions, "size-to-vm", weak, |w| {
                 w.0.console.vmwindow_set_size_to_vm()
             });
@@ -845,6 +850,33 @@ impl VmmVMWindow {
                 .and_then(|s| s.get::<bool>())
                 .unwrap_or(true);
         i.toolbar_box.set_visible(show_toolbar);
+    }
+
+    /// `control_vm_usb_redirection`.
+    fn control_vm_usb_redirection(&self) {
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let parent: &gtk::Window = this.0.window.upcast_ref();
+            let Some(widget) = this.0.console.vmwindow_viewer_get_usb_widget() else {
+                error::show_err(
+                    Some(parent),
+                    "Error initializing spice USB device widget",
+                    None,
+                    "",
+                )
+                .await;
+                return;
+            };
+            widget.set_visible(true);
+            error::show_info(
+                Some(parent),
+                "Select USB devices for redirection",
+                None,
+                Some(widget.upcast_ref()),
+                error::Buttons::Close,
+            )
+            .await;
+        });
     }
 
     fn control_vm_screenshot(&self) {

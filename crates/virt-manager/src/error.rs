@@ -13,6 +13,7 @@ use gtk::prelude::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MessageType {
+    Info,
     Question,
     Warning,
     Error,
@@ -88,6 +89,16 @@ pub struct DialogSpec<'a> {
 
 /// Shows the dialog; resolves to (affirmative response, checkbox state).
 pub async fn run_dialog(parent: Option<&gtk::Window>, spec: DialogSpec<'_>) -> (bool, bool) {
+    run_dialog_with(parent, spec, None).await
+}
+
+/// [`run_dialog`] with an extra `widget` under the text, as
+/// `_launch_dialog` adds to the content area.
+async fn run_dialog_with(
+    parent: Option<&gtk::Window>,
+    spec: DialogSpec<'_>,
+    widget: Option<&gtk::Widget>,
+) -> (bool, bool) {
     let win = gtk::Window::builder()
         .modal(true)
         .resizable(false)
@@ -104,6 +115,7 @@ pub async fn run_dialog(parent: Option<&gtk::Window>, spec: DialogSpec<'_>) -> (
 
     let top = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     let icon = gtk::Image::from_icon_name(match spec.kind {
+        MessageType::Info => "dialog-information",
         MessageType::Question => "dialog-question",
         MessageType::Warning => "dialog-warning",
         MessageType::Error => "dialog-error",
@@ -131,6 +143,9 @@ pub async fn run_dialog(parent: Option<&gtk::Window>, spec: DialogSpec<'_>) -> (
     }
     top.append(&texts);
     outer.append(&top);
+    if let Some(widget) = widget {
+        outer.append(widget);
+    }
 
     let chk = spec.chktext.map(gtk::CheckButton::with_label);
     if let Some(chk) = &chk {
@@ -203,6 +218,17 @@ pub async fn show_err(
     details: Option<&str>,
     title: &str,
 ) {
+    show_err_text2(parent, summary, details, title, None).await
+}
+
+/// `vmmErrorDialog.show_err` with its `text2` secondary text.
+pub async fn show_err_text2(
+    parent: Option<&gtk::Window>,
+    summary: &str,
+    details: Option<&str>,
+    title: &str,
+    text2: Option<&str>,
+) {
     let details = details.unwrap_or(summary);
     let details = if details.contains(summary) {
         details.to_string()
@@ -216,11 +242,35 @@ pub async fn show_err(
             kind: MessageType::Error,
             buttons: Buttons::Close,
             text1: summary,
-            text2: None,
+            text2,
             title,
             details: Some(&details),
             chktext: None,
         },
+    )
+    .await;
+}
+
+/// `vmmErrorDialog.show_info`.
+pub async fn show_info(
+    parent: Option<&gtk::Window>,
+    text1: &str,
+    text2: Option<&str>,
+    widget: Option<&gtk::Widget>,
+    buttons: Buttons,
+) {
+    run_dialog_with(
+        parent,
+        DialogSpec {
+            kind: MessageType::Info,
+            buttons,
+            text1,
+            text2,
+            title: "",
+            details: None,
+            chktext: None,
+        },
+        widget,
     )
     .await;
 }

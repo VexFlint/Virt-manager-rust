@@ -26,6 +26,7 @@ use gtk::prelude::*;
 use crate::display::{self, DisplayWidget, FrameCopy};
 use crate::keymap;
 use crate::spice::{self, ChannelKind, Session};
+use crate::spicegtksession::SpiceGtkSession;
 
 /// `DEFAULT_KEYPRESS_DELAY`, in milliseconds.
 const DEFAULT_KEYPRESS_DELAY: u32 = 100;
@@ -70,6 +71,10 @@ type Rect = (i32, i32, i32, i32);
 
 struct State {
     session: Session,
+    gtk_session: SpiceGtkSession,
+    /// The session's `inhibit-keyboard-grab`, set while a USB device
+    /// is being redirected.
+    keyboard_grab_inhibit: bool,
     main: Option<glib::Object>,
     display: Option<glib::Object>,
     inputs: Option<glib::Object>,
@@ -152,6 +157,8 @@ impl SpiceDisplay {
             area: DisplayWidget::default(),
             state: RefCell::new(State {
                 session: session.clone(),
+                gtk_session: SpiceGtkSession::get(session),
+                keyboard_grab_inhibit: false,
                 main: None,
                 display: None,
                 inputs: None,
@@ -312,6 +319,11 @@ impl SpiceDisplay {
             }
             None
         });
+        self.st().handlers.push((obj.clone(), id));
+        let weak = self.weak();
+        let id = obj.connect_notify_local(Some("inhibit-keyboard-grab"), move |obj, _| {
+            upgrade_or!(weak).session_inhibit_keyboard_grab_changed(obj);
+        });
         self.st().handlers.push((obj, id));
 
         let channels = session.channels();
@@ -325,6 +337,9 @@ impl SpiceDisplay {
 
     /// Drops every signal handler; the session outlives us.
     pub fn destroy(&self) {
+        if self.0.state.borrow().keyboard_have_focus {
+            self.update_keyboard_focus(false);
+        }
         let handlers = {
             let mut st = self.st();
             if let Some(id) = st.key_delayed_id.take() {
@@ -477,33 +492,42 @@ impl SpiceDisplay {
         self.st().keypress_delay = delay;
     }
 
-    /// `spice_gtk_session_sync_keyboard_modifiers_for_channel`: the
-    /// guest's lock keys follow the client's.
+    /// `spice_gtk_session_sync_keyboard_modifiers`: the guest's lock
+    /// keys follow the client's.
     fn sync_keyboard_modifiers(&self) {
-        let Some(inputs) = self.inputs() else { return };
-        let Some(kbd) = self
-            .0
-            .area
-            .display()
-            .default_seat()
-            .and_then(|s| s.keyboard())
-        else {
-            return;
+        let gtk_session = self.0.state.borrow().gtk_session.clone();
+        gtk_session.sync_keyboard_modifiers();
+    }
+
+    /// `session_inhibit_keyboard_grab_changed`.
+    fn session_inhibit_keyboard_grab_changed(&self, session: &glib::Object) {
+        self.st().keyboard_grab_inhibit = session.property::<bool>("inhibit-keyboard-grab");
+        // `update_keyboard_grab` and `update_mouse_grab`
+        if self.0.state.borrow().keyboard_grab_inhibit {
+            self.try_keyboard_ungrab();
+            self.try_mouse_ungrab();
+        } else {
+            self.try_keyboard_grab();
+            self.try_mouse_grab();
+        }
+    }
+
+    /// `update_keyboard_focus`: while a display has the keyboard, USB
+    /// devices plugged in are auto-redirected (when enabled).
+    fn update_keyboard_focus(&self, state: bool) {
+        let (gtk_session, inhibit) = {
+            let mut st = self.st();
+            st.keyboard_have_focus = state;
+            (st.gtk_session.clone(), st.keyboard_grab_inhibit)
         };
-        let mut client = 0;
-        if kbd.is_caps_locked() {
-            client |= spice::KEY_LOCK_CAPS;
+        gtk_session.set_keyboard_has_focus(state);
+        // The device manager inhibits the keyboard grab while it
+        // redirects a device (which may show a policykit dialog), so
+        // leave auto-redirection alone meanwhile.
+        if inhibit {
+            return;
         }
-        if kbd.is_num_locked() {
-            client |= spice::KEY_LOCK_NUM;
-        }
-        if kbd.is_scroll_locked() {
-            client |= spice::KEY_LOCK_SCROLL;
-        }
-        let guest = inputs.property::<i32>("key-modifiers") as u32;
-        if client != guest {
-            spice::inputs_set_key_locks(&inputs, client);
-        }
+        gtk_session.request_auto_usbredir(state);
     }
 
     // Surface and monitor area
@@ -1067,6 +1091,11 @@ impl SpiceDisplay {
 
     fn enter_event(&self) {
         self.st().mouse_have_pointer = true;
+        self.0
+            .state
+            .borrow()
+            .gtk_session
+            .set_mouse_has_pointer(true);
         self.try_keyboard_grab();
     }
 
@@ -1077,6 +1106,7 @@ impl SpiceDisplay {
                 return;
             }
             st.mouse_have_pointer = false;
+            st.gtk_session.set_mouse_has_pointer(false);
         }
         self.try_keyboard_ungrab();
     }
@@ -1092,14 +1122,14 @@ impl SpiceDisplay {
             if st.keyboard_grab_released {
                 st.activeseq.iter_mut().for_each(|a| *a = false);
             }
-            st.keyboard_have_focus = true;
         }
+        self.update_keyboard_focus(true);
         self.try_keyboard_grab();
     }
 
     fn focus_out_event(&self) {
         self.release_keys();
-        self.st().keyboard_have_focus = false;
+        self.update_keyboard_focus(false);
         self.try_keyboard_ungrab();
     }
 
@@ -1152,9 +1182,10 @@ impl SpiceDisplay {
         }
         {
             let mut st = self.st();
-            if st.keyboard_grab_active
-                || !st.keyboard_have_focus
-                || !st.mouse_have_pointer
+            if st.keyboard_grab_inhibit
+                || st.keyboard_grab_active
+                || !st.gtk_session.keyboard_has_focus()
+                || !st.gtk_session.mouse_has_pointer()
                 || st.keyboard_grab_released
             {
                 return;

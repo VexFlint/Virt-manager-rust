@@ -8,10 +8,12 @@
 //! properties and signals go through the GObject API, so only the
 //! methods need declaring.
 
-use std::ffi::{c_int, c_uint, c_void, CStr};
+use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
+use std::ptr::NonNull;
 
+use gtk::gio;
 use gtk::glib;
-use gtk::glib::ffi::{gboolean, GError, GList, GType};
+use gtk::glib::ffi::{gboolean, GError, GList, GPtrArray, GType};
 use gtk::glib::gobject_ffi;
 use gtk::glib::translate::*;
 use gtk::prelude::*;
@@ -54,6 +56,26 @@ pub const KEY_LOCK_CAPS: u32 = 1 << 2;
 /// `SpiceSurfaceFmt`
 pub const SURFACE_FMT_16_555: i32 = 16;
 pub const SURFACE_FMT_16_565: i32 = 80;
+
+/// `VD_AGENT_CLIPBOARD_SELECTION_*`
+pub const CLIPBOARD_SELECTION_CLIPBOARD: u32 = 0;
+pub const CLIPBOARD_SELECTION_PRIMARY: u32 = 1;
+/// `VD_AGENT_CLIPBOARD_SELECTION_SECONDARY + 1`
+pub const CLIPBOARD_LAST: usize = 3;
+
+/// `VD_AGENT_CLIPBOARD_*` data types
+pub const CLIPBOARD_NONE: u32 = 0;
+pub const CLIPBOARD_UTF8_TEXT: u32 = 1;
+pub const CLIPBOARD_IMAGE_PNG: u32 = 2;
+pub const CLIPBOARD_IMAGE_BMP: u32 = 3;
+pub const CLIPBOARD_IMAGE_TIFF: u32 = 4;
+pub const CLIPBOARD_IMAGE_JPG: u32 = 5;
+pub const CLIPBOARD_FILE_LIST: u32 = 6;
+
+/// `VD_AGENT_CAP_*`
+pub const AGENT_CAP_CLIPBOARD_BY_DEMAND: u32 = 5;
+pub const AGENT_CAP_GUEST_LINEEND_CRLF: u32 = 9;
+pub const AGENT_CAP_CLIPBOARD_NO_RELEASE_ON_REGRAB: u32 = 16;
 
 #[repr(C)]
 struct SpiceDisplayPrimary {
@@ -167,6 +189,86 @@ extern "C" {
         scancode: c_uint,
     );
 
+    fn spice_session_get_read_only(session: *mut gobject_ffi::GObject) -> gboolean;
+
+    fn spice_main_channel_clipboard_selection_grab(
+        channel: *mut gobject_ffi::GObject,
+        selection: c_uint,
+        types: *mut u32,
+        ntypes: c_int,
+    );
+    fn spice_main_channel_clipboard_selection_release(
+        channel: *mut gobject_ffi::GObject,
+        selection: c_uint,
+    );
+    fn spice_main_channel_clipboard_selection_notify(
+        channel: *mut gobject_ffi::GObject,
+        selection: c_uint,
+        type_: u32,
+        data: *const u8,
+        size: usize,
+    );
+    fn spice_main_channel_clipboard_selection_request(
+        channel: *mut gobject_ffi::GObject,
+        selection: c_uint,
+        type_: u32,
+    );
+    fn spice_main_channel_agent_test_capability(
+        channel: *mut gobject_ffi::GObject,
+        cap: u32,
+    ) -> gboolean;
+
+    fn spice_usb_device_get_type() -> GType;
+    fn spice_usb_device_get_description(device: *mut c_void, format: *const c_char) -> *mut c_char;
+    fn spice_usb_device_manager_get(
+        session: *mut gobject_ffi::GObject,
+        err: *mut *mut GError,
+    ) -> *mut gobject_ffi::GObject;
+    fn spice_usb_device_manager_get_devices(manager: *mut gobject_ffi::GObject) -> *mut GPtrArray;
+    fn spice_usb_device_manager_is_device_connected(
+        manager: *mut gobject_ffi::GObject,
+        device: *mut c_void,
+    ) -> gboolean;
+    fn spice_usb_device_manager_connect_device_async(
+        manager: *mut gobject_ffi::GObject,
+        device: *mut c_void,
+        cancellable: *mut gio::ffi::GCancellable,
+        callback: gio::ffi::GAsyncReadyCallback,
+        user_data: glib::ffi::gpointer,
+    );
+    fn spice_usb_device_manager_disconnect_device_async(
+        manager: *mut gobject_ffi::GObject,
+        device: *mut c_void,
+        cancellable: *mut gio::ffi::GCancellable,
+        callback: gio::ffi::GAsyncReadyCallback,
+        user_data: glib::ffi::gpointer,
+    );
+    fn spice_usb_device_manager_connect_device_finish(
+        manager: *mut gobject_ffi::GObject,
+        res: *mut gio::ffi::GAsyncResult,
+        err: *mut *mut GError,
+    ) -> gboolean;
+    fn spice_usb_device_manager_disconnect_device_finish(
+        manager: *mut gobject_ffi::GObject,
+        res: *mut gio::ffi::GAsyncResult,
+        err: *mut *mut GError,
+    ) -> gboolean;
+    fn spice_usb_device_manager_can_redirect_device(
+        manager: *mut gobject_ffi::GObject,
+        device: *mut c_void,
+        err: *mut *mut GError,
+    ) -> gboolean;
+    fn spice_usb_device_manager_is_redirecting(manager: *mut gobject_ffi::GObject) -> gboolean;
+    fn spice_usb_device_manager_create_shared_cd_device(
+        manager: *mut gobject_ffi::GObject,
+        filename: *mut c_char,
+        err: *mut *mut GError,
+    ) -> gboolean;
+    fn spice_usb_device_manager_is_device_shared_cd(
+        manager: *mut gobject_ffi::GObject,
+        device: *mut c_void,
+    ) -> gboolean;
+
     fn spice_audio_get(
         session: *mut gobject_ffi::GObject,
         context: *mut glib::ffi::GMainContext,
@@ -184,6 +286,11 @@ pub struct Session(glib::Object);
 impl Session {
     pub fn new() -> Session {
         Session(unsafe { from_glib_full(spice_session_new()) })
+    }
+
+    /// Wraps a session object, e.g. one kept weakly.
+    pub fn from_object(obj: glib::Object) -> Session {
+        Session(obj)
     }
 
     pub fn object(&self) -> &glib::Object {
@@ -207,6 +314,10 @@ impl Session {
             let list = spice_session_get_channels(ptr(&self.0));
             FromGlibPtrContainer::from_glib_container(list)
         }
+    }
+
+    pub fn read_only(&self) -> bool {
+        unsafe { spice_session_get_read_only(ptr(&self.0)) != 0 }
     }
 
     /// `spice_audio_get(session, NULL)`; the session keeps it.
@@ -430,5 +541,254 @@ pub fn cursor_shape(cursor: &glib::Object) -> Option<CursorShape> {
             hotx: s.hot_spot_x as i32,
             hoty: s.hot_spot_y as i32,
         })
+    }
+}
+
+pub fn main_clipboard_selection_grab(main: &glib::Object, selection: u32, types: &[u32]) {
+    let mut types = types.to_vec();
+    unsafe {
+        spice_main_channel_clipboard_selection_grab(
+            ptr(main),
+            selection,
+            types.as_mut_ptr(),
+            types.len() as c_int,
+        )
+    }
+}
+
+pub fn main_clipboard_selection_release(main: &glib::Object, selection: u32) {
+    unsafe { spice_main_channel_clipboard_selection_release(ptr(main), selection) }
+}
+
+/// `data` of `None` tells the agent the request failed.
+pub fn main_clipboard_selection_notify(
+    main: &glib::Object,
+    selection: u32,
+    type_: u32,
+    data: Option<&[u8]>,
+) {
+    let (p, len) = data.map_or((std::ptr::null(), 0), |d| (d.as_ptr(), d.len()));
+    unsafe { spice_main_channel_clipboard_selection_notify(ptr(main), selection, type_, p, len) }
+}
+
+pub fn main_clipboard_selection_request(main: &glib::Object, selection: u32, type_: u32) {
+    unsafe { spice_main_channel_clipboard_selection_request(ptr(main), selection, type_) }
+}
+
+pub fn main_agent_test_capability(main: &glib::Object, cap: u32) -> bool {
+    unsafe { spice_main_channel_agent_test_capability(ptr(main), cap) != 0 }
+}
+
+/// A `G_TYPE_POINTER` signal argument.
+pub fn value_pointer(value: &glib::Value) -> *const c_void {
+    unsafe { gobject_ffi::g_value_get_pointer(value.to_glib_none().0) }
+}
+
+/// A `SpiceUsbDevice`: a refcounted boxed type, compared by identity
+/// as spice-gtk's widget does.
+pub struct UsbDevice(NonNull<c_void>);
+
+fn usb_device_type() -> GType {
+    unsafe { spice_usb_device_get_type() }
+}
+
+impl UsbDevice {
+    /// Takes a new reference to `device`.
+    unsafe fn from_ptr(device: *const c_void) -> Option<UsbDevice> {
+        let copy = gobject_ffi::g_boxed_copy(usb_device_type(), device as glib::ffi::gconstpointer);
+        NonNull::new(copy).map(UsbDevice)
+    }
+
+    /// A `SpiceUsbDevice` signal argument.
+    pub fn from_value(value: &glib::Value) -> Option<UsbDevice> {
+        unsafe { Self::from_ptr(gobject_ffi::g_value_get_boxed(value.to_glib_none().0)) }
+    }
+
+    fn as_ptr(&self) -> *mut c_void {
+        self.0.as_ptr()
+    }
+
+    /// `spice_usb_device_get_description(device, format)`
+    pub fn description(&self, format: Option<&str>) -> String {
+        unsafe {
+            from_glib_full(spice_usb_device_get_description(
+                self.as_ptr(),
+                format.to_glib_none().0,
+            ))
+        }
+    }
+}
+
+impl Clone for UsbDevice {
+    fn clone(&self) -> Self {
+        unsafe { Self::from_ptr(self.as_ptr()) }.expect("g_boxed_copy")
+    }
+}
+
+impl Drop for UsbDevice {
+    fn drop(&mut self) {
+        unsafe { gobject_ffi::g_boxed_free(usb_device_type(), self.as_ptr()) }
+    }
+}
+
+impl PartialEq for UsbDevice {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+/// `SpiceUsbDeviceManager`, one per session.
+#[derive(Clone)]
+pub struct UsbDeviceManager(glib::Object);
+
+/// What a `GAsyncReadyCallback` boxes up.
+type UsbDone = Box<dyn FnOnce(Result<(), glib::Error>)>;
+
+unsafe extern "C" fn usb_connect_done(
+    source: *mut gobject_ffi::GObject,
+    res: *mut gio::ffi::GAsyncResult,
+    data: glib::ffi::gpointer,
+) {
+    let f = Box::from_raw(data as *mut UsbDone);
+    let mut err = std::ptr::null_mut();
+    spice_usb_device_manager_connect_device_finish(source, res, &mut err);
+    f(if err.is_null() {
+        Ok(())
+    } else {
+        Err(from_glib_full(err))
+    });
+}
+
+unsafe extern "C" fn usb_disconnect_done(
+    source: *mut gobject_ffi::GObject,
+    res: *mut gio::ffi::GAsyncResult,
+    data: glib::ffi::gpointer,
+) {
+    let f = Box::from_raw(data as *mut UsbDone);
+    let mut err = std::ptr::null_mut();
+    spice_usb_device_manager_disconnect_device_finish(source, res, &mut err);
+    f(if err.is_null() {
+        Ok(())
+    } else {
+        Err(from_glib_full(err))
+    });
+}
+
+impl UsbDeviceManager {
+    /// `spice_usb_device_manager_get`: fails when the library was
+    /// built without USB redirection or libusb can't start.
+    pub fn get(session: &Session) -> Result<UsbDeviceManager, glib::Error> {
+        unsafe {
+            let mut err = std::ptr::null_mut();
+            let m = spice_usb_device_manager_get(ptr(&session.0), &mut err);
+            if !err.is_null() {
+                return Err(from_glib_full(err));
+            }
+            if m.is_null() {
+                return Err(glib::Error::new(
+                    glib::FileError::Failed,
+                    "USB redirection is not available",
+                ));
+            }
+            Ok(UsbDeviceManager(from_glib_none(m)))
+        }
+    }
+
+    pub fn object(&self) -> &glib::Object {
+        &self.0
+    }
+
+    pub fn devices(&self) -> Vec<UsbDevice> {
+        unsafe {
+            let arr = spice_usb_device_manager_get_devices(ptr(&self.0));
+            if arr.is_null() {
+                return vec![];
+            }
+            let pdata = (*arr).pdata;
+            let devices = (0..(*arr).len as usize)
+                .filter_map(|i| UsbDevice::from_ptr(*pdata.add(i)))
+                .collect();
+            glib::ffi::g_ptr_array_unref(arr);
+            devices
+        }
+    }
+
+    pub fn is_device_connected(&self, device: &UsbDevice) -> bool {
+        unsafe { spice_usb_device_manager_is_device_connected(ptr(&self.0), device.as_ptr()) != 0 }
+    }
+
+    pub fn connect_device_async(
+        &self,
+        device: &UsbDevice,
+        done: impl FnOnce(Result<(), glib::Error>) + 'static,
+    ) {
+        let data: Box<UsbDone> = Box::new(Box::new(done));
+        unsafe {
+            spice_usb_device_manager_connect_device_async(
+                ptr(&self.0),
+                device.as_ptr(),
+                std::ptr::null_mut(),
+                Some(usb_connect_done),
+                Box::into_raw(data) as glib::ffi::gpointer,
+            )
+        }
+    }
+
+    pub fn disconnect_device_async(
+        &self,
+        device: &UsbDevice,
+        done: impl FnOnce(Result<(), glib::Error>) + 'static,
+    ) {
+        let data: Box<UsbDone> = Box::new(Box::new(done));
+        unsafe {
+            spice_usb_device_manager_disconnect_device_async(
+                ptr(&self.0),
+                device.as_ptr(),
+                std::ptr::null_mut(),
+                Some(usb_disconnect_done),
+                Box::into_raw(data) as glib::ffi::gpointer,
+            )
+        }
+    }
+
+    pub fn can_redirect_device(&self, device: &UsbDevice) -> Result<(), glib::Error> {
+        unsafe {
+            let mut err = std::ptr::null_mut();
+            if spice_usb_device_manager_can_redirect_device(ptr(&self.0), device.as_ptr(), &mut err)
+                != 0
+            {
+                return Ok(());
+            }
+            Err(if err.is_null() {
+                glib::Error::new(glib::FileError::Failed, "unknown error")
+            } else {
+                from_glib_full(err)
+            })
+        }
+    }
+
+    pub fn is_redirecting(&self) -> bool {
+        unsafe { spice_usb_device_manager_is_redirecting(ptr(&self.0)) != 0 }
+    }
+
+    /// `Ok(false)` stands for a failure that set no error.
+    pub fn create_shared_cd_device(&self, filename: &str) -> Result<bool, glib::Error> {
+        unsafe {
+            let mut err = std::ptr::null_mut();
+            let name: glib::GString = filename.into();
+            let ok = spice_usb_device_manager_create_shared_cd_device(
+                ptr(&self.0),
+                name.as_ptr() as *mut c_char,
+                &mut err,
+            );
+            if !err.is_null() {
+                return Err(from_glib_full(err));
+            }
+            Ok(ok != 0)
+        }
+    }
+
+    pub fn is_device_shared_cd(&self, device: &UsbDevice) -> bool {
+        unsafe { spice_usb_device_manager_is_device_shared_cd(ptr(&self.0), device.as_ptr()) != 0 }
     }
 }

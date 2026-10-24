@@ -791,6 +791,7 @@ impl VmmConsolePages {
                     this.viewer_auth_error(&errmsg, will_disconnect)
                 }
                 ViewerEvent::NeedAuth(pw, user) => this.activate_auth_page(pw, user),
+                ViewerEvent::UsbRedirectError(errstr) => this.viewer_usb_redirect_error(&errstr),
             }
         });
     }
@@ -800,6 +801,22 @@ impl VmmConsolePages {
         // Sync initial settings
         self.sync_scaling_with_display();
         self.sync_resizeguest_with_display();
+    }
+
+    /// `_viewer_usb_redirect_error_cb`.
+    fn viewer_usb_redirect_error(&self, errstr: &str) {
+        let parent = self.0.topwin.clone();
+        let errstr = errstr.to_string();
+        glib::spawn_future_local(async move {
+            error::show_err_text2(
+                Some(&parent),
+                "USB redirection error",
+                None,
+                "",
+                Some(&errstr),
+            )
+            .await;
+        });
     }
 
     fn viewer_auth_error(&self, errmsg: &str, viewer_will_disconnect: bool) {
@@ -1022,6 +1039,12 @@ impl VmmConsolePages {
 
     pub fn vmwindow_viewer_can_usb_redirect(&self) -> bool {
         self.viewer_can_usb_redirect()
+    }
+
+    pub fn vmwindow_viewer_get_usb_widget(
+        &self,
+    ) -> Option<crate::usbdevicewidget::UsbDeviceWidget> {
+        self.viewer().and_then(|v| v.console_get_usb_widget())
     }
 
     pub fn vmwindow_viewer_get_framebuffer(&self) -> Option<crate::display::FrameCopy> {

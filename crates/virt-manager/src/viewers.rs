@@ -15,9 +15,11 @@ use crate::display::{DisplayWidget, FrameCopy};
 use crate::domain::VmmDomain;
 use crate::engine;
 use crate::gvnc;
-use crate::spice::{self, ChannelKind, Session};
+use crate::spice::{self, ChannelKind, Session, UsbDeviceManager};
 use crate::spicedisplay::{SpiceDisplay, SpiceDisplayEvent};
+use crate::spicegtksession::SpiceGtkSession;
 use crate::sshtunnels::{ConnectionInfo, SshTunnels};
+use crate::usbdevicewidget::UsbDeviceWidget;
 use crate::vncdisplay::{DisplayEvent, VncDisplay};
 
 /// `Viewer`'s signals.
@@ -36,6 +38,8 @@ pub enum ViewerEvent {
     AuthError(String, bool),
     /// `(with_password, with_username)`
     NeedAuth(bool, bool),
+    /// `usb-redirect-error`
+    UsbRedirectError(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -68,6 +72,8 @@ struct SpiceState {
     /// Every channel seen, with the handlers we put on it.
     channels: Vec<(glib::Object, Vec<glib::SignalHandlerId>)>,
     session_handlers: Vec<glib::SignalHandlerId>,
+    usbdev_manager: Option<UsbDeviceManager>,
+    usbdev_handlers: Vec<glib::SignalHandlerId>,
 }
 
 type Listener = Rc<dyn Fn(ViewerEvent)>;
@@ -368,10 +374,12 @@ impl Viewer {
         });
     }
 
-    /// `_create_spice_session`. Clipboard sharing and USB redirection
-    /// come from spice-gtk's GTK3 library upstream and aren't here.
+    /// `_create_spice_session`.
     fn create_spice_session(&self) -> Session {
         let session = Session::new();
+        let gtk_session = SpiceGtkSession::get(&session);
+        gtk_session.set_auto_clipboard(true);
+
         let weak = self.weak();
         let id = session
             .object()
@@ -381,10 +389,42 @@ impl Viewer {
                 }
                 None
             });
-        let mut st = self.0.spice.borrow_mut();
-        st.session = Some(session.clone());
-        st.session_handlers.push(id);
+        {
+            let mut st = self.0.spice.borrow_mut();
+            st.session = Some(session.clone());
+            st.session_handlers.push(id);
+        }
+
+        // Distros might have usb redirection compiled out, like OpenBSD
+        // https://bugzilla.redhat.com/show_bug.cgi?id=1348479
+        match UsbDeviceManager::get(&session) {
+            Ok(manager) => {
+                let mut ids = vec![];
+                for signal in ["auto-connect-failed", "device-error"] {
+                    let weak = self.weak();
+                    ids.push(manager.object().connect_local(signal, false, move |a| {
+                        if let (Some(inner), Ok(err)) = (weak.upgrade(), a[2].get::<glib::Error>())
+                        {
+                            Viewer(inner).usbdev_redirect_error(err.message());
+                        }
+                        None
+                    }));
+                }
+                if engine::get().config().get_auto_usbredir() {
+                    gtk_session.set_auto_usbredir(true);
+                }
+                let mut st = self.0.spice.borrow_mut();
+                st.usbdev_manager = Some(manager);
+                st.usbdev_handlers = ids;
+            }
+            Err(e) => eprintln!("Error initializing spice usb device manager: {e}"),
+        }
         session
+    }
+
+    /// `_usbdev_redirect_error`.
+    fn usbdev_redirect_error(&self, errstr: &str) {
+        self.emit(ViewerEvent::UsbRedirectError(errstr.to_string()));
     }
 
     fn spice_session(&self) -> Option<Session> {
@@ -550,6 +590,11 @@ impl Viewer {
         for (ch, ids) in st.channels {
             for id in ids {
                 ch.disconnect(id);
+            }
+        }
+        if let Some(manager) = &st.usbdev_manager {
+            for id in st.usbdev_handlers {
+                manager.object().disconnect(id);
             }
         }
         if let Some(session) = st.session {
@@ -722,7 +767,26 @@ impl Viewer {
         }
     }
 
+    /// `_get_usb_widget`: a new device list each time.
+    pub fn console_get_usb_widget(&self) -> Option<UsbDeviceWidget> {
+        let session = {
+            let st = self.0.spice.borrow();
+            st.usbdev_manager.as_ref()?;
+            st.session.clone()?
+        };
+        let widget = UsbDeviceWidget::new(&session, None);
+        let weak = self.weak();
+        widget.connect_connect_failed(move |err| {
+            if let Some(inner) = weak.upgrade() {
+                Viewer(inner).usbdev_redirect_error(err);
+            }
+        });
+        Some(widget)
+    }
+
+    /// `_has_usb_redirection`.
     pub fn console_has_usb_redirection(&self) -> bool {
-        false
+        let st = self.0.spice.borrow();
+        st.session.is_some() && st.usbdev_manager.is_some()
     }
 }
