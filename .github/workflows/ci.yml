@@ -17,11 +17,12 @@ jobs:
       # libvirt-dev links the `virt` crate; libosinfo-1.0-dev + libclang-dev
       # feed virtinst-core's bindgen build script; libxml2-utils gives the
       # harness its xmllint; libgtk-4-dev builds the virt-manager GUI crate,
-      # libgvnc-1.0-dev links its VNC console (gtk-vnc's GTK-free core).
+      # libgvnc-1.0-dev links its VNC console (gtk-vnc's GTK-free core),
+      # libspice-client-glib-2.0-dev its SPICE console (spice-gtk's).
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libvirt-dev libosinfo-1.0-dev libclang-dev pkg-config libxml2-utils libgtk-4-dev libgvnc-1.0-dev
+          sudo apt-get install -y libvirt-dev libosinfo-1.0-dev libclang-dev pkg-config libxml2-utils libgtk-4-dev libgvnc-1.0-dev libspice-client-glib-2.0-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:

@@ -1,5 +1,5 @@
 //! gtk-vnc's `VncDisplay` widget (`src/vncdisplay.c`) for GTK4: a
-//! `gtk::DrawingArea` painting a [`gvnc::Framebuffer`], feeding pointer
+//! [`DisplayWidget`] painting a [`gvnc::Framebuffer`], feeding pointer
 //! and keyboard input to a [`gvnc::Connection`].
 //!
 //! It follows `vncdisplay.c` closely: the same pixel format and
@@ -9,10 +9,10 @@
 //! same delayed desktop resize. Differences come from GTK4 itself: it
 //! has no pointer or keyboard grabs, so "keyboard grab" is the pointer
 //! being over the focused display (the window's own shortcuts are
-//! bypassed then, see `vncdisplay_key_capture`), and in relative
+//! bypassed then, see [`display::connect_keys`]), and in relative
 //! pointer mode motion deltas are sent without warping the pointer.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 use gtk::gdk;
@@ -20,6 +20,7 @@ use gtk::glib;
 use gtk::glib::translate::IntoGlib;
 use gtk::prelude::*;
 
+use crate::display::{self, render_region, DisplayWidget, FrameCopy};
 use crate::gvnc::{self, Connection, Framebuffer};
 use crate::keymap;
 
@@ -114,34 +115,6 @@ pub fn choose_auth_subtype(major: u32, offered: &[i32]) -> Option<u32> {
         .find(|p| offered.iter().any(|o| *o as u32 == *p))
 }
 
-/// `get_render_region_info`: where the framebuffer lands in the
-/// widget, as `(offset_x, offset_y, scale_x, scale_y)`.
-pub fn render_region(
-    win: (f64, f64),
-    fb: (f64, f64),
-    scaling: bool,
-    keep_aspect: bool,
-) -> (f64, f64, f64, f64) {
-    let (ww, wh) = win;
-    let (fw, fh) = fb;
-    if fw <= 0.0 || fh <= 0.0 {
-        return (0.0, 0.0, 1.0, 1.0);
-    }
-    let (mut sx, mut sy) = (1.0, 1.0);
-    if scaling {
-        sx = ww / fw;
-        sy = wh / fh;
-        if keep_aspect {
-            let s = sx.min(sy);
-            sx = s;
-            sy = s;
-        }
-    }
-    let ox = ((ww - fw * sx) / 2.0).max(0.0);
-    let oy = ((wh - fh * sy) / 2.0).max(0.0);
-    (ox, oy, sx, sy)
-}
-
 /// `check_for_grab_key`'s state.
 #[derive(Default)]
 struct GrabSeq {
@@ -215,8 +188,6 @@ struct Inner {
     area: DisplayWidget,
     state: RefCell<State>,
     callback: RefCell<Option<Listener>>,
-    /// Set while the display has focus and the pointer is over it.
-    pointer_inside: Cell<bool>,
 }
 
 #[derive(Clone)]
@@ -226,10 +197,6 @@ impl VncDisplay {
     pub fn new() -> VncDisplay {
         gvnc::init_debug();
         let area = DisplayWidget::default();
-        area.set_focusable(true);
-        area.set_can_focus(true);
-        area.set_hexpand(true);
-        area.set_vexpand(true);
         let this = VncDisplay(Rc::new(Inner {
             area,
             state: RefCell::new(State {
@@ -238,7 +205,6 @@ impl VncDisplay {
                 ..Default::default()
             }),
             callback: RefCell::default(),
-            pointer_inside: Cell::new(false),
         }));
         this.init_widget();
         this
@@ -350,29 +316,16 @@ impl VncDisplay {
         area.add_controller(focus);
 
         let weak = self.weak();
-        area.connect_realize(move |area| {
-            // The window-level key capture lets keys reach the guest
-            // ahead of the window's shortcuts, as upstream does by
-            // removing its accel groups during a keyboard grab.
-            let Some(root) = area.root() else { return };
-            let keys = gtk::EventControllerKey::new();
-            keys.set_propagation_phase(gtk::PropagationPhase::Capture);
-            let w = weak.clone();
-            keys.connect_key_pressed(move |_, keyval, keycode, _| {
-                vncdisplay_key_capture(&w, true, keyval, keycode)
-            });
-            let w = weak.clone();
-            keys.connect_key_released(move |_, keyval, keycode, _| {
-                vncdisplay_key_capture(&w, false, keyval, keycode);
-            });
-            root.add_controller(keys.clone());
-            let weak_ctrl = keys.downgrade();
-            area.connect_unrealize(move |area| {
-                if let (Some(root), Some(ctrl)) = (area.root(), weak_ctrl.upgrade()) {
-                    root.remove_controller(&ctrl);
-                }
-            });
+        let grabbed = Rc::new(move || {
+            weak.upgrade()
+                .is_some_and(|inner| inner.state.borrow().in_keyboard_grab)
         });
+        let weak = self.weak();
+        let on_key = Rc::new(move |press, keyval, keycode| {
+            weak.upgrade()
+                .is_some_and(|inner| VncDisplay(inner).key(press, keyval, keycode))
+        });
+        display::connect_keys(area, grabbed, on_key);
     }
 
     // Public API mirroring vnc_display_*
@@ -431,9 +384,8 @@ impl VncDisplay {
 
     pub fn set_scaling(&self, scaling: bool) {
         self.0.state.borrow_mut().scaling = scaling;
-        self.0.area.imp().scaling.set(scaling);
+        self.0.area.set_scaling(scaling);
         self.update_size_request();
-        self.0.area.queue_draw();
     }
 
     pub fn get_scaling(&self) -> bool {
@@ -442,8 +394,7 @@ impl VncDisplay {
 
     pub fn set_keep_aspect_ratio(&self, keep: bool) {
         self.0.state.borrow_mut().keep_aspect = keep;
-        self.0.area.imp().keep_aspect.set(keep);
-        self.0.area.queue_draw();
+        self.0.area.set_keep_aspect(keep);
     }
 
     pub fn set_force_size(&self, force: bool) {
@@ -476,11 +427,7 @@ impl VncDisplay {
             .grab_seq
             .keys
             .iter()
-            .map(|k| {
-                // SAFETY: any u32 is a valid (maybe unnamed) keyval.
-                let key: gdk::Key = unsafe { glib::translate::from_glib(*k) };
-                key.name().map(|n| n.to_string()).unwrap_or_default()
-            })
+            .map(|k| display::keyval_name(*k))
             .collect::<Vec<_>>()
             .join("+")
     }
@@ -503,12 +450,13 @@ impl VncDisplay {
     }
 
     /// `vnc_display_get_pixbuf`: a copy of the framebuffer.
-    pub fn get_framebuffer(&self) -> Option<Framebuffer> {
-        self.0.state.borrow().fb.clone()
-    }
-
-    pub fn has_keyboard_grab(&self) -> bool {
-        self.0.state.borrow().in_keyboard_grab
+    pub fn get_framebuffer(&self) -> Option<FrameCopy> {
+        self.0.state.borrow().fb.as_ref().map(|fb| FrameCopy {
+            width: fb.width(),
+            height: fb.height(),
+            stride: fb.stride(),
+            pixels: fb.pixels().to_vec(),
+        })
     }
 
     // Connection setup
@@ -757,9 +705,7 @@ impl VncDisplay {
         } else {
             (0, 0)
         };
-        let imp = self.0.area.imp();
-        imp.request.set((min, natural));
-        self.0.area.queue_resize();
+        self.0.area.set_request(min, natural);
     }
 
     /// `configure_event`: schedule a guest resize to the widget size.
@@ -848,14 +794,12 @@ impl VncDisplay {
         if self.initialized_conn().is_none() {
             return;
         }
-        self.0.pointer_inside.set(true);
         self.0.area.grab_focus();
         self.keyboard_grab();
         self.sync_cursor();
     }
 
     fn leave(&self) {
-        self.0.pointer_inside.set(false);
         if self.initialized_conn().is_none() {
             return;
         }
@@ -1013,35 +957,9 @@ impl VncDisplay {
     }
 }
 
-/// The window-level capture handler: while the display holds the
-/// keyboard grab every key goes to the guest.
-fn vncdisplay_key_capture(
-    weak: &Weak<Inner>,
-    press: bool,
-    keyval: gdk::Key,
-    keycode: u32,
-) -> glib::Propagation {
-    let Some(inner) = weak.upgrade() else {
-        return glib::Propagation::Proceed;
-    };
-    let this = VncDisplay(inner);
-    let grabbed = this.0.area.has_focus() && this.has_keyboard_grab();
-    if grabbed && this.key(press, keyval.into_glib(), keycode) {
-        glib::Propagation::Stop
-    } else {
-        glib::Propagation::Proceed
-    }
-}
-
-/// `get_scancode_from_keyval`: the first hardware keycode producing
-/// the keyval in the current layout.
+/// `get_scancode_from_keyval`.
 fn scancode_from_keyval(widget: &impl IsA<gtk::Widget>, keyval: u32) -> u16 {
-    // SAFETY: any u32 is a valid (maybe unnamed) keyval.
-    let key: gdk::Key = unsafe { glib::translate::from_glib(keyval) };
-    widget
-        .display()
-        .map_keyval(key)
-        .and_then(|keys| keys.first().map(|k| k.keycode()))
+    display::keycode_from_keyval(widget, keyval)
         .map(keymap::gdk_keycode_to_rfb)
         .unwrap_or(0)
 }
@@ -1081,30 +999,6 @@ mod tests {
     }
 
     #[test]
-    fn render_region_modes() {
-        // Unscaled, centered in a bigger widget.
-        assert_eq!(
-            render_region((1000.0, 800.0), (800.0, 600.0), false, true),
-            (100.0, 100.0, 1.0, 1.0)
-        );
-        // Unscaled in a smaller widget: pinned top-left.
-        assert_eq!(
-            render_region((400.0, 300.0), (800.0, 600.0), false, true),
-            (0.0, 0.0, 1.0, 1.0)
-        );
-        // Scaled keeping aspect: letterboxed.
-        assert_eq!(
-            render_region((1600.0, 600.0), (800.0, 600.0), true, true),
-            (400.0, 0.0, 1.0, 1.0)
-        );
-        // Scaled, stretched.
-        assert_eq!(
-            render_region((1600.0, 600.0), (800.0, 600.0), true, false),
-            (0.0, 0.0, 2.0, 1.0)
-        );
-    }
-
-    #[test]
     fn grab_sequence_fires_on_release() {
         let mut seq = GrabSeq::default();
         seq.set(vec![65507, 65513]);
@@ -1116,109 +1010,5 @@ mod tests {
         assert!(!seq.check(true, 97));
         assert!(!seq.check(true, 65513));
         assert!(!seq.check(false, 65513));
-    }
-}
-
-/// The display's drawing surface: paints the framebuffer as a texture,
-/// black around it, and reports allocation changes.
-mod widget_imp {
-    use super::*;
-    use gtk::graphene;
-    use gtk::subclass::prelude::*;
-
-    type TextureProvider = Box<dyn Fn() -> Option<gdk::Texture>>;
-    type ResizeHandler = Box<dyn Fn(i32, i32)>;
-
-    #[derive(Default)]
-    pub struct DisplayWidget {
-        pub provider: RefCell<Option<TextureProvider>>,
-        pub on_resize: RefCell<Option<ResizeHandler>>,
-        pub texture: RefCell<Option<gdk::Texture>>,
-        pub dirty: Cell<bool>,
-        pub scaling: Cell<bool>,
-        pub keep_aspect: Cell<bool>,
-        /// `((min_w, min_h), (nat_w, nat_h))`
-        pub request: Cell<((i32, i32), (i32, i32))>,
-    }
-
-    #[glib::object_subclass]
-    impl ObjectSubclass for DisplayWidget {
-        const NAME: &'static str = "VmmVncDisplay";
-        type Type = super::DisplayWidget;
-        type ParentType = gtk::Widget;
-    }
-
-    impl ObjectImpl for DisplayWidget {}
-
-    impl WidgetImpl for DisplayWidget {
-        fn measure(&self, orientation: gtk::Orientation, _for_size: i32) -> (i32, i32, i32, i32) {
-            let ((mw, mh), (nw, nh)) = self.request.get();
-            match orientation {
-                gtk::Orientation::Horizontal => (mw, nw.max(mw), -1, -1),
-                _ => (mh, nh.max(mh), -1, -1),
-            }
-        }
-
-        fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
-            self.parent_size_allocate(width, height, baseline);
-            if let Some(cb) = &*self.on_resize.borrow() {
-                cb(width, height);
-            }
-        }
-
-        fn snapshot(&self, snapshot: &gtk::Snapshot) {
-            let widget = self.obj();
-            let (w, h) = (widget.width() as f32, widget.height() as f32);
-            snapshot.append_color(&gdk::RGBA::BLACK, &graphene::Rect::new(0.0, 0.0, w, h));
-            if self.dirty.replace(false) {
-                let tex = self.provider.borrow().as_ref().and_then(|p| p());
-                self.texture.replace(tex);
-            }
-            let Some(tex) = self.texture.borrow().clone() else {
-                return;
-            };
-            let (fw, fh) = (tex.width() as f64, tex.height() as f64);
-            let (ox, oy, sx, sy) = render_region(
-                (w as f64, h as f64),
-                (fw, fh),
-                self.scaling.get(),
-                self.keep_aspect.get(),
-            );
-            let rect =
-                graphene::Rect::new(ox as f32, oy as f32, (fw * sx) as f32, (fh * sy) as f32);
-            snapshot.push_clip(&graphene::Rect::new(0.0, 0.0, w, h));
-            if self.scaling.get() {
-                snapshot.append_scaled_texture(&tex, gtk::gsk::ScalingFilter::Linear, &rect);
-            } else {
-                snapshot.append_texture(&tex, &rect);
-            }
-            snapshot.pop();
-        }
-    }
-}
-
-glib::wrapper! {
-    pub struct DisplayWidget(ObjectSubclass<widget_imp::DisplayWidget>)
-        @extends gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
-}
-
-impl Default for DisplayWidget {
-    fn default() -> Self {
-        let w: DisplayWidget = glib::Object::new();
-        w.imp().keep_aspect.set(true);
-        w
-    }
-}
-
-impl DisplayWidget {
-    fn imp(&self) -> &widget_imp::DisplayWidget {
-        gtk::subclass::prelude::ObjectSubclassIsExt::imp(self)
-    }
-
-    /// New pixels: rebuild the texture on the next frame.
-    fn mark_dirty(&self) {
-        self.imp().dirty.set(true);
-        self.queue_draw();
     }
 }

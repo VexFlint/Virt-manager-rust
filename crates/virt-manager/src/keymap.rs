@@ -30,6 +30,17 @@ pub(crate) const LINUX_TO_QNUM: [u16; 240] = [
     0xd7, 0xd8, 0xd9, 0xda, 0xe4, 0x8e, 0xd5, 0xf0, 0xf1, 0xf2, 0xf3, 0xf4,
 ];
 
+/// spice-gtk's `vnc_display_keymap_gdk2xtkbd`: the same XT scancodes,
+/// with the 0xe0 prefix as 0x100 instead of folded into 0x80.
+pub fn gdk_keycode_to_xtkbd(keycode: u32) -> u32 {
+    let qnum = u32::from(gdk_keycode_to_rfb(keycode));
+    if qnum & 0x80 != 0 {
+        0x100 | (qnum & 0x7f)
+    } else {
+        qnum
+    }
+}
+
 /// `vnc_display_keymap_gdk2rfb` with the xorgevdev → qnum table.
 pub fn gdk_keycode_to_rfb(keycode: u32) -> u16 {
     keycode
@@ -55,5 +66,13 @@ mod tests {
         assert_eq!(gdk_keycode_to_rfb(111 + 8), 0xd3);
         assert_eq!(gdk_keycode_to_rfb(3), 0);
         assert_eq!(gdk_keycode_to_rfb(10_000), 0);
+    }
+
+    #[test]
+    fn evdev_keycodes_map_to_xtkbd() {
+        assert_eq!(gdk_keycode_to_xtkbd(30 + 8), 0x1e);
+        assert_eq!(gdk_keycode_to_xtkbd(97 + 8), 0x11d);
+        assert_eq!(gdk_keycode_to_xtkbd(111 + 8), 0x153);
+        assert_eq!(gdk_keycode_to_xtkbd(3), 0);
     }
 }

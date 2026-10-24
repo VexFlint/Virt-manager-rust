@@ -29,14 +29,14 @@ futures-channel = "0.3"
 # `gio::spawn_blocking`, awaited from `glib::spawn_future_local` on the
 # GTK main loop. No tokio.
 #
-# gir-generated, not yet vendored/generated (tickets 09, 14):
+# gir-generated, not yet vendored/generated (ticket 09):
 #   - libvirt-glib (Connection/Domain event signals) — until then the
 #     engine's tick polls, which is also upstream's fallback when a
 #     driver has no event support.
-#   - libspice-client-glib (SPICE console viewer, ticket 14)
 #
-# libgvnc-1.0 (VNC console) is linked directly by the hand-written
-# bindings in src/gvnc.rs.
+# libgvnc-1.0 (VNC console) and libspice-client-glib-2.0 (SPICE
+# console) are linked directly by the hand-written bindings in
+# src/gvnc.rs and src/spice.rs.
 
 [build-dependencies]
 glib-build-tools = "0.22"

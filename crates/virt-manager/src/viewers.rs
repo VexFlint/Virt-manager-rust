@@ -1,8 +1,6 @@
 //! Upstream's `virtManager/details/viewers.py`: the `Viewer` wrapper the
-//! console page drives, around the graphical display widget.
-//!
-//! Only `VNCViewer` exists so far; `SpiceViewer` is the next slice and
-//! slots in as another [`ViewerKind`].
+//! console page drives, around the graphical display widget, for VNC
+//! (`VNCViewer`) and SPICE (`SpiceViewer`).
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -13,9 +11,12 @@ use gtk::glib::translate::IntoGlib;
 use gtk::prelude::*;
 use virtinst_core::connection::Uri;
 
+use crate::display::{DisplayWidget, FrameCopy};
 use crate::domain::VmmDomain;
 use crate::engine;
 use crate::gvnc;
+use crate::spice::{self, ChannelKind, Session};
+use crate::spicedisplay::{SpiceDisplay, SpiceDisplayEvent};
 use crate::sshtunnels::{ConnectionInfo, SshTunnels};
 use crate::vncdisplay::{DisplayEvent, VncDisplay};
 
@@ -37,8 +38,36 @@ pub enum ViewerEvent {
     NeedAuth(bool, bool),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ViewerType {
+    Vnc,
+    Spice,
+}
+
+#[derive(Clone)]
 enum ViewerKind {
     Vnc(VncDisplay),
+    Spice(SpiceDisplay),
+}
+
+impl ViewerKind {
+    fn widget(&self) -> &DisplayWidget {
+        match self {
+            ViewerKind::Vnc(d) => d.widget(),
+            ViewerKind::Spice(d) => d.widget(),
+        }
+    }
+}
+
+/// `SpiceViewer`'s own state.
+#[derive(Default)]
+struct SpiceState {
+    session: Option<Session>,
+    main_channel: Option<glib::Object>,
+    audio: Option<glib::Object>,
+    /// Every channel seen, with the handlers we put on it.
+    channels: Vec<(glib::Object, Vec<glib::SignalHandlerId>)>,
+    session_handlers: Vec<glib::SignalHandlerId>,
 }
 
 type Listener = Rc<dyn Fn(ViewerEvent)>;
@@ -46,7 +75,9 @@ type Listener = Rc<dyn Fn(ViewerEvent)>;
 struct Inner {
     vm: VmmDomain,
     ginfo: ConnectionInfo,
+    viewer_type: ViewerType,
     display: RefCell<Option<ViewerKind>>,
+    spice: RefCell<SpiceState>,
     tunnels: RefCell<SshTunnels>,
     keyboard_grab: Cell<bool>,
     desktop_resolution: Cell<(i32, i32)>,
@@ -60,11 +91,22 @@ pub struct Viewer(Rc<Inner>);
 impl Viewer {
     /// `VNCViewer(vm, ginfo)`.
     pub fn new_vnc(vm: &VmmDomain, ginfo: ConnectionInfo) -> Viewer {
+        Viewer::new(vm, ginfo, ViewerType::Vnc)
+    }
+
+    /// `SpiceViewer(vm, ginfo)`.
+    pub fn new_spice(vm: &VmmDomain, ginfo: ConnectionInfo) -> Viewer {
+        Viewer::new(vm, ginfo, ViewerType::Spice)
+    }
+
+    fn new(vm: &VmmDomain, ginfo: ConnectionInfo, viewer_type: ViewerType) -> Viewer {
         let tunnels = SshTunnels::new(&ginfo);
         let this = Viewer(Rc::new(Inner {
             vm: vm.clone(),
             ginfo,
+            viewer_type,
             display: RefCell::default(),
+            spice: RefCell::default(),
             tunnels: RefCell::new(tunnels),
             keyboard_grab: Cell::new(false),
             desktop_resolution: Cell::new((0, 0)),
@@ -100,26 +142,38 @@ impl Viewer {
         Rc::downgrade(&self.0)
     }
 
+    fn display(&self) -> Option<ViewerKind> {
+        self.0.display.borrow().clone()
+    }
+
     fn vnc(&self) -> Option<VncDisplay> {
-        self.0
-            .display
-            .borrow()
-            .as_ref()
-            .map(|ViewerKind::Vnc(d)| d.clone())
+        match self.display() {
+            Some(ViewerKind::Vnc(d)) => Some(d),
+            _ => None,
+        }
+    }
+
+    fn spice_display(&self) -> Option<SpiceDisplay> {
+        match self.display() {
+            Some(ViewerKind::Spice(d)) => Some(d),
+            _ => None,
+        }
     }
 
     /// `_cleanup`.
     pub fn cleanup(&self) {
-        if let Some(d) = self.vnc() {
-            d.close();
-            d.destroy();
+        self.close();
+        if let Some(d) = self.0.display.take() {
+            match &d {
+                ViewerKind::Vnc(d) => d.destroy(),
+                ViewerKind::Spice(d) => d.destroy(),
+            }
             if let Some(parent) = d.widget().parent() {
                 if let Some(b) = parent.downcast_ref::<gtk::Box>() {
                     b.remove(d.widget());
                 }
             }
         }
-        self.0.display.replace(None);
         self.0.tunnels.borrow_mut().close_all();
         if let Some((settings, id)) = self.0.grabkeys_handler.take() {
             settings.disconnect(id);
@@ -130,15 +184,16 @@ impl Viewer {
     // Internal helpers
 
     /// `_set_display`.
-    fn set_display(&self, display: VncDisplay) {
-        self.0
-            .display
-            .replace(Some(ViewerKind::Vnc(display.clone())));
+    fn set_display(&self, display: ViewerKind) {
+        self.0.display.replace(Some(display.clone()));
         self.refresh_grab_keys();
         self.emit(ViewerEvent::AddDisplayWidget(
             display.widget().clone().upcast(),
         ));
-        self.connect_display_signals(&display);
+        match &display {
+            ViewerKind::Vnc(d) => self.connect_vnc_display_signals(d),
+            ViewerKind::Spice(d) => self.connect_spice_display_signals(d),
+        }
         display.widget().set_visible(true);
     }
 
@@ -160,6 +215,8 @@ impl Viewer {
             return Ok(None);
         }
         if ginfo.gtlsport.is_some() && ginfo.gport.is_none() {
+            // This makes spice loop requesting an fd. Disable until spice is
+            // fixed: https://bugzilla.redhat.com/show_bug.cgi?id=1334071
             return Ok(None);
         }
         // conn.support.domain_open_graphics(): qemu only.
@@ -175,12 +232,18 @@ impl Viewer {
 
     /// `_refresh_grab_keys`.
     fn refresh_grab_keys(&self) {
-        let Some(d) = self.vnc() else { return };
+        let Some(d) = self.display() else { return };
         let keys = engine::get().config().get_keys_combination();
+        if keys.is_empty() {
+            return;
+        }
         let parsed: Result<Vec<u32>, _> = keys.split(',').map(|k| k.trim().parse()).collect();
         match parsed {
-            Ok(keys) if !keys.is_empty() => d.set_grab_keys(keys),
-            _ => eprintln!("Error in grab_keys configuration in GSettings: {keys}"),
+            Ok(keys) => match d {
+                ViewerKind::Vnc(d) => d.set_grab_keys(keys),
+                ViewerKind::Spice(d) => d.set_grab_keys(keys),
+            },
+            Err(_) => eprintln!("Error in grab_keys configuration in GSettings: {keys}"),
         }
     }
 
@@ -201,10 +264,32 @@ impl Viewer {
         self.emit(ViewerEvent::DesktopResolutionChanged);
     }
 
+    /// `_keyboard_grab_cb`.
+    fn set_keyboard_grab(&self, grab: bool) {
+        self.0.keyboard_grab.set(grab);
+        self.emit(if grab {
+            ViewerEvent::KeyboardGrab
+        } else {
+            ViewerEvent::KeyboardUngrab
+        });
+    }
+
+    /// `_close`.
+    fn close(&self) {
+        match self.0.viewer_type {
+            ViewerType::Vnc => {
+                if let Some(d) = self.vnc() {
+                    d.close();
+                }
+            }
+            ViewerType::Spice => self.spice_close(),
+        }
+    }
+
     // VNCViewer
 
     /// `VNCViewer._connect_display_signals` and the callbacks behind it.
-    fn connect_display_signals(&self, display: &VncDisplay) {
+    fn connect_vnc_display_signals(&self, display: &VncDisplay) {
         let weak = self.weak();
         display.connect_event(move |ev| {
             let Some(inner) = weak.upgrade() else { return };
@@ -212,14 +297,8 @@ impl Viewer {
             match ev {
                 DisplayEvent::PointerGrab => this.emit(ViewerEvent::PointerGrab),
                 DisplayEvent::PointerUngrab => this.emit(ViewerEvent::PointerUngrab),
-                DisplayEvent::KeyboardGrab => {
-                    this.0.keyboard_grab.set(true);
-                    this.emit(ViewerEvent::KeyboardGrab);
-                }
-                DisplayEvent::KeyboardUngrab => {
-                    this.0.keyboard_grab.set(false);
-                    this.emit(ViewerEvent::KeyboardUngrab);
-                }
+                DisplayEvent::KeyboardGrab => this.set_keyboard_grab(true),
+                DisplayEvent::KeyboardUngrab => this.set_keyboard_grab(false),
                 DisplayEvent::AuthCredential(creds) => this.auth_credential(&creds),
                 DisplayEvent::AuthFailure(msg) => {
                     this.emit(ViewerEvent::AuthError(msg, true));
@@ -273,53 +352,318 @@ impl Viewer {
         }
     }
 
+    // SpiceViewer
+
+    /// `SpiceViewer._connect_display_signals`.
+    fn connect_spice_display_signals(&self, display: &SpiceDisplay) {
+        let weak = self.weak();
+        display.connect_event(move |ev| {
+            let Some(inner) = weak.upgrade() else { return };
+            let this = Viewer(inner);
+            match ev {
+                SpiceDisplayEvent::MouseGrab(true) => this.emit(ViewerEvent::PointerGrab),
+                SpiceDisplayEvent::MouseGrab(false) => this.emit(ViewerEvent::PointerUngrab),
+                SpiceDisplayEvent::KeyboardGrab(grab) => this.set_keyboard_grab(grab),
+            }
+        });
+    }
+
+    /// `_create_spice_session`. Clipboard sharing and USB redirection
+    /// come from spice-gtk's GTK3 library upstream and aren't here.
+    fn create_spice_session(&self) -> Session {
+        let session = Session::new();
+        let weak = self.weak();
+        let id = session
+            .object()
+            .connect_local("channel-new", false, move |a| {
+                if let (Some(inner), Ok(ch)) = (weak.upgrade(), a[1].get::<glib::Object>()) {
+                    Viewer(inner).spice_channel_new(&ch);
+                }
+                None
+            });
+        let mut st = self.0.spice.borrow_mut();
+        st.session = Some(session.clone());
+        st.session_handlers.push(id);
+        session
+    }
+
+    fn spice_session(&self) -> Option<Session> {
+        self.0.spice.borrow().session.clone()
+    }
+
+    fn track_channel_handler(&self, ch: &glib::Object, id: glib::SignalHandlerId) {
+        let mut st = self.0.spice.borrow_mut();
+        match st.channels.iter_mut().find(|(c, _)| c == ch) {
+            Some((_, ids)) => ids.push(id),
+            None => st.channels.push((ch.clone(), vec![id])),
+        }
+    }
+
+    /// `_main_channel_event_cb`.
+    fn main_channel_event(&self, channel: &glib::Object, event: i32) {
+        self.0.tunnels.borrow().unlock();
+        if event == spice::CHANNEL_CLOSED {
+            self.emit_disconnected(None);
+        } else if event == spice::CHANNEL_ERROR_AUTH {
+            let password = self
+                .spice_session()
+                .and_then(|s| s.object().property::<Option<String>>("password"))
+                .unwrap_or_default();
+            if password.is_empty() {
+                eprintln!(
+                    "Spice channel received ERROR_AUTH, but no password set, \
+                     assuming it wants credentials."
+                );
+                self.emit(ViewerEvent::NeedAuth(true, false));
+            } else {
+                eprintln!(
+                    "Spice channel received ERROR_AUTH, but a password is already \
+                     set. Assuming authentication failed."
+                );
+                let msg = spice::channel_error(channel).unwrap_or_default();
+                self.emit(ViewerEvent::AuthError(msg, false));
+            }
+        } else if event >= spice::CHANNEL_ERROR_FIRST {
+            let error = spice::channel_error(channel);
+            let nick = spice::channel_event_nick(event);
+            eprintln!(
+                "Spice channel event={nick} message={}",
+                error.as_deref().unwrap_or("None")
+            );
+            let mut msg = format!("Encountered SPICE {nick}");
+            if let Some(error) = error {
+                msg.push_str(&format!(": {error}"));
+            }
+            self.emit_disconnected(Some(msg));
+        }
+    }
+
+    /// `_channel_open_fd_request`: a channel of an fd-opened session
+    /// wants its own fd. Any event on it releases the tunnel lock
+    /// (`_fd_channel_event_cb`).
+    fn channel_open_fd_request(&self, channel: &glib::Object) {
+        if self.spice_session().is_none() {
+            // Can happen if we close the details window while initially
+            // connecting to spice and channel FD requests still roll in.
+            return;
+        }
+        eprintln!("Requesting fd for channel: {}", channel.type_().name());
+        let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::default();
+        let weak = self.weak();
+        let h = handler.clone();
+        let id = channel.connect_local("channel-event", true, move |a| {
+            if let Ok(ch) = a[0].get::<glib::Object>() {
+                if let Some(id) = h.borrow_mut().take() {
+                    ch.disconnect(id);
+                }
+            }
+            if let Some(inner) = weak.upgrade() {
+                inner.tunnels.borrow().unlock();
+            }
+            None
+        });
+        handler.replace(Some(id));
+
+        let this = self.clone();
+        let channel = channel.clone();
+        glib::spawn_future_local(async move {
+            match this.get_fd_for_open().await {
+                Ok(Some(fd)) => {
+                    spice::channel_open_fd(&channel, fd);
+                }
+                Ok(None) => eprintln!("No fd available for SPICE channel"),
+                Err(e) => eprintln!("Error getting fd for SPICE channel: {e}"),
+            }
+        });
+    }
+
+    /// `_channel_new_cb`.
+    fn spice_channel_new(&self, channel: &glib::Object) {
+        let weak = self.weak();
+        let id = channel.connect_local("open-fd", false, move |a| {
+            if let (Some(inner), Ok(ch)) = (weak.upgrade(), a[0].get::<glib::Object>()) {
+                Viewer(inner).channel_open_fd_request(&ch);
+            }
+            None
+        });
+        self.track_channel_handler(channel, id);
+
+        let (have_main, have_audio) = {
+            let st = self.0.spice.borrow();
+            (st.main_channel.is_some(), st.audio.is_some())
+        };
+        match spice::channel_kind(channel) {
+            ChannelKind::Main if !have_main => {
+                self.0.spice.borrow_mut().main_channel = Some(channel.clone());
+                let weak = self.weak();
+                let id = channel.connect_local("channel-event", true, move |a| {
+                    if let (Some(inner), Ok(ch)) = (weak.upgrade(), a[0].get::<glib::Object>()) {
+                        Viewer(inner).main_channel_event(&ch, spice::value_enum(&a[1]));
+                    }
+                    None
+                });
+                self.track_channel_handler(channel, id);
+            }
+            ChannelKind::Display if self.display().is_none() => {
+                let channel_id = channel.property::<i32>("channel-id");
+                if channel_id != 0 {
+                    eprintln!("Spice multi-head unsupported");
+                    return;
+                }
+                let Some(session) = self.spice_session() else {
+                    return;
+                };
+                let display = SpiceDisplay::new(&session);
+                self.set_display(ViewerKind::Spice(display));
+
+                let weak = self.weak();
+                let id = channel.connect_local("display-primary-create", true, move |a| {
+                    if let Some(inner) = weak.upgrade() {
+                        let w = a[2].get::<i32>().unwrap_or(0);
+                        let h = a[3].get::<i32>().unwrap_or(0);
+                        Viewer(inner).set_desktop_resolution(w, h);
+                    }
+                    None
+                });
+                self.track_channel_handler(channel, id);
+                self.emit(ViewerEvent::Connected);
+            }
+            ChannelKind::Playback | ChannelKind::Record if !have_audio => {
+                // It's unclear why we need this audio handle, but it
+                // does matter:
+                // https://bugzilla.redhat.com/show_bug.cgi?id=1881080
+                let audio = self.spice_session().and_then(|s| s.audio());
+                self.0.spice.borrow_mut().audio = audio;
+            }
+            _ => {}
+        }
+    }
+
+    /// `SpiceViewer._close`.
+    fn spice_close(&self) {
+        let st = std::mem::take(&mut *self.0.spice.borrow_mut());
+        if let Some(session) = &st.session {
+            for id in st.session_handlers {
+                session.object().disconnect(id);
+            }
+        }
+        for (ch, ids) in st.channels {
+            for id in ids {
+                ch.disconnect(id);
+            }
+        }
+        if let Some(session) = st.session {
+            session.disconnect();
+        }
+    }
+
+    /// `SpiceViewer._open_host`.
+    fn spice_open_host(&self) {
+        let (host, port, tlsport) = self.0.ginfo.get_conn_host();
+        let session = self.create_spice_session();
+        eprintln!(
+            "Spice connecting to host={host} port={} tlsport={}",
+            port.as_deref().unwrap_or("None"),
+            tlsport.as_deref().unwrap_or("None")
+        );
+        let obj = session.object();
+        obj.set_property("host", host.as_str());
+        if let Some(port) = port.filter(|p| !p.is_empty()) {
+            obj.set_property("port", port.as_str());
+        }
+        if let Some(tlsport) = tlsport.filter(|p| !p.is_empty()) {
+            obj.set_property("tls-port", tlsport.as_str());
+        }
+        session.connect();
+    }
+
     // APIs accessed by vmmConsolePages
 
     pub fn console_is_open(&self) -> bool {
-        self.vnc().is_some_and(|d| d.is_open())
+        match self.0.viewer_type {
+            ViewerType::Vnc => self.vnc().is_some_and(|d| d.is_open()),
+            ViewerType::Spice => self.spice_session().is_some(),
+        }
     }
 
     pub fn console_grab_focus(&self) {
-        if let Some(d) = self.vnc() {
+        if let Some(d) = self.display() {
             d.widget().grab_focus();
         }
     }
 
-    pub fn console_get_framebuffer(&self) -> Option<gvnc::Framebuffer> {
-        self.vnc().and_then(|d| d.get_framebuffer())
+    pub fn console_get_framebuffer(&self) -> Option<FrameCopy> {
+        match self.display()? {
+            ViewerKind::Vnc(d) => d.get_framebuffer(),
+            ViewerKind::Spice(d) => d.get_framebuffer(),
+        }
     }
 
-    /// `console_open` / `_open`: creates the display, then connects
-    /// through a tunnel, a libvirt-provided fd, or straight to the host.
+    /// `console_open` / `_open`: connects through a tunnel, a
+    /// libvirt-provided fd, or straight to the host.
     pub async fn console_open(&self) -> Result<(), String> {
-        // _init_display
-        let display = VncDisplay::new();
-        display.set_keep_aspect_ratio(true);
-        self.set_display(display.clone());
+        if self.0.viewer_type == ViewerType::Vnc {
+            // VNCViewer._init_display
+            let display = VncDisplay::new();
+            display.set_keep_aspect_ratio(true);
+            self.set_display(ViewerKind::Vnc(display));
+        }
         if let Some(err) = self.0.ginfo.bad_config() {
             return Err(err);
         }
-        match self.get_fd_for_open().await? {
-            Some(fd) => {
-                display.open_fd(fd);
+        let fd = self.get_fd_for_open().await?;
+        match (self.0.viewer_type, fd) {
+            (ViewerType::Vnc, Some(fd)) => {
+                if let Some(d) = self.vnc() {
+                    d.open_fd(fd);
+                }
             }
-            None => {
+            (ViewerType::Vnc, None) => {
                 let (host, port, _) = self.0.ginfo.get_conn_host();
                 let port = port.unwrap_or_default();
                 eprintln!("VNC connecting to host={host} port={port}");
-                display.open_host(&host, &port);
+                if let Some(d) = self.vnc() {
+                    d.open_host(&host, &port);
+                }
             }
+            (ViewerType::Spice, Some(fd)) => {
+                self.create_spice_session().open_fd(fd);
+            }
+            (ViewerType::Spice, None) => self.spice_open_host(),
         }
         Ok(())
     }
 
     pub fn console_set_password(&self, val: &str) {
-        if let Some(d) = self.vnc() {
-            d.set_credential(gvnc::CREDENTIAL_PASSWORD, val);
+        match self.0.viewer_type {
+            ViewerType::Vnc => {
+                if let Some(d) = self.vnc() {
+                    d.set_credential(gvnc::CREDENTIAL_PASSWORD, val);
+                }
+            }
+            ViewerType::Spice => {
+                let Some(session) = self.spice_session() else {
+                    return;
+                };
+                session.object().set_property("password", val);
+                let this = self.clone();
+                glib::spawn_future_local(async move {
+                    match this.get_fd_for_open().await {
+                        Ok(Some(fd)) => {
+                            session.open_fd(fd);
+                        }
+                        Ok(None) => {
+                            session.connect();
+                        }
+                        Err(e) => this.emit_disconnected(Some(e)),
+                    }
+                });
+            }
         }
     }
 
     pub fn console_set_username(&self, val: &str) {
+        // SPICE has no usernames.
         if let Some(d) = self.vnc() {
             d.set_credential(gvnc::CREDENTIAL_USERNAME, val);
         }
@@ -327,36 +671,54 @@ impl Viewer {
 
     /// `console_send_keys`: X keysym names, e.g. `Control_L`.
     pub fn console_send_keys(&self, keys: &[&str]) {
-        let Some(d) = self.vnc() else { return };
+        let Some(d) = self.display() else { return };
         let keyvals: Vec<u32> = keys
             .iter()
             .filter_map(|k| gtk::gdk::Key::from_name(*k))
             .map(|k| k.into_glib())
             .collect();
-        d.send_keys(&keyvals);
+        match d {
+            ViewerKind::Vnc(d) => d.send_keys(&keyvals),
+            ViewerKind::Spice(d) => d.send_keys(&keyvals),
+        }
     }
 
     pub fn console_get_grab_keys(&self) -> String {
-        self.vnc()
-            .map(|d| d.get_grab_keys_string())
-            .unwrap_or_default()
+        match self.display() {
+            Some(ViewerKind::Vnc(d)) => d.get_grab_keys_string(),
+            Some(ViewerKind::Spice(d)) => d.get_grab_keys_string(),
+            None => String::new(),
+        }
     }
 
     pub fn console_get_preferred_size(&self) -> (i32, i32) {
-        self.0.desktop_resolution.get()
+        match self.spice_display() {
+            // When scaling and resizeguest are disabled, this usually
+            // matches the VM resolution.
+            Some(d) if !d.get_scaling_enabled() && !d.get_resize_guest() => d.preferred_size(),
+            _ => self.0.desktop_resolution.get(),
+        }
     }
 
     pub fn console_set_scaling(&self, val: bool) {
-        if let Some(d) = self.vnc() {
-            d.set_scaling(val);
-            self.sync_force_size();
+        match self.display() {
+            Some(ViewerKind::Vnc(d)) => {
+                d.set_scaling(val);
+                self.sync_force_size();
+            }
+            Some(ViewerKind::Spice(d)) => d.set_scaling(val),
+            None => {}
         }
     }
 
     pub fn console_set_resizeguest(&self, val: bool) {
-        if let Some(d) = self.vnc() {
-            d.set_allow_resize(val);
-            self.sync_force_size();
+        match self.display() {
+            Some(ViewerKind::Vnc(d)) => {
+                d.set_allow_resize(val);
+                self.sync_force_size();
+            }
+            Some(ViewerKind::Spice(d)) => d.set_resize_guest(val),
+            None => {}
         }
     }
 
