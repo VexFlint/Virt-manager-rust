@@ -4,9 +4,9 @@
 //! right, the page for the selected row; below, Remove / Cancel / Apply.
 //!
 //! Per ticket 10 the sidebar is a plain `GtkListBox` with directly built
-//! rows. This first slice ports the sidebar (labels and icons exactly as
-//! upstream computes them) and the Overview page's read-only view; the
-//! other pages and the edit/Apply machinery arrive in the next slices.
+//! rows. Ported so far: the sidebar (labels and icons exactly as
+//! upstream computes them), the edit/Apply machinery and the Overview
+//! page; the other pages arrive in the next slices.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -43,6 +43,14 @@ pub enum HwType {
     Rng,
     Panic,
     Vsock,
+}
+
+/// `EDIT_*`: what the pending changes touch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Edit {
+    Name,
+    Title,
+    Desc,
 }
 
 impl HwType {
@@ -635,12 +643,6 @@ impl Overview {
             .has_frame(true)
             .build();
 
-        // Edits are wired up with the edit/Apply port; until then the
-        // fields are display-only.
-        name.set_editable(false);
-        title.set_editable(false);
-        description.set_editable(false);
-
         let basic = gtk::Grid::builder()
             .row_spacing(6)
             .column_spacing(12)
@@ -733,6 +735,7 @@ struct Inner {
     config_cancel: gtk::Button,
     config_apply: gtk::Button,
     oldhwkey: RefCell<Option<String>>,
+    active_edits: RefCell<Vec<Edit>>,
     /// Set while the list is being rebuilt, so the selection churn
     /// doesn't refresh pages.
     repopulating: Cell<bool>,
@@ -808,6 +811,7 @@ impl VmmDetails {
             config_cancel,
             config_apply,
             oldhwkey: RefCell::default(),
+            active_edits: RefCell::default(),
             repopulating: Cell::new(false),
         }));
         this.disable_apply();
@@ -819,8 +823,53 @@ impl VmmDetails {
                 VmmDetails(inner).hw_changed();
             }
         });
+        this.connect_edits();
         this.repopulate_hw_list();
         this
+    }
+
+    /// `_init_details`' edit signals, and the Cancel/Apply buttons.
+    fn connect_edits(&self) {
+        let i = &self.0;
+        let weak = Rc::downgrade(&self.0);
+        let enable = move |edit| {
+            let weak = weak.clone();
+            move || {
+                if let Some(inner) = weak.upgrade() {
+                    VmmDetails(inner).enable_apply(edit);
+                }
+            }
+        };
+        let cb = enable(Edit::Name);
+        i.overview.name.connect_changed(move |_| cb());
+        let cb = enable(Edit::Title);
+        i.overview.title.connect_changed(move |_| cb());
+        let cb = enable(Edit::Desc);
+        i.overview
+            .description
+            .buffer()
+            .connect_changed(move |_| cb());
+
+        let weak = Rc::downgrade(&self.0);
+        i.config_cancel.connect_clicked(move |_| {
+            // Remove current changes and deactivate 'apply' button
+            if let Some(inner) = weak.upgrade() {
+                VmmDetails(inner).refresh_page();
+            }
+        });
+        let weak = Rc::downgrade(&self.0);
+        i.config_apply.connect_clicked(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                let this = VmmDetails(inner);
+                glib::spawn_future_local(async move {
+                    this.config_apply(None).await;
+                });
+            }
+        });
+    }
+
+    fn parent(&self) -> Option<gtk::Window> {
+        self.0.top_box.root().and_downcast::<gtk::Window>()
     }
 
     pub fn top_box(&self) -> &gtk::Box {
@@ -828,8 +877,130 @@ impl VmmDetails {
     }
 
     fn disable_apply(&self) {
+        self.0.active_edits.borrow_mut().clear();
         self.0.config_apply.set_sensitive(false);
         self.0.config_cancel.set_sensitive(false);
+    }
+
+    fn enable_apply(&self, edit: Edit) {
+        self.0.config_apply.set_sensitive(true);
+        self.0.config_cancel.set_sensitive(true);
+        let mut edits = self.0.active_edits.borrow_mut();
+        if !edits.contains(&edit) {
+            edits.push(edit);
+        }
+    }
+
+    fn edited(&self, edit: Edit) -> bool {
+        self.0.active_edits.borrow().contains(&edit)
+    }
+
+    /// `_config_apply`: `true` when the changes went in (or there were
+    /// none to make).
+    async fn config_apply(&self, row: Option<HwRow>) -> bool {
+        let Some(row) = row.or_else(|| self.get_hw_row()) else {
+            return true;
+        };
+        let res = match row.hwtype {
+            HwType::General => self.apply_overview().await,
+            _ => Ok(true),
+        };
+        let success = match res {
+            Ok(success) => success,
+            Err(e) => {
+                crate::error::show_err(
+                    self.parent().as_ref(),
+                    &format!("Error applying changes: {e}"),
+                    None,
+                    "",
+                )
+                .await;
+                false
+            }
+        };
+        if success {
+            self.disable_apply();
+        }
+        success
+    }
+
+    /// `_apply_overview`. The machine type and firmware edits belong to
+    /// the customize dialog.
+    async fn apply_overview(&self) -> Result<bool, String> {
+        let o = &self.0.overview;
+        let mut title = None;
+        let mut description = None;
+        if self.edited(Edit::Title) {
+            title = Some(o.title.text().to_string());
+        }
+        if self.edited(Edit::Desc) {
+            let buffer = o.description.buffer();
+            let (start, end) = buffer.bounds();
+            description = Some(buffer.text(&start, &end, false).to_string());
+        }
+
+        // This needs to be last
+        if self.edited(Edit::Name) {
+            // Renaming is pretty convoluted, so do it here synchronously
+            self.0.vm.rename_domain(&o.name.text()).await?;
+            if title.is_none() && description.is_none() {
+                // Saves some useless redefine attempts
+                return Ok(true);
+            }
+        }
+
+        let vm = self.0.vm.clone();
+        let (t, d) = (title.clone(), description.clone());
+        Ok(self
+            .change_config(
+                async move { vm.define_overview(d.map(Some), t.map(Some), None).await },
+                title.is_some() || description.is_some(),
+                (description, title),
+            )
+            .await)
+    }
+
+    /// `vmmAddHardware.change_config_helper` for guest XML edits: define,
+    /// then hotplug the metadata into a running VM, telling the user
+    /// when the change has to wait for the next shutdown.
+    async fn change_config(
+        &self,
+        define: impl std::future::Future<Output = Result<(), String>>,
+        has_hotplug_args: bool,
+        (description, title): (Option<String>, Option<String>),
+    ) -> bool {
+        let parent = self.parent();
+        // Persistent config change
+        if let Err(e) = define.await {
+            crate::error::show_err(
+                parent.as_ref(),
+                &format!("Error changing VM configuration: {e}"),
+                None,
+                "",
+            )
+            .await;
+            return false;
+        }
+        let vm = &self.0.vm;
+        if !vm.is_active() {
+            return true;
+        }
+
+        // Hotplug change
+        let mut hotplug_err = None;
+        if has_hotplug_args {
+            if let Err(e) = vm.hotplug_metadata(description, title).await {
+                glib::g_debug!("virt-manager", "Hotplug failed: {e}");
+                hotplug_err = Some(e);
+            }
+        }
+        if has_hotplug_args && hotplug_err.is_none() {
+            return true;
+        }
+
+        let msg = "These changes will take effect after the next guest shutdown.";
+        crate::error::show_notice(parent.as_ref(), msg, hotplug_err.as_deref()).await;
+        true
     }
 
     fn make_row_widget(row: &HwRow) -> gtk::ListBoxRow {
@@ -879,7 +1050,9 @@ impl VmmDetails {
         self.0.rows.borrow().get(idx as usize).cloned()
     }
 
-    /// `_hw_changed_cb`.
+    /// `_hw_changed_cb`. Pending edits are offered for applying first
+    /// (asynchronously here, the old page staying up meanwhile); if
+    /// that fails, the old row is selected again.
     fn hw_changed(&self) {
         if self.0.repopulating.get() {
             return;
@@ -888,12 +1061,65 @@ impl VmmDetails {
             return;
         };
         let key = Some(row.key());
-        if *self.0.oldhwkey.borrow() == key && self.0.hw_panel.visible_child_name().is_some() {
+        if *self.0.oldhwkey.borrow() == key {
+            if self.0.hw_panel.visible_child_name().is_none() {
+                self.refresh_page();
+            }
+            return;
+        }
+        let oldrow = {
+            let old = self.0.oldhwkey.borrow();
+            self.0
+                .rows
+                .borrow()
+                .iter()
+                .find(|r| Some(r.key()) == *old)
+                .cloned()
+        };
+        if !self.0.config_apply.is_sensitive() || oldrow.is_none() {
+            self.0.oldhwkey.replace(key);
             self.refresh_page();
             return;
         }
-        self.0.oldhwkey.replace(key);
-        self.refresh_page();
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            if this.has_unapplied_changes(oldrow).await {
+                // Unapplied changes, and syncing them failed
+                this.select_key(this.0.oldhwkey.borrow().clone());
+            } else {
+                this.0.oldhwkey.replace(key);
+                this.refresh_page();
+            }
+        });
+    }
+
+    /// `_set_hw_selection(..., _disable_apply=False)`, by key and
+    /// without re-entering [`Self::hw_changed`].
+    fn select_key(&self, key: Option<String>) {
+        let i = &self.0;
+        let idx = key
+            .and_then(|k| i.rows.borrow().iter().position(|r| r.key() == k))
+            .unwrap_or(0);
+        i.repopulating.set(true);
+        i.hw_list
+            .select_row(i.hw_list.row_at_index(idx as i32).as_ref());
+        i.repopulating.set(false);
+    }
+
+    /// `_has_unapplied_changes`: `false` when nothing is pending, the
+    /// user declines applying, or applying works; `true` when applying
+    /// failed, and the caller should abort what it was about to do.
+    async fn has_unapplied_changes(&self, row: Option<HwRow>) -> bool {
+        let Some(row) = row else {
+            return false;
+        };
+        if !self.0.config_apply.is_sensitive() {
+            return false;
+        }
+        if !crate::error::confirm_unapplied_changes(self.parent().as_ref()).await {
+            return false;
+        }
+        !self.config_apply(Some(row)).await
     }
 
     /// `_refresh_page`.
@@ -975,7 +1201,7 @@ impl VmmDetails {
     fn refresh_vm_state(&self) {
         let vm = &self.0.vm;
         let o = &self.0.overview;
-        o.name.set_sensitive(true);
+        o.name.set_editable(!vm.is_active());
         let status = match vm.run_status_reason() {
             Some(reason) => format!("{} ({reason})", vm.run_status()),
             None => vm.run_status().to_string(),
@@ -1000,9 +1226,15 @@ impl VmmDetails {
         self.refresh_page();
     }
 
-    /// `vmwindow_has_unapplied_changes`: nothing is editable yet.
-    pub fn vmwindow_has_unapplied_changes(&self) -> bool {
-        false
+    /// Whether [`Self::vmwindow_has_unapplied_changes`] would prompt:
+    /// lets the caller hold its action without waiting.
+    pub fn has_pending_edits(&self) -> bool {
+        self.0.config_apply.is_sensitive()
+    }
+
+    /// `vmwindow_has_unapplied_changes`.
+    pub async fn vmwindow_has_unapplied_changes(&self) -> bool {
+        self.has_unapplied_changes(self.get_hw_row()).await
     }
 
     pub fn vmwindow_close(&self) {

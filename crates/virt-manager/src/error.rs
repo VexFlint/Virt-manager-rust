@@ -310,9 +310,8 @@ pub async fn yes_no(parent: Option<&gtk::Window>, text1: &str, text2: Option<&st
     .0
 }
 
-/// `vmmErrorDialog.chkbox_helper`: skip the prompt (returning `true`)
-/// when the config says not to ask; otherwise ask, and store the
-/// "Don't ask me again" answer back.
+/// `vmmErrorDialog.chkbox_helper` with its defaults (`default=True`,
+/// "Don't ask me again").
 pub async fn chkbox_helper(
     parent: Option<&gtk::Window>,
     getcb: impl Fn() -> bool,
@@ -320,8 +319,32 @@ pub async fn chkbox_helper(
     text1: &str,
     text2: Option<&str>,
 ) -> bool {
+    chkbox_helper_with(
+        parent,
+        getcb,
+        setcb,
+        text1,
+        text2,
+        true,
+        "Don't ask me again",
+    )
+    .await
+}
+
+/// `vmmErrorDialog.chkbox_helper`: skip the prompt (returning
+/// `default`) when the config says not to ask; otherwise ask, and
+/// store the checkbox answer back.
+pub async fn chkbox_helper_with(
+    parent: Option<&gtk::Window>,
+    getcb: impl Fn() -> bool,
+    setcb: impl Fn(bool),
+    text1: &str,
+    text2: Option<&str>,
+    default: bool,
+    chktext: &str,
+) -> bool {
     if !getcb() {
-        return true;
+        return default;
     }
     let (response, skip_prompt) = run_dialog(
         parent,
@@ -332,12 +355,50 @@ pub async fn chkbox_helper(
             text2,
             title: "",
             details: None,
-            chktext: Some("Don't ask me again"),
+            chktext: Some(chktext),
         },
     )
     .await;
     setcb(!skip_prompt);
     response
+}
+
+/// `vmmErrorDialog.confirm_unapplied_changes`.
+pub async fn confirm_unapplied_changes(parent: Option<&gtk::Window>) -> bool {
+    let config = crate::engine::get().config();
+    chkbox_helper_with(
+        parent,
+        || config.get_confirm_unapplied(),
+        |v| config.set_confirm_unapplied(v),
+        "There are unapplied changes. Would you like to apply them now?",
+        None,
+        false,
+        "Don't warn me again.",
+    )
+    .await
+}
+
+/// `vmmErrorDialog.show_err(text1, details, dialog_type=..., buttons=OK)`
+/// as `change_config_helper` uses it for its "next guest shutdown"
+/// notice: a warning when there are details, info otherwise.
+pub async fn show_notice(parent: Option<&gtk::Window>, text1: &str, details: Option<&str>) {
+    run_dialog(
+        parent,
+        DialogSpec {
+            kind: if details.is_some() {
+                MessageType::Warning
+            } else {
+                MessageType::Info
+            },
+            buttons: Buttons::Ok,
+            text1,
+            text2: None,
+            title: "",
+            details,
+            chktext: None,
+        },
+    )
+    .await;
 }
 
 #[cfg(test)]
