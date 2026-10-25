@@ -126,6 +126,235 @@ impl DomainXml {
     }
 }
 
+/// `_make_xmlobj_to_define`'s result: the inactive XML as an editable
+/// document, with its typed view. Edits go into `guest` (or straight
+/// into `doc` for the nested parts `Guest` keeps read-only), and
+/// [`VmmDomain::redefine_xmlobj`] writes them back.
+pub struct XmlToDefine {
+    pub doc: virtinst_xml::Document,
+    pub guest: Guest,
+    origxml: String,
+}
+
+impl XmlToDefine {
+    fn parse(xml: String) -> Result<XmlToDefine, String> {
+        let doc = virtinst_xml::parse_libvirt_xml(&xml).map_err(|e| e.to_string())?;
+        let root = doc.root_element().ok_or("Empty domain XML")?;
+        let guest = Guest::from_element(&doc, root);
+        Ok(XmlToDefine {
+            doc,
+            guest,
+            origxml: xml,
+        })
+    }
+
+    pub fn root(&self) -> virtinst_xml::Element {
+        self.doc.root_element().expect("parsed with a root")
+    }
+
+    /// `get_xml()`: the document with `guest`'s edits written back.
+    pub fn get_xml(&mut self) -> Result<String, String> {
+        let root = self.root();
+        self.guest.write_to(&mut self.doc, root);
+        // An unset text field writes nothing; `guest` was read from
+        // `doc`, so `None` here means the element was cleared.
+        for (tag, unset) in [
+            ("title", self.guest.title.is_none()),
+            ("description", self.guest.description.is_none()),
+        ] {
+            if unset {
+                virtinst_xml::remove_path_if_present(&mut self.doc, root, &[tag])
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        self.doc.write_str().map_err(|e| e.to_string())
+    }
+
+    /// `./os`, written back from an edited copy of `guest.os`.
+    pub fn write_os(&mut self) {
+        let root = self.root();
+        let os = virtinst_xml::resolve_or_create_path(&mut self.doc, root, &["os"]);
+        self.guest.os.write_to(&mut self.doc, os);
+    }
+
+    /// `is_uefi`.
+    pub fn is_uefi(&self) -> bool {
+        let os = &self.guest.os;
+        if os.loader.is_some() && os.loader_type.as_deref() == Some("pflash") {
+            return true;
+        }
+        os.firmware.as_deref() == Some("efi")
+    }
+}
+
+/// `Guest.validate_name` (with `XMLBuilder.validate_generic_name`),
+/// minus the collision check, which needs the connection.
+pub fn validate_generic_name(name_label: &str, val: &str) -> Result<(), String> {
+    if val.is_empty() {
+        return Err(format!("A name must be specified for the {name_label}"));
+    }
+    if val.contains('/') {
+        return Err(format!(
+            "{name_label} name '{val}' can not contain '/' character."
+        ));
+    }
+    Ok(())
+}
+
+/// A storage volume or local file that `_copy_nvram_file` made or
+/// will remove.
+enum NvramFile {
+    Vol(virt::storage_vol::StorageVol),
+    Local(String),
+}
+
+impl NvramFile {
+    fn path(&self) -> String {
+        match self {
+            NvramFile::Vol(v) => v.get_path().unwrap_or_default(),
+            NvramFile::Local(p) => p.clone(),
+        }
+    }
+
+    fn delete(&self) -> Result<(), String> {
+        match self {
+            NvramFile::Vol(v) => v.delete(0).map_err(|e| e.message().to_string()),
+            NvramFile::Local(p) => std::fs::remove_file(p).map_err(|e| e.to_string()),
+        }
+    }
+}
+
+/// `_copy_nvram_file`'s copy, blocking: libvirt has no API to rename a
+/// storage volume, so the NVRAM is cloned next to the old one under
+/// the new name (`Cloner.build_clone_disk` + `build_storage`). A path
+/// outside any storage pool is copied directly when the connection is
+/// local. Returns `(new, old)`, or `None` when the old file can't be
+/// found.
+fn copy_nvram_file(
+    conn: &Connect,
+    old_path: &str,
+    new_name: &str,
+    is_local: bool,
+) -> Result<Option<(NvramFile, NvramFile)>, String> {
+    use virt::storage_pool::StoragePool;
+    use virt::storage_vol::StorageVol;
+
+    let old = std::path::Path::new(old_path);
+    let ext = old
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_else(|| ".fd".into());
+    let base = std::path::Path::new(new_name)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| new_name.to_string());
+    let new_file = format!("{base}_VARS{ext}");
+    let dir = old.parent().unwrap_or(std::path::Path::new("/"));
+    let new_path = dir.join(&new_file).to_string_lossy().into_owned();
+
+    if let Ok(vol) = StorageVol::lookup_by_path(conn, old_path) {
+        let pool = StoragePool::lookup_by_volume(&vol).map_err(|e| e.message().to_string())?;
+        let info = vol.get_info().map_err(|e| e.message().to_string())?;
+        let format = vol
+            .get_xml_desc(0)
+            .ok()
+            .and_then(|xml| volume_format(&xml))
+            .map(|f| format!("<format type='{f}'/>"))
+            .unwrap_or_default();
+        let xml = format!(
+            "<volume><name>{}</name><capacity>{}</capacity>\
+             <target>{format}</target></volume>",
+            glib::markup_escape_text(&new_file),
+            info.capacity
+        );
+        let newvol = StorageVol::create_xml_from(&pool, &xml, &vol, 0)
+            .map_err(|e| e.message().to_string())?;
+        return Ok(Some((NvramFile::Vol(newvol), NvramFile::Vol(vol))));
+    }
+    if is_local && old.exists() {
+        std::fs::copy(old, &new_path).map_err(|e| e.to_string())?;
+        return Ok(Some((
+            NvramFile::Local(new_path),
+            NvramFile::Local(old_path.to_string()),
+        )));
+    }
+    eprintln!(
+        "old_nvram_path={old_path} but it doesn't appear to exist. \
+         skipping rename nvram duplication"
+    );
+    Ok(None)
+}
+
+/// `<target><format type=...>` of a storage volume's XML.
+fn volume_format(xml: &str) -> Option<String> {
+    let doc = virtinst_xml::parse_libvirt_xml(xml).ok()?;
+    let root = doc.root_element()?;
+    let format = virtinst_xml::resolve_path(&doc, root, &["target", "format"])?;
+    format.attribute(&doc, "type").map(str::to_string)
+}
+
+/// `vmmLibvirtObject.define_name` + `vmmConnection.rename_object`:
+/// undefine the old name (keeping NVRAM and TPM state) and define the
+/// new XML, putting the old one back if that fails; autostart carries
+/// over. Blocking.
+fn define_name(
+    conn: &Connect,
+    dom: &Domain,
+    newname: &str,
+    has_nvram: bool,
+    has_tpm_state: bool,
+) -> Result<(), String> {
+    let msg = |e: virt::error::Error| e.message().to_string();
+    let oldautostart = dom.get_autostart().unwrap_or(false);
+    let origxml = dom
+        .get_xml_desc(sys::VIR_DOMAIN_XML_INACTIVE | sys::VIR_DOMAIN_XML_SECURE)
+        .map_err(msg)?;
+    let mut xmlobj = XmlToDefine::parse(origxml.clone())?;
+    if xmlobj.guest.name.as_deref() == Some(newname) {
+        return Ok(());
+    }
+    eprintln!(
+        "Changing domain name from {} to {newname}",
+        xmlobj.guest.name.as_deref().unwrap_or("")
+    );
+    xmlobj.guest.name = Some(newname.to_string());
+    let newxml = xmlobj.get_xml()?;
+
+    // `delete(force=False)`
+    let mut flags = 0;
+    if has_nvram {
+        flags |= sys::VIR_DOMAIN_UNDEFINE_KEEP_NVRAM;
+    }
+    // `domain_undefine_keep_tpm`: libvirt 8.9.0
+    if has_tpm_state && conn.get_lib_version().unwrap_or(0) >= 8_009_000 {
+        flags |= sys::VIR_DOMAIN_UNDEFINE_KEEP_TPM;
+    }
+    if let Err(e) = dom.undefine_flags(flags) {
+        eprintln!("libvirt undefineFlags failed, falling back to old style: {e}");
+        dom.undefine().map_err(msg)?;
+    }
+
+    let newdom = match Domain::define_xml(conn, &newxml) {
+        Ok(d) => d,
+        Err(renameerr) => {
+            eprintln!("Error defining new name domain XML: {renameerr}");
+            return match Domain::define_xml(conn, &origxml) {
+                Ok(_) => Err(renameerr.message().to_string()),
+                Err(fixerr) => Err(format!(
+                    "domain rename failed. Attempting to recover also failed.\n\n\
+                     Original error: {}\n\nRecover error: {}",
+                    renameerr.message(),
+                    fixerr.message()
+                )),
+            };
+        }
+    };
+    if oldautostart {
+        newdom.set_autostart(true).map_err(msg)?;
+    }
+    Ok(())
+}
+
 /// `vmmConnection.pretty_hv`: `<domain type>` + `<os><type>` to a label.
 pub fn pretty_hv(gtype: &str, domtype: &str) -> String {
     let gtype = gtype.to_lowercase();
@@ -377,6 +606,205 @@ impl VmmDomain {
     }
 
     /// `get_pretty_hv_type`.
+    pub fn emit_state_changed(&self) {
+        self.emit_by_name::<()>("state-changed", &[]);
+    }
+
+    fn handle(&self) -> Result<std::sync::Arc<crate::connection::ConnHandle>, String> {
+        let conn = self.conn().ok_or("Connection closed")?;
+        conn.handle().ok_or_else(|| "Not connected".to_string())
+    }
+
+    /// Runs `f` on the domain, looked up by UUID, on a worker thread.
+    async fn with_domain<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&Connect, &Domain) -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
+        let handle = self.handle()?;
+        let uuid = self.get_uuid();
+        gio::spawn_blocking(move || {
+            let conn = handle.connect();
+            let dom =
+                Domain::lookup_by_uuid_string(conn, &uuid).map_err(|e| e.message().to_string())?;
+            f(conn, &dom)
+        })
+        .await
+        .map_err(|_| "Worker thread panicked".to_string())?
+    }
+
+    /// `_make_xmlobj_to_define`: the inactive XML, for editing.
+    pub async fn make_xmlobj_to_define(&self) -> Result<XmlToDefine, String> {
+        let xml = self
+            .with_domain(|_, dom| {
+                dom.get_xml_desc(sys::VIR_DOMAIN_XML_INACTIVE | sys::VIR_DOMAIN_XML_SECURE)
+                    .map_err(|e| e.message().to_string())
+            })
+            .await?;
+        XmlToDefine::parse(xml)
+    }
+
+    /// `_redefine_xmlobj` / `_redefine_xml_internal`: define the edited
+    /// XML, then pick it up (there are no libvirt events to do it).
+    pub async fn redefine_xmlobj(&self, mut xmlobj: XmlToDefine) -> Result<(), String> {
+        let newxml = xmlobj.get_xml()?;
+        if newxml == xmlobj.origxml {
+            eprintln!(
+                "Redefine requested for {}, but XML didn't change!",
+                self.get_name()
+            );
+        }
+        let handle = self.handle()?;
+        gio::spawn_blocking(move || {
+            Domain::define_xml(handle.connect(), &newxml)
+                .map(|_| ())
+                .map_err(|e| e.message().to_string())
+        })
+        .await
+        .map_err(|_| "Worker thread panicked".to_string())??;
+        self.ensure_latest_xml().await;
+        Ok(())
+    }
+
+    /// `ensure_latest_xml` + `idle_emit("state-changed")`.
+    async fn ensure_latest_xml(&self) {
+        let _ = self.refresh_xml().await;
+        self.emit_state_changed();
+        if let Some(conn) = self.conn() {
+            conn.tick();
+        }
+    }
+
+    /// `define_overview`: `None` leaves a field alone, `Some(None)`
+    /// clears it.
+    pub async fn define_overview(
+        &self,
+        description: Option<Option<String>>,
+        title: Option<Option<String>>,
+        nvram: Option<String>,
+    ) -> Result<(), String> {
+        let mut guest = self.make_xmlobj_to_define().await?;
+        if let Some(description) = description {
+            guest.guest.description = description.filter(|s| !s.is_empty());
+        }
+        if let Some(title) = title {
+            guest.guest.title = title.filter(|s| !s.is_empty());
+        }
+        if let Some(nvram) = nvram {
+            guest.guest.os.nvram = Some(nvram);
+            guest.write_os();
+        }
+        self.redefine_xmlobj(guest).await
+    }
+
+    /// `hotplug(description=..., title=...)`: the live metadata.
+    pub async fn hotplug_metadata(
+        &self,
+        description: Option<String>,
+        title: Option<String>,
+    ) -> Result<(), String> {
+        if !self.is_active() {
+            return Ok(());
+        }
+        self.with_domain(move |_, dom| {
+            let flags = sys::VIR_DOMAIN_AFFECT_LIVE | sys::VIR_DOMAIN_AFFECT_CONFIG;
+            let set = |kind: u32, val: &str| {
+                dom.set_metadata(kind as i32, Some(val), None, None, flags)
+                    .map(|_| ())
+                    .map_err(|e| e.message().to_string())
+            };
+            if let Some(d) = &description {
+                set(sys::VIR_DOMAIN_METADATA_DESCRIPTION, d)?;
+            }
+            if let Some(t) = &title {
+                set(sys::VIR_DOMAIN_METADATA_TITLE, t)?;
+            }
+            Ok(())
+        })
+        .await?;
+        self.ensure_latest_xml().await;
+        Ok(())
+    }
+
+    /// `rename_domain`: validate, carry the NVRAM file over to the new
+    /// name, then `define_name`.
+    pub async fn rename_domain(&self, new_name: &str) -> Result<(), String> {
+        if new_name == self.get_name() {
+            return Ok(());
+        }
+        validate_generic_name("Guest", new_name)?;
+        let name = new_name.to_string();
+        self.with_domain(move |conn, _| match Domain::lookup_by_name(conn, &name) {
+            Ok(_) => Err(format!("Guest name '{name}' is already in use.")),
+            Err(_) => Ok(()),
+        })
+        .await?;
+
+        let xmlobj = self.make_xmlobj_to_define().await?;
+        let has_nvram = xmlobj.is_uefi() || xmlobj.guest.os.nvram.is_some();
+        let has_tpm_state = xmlobj
+            .guest
+            .devices
+            .tpms
+            .iter()
+            .any(|t| t.backend_type.as_deref() == Some("emulator"));
+        let uri = self.conn().map(|c| c.get_uri()).unwrap_or_default();
+        let parsed = virtinst_core::connection::Uri::parse(&uri);
+        let is_local = !parsed.is_remote();
+        let old_nvram_path = xmlobj.guest.os.nvram.clone().unwrap_or_else(|| {
+            // Probably using firmware=efi which doesn't put nvram
+            // path in the XML on older libvirt. Build the implied path
+            let root = if parsed.path == "/session" {
+                std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
+                    glib::home_dir()
+                        .join(".local/share/libvirt")
+                        .to_string_lossy()
+                        .into_owned()
+                })
+            } else {
+                "/var/lib/libvirt".to_string()
+            };
+            let driver = parsed
+                .scheme
+                .split('+')
+                .next()
+                .unwrap_or("qemu")
+                .to_string();
+            format!("{root}/{driver}/nvram/{}_VARS.fd", self.get_name())
+        });
+
+        let name = new_name.to_string();
+        let renamed = self
+            .with_domain(move |conn, dom| {
+                let copied = if has_nvram {
+                    copy_nvram_file(conn, &old_nvram_path, &name, is_local)?
+                } else {
+                    None
+                };
+                let res = define_name(conn, dom, &name, has_nvram, has_tpm_state);
+                if let Err(e) = res {
+                    if let Some((new, _)) = &copied {
+                        if let Err(warn) = new.delete() {
+                            eprintln!("rename failed and new nvram was not removed: '{warn}'");
+                        }
+                    }
+                    return Err(e);
+                }
+                let Some((new, old)) = copied else {
+                    return Ok(None);
+                };
+                if let Err(warn) = old.delete() {
+                    eprintln!("old nvram file was not removed: '{warn}'");
+                }
+                Ok(Some(new.path()))
+            })
+            .await;
+        self.ensure_latest_xml().await;
+        if let Some(new_path) = renamed? {
+            self.define_overview(None, None, Some(new_path)).await?;
+        }
+        Ok(())
+    }
+
     pub fn get_pretty_hv_type(&self) -> String {
         let Some(x) = self.xmlobj() else {
             return String::new();
@@ -514,6 +942,71 @@ mod tests {
     /// `test:///default` is one shared in-process driver instance, so
     /// tests that change its domains' state must not overlap.
     static TEST_DRIVER: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn validate_generic_name_like_upstream() {
+        assert!(validate_generic_name("Guest", "ok-name").is_ok());
+        assert_eq!(
+            validate_generic_name("Guest", "").unwrap_err(),
+            "A name must be specified for the Guest"
+        );
+        assert_eq!(
+            validate_generic_name("Guest", "a/b").unwrap_err(),
+            "Guest name 'a/b' can not contain '/' character."
+        );
+    }
+
+    #[test]
+    fn xml_to_define_edits_round_trip() {
+        let xml = "<domain type='test'><name>x</name><title>t</title>\
+                   <os><type>hvm</type><loader type='pflash'>/l.fd</loader></os></domain>";
+        let mut x = XmlToDefine::parse(xml.to_string()).unwrap();
+        assert!(x.is_uefi());
+        x.guest.title = None;
+        x.guest.description = Some("d".into());
+        x.guest.os.nvram = Some("/n.fd".into());
+        x.write_os();
+        let out = x.get_xml().unwrap();
+        assert!(!out.contains("<title>"), "{out}");
+        assert!(out.contains("<description>d</description>"), "{out}");
+        assert!(out.contains("<nvram>/n.fd</nvram>"), "{out}");
+        assert!(out.contains("pflash"), "{out}");
+    }
+
+    #[test]
+    fn local_nvram_copy_uses_the_new_name() {
+        let dir = std::env::temp_dir().join(format!("vmm-nvram-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("old_VARS.fd");
+        std::fs::write(&old, b"vars").unwrap();
+        let mut conn = Connect::open(Some("test:///default")).unwrap();
+        let (new, oldf) = copy_nvram_file(&conn, old.to_str().unwrap(), "new", true)
+            .unwrap()
+            .expect("copied");
+        assert_eq!(new.path(), dir.join("new_VARS.fd").to_str().unwrap());
+        assert_eq!(std::fs::read(new.path()).unwrap(), b"vars");
+        oldf.delete().unwrap();
+        assert!(!old.exists());
+        new.delete().unwrap();
+        let _ = std::fs::remove_dir(&dir);
+        conn.close().unwrap();
+    }
+
+    #[test]
+    fn define_name_renames_and_keeps_autostart() {
+        let _guard = TEST_DRIVER.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = Connect::open(Some("test:///default")).unwrap();
+        let xml = "<domain type='test'><name>vmm-rename-a</name><memory>1024</memory>\
+                   <os><type>hvm</type></os></domain>";
+        let dom = Domain::define_xml(&conn, xml).unwrap();
+        dom.set_autostart(true).unwrap();
+        define_name(&conn, &dom, "vmm-rename-b", false, false).unwrap();
+        assert!(Domain::lookup_by_name(&conn, "vmm-rename-a").is_err());
+        let renamed = Domain::lookup_by_name(&conn, "vmm-rename-b").unwrap();
+        assert!(renamed.get_autostart().unwrap());
+        renamed.undefine().unwrap();
+        conn.close().unwrap();
+    }
 
     /// libvirt's built-in `test:///default` driver ships one running
     /// domain called `test`.

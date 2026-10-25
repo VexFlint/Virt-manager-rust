@@ -649,8 +649,18 @@ impl VmmVMWindow {
             self.sync_toolbar_page_buttons(current.as_deref().unwrap_or(PAGE_CONSOLE));
             return;
         }
-        if current.as_deref() == Some(PAGE_DETAILS) && i.details.vmwindow_has_unapplied_changes() {
+        if current.as_deref() == Some(PAGE_DETAILS) && i.details.has_pending_edits() {
             self.sync_toolbar_page_buttons(PAGE_DETAILS);
+            // Offer the pending edits first; switch once they are
+            // applied or dropped.
+            let this = self.clone();
+            let page = page.to_string();
+            glib::spawn_future_local(async move {
+                if !this.0.details.vmwindow_has_unapplied_changes().await {
+                    this.0.details.vmwindow_close();
+                    this.details_console_changed(&page);
+                }
+            });
             return;
         }
         if current.as_deref() == Some(page) {
@@ -766,10 +776,16 @@ impl VmmVMWindow {
     }
 
     fn control_vm_run(&self) {
-        if self.0.details.vmwindow_has_unapplied_changes() {
+        if !self.0.details.has_pending_edits() {
+            self.0.vm_actions.activate_action("run", None);
             return;
         }
-        self.0.vm_actions.activate_action("run", None);
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            if !this.0.details.vmwindow_has_unapplied_changes().await {
+                this.0.vm_actions.activate_action("run", None);
+            }
+        });
     }
 
     fn control_vm_shutdown(&self) {
