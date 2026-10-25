@@ -68,6 +68,12 @@ pub struct Guest {
     #[xml(path = "title", text)]
     pub title: Option<String>,
 
+    #[xml(path = "vcpu", text)]
+    pub vcpus: Option<u32>,
+
+    #[xml(path = "vcpu", attribute = "current")]
+    pub vcpu_current: Option<u32>,
+
     #[xml(path = "currentMemory", text)]
     pub current_memory: Option<u32>,
 
