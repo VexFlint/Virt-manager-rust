@@ -22,6 +22,7 @@ use gtk::glib::prelude::*;
 use gtk::glib::subclass::prelude::*;
 use gtk::glib::subclass::Signal;
 use virt::connect::Connect;
+use virtinst_core::capabilities::caps::Capabilities;
 use virtinst_core::connection::Uri;
 
 use crate::domain::{DomainSnapshot, VmmDomain};
@@ -141,6 +142,10 @@ mod imp {
         pub vms: RefCell<Vec<VmmDomain>>,
         pub ticking: Cell<bool>,
         pub hostcpus: Cell<u32>,
+        /// `_hostinfo[1]`, in KiB.
+        pub hostmem: Cell<u64>,
+        /// `caps.host.cpu.model`.
+        pub host_cpu_model: RefCell<Option<String>>,
     }
 
     #[glib::object_subclass]
@@ -208,6 +213,21 @@ impl VmmConnection {
         }
     }
 
+    /// `host_active_processor_count`.
+    pub fn host_active_processor_count(&self) -> u32 {
+        self.imp().hostcpus.get()
+    }
+
+    /// `host_memory_size`, in KiB.
+    pub fn host_memory_size(&self) -> u64 {
+        self.imp().hostmem.get()
+    }
+
+    /// `caps.host.cpu.model`.
+    pub fn host_cpu_model(&self) -> Option<String> {
+        self.imp().host_cpu_model.borrow().clone()
+    }
+
     pub fn handle(&self) -> Option<Arc<ConnHandle>> {
         self.imp().handle.borrow().clone()
     }
@@ -237,14 +257,23 @@ impl VmmConnection {
             let res = gio::spawn_blocking(move || {
                 let conn = Connect::open(Some(&uri2)).map_err(|e| e.message().to_string())?;
                 // `_hostinfo = getInfo()`; [2] is the active CPU count.
-                let hostcpus = conn.get_node_info().map(|i| i.cpus).unwrap_or(0);
-                Ok((conn, hostcpus))
+                let info = conn.get_node_info().ok();
+                let hostcpus = info.as_ref().map(|i| i.cpus).unwrap_or(0);
+                let hostmem = info.map(|i| i.memory).unwrap_or(0);
+                let caps = conn
+                    .get_capabilities()
+                    .ok()
+                    .and_then(|xml| Capabilities::parse(&xml).ok());
+                let host_cpu_model = caps.and_then(|c| c.host.cpu.model);
+                Ok((conn, (hostcpus, hostmem, host_cpu_model)))
             })
             .await
             .unwrap_or_else(|_| Err("Connect thread panicked".to_string()));
             match res {
-                Ok((conn, hostcpus)) => {
+                Ok((conn, (hostcpus, hostmem, host_cpu_model))) => {
                     this.imp().hostcpus.set(hostcpus);
+                    this.imp().hostmem.set(hostmem);
+                    this.imp().host_cpu_model.replace(host_cpu_model);
                     this.imp().handle.replace(Some(Arc::new(ConnHandle(conn))));
                     this.change_state(ConnState::Active);
                     this.tick();

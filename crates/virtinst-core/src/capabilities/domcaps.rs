@@ -317,6 +317,12 @@ pub struct DomainCapabilities {
     pub os: CapsBlock,
     pub devices: DomainCapabilitiesDevices,
     pub cpu: Cpu,
+    /// `<memoryBacking>` — upstream's `_MemoryBacking`.
+    pub memorybacking: CapsBlock,
+    /// `_convert_mode_to_cpu` for the supported `host-model` mode: a
+    /// `<cpu>` document to expand with `baselineHypervisorCPU`, kept
+    /// at parse time since the mode's raw children aren't modeled.
+    pub host_model_cpu_xml: Option<String>,
 }
 
 impl DomainCapabilities {
@@ -343,6 +349,8 @@ impl DomainCapabilities {
                 Some(el) => Cpu::from_element(&doc, el),
                 None => Cpu::default(),
             },
+            memorybacking: CapsBlock::from_optional_child(&doc, root, "memoryBacking"),
+            host_model_cpu_xml: host_model_cpu_xml(&doc, root),
         })
     }
 
@@ -491,6 +499,60 @@ impl DomainCapabilities {
                 .is_some_and(|e| e.has_value("on"))
     }
 
+    /// Upstream's `get_cpu_models`: the usable custom models.
+    pub fn get_cpu_models(&self) -> Vec<String> {
+        self.cpu
+            .modes
+            .iter()
+            .filter(|m| m.name.as_deref() == Some("custom") && m.supported == Some(true))
+            .flat_map(|m| &m.models)
+            .filter(|m| m.usable.as_deref() != Some("no"))
+            .filter_map(|m| m.model.clone())
+            .collect()
+    }
+
+    /// Upstream's `supports_filesystem_virtiofs`.
+    pub fn supports_filesystem_virtiofs(&self) -> bool {
+        self.devices
+            .filesystem
+            .get_enum("driverType")
+            .is_some_and(|e| e.has_value("virtiofs"))
+    }
+
+    /// Upstream's `supports_memorybacking_memfd`.
+    pub fn supports_memorybacking_memfd(&self) -> bool {
+        self.memorybacking
+            .get_enum("sourceType")
+            .is_some_and(|e| e.has_value("memfd"))
+    }
+
+    /// `DomainCpu._get_app_default_mode` (with
+    /// `_should_use_maximum_cpu_mode`), for a guest of `domain_type`
+    /// on `arch`/`machine`.
+    pub fn app_default_cpu_mode(
+        &self,
+        domain_type: Option<&str>,
+        arch: Option<&str>,
+        machine: Option<&str>,
+    ) -> &'static str {
+        let arch = arch.unwrap_or("");
+        let machine = machine.unwrap_or("");
+        let virt = machine.starts_with("virt");
+        let arch_ok = matches!(arch, "x86_64" | "i686" | "loongarch64")
+            || (matches!(arch, "armv7l" | "aarch64") && virt)
+            || (matches!(arch, "riscv64" | "riscv32") && virt);
+        if self.supports_maximum_cpu_mode() && domain_type == Some("qemu") && arch_ok {
+            return "maximum";
+        }
+        if self.supports_safe_host_passthrough() {
+            return "host-passthrough";
+        }
+        if self.supports_safe_host_model() {
+            return "host-model";
+        }
+        "host-model-only"
+    }
+
     /// Upstream's `supports_maximum_cpu_mode` (`domcapabilities.py:391`).
     pub fn supports_maximum_cpu_mode(&self) -> bool {
         self.cpu
@@ -621,6 +683,62 @@ impl DomainCapabilities {
     }
 }
 
+/// `_convert_mode_to_cpu` for the supported `host-model` mode.
+fn host_model_cpu_xml(doc: &Document, root: Element) -> Option<String> {
+    let mode = root
+        .find(doc, "cpu")?
+        .find_all(doc, "mode")
+        .into_iter()
+        .find(|m| {
+            m.attribute(doc, "name") == Some("host-model")
+                && m.attribute(doc, "supported") == Some("yes")
+        })?;
+    let esc = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+    let mut xml = String::from("<cpu>");
+    for child in mode.child_elements(doc) {
+        let mut attrs: Vec<_> = child.attributes(doc).iter().collect();
+        attrs.sort();
+        xml.push('<');
+        xml.push_str(child.name(doc));
+        for (k, v) in attrs {
+            xml.push_str(&format!(" {k}=\"{}\"", esc(v)));
+        }
+        xml.push_str(&format!(
+            ">{}</{}>",
+            esc(&child.text_content(doc)),
+            child.name(doc)
+        ));
+    }
+    let arch = root
+        .find(doc, "arch")
+        .map(|e| e.text_content(doc))
+        .unwrap_or_default();
+    xml.push_str(&format!("<arch>{}</arch></cpu>", esc(&arch)));
+    Some(xml)
+}
+
+/// `_lookup_cpu_security_features`'s filter over the expanded CPU.
+pub fn cpu_security_features(expanded_xml: &str) -> Vec<String> {
+    const SEC_FEATURES: [&str; 5] = ["spec-ctrl", "ssbd", "ibpb", "virt-ssbd", "md-clear"];
+    let Ok(doc) = parse_libvirt_xml(expanded_xml) else {
+        return vec![];
+    };
+    let Some(root) = doc.root_element() else {
+        return vec![];
+    };
+    root.find_all(&doc, "feature")
+        .into_iter()
+        .filter_map(|f| f.attribute(&doc, "name"))
+        .filter(|n| SEC_FEATURES.contains(n))
+        .map(str::to_string)
+        .collect()
+}
+
 /// Resolved default `<cpu>` mode — see [`DomainCapabilities::
 /// default_cpu_mode`]'s doc comment for the full trace of which
 /// upstream branch produces which variant.
@@ -646,6 +764,47 @@ pub enum DefaultCpuMode {
 mod tests {
     use super::*;
     use crate::test_support::TEST_DOMAIN_LOCK;
+
+    #[test]
+    fn cpu_models_memfd_and_host_model_xml() {
+        let caps = DomainCapabilities::parse(
+            "<domainCapabilities><arch>x86_64</arch>\
+             <memoryBacking supported='yes'><enum name='sourceType'><value>memfd</value></enum></memoryBacking>\
+             <cpu><mode name='host-passthrough' supported='yes'/>\
+             <mode name='host-model' supported='yes'><model fallback='forbid'>Skylake</model>\
+             <vendor>Intel</vendor><feature policy='require' name='ssbd'/></mode>\
+             <mode name='custom' supported='yes'><model usable='yes'>Haswell</model>\
+             <model usable='no'>EPYC</model><model usable='unknown'>qemu64</model></mode>\
+             <mode name='maximum' supported='yes'/></cpu>\
+             <devices><filesystem supported='yes'><enum name='driverType'><value>virtiofs</value></enum></filesystem></devices>\
+             </domainCapabilities>",
+        )
+        .unwrap();
+        assert_eq!(caps.get_cpu_models(), ["Haswell", "qemu64"]);
+        assert!(caps.supports_memorybacking_memfd());
+        assert!(caps.supports_filesystem_virtiofs());
+        let xml = caps.host_model_cpu_xml.as_deref().unwrap();
+        assert_eq!(
+            xml,
+            "<cpu><model fallback=\"forbid\">Skylake</model><vendor>Intel</vendor>\
+             <feature name=\"ssbd\" policy=\"require\"></feature><arch>x86_64</arch></cpu>"
+        );
+        assert_eq!(
+            caps.app_default_cpu_mode(Some("qemu"), Some("x86_64"), Some("pc-q35-9.0")),
+            "maximum"
+        );
+        assert_eq!(
+            caps.app_default_cpu_mode(Some("kvm"), Some("x86_64"), None),
+            "host-model"
+        );
+        assert_eq!(
+            cpu_security_features(
+                "<cpu><feature policy='require' name='ssbd'/><feature policy='require' name='vmx'/>\
+                 <feature policy='disable' name='md-clear'/></cpu>"
+            ),
+            ["ssbd", "md-clear"]
+        );
+    }
 
     /// Real libvirt call against libvirt's builtin `test:///` driver —
     /// same no-daemon guarantee `connection.rs`/`domain.rs`'s own tests

@@ -16,6 +16,7 @@ use gtk::prelude::*;
 use virtinst_xml::{Document, Element};
 
 use crate::domain::{DomainXml, VmmDomain};
+use virtinst_core::domain::cpu;
 
 /// `HW_LIST_TYPE_*`; the order is the order rows are listed in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -51,6 +52,11 @@ enum Edit {
     Name,
     Title,
     Desc,
+    Vcpus,
+    Cpu,
+    Topology,
+    Mem,
+    MemShared,
 }
 
 impl HwType {
@@ -596,7 +602,7 @@ fn value_label() -> gtk::Label {
 fn frame(title: &str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 6);
     let label = gtk::Label::new(None);
-    label.set_markup(&format!("<b>{title}</b>"));
+    label.set_markup_with_mnemonic(&format!("<b>{title}</b>"));
     label.set_xalign(0.0);
     vbox.append(&label);
     child.set_margin_start(12);
@@ -722,6 +728,342 @@ impl Overview {
     }
 }
 
+/// A `vm.hotplug(...)` call for [`VmmDetails::change_config`].
+type Hotplug = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>>>>;
+
+/// `uiutil.spin_get_helper`: the typed text if it parses, else the
+/// adjustment's value.
+fn spin_get(spin: &gtk::SpinButton) -> f64 {
+    spin.text()
+        .trim()
+        .parse::<f64>()
+        .unwrap_or_else(|_| spin.value())
+}
+
+fn spin(lower: f64, upper: f64, page: f64) -> gtk::SpinButton {
+    let adj = gtk::Adjustment::new(lower, lower, upper, 1.0, page, 0.0);
+    let spin = gtk::SpinButton::new(Some(&adj), 1.0, 0);
+    spin.set_numeric(true);
+    spin.set_halign(gtk::Align::Start);
+    spin
+}
+
+fn left_label(text: &str) -> gtk::Label {
+    let label = gtk::Label::with_mnemonic(text);
+    label.set_xalign(0.0);
+    label.set_halign(gtk::Align::Start);
+    label
+}
+
+/// One row of the `cpu-model` combo: `[label, sortkey, idstring]`;
+/// `None` is the separator.
+type CpuModelRow = Option<(String, String, String)>;
+
+/// The `cpu-model` combo with its entry: GTK4 has no non-deprecated
+/// editable combo, so this is an entry plus a drop-down button whose
+/// popover lists the rows.
+struct CpuModelCombo {
+    widget: gtk::Box,
+    entry: gtk::Entry,
+    list: gtk::ListBox,
+    popover: gtk::Popover,
+    rows: RefCell<Vec<CpuModelRow>>,
+    /// Whether the domcaps models are in.
+    loaded: Cell<bool>,
+}
+
+impl CpuModelCombo {
+    fn new() -> Rc<CpuModelCombo> {
+        let entry = gtk::Entry::new();
+        entry.set_width_chars(25);
+        let list = gtk::ListBox::new();
+        list.set_selection_mode(gtk::SelectionMode::None);
+        let scroll = gtk::ScrolledWindow::builder()
+            .child(&list)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_height(true)
+            .max_content_height(400)
+            .build();
+        let popover = gtk::Popover::new();
+        popover.set_child(Some(&scroll));
+        let button = gtk::MenuButton::new();
+        button.set_popover(Some(&popover));
+        let widget = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        widget.add_css_class("linked");
+        widget.append(&entry);
+        widget.append(&button);
+        widget.set_halign(gtk::Align::Start);
+        entry.update_property(&[gtk::accessible::Property::Label("CPU model")]);
+        let this = Rc::new(CpuModelCombo {
+            widget,
+            entry,
+            list,
+            popover,
+            rows: RefCell::default(),
+            loaded: Cell::new(false),
+        });
+        let weak = Rc::downgrade(&this);
+        this.list.connect_row_activated(move |_, row| {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            let label = this
+                .rows
+                .borrow()
+                .get(row.index() as usize)
+                .and_then(|r| r.as_ref().map(|(label, _, _)| label.clone()));
+            if let Some(label) = label {
+                this.entry.set_text(&label);
+            }
+            this.popover.popdown();
+        });
+        this.set_rows(vec![]);
+        this
+    }
+
+    /// `_init_details`' model: the special modes, a separator, then
+    /// the domcaps models, sorted by sort key.
+    fn set_rows(&self, models: Vec<String>) {
+        let special = [
+            ("Application Default", "01", cpu::SPECIAL_MODE_APP_DEFAULT),
+            ("Hypervisor Default", "02", cpu::SPECIAL_MODE_HV_DEFAULT),
+            ("Clear CPU configuration", "03", cpu::SPECIAL_MODE_CLEAR),
+            ("host-model", "04", cpu::SPECIAL_MODE_HOST_MODEL),
+            ("host-passthrough", "05", cpu::SPECIAL_MODE_HOST_PASSTHROUGH),
+            ("maximum", "06", cpu::SPECIAL_MODE_MAXIMUM),
+        ];
+        let mut rows: Vec<CpuModelRow> = special
+            .iter()
+            .map(|(l, k, id)| Some((l.to_string(), k.to_string(), id.to_string())))
+            .collect();
+        let mut models: Vec<_> = models
+            .into_iter()
+            .map(|m| Some((m.clone(), m.clone(), m)))
+            .collect();
+        models.sort_by_key(|r| r.as_ref().map(|(_, k, _)| k.to_lowercase()));
+        rows.push(None);
+        rows.extend(models);
+
+        self.list.remove_all();
+        for row in &rows {
+            let child: gtk::Widget = match row {
+                Some((label, _, _)) => {
+                    let l = gtk::Label::new(Some(label));
+                    l.set_xalign(0.0);
+                    l.upcast()
+                }
+                None => gtk::Separator::new(gtk::Orientation::Horizontal).upcast(),
+            };
+            let lbrow = gtk::ListBoxRow::builder().child(&child).build();
+            lbrow.set_activatable(row.is_some());
+            lbrow.set_selectable(false);
+            self.list.append(&lbrow);
+        }
+        self.rows.replace(rows);
+    }
+
+    fn text(&self) -> String {
+        self.entry.text().to_string()
+    }
+
+    /// The row id for the entry's text, if it is a row's label.
+    fn key_for_text(&self) -> Option<String> {
+        let text = self.text();
+        self.rows
+            .borrow()
+            .iter()
+            .flatten()
+            .find(|(label, _, _)| *label == text)
+            .map(|(_, _, id)| id.clone())
+    }
+
+    /// `uiutil.set_list_selection(..., column=2)`.
+    fn select_id(&self, id: &str) {
+        let label = self
+            .rows
+            .borrow()
+            .iter()
+            .flatten()
+            .find(|(_, _, i)| i == id)
+            .map(|(label, _, _)| label.clone());
+        if let Some(label) = label {
+            self.entry.set_text(&label);
+        }
+    }
+}
+
+/// The CPUs page (`cpu-*`, `state-host-cpus`).
+struct CpuPage {
+    page: gtk::Box,
+    host_cpus: gtk::Label,
+    vcpus: gtk::SpinButton,
+    vcpus_warn_box: gtk::Box,
+    copy_host: gtk::CheckButton,
+    model_label: gtk::Label,
+    model: Rc<CpuModelCombo>,
+    secure: gtk::CheckButton,
+    topology_expander: gtk::Expander,
+    topology_enable: gtk::CheckButton,
+    topology_table: gtk::Grid,
+    sockets: gtk::SpinButton,
+    cores: gtk::SpinButton,
+    threads: gtk::SpinButton,
+}
+
+impl CpuPage {
+    fn new() -> CpuPage {
+        let host_cpus = left_label("8");
+        let vcpus = spin(1.0, 1024.0, 2.0);
+        vcpus.set_hexpand(true);
+        let vcpus_label = left_label("vCPU a_llocation:");
+        vcpus_label.set_mnemonic_widget(Some(&vcpus));
+        let warn_icon = gtk::Image::from_icon_name("dialog-warning");
+        let warn_text = gtk::Label::new(None);
+        warn_text.set_markup("<small>Overcommitting vCPUs can hurt performance</small>");
+        let vcpus_warn_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        vcpus_warn_box.set_halign(gtk::Align::Start);
+        vcpus_warn_box.append(&warn_icon);
+        vcpus_warn_box.append(&warn_text);
+        let cpus_grid = gtk::Grid::builder()
+            .row_spacing(6)
+            .column_spacing(12)
+            .build();
+        cpus_grid.attach(&left_label("Logical host CPUs:"), 0, 0, 1, 1);
+        cpus_grid.attach(&host_cpus, 1, 0, 1, 1);
+        cpus_grid.attach(&vcpus_label, 0, 1, 1, 1);
+        cpus_grid.attach(&vcpus, 1, 1, 1, 1);
+        cpus_grid.attach(&vcpus_warn_box, 0, 2, 2, 1);
+
+        let copy_host = gtk::CheckButton::with_mnemonic("Copy host CP_U configuration");
+        let model = CpuModelCombo::new();
+        model.widget.set_hexpand(true);
+        let model_label = left_label("M_odel:");
+        model_label.set_mnemonic_widget(Some(&model.entry));
+        let secure = gtk::CheckButton::with_label("Enable available CPU security flaw mitigations");
+        let config_grid = gtk::Grid::builder()
+            .row_spacing(3)
+            .column_spacing(12)
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Start)
+            .build();
+        config_grid.attach(&copy_host, 0, 0, 2, 1);
+        config_grid.attach(&model_label, 0, 1, 1, 1);
+        config_grid.attach(&model.widget, 1, 1, 1, 1);
+        config_grid.attach(&secure, 0, 2, 2, 1);
+
+        let topology_enable = gtk::CheckButton::with_mnemonic("Manuall_y set CPU topology");
+        let sockets = spin(1.0, 256.0, 10.0);
+        let cores = spin(1.0, 256.0, 10.0);
+        let threads = spin(1.0, 256.0, 10.0);
+        let topology_table = gtk::Grid::builder()
+            .row_spacing(4)
+            .column_spacing(12)
+            .build();
+        for (i, (text, spin)) in [
+            ("Socke_ts:", &sockets),
+            ("Cor_es:", &cores),
+            ("Thread_s:", &threads),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let label = left_label(text);
+            label.set_mnemonic_widget(Some(spin));
+            topology_table.attach(&label, 0, i as i32, 1, 1);
+            topology_table.attach(spin, 1, i as i32, 1, 1);
+        }
+        let topology_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        topology_box.set_margin_start(12);
+        topology_box.append(&topology_enable);
+        topology_box.append(&topology_table);
+        let topology_expander = gtk::Expander::new(None);
+        let exp_label = gtk::Label::new(None);
+        exp_label.set_markup_with_mnemonic("<b>To_pology</b>");
+        topology_expander.set_label_widget(Some(&exp_label));
+        topology_expander.set_child(Some(&topology_box));
+
+        let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        page.append(&frame("CPUs", &cpus_grid));
+        page.append(&frame("Configu_ration", &config_grid));
+        page.append(&topology_expander);
+
+        CpuPage {
+            page,
+            host_cpus,
+            vcpus,
+            vcpus_warn_box,
+            copy_host,
+            model_label,
+            model,
+            secure,
+            topology_expander,
+            topology_enable,
+            topology_table,
+            sockets,
+            cores,
+            threads,
+        }
+    }
+}
+
+/// The Memory page (`mem-*`, `state-host-memory`, `shared-memory`).
+struct MemoryPage {
+    page: gtk::Box,
+    host_memory: gtk::Label,
+    memory: gtk::SpinButton,
+    maxmem: gtk::SpinButton,
+    shared: gtk::CheckButton,
+}
+
+impl MemoryPage {
+    fn new() -> MemoryPage {
+        let host_memory = left_label("2 GiB");
+        let memory = spin(1.0, 10240000.0, 25.0);
+        let maxmem = spin(1.0, 10240000.0, 25.0);
+        let shared = gtk::CheckButton::with_mnemonic("Enable shared _memory");
+        shared.set_halign(gtk::Align::Start);
+        let grid = gtk::Grid::builder()
+            .row_spacing(6)
+            .column_spacing(6)
+            .valign(gtk::Align::Start)
+            .build();
+        let right = |text: &str| {
+            let l = gtk::Label::with_mnemonic(text);
+            l.set_halign(gtk::Align::End);
+            l
+        };
+        let with_unit = |spin: &gtk::SpinButton| {
+            let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 3);
+            hbox.append(spin);
+            hbox.append(&left_label("MiB"));
+            hbox
+        };
+        let cur_label = right("Current a_llocation:");
+        cur_label.set_mnemonic_widget(Some(&memory));
+        let max_label = right("Ma_ximum allocation:");
+        max_label.set_mnemonic_widget(Some(&maxmem));
+        grid.attach(&right("Total host memory:"), 0, 0, 1, 1);
+        grid.attach(&host_memory, 1, 0, 1, 1);
+        grid.attach(&cur_label, 0, 1, 1, 1);
+        let cur_box = with_unit(&memory);
+        cur_box.set_hexpand(true);
+        grid.attach(&cur_box, 1, 1, 1, 1);
+        grid.attach(&max_label, 0, 2, 1, 1);
+        grid.attach(&with_unit(&maxmem), 1, 2, 1, 1);
+        grid.attach(&shared, 1, 3, 1, 1);
+
+        let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        page.append(&frame("Memory", &grid));
+        MemoryPage {
+            page,
+            host_memory,
+            memory,
+            maxmem,
+            shared,
+        }
+    }
+}
+
 struct Inner {
     vm: VmmDomain,
     is_customize_dialog: bool,
@@ -730,12 +1072,17 @@ struct Inner {
     rows: RefCell<Vec<HwRow>>,
     hw_panel: gtk::Stack,
     overview: Overview,
+    cpu: CpuPage,
+    memory: MemoryPage,
     unported: gtk::Label,
     config_remove: gtk::Button,
     config_cancel: gtk::Button,
     config_apply: gtk::Button,
     oldhwkey: RefCell<Option<String>>,
     active_edits: RefCell<Vec<Edit>>,
+    /// Set while a page is filled in, so the widgets' change signals
+    /// don't count as edits.
+    refreshing: Cell<bool>,
     /// Set while the list is being rebuilt, so the selection churn
     /// doesn't refresh pages.
     repopulating: Cell<bool>,
@@ -764,11 +1111,15 @@ impl VmmDetails {
         left.append(&add_hardware);
 
         let overview = Overview::new();
+        let cpu = CpuPage::new();
+        let memory = MemoryPage::new();
         let unported = gtk::Label::new(Some("This page is not available yet in this version."));
         unported.set_valign(gtk::Align::Start);
         unported.set_xalign(0.0);
         let hw_panel = gtk::Stack::new();
         hw_panel.add_named(&overview.page, Some("overview"));
+        hw_panel.add_named(&cpu.page, Some("cpu"));
+        hw_panel.add_named(&memory.page, Some("memory"));
         hw_panel.add_named(&unported, Some("unported"));
         let panel_scroll = gtk::ScrolledWindow::builder()
             .child(&hw_panel)
@@ -806,12 +1157,15 @@ impl VmmDetails {
             rows: RefCell::default(),
             hw_panel,
             overview,
+            cpu,
+            memory,
             unported,
             config_remove,
             config_cancel,
             config_apply,
             oldhwkey: RefCell::default(),
             active_edits: RefCell::default(),
+            refreshing: Cell::new(false),
             repopulating: Cell::new(false),
         }));
         this.disable_apply();
@@ -824,6 +1178,7 @@ impl VmmDetails {
             }
         });
         this.connect_edits();
+        this.init_cpu_models();
         this.repopulate_hw_list();
         this
     }
@@ -850,6 +1205,37 @@ impl VmmDetails {
             .buffer()
             .connect_changed(move |_| cb());
 
+        let cb = enable(Edit::Cpu);
+        i.cpu.model.entry.connect_changed(move |_| cb());
+        let cb = enable(Edit::Cpu);
+        i.cpu.secure.connect_toggled(move |_| cb());
+        let cb = enable(Edit::Mem);
+        i.memory.maxmem.connect_value_changed(move |_| cb());
+        let cb = enable(Edit::MemShared);
+        i.memory.shared.connect_toggled(move |_| cb());
+
+        let weak = Rc::downgrade(&self.0);
+        let with = move |f: fn(&VmmDetails)| {
+            let weak = weak.clone();
+            move || {
+                if let Some(inner) = weak.upgrade() {
+                    f(&VmmDetails(inner));
+                }
+            }
+        };
+        let cb = with(Self::config_vcpus_changed);
+        i.cpu.vcpus.connect_value_changed(move |_| cb());
+        let cb = with(Self::cpu_copy_host_clicked);
+        i.cpu.copy_host.connect_toggled(move |_| cb());
+        let cb = with(Self::cpu_topology_enable);
+        i.cpu.topology_enable.connect_toggled(move |_| cb());
+        for spin in [&i.cpu.sockets, &i.cpu.cores, &i.cpu.threads] {
+            let cb = with(Self::sync_cpu_topology_ui);
+            spin.connect_value_changed(move |_| cb());
+        }
+        let cb = with(Self::curmem_changed);
+        i.memory.memory.connect_value_changed(move |_| cb());
+
         let weak = Rc::downgrade(&self.0);
         i.config_cancel.connect_clicked(move |_| {
             // Remove current changes and deactivate 'apply' button
@@ -868,6 +1254,91 @@ impl VmmDetails {
         });
     }
 
+    /// `_curmem_changed_cb`.
+    fn curmem_changed(&self) {
+        self.enable_apply(Edit::Mem);
+        let maxmem = &self.0.memory.maxmem;
+        let mem = spin_get(&self.0.memory.memory);
+        if maxmem.value() < mem {
+            maxmem.set_value(mem);
+        }
+        let (_, upper) = maxmem.range();
+        maxmem.set_range(mem, upper);
+    }
+
+    /// `_config_vcpus_changed_cb`.
+    fn config_vcpus_changed(&self) {
+        self.enable_apply(Edit::Vcpus);
+        self.update_vcpus_warning();
+    }
+
+    /// Warn about overcommit.
+    fn update_vcpus_warning(&self) {
+        let host_active_count = self
+            .0
+            .vm
+            .conn()
+            .map(|c| c.host_active_processor_count())
+            .unwrap_or(0);
+        let cur = spin_get(&self.0.cpu.vcpus);
+        self.0
+            .cpu
+            .vcpus_warn_box
+            .set_visible(cur > f64::from(host_active_count));
+    }
+
+    /// `_cpu_copy_host_clicked_cb`.
+    fn cpu_copy_host_clicked(&self) {
+        let c = &self.0.cpu;
+        let show = !c.copy_host.is_active();
+        c.model_label.set_visible(show);
+        c.model.widget.set_visible(show);
+        c.secure.set_visible(show);
+        self.enable_apply(Edit::Cpu);
+    }
+
+    /// `_sync_cpu_topology_ui`.
+    fn sync_cpu_topology_ui(&self) {
+        let c = &self.0.cpu;
+        let manual_top = c.topology_table.is_sensitive();
+        c.vcpus.set_sensitive(!manual_top);
+        if manual_top {
+            // `spin_get_helper(...) or 1`
+            let get = |s: &gtk::SpinButton| Some(spin_get(s)).filter(|v| *v != 0.0).unwrap_or(1.0);
+            let total = get(&c.cores) * get(&c.sockets) * get(&c.threads);
+            c.vcpus.set_value(total);
+        } else {
+            let vcpus = spin_get(&c.vcpus);
+            c.sockets.set_value(if vcpus == 0.0 { 1.0 } else { vcpus });
+            c.cores.set_value(1.0);
+            c.threads.set_value(1.0);
+        }
+        self.enable_apply(Edit::Topology);
+    }
+
+    /// `_cpu_topology_enable_cb`.
+    fn cpu_topology_enable(&self) {
+        let c = &self.0.cpu;
+        c.topology_table
+            .set_sensitive(c.topology_enable.is_active());
+        self.sync_cpu_topology_ui();
+    }
+
+    /// `_get_config_cpu_model`.
+    fn get_config_cpu_model(&self) -> String {
+        let c = &self.0.cpu;
+        if c.copy_host.is_active() {
+            return cpu::SPECIAL_MODE_HOST_PASSTHROUGH.into();
+        }
+        match c.model.key_for_text() {
+            None => c.model.text(),
+            Some(key) if key == cpu::SPECIAL_MODE_APP_DEFAULT => {
+                crate::engine::get().config().get_default_cpu_setting()
+            }
+            Some(key) => key,
+        }
+    }
+
     fn parent(&self) -> Option<gtk::Window> {
         self.0.top_box.root().and_downcast::<gtk::Window>()
     }
@@ -883,6 +1354,9 @@ impl VmmDetails {
     }
 
     fn enable_apply(&self, edit: Edit) {
+        if self.0.refreshing.get() {
+            return;
+        }
         self.0.config_apply.set_sensitive(true);
         self.0.config_cancel.set_sensitive(true);
         let mut edits = self.0.active_edits.borrow_mut();
@@ -903,6 +1377,8 @@ impl VmmDetails {
         };
         let res = match row.hwtype {
             HwType::General => self.apply_overview().await,
+            HwType::Cpu => Ok(self.apply_vcpus().await),
+            HwType::Memory => Ok(self.apply_memory().await),
             _ => Ok(true),
         };
         let success = match res {
@@ -950,14 +1426,62 @@ impl VmmDetails {
         }
 
         let vm = self.0.vm.clone();
+        let vm2 = vm.clone();
         let (t, d) = (title.clone(), description.clone());
+        let hotplug = (title.is_some() || description.is_some()).then(|| {
+            Box::pin(async move { vm2.hotplug_metadata(description, title).await }) as Hotplug
+        });
         Ok(self
             .change_config(
                 async move { vm.define_overview(d.map(Some), t.map(Some), None).await },
-                title.is_some() || description.is_some(),
-                (description, title),
+                hotplug,
             )
             .await)
+    }
+
+    /// `_apply_vcpus`.
+    async fn apply_vcpus(&self) -> bool {
+        let c = &self.0.cpu;
+        let vcpus = self.edited(Edit::Vcpus).then(|| spin_get(&c.vcpus) as u32);
+        let model = self
+            .edited(Edit::Cpu)
+            .then(|| (self.get_config_cpu_model(), c.secure.is_active()));
+        let topology = self.edited(Edit::Topology).then(|| {
+            c.topology_enable.is_active().then(|| {
+                (
+                    c.sockets.value() as u32,
+                    c.cores.value() as u32,
+                    c.threads.value() as u32,
+                )
+            })
+        });
+        let vm = self.0.vm.clone();
+        self.change_config(
+            async move { vm.define_cpu(vcpus, model, topology).await },
+            None,
+        )
+        .await
+    }
+
+    /// `_apply_memory`.
+    async fn apply_memory(&self) -> bool {
+        let m = &self.0.memory;
+        let memory = self.edited(Edit::Mem).then(|| {
+            let maxmem = spin_get(&m.maxmem) as u64 * 1024;
+            let curmem = spin_get(&m.memory) as u64 * 1024;
+            (curmem, maxmem)
+        });
+        let mem_shared = self.edited(Edit::MemShared).then(|| m.shared.is_active());
+        let vm = self.0.vm.clone();
+        let vm2 = vm.clone();
+        let hotplug = memory.map(|(cur, max)| {
+            Box::pin(async move { vm2.hotplug_memory(cur, max).await }) as Hotplug
+        });
+        self.change_config(
+            async move { vm.define_memory(memory, mem_shared).await },
+            hotplug,
+        )
+        .await
     }
 
     /// `vmmAddHardware.change_config_helper` for guest XML edits: define,
@@ -966,8 +1490,7 @@ impl VmmDetails {
     async fn change_config(
         &self,
         define: impl std::future::Future<Output = Result<(), String>>,
-        has_hotplug_args: bool,
-        (description, title): (Option<String>, Option<String>),
+        hotplug: Option<Hotplug>,
     ) -> bool {
         let parent = self.parent();
         // Persistent config change
@@ -988,13 +1511,14 @@ impl VmmDetails {
 
         // Hotplug change
         let mut hotplug_err = None;
-        if has_hotplug_args {
-            if let Err(e) = vm.hotplug_metadata(description, title).await {
+        let did_hotplug = hotplug.is_some();
+        if let Some(hotplug) = hotplug {
+            if let Err(e) = hotplug.await {
                 glib::g_debug!("virt-manager", "Hotplug failed: {e}");
                 hotplug_err = Some(e);
             }
         }
-        if has_hotplug_args && hotplug_err.is_none() {
+        if did_hotplug && hotplug_err.is_none() {
             return true;
         }
 
@@ -1128,13 +1652,23 @@ impl VmmDetails {
             return;
         };
         let i = &self.0;
+        i.refreshing.set(true);
         match row.hwtype {
             HwType::General => {
                 self.refresh_overview_page();
                 i.hw_panel.set_visible_child_name("overview");
             }
+            HwType::Cpu => {
+                self.refresh_config_cpu();
+                i.hw_panel.set_visible_child_name("cpu");
+            }
+            HwType::Memory => {
+                self.refresh_config_memory();
+                i.hw_panel.set_visible_child_name("memory");
+            }
             _ => i.hw_panel.set_visible_child(&i.unported),
         }
+        i.refreshing.set(false);
         self.disable_apply();
         i.config_remove.set_visible(row.hwtype.is_removable());
     }
@@ -1194,6 +1728,128 @@ impl VmmDetails {
                 &o.firmware_label,
                 is_hvm && (efi || arch_can_uefi(arch.as_deref())),
             );
+        });
+    }
+
+    /// Fills in widgets after an async lookup without counting it as
+    /// an edit.
+    fn quietly(&self, f: impl FnOnce()) {
+        let was = self.0.refreshing.replace(true);
+        f();
+        self.0.refreshing.set(was);
+    }
+
+    /// `_refresh_config_cpu`.
+    fn refresh_config_cpu(&self) {
+        let i = &self.0;
+        let c = &i.cpu;
+        let Some(x) = i.vm.xmlobj() else {
+            return;
+        };
+        self.init_cpu_models();
+        // Set topology first, because it impacts vcpus values
+        let cpu = &x.guest.cpu;
+        let show_top = cpu.has_topology();
+        c.topology_enable.set_active(show_top);
+        c.topology_table.set_sensitive(show_top);
+        c.sockets
+            .set_value(f64::from(cpu.topology_sockets.unwrap_or(1)));
+        c.cores
+            .set_value(f64::from(cpu.topology_cores.unwrap_or(1)));
+        c.threads
+            .set_value(f64::from(cpu.topology_threads.unwrap_or(1)));
+        if show_top {
+            c.topology_expander.set_expanded(true);
+        }
+
+        let host_active_count =
+            i.vm.conn()
+                .map(|c| c.host_active_processor_count())
+                .unwrap_or(0);
+        c.vcpus.set_value(f64::from(x.guest.vcpus.unwrap_or(1)));
+        c.host_cpus.set_text(&host_active_count.to_string());
+
+        // Trigger this again to make sure vcpus is correct
+        self.sync_cpu_topology_ui();
+        self.update_vcpus_warning();
+
+        // CPU model config
+        let mode = cpu.mode.as_deref();
+        let is_host = matches!(mode, Some("host-model" | "host-passthrough"));
+        let special_mode = mode.filter(|m| cpu::SPECIAL_MODES.contains(m));
+        let model = cpu
+            .model
+            .clone()
+            .filter(|m| !m.is_empty())
+            .or_else(|| special_mode.map(str::to_string));
+        match model {
+            Some(model) => c.model.entry.set_text(&model),
+            None => c.model.select_id(cpu::SPECIAL_MODE_HV_DEFAULT),
+        }
+
+        c.copy_host.set_active(is_host);
+        let mut text = "Copy host CP_U configuration".to_string();
+        if is_host {
+            text += &format!(" ({})", mode.unwrap_or_default());
+        }
+        c.copy_host.set_label(Some(&text));
+        self.cpu_copy_host_clicked();
+
+        // `_cpu_secure_is_available` and `check_security_features`
+        // need the expanded host CPU, which takes a libvirt call.
+        let is_x86 = matches!(x.guest.os.arch.as_deref(), Some("x86_64" | "i686"));
+        let guest_cpu = cpu.clone();
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let features = this.0.vm.get_cpu_security_features().await;
+            let secure = &this.0.cpu.secure;
+            let available = is_x86 && !features.is_empty();
+            secure.set_sensitive(available);
+            secure.set_tooltip_text((!available).then_some(
+                "No security features to copy, the host is missing \
+                 security patches or the host CPU is not vulnerable.",
+            ));
+            let active = guest_cpu.check_security_features(&features);
+            this.quietly(|| secure.set_active(active));
+        });
+    }
+
+    /// `_refresh_config_memory`.
+    fn refresh_config_memory(&self) {
+        let i = &self.0;
+        let m = &i.memory;
+        let Some(x) = i.vm.xmlobj() else {
+            return;
+        };
+        let host_mem = i.vm.conn().map(|c| c.host_memory_size()).unwrap_or(0) / 1024;
+        let vm_cur_mem = f64::from(x.guest.current_memory.unwrap_or(0)) / 1024.0;
+        let vm_max_mem = f64::from(x.guest.memory.unwrap_or(0)) / 1024.0;
+        m.host_memory.set_text(&format!("{host_mem} MiB"));
+        m.memory.set_value(vm_cur_mem.round());
+        m.maxmem.set_value(vm_max_mem.round());
+
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let (shared_mem, shared_mem_err) = this.0.vm.has_shared_mem().await;
+            let shared = &this.0.memory.shared;
+            this.quietly(|| shared.set_active(shared_mem));
+            shared.set_sensitive(shared_mem_err.is_none());
+            shared.set_tooltip_text(shared_mem_err.as_deref());
+        });
+    }
+
+    /// `_init_details`' CPU model list, from domcaps (which needs the
+    /// XML, so it is retried until that has arrived).
+    fn init_cpu_models(&self) {
+        if self.0.cpu.model.loaded.replace(true) {
+            return;
+        }
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            match this.0.vm.get_domain_capabilities().await {
+                Some(caps) => this.0.cpu.model.set_rows(caps.get_cpu_models()),
+                None => this.0.cpu.model.loaded.set(false),
+            }
         });
     }
 

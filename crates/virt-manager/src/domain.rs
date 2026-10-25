@@ -28,6 +28,7 @@ use crate::libvirtenummap::{self as enummap, DomainState};
 use crate::statsmanager::{self, PollFlags, RawSample, StatsList};
 use std::rc::Rc;
 use virtinst_core::capabilities::domcaps::DomainCapabilities;
+use virtinst_core::domain::cpu::{self, CpuEditContext};
 use virtinst_core::Guest;
 use virtinst_xml::XmlBound;
 
@@ -199,6 +200,83 @@ pub fn validate_generic_name(name_label: &str, val: &str) -> Result<(), String> 
         ));
     }
     Ok(())
+}
+
+/// `_edit_shared_mem`.
+fn edit_shared_mem(doc: &mut virtinst_xml::Document, root: virtinst_xml::Element, shared: bool) {
+    if shared {
+        let mb = virtinst_xml::resolve_or_create_path(doc, root, &["memoryBacking"]);
+        let source = virtinst_xml::resolve_or_create_path(doc, mb, &["source"]);
+        source.set_attribute(doc, "type", "memfd");
+        let access = virtinst_xml::resolve_or_create_path(doc, mb, &["access"]);
+        access.set_attribute(doc, "mode", "shared");
+        return;
+    }
+    let Some(mb) = root.find(doc, "memoryBacking") else {
+        return;
+    };
+    for (tag, attr) in [("source", "type"), ("access", "mode")] {
+        if let Some(el) = mb.find(doc, tag) {
+            el.mut_attributes(doc).remove(attr);
+            if el.attributes(doc).is_empty() && el.child_elements(doc).is_empty() {
+                let _ = el.detach(doc);
+            }
+        }
+    }
+    if mb.attributes(doc).is_empty() && mb.child_elements(doc).is_empty() {
+        let _ = mb.detach(doc);
+    }
+}
+
+/// `_get_expanded_cpu`: `baselineHypervisorCPU` with
+/// `EXPAND_FEATURES`, falling back to the older `baselineCPU`.
+/// Blocking.
+fn baseline_hypervisor_cpu(
+    conn: &Connect,
+    (emulator, arch, machine, virttype): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ),
+    cpu_xml: &str,
+) -> Option<String> {
+    use std::ffi::{CStr, CString};
+    use std::os::raw::{c_char, c_void};
+    extern "C" {
+        fn free(p: *mut c_void);
+    }
+    let cstr = |s: Option<String>| s.and_then(|s| CString::new(s).ok());
+    let (emulator, arch, machine, virttype) =
+        (cstr(emulator), cstr(arch), cstr(machine), cstr(virttype));
+    let ptr = |s: &Option<CString>| s.as_ref().map_or(std::ptr::null(), |s| s.as_ptr());
+    let xml = CString::new(cpu_xml).ok()?;
+    let mut xmls: [*const c_char; 1] = [xml.as_ptr()];
+    // SAFETY: every pointer is a live NUL-terminated string or null,
+    // which libvirt accepts for the optional parameters; the result
+    // is a malloc'd string we own.
+    let ret = unsafe {
+        sys::virConnectBaselineHypervisorCPU(
+            conn.as_ptr(),
+            ptr(&emulator),
+            ptr(&arch),
+            ptr(&machine),
+            ptr(&virttype),
+            xmls.as_mut_ptr(),
+            1,
+            sys::VIR_CONNECT_BASELINE_CPU_EXPAND_FEATURES,
+        )
+    };
+    if !ret.is_null() {
+        // SAFETY: non-null result from libvirt, freed right after.
+        let out = unsafe { CStr::from_ptr(ret) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe { free(ret as *mut c_void) };
+        return Some(out);
+    }
+    conn.baseline_cpu(&[cpu_xml], sys::VIR_CONNECT_BASELINE_CPU_EXPAND_FEATURES)
+        .ok()
 }
 
 /// A storage volume or local file that `_copy_nvram_file` made or
@@ -414,6 +492,8 @@ mod imp {
         pub mem_period_set: Cell<bool>,
         pub xmlobj: RefCell<Option<Rc<DomainXml>>>,
         pub domcaps: RefCell<Option<Rc<DomainCapabilities>>>,
+        /// `domcaps.get_cpu_security_features()`, cached like upstream.
+        pub cpu_security_features: RefCell<Option<Rc<Vec<String>>>>,
     }
 
     #[glib::object_subclass]
@@ -605,7 +685,6 @@ impl VmmDomain {
         Some(caps)
     }
 
-    /// `get_pretty_hv_type`.
     pub fn emit_state_changed(&self) {
         self.emit_by_name::<()>("state-changed", &[]);
     }
@@ -672,6 +751,198 @@ impl VmmDomain {
         if let Some(conn) = self.conn() {
             conn.tick();
         }
+    }
+
+    /// `domcaps.get_cpu_security_features()`: the security features
+    /// of the expanded host-model CPU.
+    pub async fn get_cpu_security_features(&self) -> Rc<Vec<String>> {
+        if let Some(f) = self.imp().cpu_security_features.borrow().clone() {
+            return f;
+        }
+        let mut features = vec![];
+        if let (Some(caps), Ok(handle)) = (self.get_domain_capabilities().await, self.handle()) {
+            if let Some(cpu_xml) = caps.host_model_cpu_xml.clone() {
+                let params = (
+                    caps.path.clone(),
+                    caps.arch.clone(),
+                    caps.machine.clone(),
+                    caps.domain.clone(),
+                );
+                let expanded = gio::spawn_blocking(move || {
+                    baseline_hypervisor_cpu(handle.connect(), params, &cpu_xml)
+                })
+                .await
+                .ok()
+                .flatten();
+                match expanded {
+                    Some(xml) => {
+                        features = virtinst_core::capabilities::domcaps::cpu_security_features(&xml)
+                    }
+                    None => glib::g_warning!("virt-manager", "Failed to get expanded CPU XML"),
+                }
+            }
+        }
+        glib::g_debug!(
+            "virt-manager",
+            "Found host-model security features: {features:?}"
+        );
+        let features = Rc::new(features);
+        self.imp()
+            .cpu_security_features
+            .replace(Some(features.clone()));
+        features
+    }
+
+    /// What `DomainCpu`'s edits need: see [`CpuEditContext`].
+    pub async fn cpu_edit_context(&self) -> CpuEditContext {
+        let x = self.xmlobj();
+        let os = x.as_ref().map(|x| &x.guest.os);
+        let app_default_mode = match self.get_domain_capabilities().await {
+            Some(caps) => caps.app_default_cpu_mode(
+                x.as_ref().and_then(|x| x.guest.domain_type.as_deref()),
+                os.and_then(|o| o.arch.as_deref()),
+                os.and_then(|o| o.machine.as_deref()),
+            ),
+            None => "host-model-only",
+        };
+        CpuEditContext {
+            app_default_mode: app_default_mode.to_string(),
+            host_cpu_model: self.conn().and_then(|c| c.host_cpu_model()),
+            security_features: self.get_cpu_security_features().await.to_vec(),
+        }
+    }
+
+    /// `define_cpu`. `model` is `(model or special mode, secure)`;
+    /// `topology` is `Some(None)` to clear it.
+    pub async fn define_cpu(
+        &self,
+        vcpus: Option<u32>,
+        model: Option<(String, bool)>,
+        topology: Option<Option<(u32, u32, u32)>>,
+    ) -> Result<(), String> {
+        let ctx = if model.is_some() {
+            Some(self.cpu_edit_context().await)
+        } else {
+            None
+        };
+        let mut guest = self.make_xmlobj_to_define().await?;
+        let root = guest.root();
+        if let Some(vcpus) = vcpus {
+            guest.guest.vcpus = Some(vcpus);
+            guest.guest.vcpu_current = Some(vcpus);
+        }
+        // `guest.write_to` in `get_xml` writes vcpus; the rest goes
+        // straight into the document.
+        let doc = &mut guest.doc;
+        match topology {
+            Some(None) => cpu::edit_clear_topology(doc, root),
+            Some(Some((sockets, cores, threads))) => {
+                cpu::edit_set_topology(doc, root, sockets, cores, threads)
+            }
+            None => {}
+        }
+        if let (Some((model, secure)), Some(ctx)) = (model, ctx) {
+            if cpu::SPECIAL_MODES.contains(&model.as_str()) {
+                cpu::edit_set_special_mode(doc, root, &ctx, &model, secure)?;
+            } else {
+                cpu::edit_set_model(doc, root, &ctx, Some(&model), secure);
+            }
+        }
+        self.redefine_xmlobj(guest).await
+    }
+
+    /// `define_memory` (with `_edit_shared_mem`); memory in KiB.
+    pub async fn define_memory(
+        &self,
+        memory: Option<(u64, u64)>,
+        mem_shared: Option<bool>,
+    ) -> Result<(), String> {
+        let mut guest = self.make_xmlobj_to_define().await?;
+        let root = guest.root();
+        let doc = &mut guest.doc;
+        if let Some((cur, max)) = memory {
+            for (tag, val) in [("currentMemory", cur), ("memory", max)] {
+                let el = virtinst_xml::resolve_or_create_path(doc, root, &[tag]);
+                el.set_text_content(doc, val.to_string());
+                el.set_attribute(doc, "unit", "KiB");
+            }
+            guest.guest.current_memory = None;
+            guest.guest.memory = None;
+        }
+        if let Some(shared) = mem_shared {
+            edit_shared_mem(doc, root, shared);
+        }
+        self.redefine_xmlobj(guest).await
+    }
+
+    /// `hotplug(memory=..., maxmem=...)`, in KiB.
+    pub async fn hotplug_memory(&self, memory: u64, maxmem: u64) -> Result<(), String> {
+        if !self.is_active() {
+            return Ok(());
+        }
+        let Some(x) = self.xmlobj() else {
+            return Ok(());
+        };
+        glib::g_debug!(
+            "virt-manager",
+            "Hotplugging curmem={memory} maxmem={maxmem} for VM '{}'",
+            self.get_name()
+        );
+        let actual_cur = u64::from(x.guest.current_memory.unwrap_or(0));
+        let actual_max = u64::from(x.guest.memory.unwrap_or(0));
+        self.with_domain(move |_, dom| {
+            let msg = |e: virt::error::Error| e.message().to_string();
+            let set_cur = || -> Result<(), String> {
+                if memory != actual_cur {
+                    dom.set_memory(memory).map_err(msg)?;
+                }
+                Ok(())
+            };
+            let set_max = || -> Result<(), String> {
+                if maxmem != actual_max {
+                    dom.set_max_memory(maxmem).map_err(msg)?;
+                }
+                Ok(())
+            };
+            if maxmem < actual_cur {
+                // Set current first to avoid error
+                set_cur()?;
+                set_max()
+            } else {
+                set_max()?;
+                set_cur()
+            }
+        })
+        .await?;
+        self.ensure_latest_xml().await;
+        Ok(())
+    }
+
+    /// `has_shared_mem`: the "Enable shared memory" value, and why it
+    /// can't be changed, if it can't.
+    pub async fn has_shared_mem(&self) -> (bool, Option<String>) {
+        let Some(x) = self.xmlobj() else {
+            return (false, None);
+        };
+        let domcaps = self.get_domain_capabilities().await;
+        if !x.guest.cpu.cells.is_empty() {
+            return (
+                false,
+                Some("Can not change shared memory setting when <numa> is configured.".into()),
+            );
+        }
+        let supported = domcaps
+            .is_some_and(|c| c.supports_filesystem_virtiofs() && c.supports_memorybacking_memfd());
+        if !supported {
+            return (
+                false,
+                Some("Libvirt may not be new enough to support memfd.".into()),
+            );
+        }
+        (
+            x.guest.memory_backing.source_type.as_deref() == Some("memfd"),
+            None,
+        )
     }
 
     /// `define_overview`: `None` leaves a field alone, `Some(None)`
@@ -805,6 +1076,7 @@ impl VmmDomain {
         Ok(())
     }
 
+    /// `get_pretty_hv_type`.
     pub fn get_pretty_hv_type(&self) -> String {
         let Some(x) = self.xmlobj() else {
             return String::new();
@@ -971,6 +1243,32 @@ mod tests {
         assert!(out.contains("<description>d</description>"), "{out}");
         assert!(out.contains("<nvram>/n.fd</nvram>"), "{out}");
         assert!(out.contains("pflash"), "{out}");
+    }
+
+    #[test]
+    fn shared_mem_toggles_memfd_backing() {
+        let mut doc = virtinst_xml::parse_libvirt_xml(
+            "<domain><memoryBacking><locked/></memoryBacking></domain>",
+        )
+        .unwrap();
+        let root = doc.root_element().unwrap();
+        edit_shared_mem(&mut doc, root, true);
+        let x = doc.write_str().unwrap();
+        assert!(
+            x.contains("<source type=\"memfd\"/>") && x.contains("<access mode=\"shared\"/>"),
+            "{x}"
+        );
+        edit_shared_mem(&mut doc, root, false);
+        let x = doc.write_str().unwrap();
+        assert!(
+            !x.contains("source") && !x.contains("access") && x.contains("<locked/>"),
+            "{x}"
+        );
+        let mut doc = virtinst_xml::parse_libvirt_xml("<domain/>").unwrap();
+        let root = doc.root_element().unwrap();
+        edit_shared_mem(&mut doc, root, true);
+        edit_shared_mem(&mut doc, root, false);
+        assert!(!doc.write_str().unwrap().contains("memoryBacking"));
     }
 
     #[test]
