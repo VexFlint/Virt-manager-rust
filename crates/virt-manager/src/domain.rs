@@ -193,12 +193,10 @@ pub fn validate_generic_name(name_label: &str, val: &str) -> Result<(), String> 
     if val.is_empty() {
         return Err(format!("A name must be specified for the {name_label}"));
     }
-    for c in ['/'] {
-        if val.contains(c) {
-            return Err(format!(
-                "{name_label} name '{val}' can not contain '{c}' character."
-            ));
-        }
+    if val.contains('/') {
+        return Err(format!(
+            "{name_label} name '{val}' can not contain '/' character."
+        ));
     }
     Ok(())
 }
