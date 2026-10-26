@@ -1331,6 +1331,46 @@ impl VmmDomain {
         self.redefine_xmlobj(guest).await
     }
 
+    /// `remove_device`: drop the device from the inactive config. A
+    /// device only the running VM has is left alone, as upstream's
+    /// `_lookup_device_to_define` does.
+    pub async fn remove_device(&self, id: &virtinst_core::devices::DeviceId) -> Result<(), String> {
+        let mut guest = self.make_xmlobj_to_define().await?;
+        let root = guest.root();
+        let Some(dev) = virtinst_core::devices::find_device(&guest.doc, root, id) else {
+            let live = self.xmlobj().and_then(|x| {
+                virtinst_core::devices::find_device(&x.doc, x.root(), id).map(|_| ())
+            });
+            if live.is_some() {
+                glib::g_debug!(
+                    "virt-manager",
+                    "Device in active config but not inactive config."
+                );
+                return Ok(());
+            }
+            return Err("Could not find specified device in the inactive VM configuration".into());
+        };
+        let devices = dev.parent(&guest.doc).ok_or("Device has no parent")?;
+        virtinst_core::devices::remove_device(&mut guest.doc, devices, dev);
+        self.redefine_xmlobj(guest).await
+    }
+
+    /// `detach_device`: hot-unplug `devxml` from the running VM.
+    pub async fn detach_device(&self, devxml: String) -> Result<(), String> {
+        if !self.is_active() {
+            return Ok(());
+        }
+        glib::g_debug!("virt-manager", "detach_device with xml=\n{devxml}");
+        self.with_domain(move |_, dom| {
+            dom.detach_device(&devxml)
+                .map(|_| ())
+                .map_err(|e| e.message().to_string())
+        })
+        .await?;
+        self.ensure_latest_xml().await;
+        Ok(())
+    }
+
     /// `define_*(do_hotplug=True)`, then `hotplug(device=...)`: the
     /// edited live device goes to `updateDeviceFlags`.
     pub async fn hotplug_device(

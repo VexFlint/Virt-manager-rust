@@ -17,6 +17,9 @@ mod edit;
 pub mod compare;
 pub use compare::{device_id, find_device, DeviceId};
 
+pub mod remove;
+pub use remove::remove_device;
+
 pub mod disk;
 pub use disk::DeviceDisk;
 
