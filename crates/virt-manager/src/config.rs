@@ -539,6 +539,22 @@ impl Config {
     pub fn get_iso_paths(&self) -> Vec<String> {
         strv(&self.urls, "isos")
     }
+
+    pub fn add_media_url(&self, url: &str) {
+        self.url_add_helper("urls", url);
+    }
+
+    pub fn get_media_urls(&self) -> Vec<String> {
+        strv(&self.urls, "urls")
+    }
+
+    pub fn add_container_url(&self, url: &str) {
+        self.url_add_helper("containers", url);
+    }
+
+    pub fn get_container_urls(&self) -> Vec<String> {
+        strv(&self.urls, "containers")
+    }
 }
 
 fn strv(settings: &gio::Settings, key: &str) -> Vec<String> {

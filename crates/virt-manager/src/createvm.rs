@@ -5,20 +5,30 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use gtk::glib;
 use gtk::prelude::*;
+use gtk::{gio, glib};
 use virtinst_core::capabilities::{Capabilities, CapsInfo};
 use virtinst_core::install::{prefers_uefi, GuestCapsDefaults};
 
 use crate::connection::VmmConnection;
-use crate::devpages::{Grid, GridRow, SimpleCombo};
+use crate::devpages::{EntryCombo, Grid, GridRow, SimpleCombo};
 use crate::domain::pretty_hv;
 use crate::engine;
+use crate::error;
+use crate::mediacombo::MediaCombo;
+use crate::oslist::{self, OsList};
+use crate::storagebrowse::{self, BrowseReason, StorageBrowser};
 
 const PAGE_NAME: usize = 0;
 const PAGE_INSTALL: usize = 1;
+const PAGE_MEM: usize = 2;
 const PAGE_STORAGE: usize = 3;
 const PAGE_FINISH: usize = 4;
+
+/// Seconds before OS detection gives up.
+const DETECT_TIMEOUT: u32 = 20;
+/// MiB, when the OS has no recommendation.
+const DEFAULT_MEM: f64 = 1024.0;
 
 /// `INSTALL_PAGE_*`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +40,25 @@ pub enum InstallPage {
     ContainerApp,
     ContainerOs,
     VzTemplate,
+}
+
+impl InstallPage {
+    fn name(self) -> &'static str {
+        match self {
+            InstallPage::Iso => "iso",
+            InstallPage::Url => "url",
+            InstallPage::Manual => "manual",
+            InstallPage::Import => "import",
+            InstallPage::ContainerApp => "app",
+            InstallPage::ContainerOs => "oscontainer",
+            InstallPage::VzTemplate => "vz",
+        }
+    }
+}
+
+/// `_pretty_memory`, from KiB.
+fn pretty_memory(mem: u64) -> String {
+    format!("{} MiB", mem / 1024)
 }
 
 /// `_pretty_arch`.
@@ -81,6 +110,406 @@ fn method_box(title: &str, radios: &[&gtk::CheckButton]) -> gtk::Box {
     b
 }
 
+fn start_label(text: &str, widget: &impl IsA<gtk::Widget>) -> gtk::Label {
+    let l = gtk::Label::with_mnemonic(text);
+    l.set_halign(gtk::Align::Start);
+    l.set_mnemonic_widget(Some(widget));
+    l
+}
+
+/// An info or warning icon beside small text (`kernel-info-box`,
+/// `install-oscontainer-notsupport`).
+fn small_note(icon: &str, markup: &str) -> gtk::Box {
+    let image = gtk::Image::from_icon_name(icon);
+    image.set_valign(gtk::Align::Start);
+    let label = gtk::Label::new(None);
+    label.set_markup(markup);
+    label.set_halign(gtk::Align::Start);
+    label.set_xalign(0.0);
+    label.set_wrap(true);
+    label.set_max_width_chars(60);
+    let b = gtk::Box::new(gtk::Orientation::Horizontal, 3);
+    b.append(&image);
+    b.append(&label);
+    b
+}
+
+/// An entry with a Browse button beside it.
+fn entry_browse(label: &str) -> (gtk::Box, gtk::Entry, gtk::Button) {
+    let entry = gtk::Entry::new();
+    entry.set_hexpand(true);
+    let browse = gtk::Button::with_mnemonic(label);
+    let b = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    b.append(&entry);
+    b.append(&browse);
+    (b, entry, browse)
+}
+
+/// `os.geteuid() == 0`.
+fn is_root() -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata("/proc/self").is_ok_and(|m| m.uid() == 0)
+}
+
+/// `is_virt_bootstrap_installed`.
+fn is_virt_bootstrap_installed() -> bool {
+    glib::find_program_in_path("virt-bootstrap").is_some()
+}
+
+/// Step 2: the install media, and the OS.
+struct InstallWidgets {
+    top: gtk::Box,
+    method_pages: gtk::Stack,
+    mediacombo: Rc<MediaCombo>,
+    iso_browse: gtk::Button,
+    url_combo: Rc<EntryCombo>,
+    url_options: gtk::Expander,
+    urlopts_entry: gtk::Entry,
+    import_entry: gtk::Entry,
+    import_browse: gtk::Button,
+    kernel_info_box: gtk::Box,
+    app_entry: gtk::Entry,
+    app_browse: gtk::Button,
+    oscontainer_fs: gtk::Entry,
+    oscontainer_browse: gtk::Button,
+    oscontainer_notsupport: gtk::Box,
+    oscontainer_notsupport_conn: gtk::Box,
+    oscontainer_bootstrap: gtk::CheckButton,
+    oscontainer_source: gtk::Box,
+    oscontainer_source_url: Rc<EntryCombo>,
+    oscontainer_source_insecure: gtk::CheckButton,
+    oscontainer_auth_options: gtk::Expander,
+    oscontainer_source_user: gtk::Entry,
+    oscontainer_source_passwd: gtk::PasswordEntry,
+    oscontainer_rootpw_box: gtk::Box,
+    oscontainer_rootpw: gtk::PasswordEntry,
+    container_template: gtk::Entry,
+    os_distro_box: gtk::Box,
+    os_list: Rc<OsList>,
+    detect_os_box: gtk::Box,
+    detect_os: gtk::CheckButton,
+    detect_os_spinner: gtk::Spinner,
+}
+
+impl InstallWidgets {
+    fn new() -> InstallWidgets {
+        // ISO
+        let mediacombo = MediaCombo::new(None);
+        let iso_browse = gtk::Button::with_mnemonic("Bro_wse...");
+        iso_browse.update_property(&[gtk::accessible::Property::Label("install-iso-browse")]);
+        let iso_label = gtk::Label::with_mnemonic("Choose _ISO or CDROM install media:");
+        iso_label.set_halign(gtk::Align::Start);
+        mediacombo.set_mnemonic_label(&iso_label);
+        let hbox4 = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+        hbox4.append(&mediacombo.top_box);
+        hbox4.append(&iso_browse);
+        let page_iso = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        page_iso.append(&iso_label);
+        page_iso.append(&hbox4);
+
+        // URL
+        let url_combo = EntryCombo::new(vec![]);
+        url_combo.top.set_halign(gtk::Align::Fill);
+        url_combo.top.set_hexpand(true);
+        url_combo.entry.set_hexpand(true);
+        url_combo
+            .entry
+            .update_property(&[gtk::accessible::Property::Label("install-url-entry")]);
+        let urlopts_entry = gtk::Entry::new();
+        urlopts_entry.set_hexpand(true);
+        urlopts_entry.update_property(&[gtk::accessible::Property::Label("install-urlopts-entry")]);
+        let table7 = gtk::Grid::builder()
+            .row_spacing(4)
+            .column_spacing(6)
+            .margin_start(12)
+            .build();
+        let label26 = gtk::Label::with_mnemonic("Kerne_l options:");
+        label26.set_halign(gtk::Align::End);
+        label26.set_mnemonic_widget(Some(&urlopts_entry));
+        table7.attach(&label26, 0, 0, 1, 1);
+        table7.attach(&urlopts_entry, 1, 0, 1, 1);
+        let url_options = gtk::Expander::with_mnemonic("URL _Options");
+        url_options.set_child(Some(&table7));
+        let table2 = gtk::Grid::builder()
+            .row_spacing(4)
+            .column_spacing(6)
+            .build();
+        table2.attach(&url_combo.top, 0, 0, 1, 1);
+        table2.attach(&url_options, 0, 1, 1, 1);
+        let page_url = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        page_url.append(&start_label(
+            "Provide the operating system install U_RL:",
+            &url_combo.entry,
+        ));
+        page_url.append(&table2);
+
+        // Import
+        let (hbox1, import_entry, import_browse) = entry_browse("B_rowse...");
+        import_entry.update_property(&[gtk::accessible::Property::Label("install-import-entry")]);
+        let kernel_info_box = small_note(
+            "dialog-information",
+            "<small>Kernel/initrd settings can be configured with 'Customize before \
+             install' on the final page.</small>",
+        );
+        let page_import = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        page_import.append(&start_label(
+            "Provide the existing stora_ge path:",
+            &import_entry,
+        ));
+        page_import.append(&hbox1);
+        page_import.append(&kernel_info_box);
+
+        // Application container
+        let (hbox15, app_entry, app_browse) = entry_browse("B_rowse...");
+        let page_app = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        page_app.append(&start_label("Provide the _application path:", &app_entry));
+        page_app.append(&hbox15);
+
+        // OS container
+        let (hbox17, oscontainer_fs, oscontainer_browse) = entry_browse("B_rowse...");
+        let oscontainer_notsupport = small_note(
+            "dialog-warning",
+            "<small>The OS directory tree must already exist. To enable OS directory \
+             tree creation,\nplease install <a href=\"https://github.com/virt-manager/\
+             virt-bootstrap\">virt-bootstrap</a></small>",
+        );
+        let oscontainer_notsupport_conn = small_note(
+            "dialog-warning",
+            "<small>The OS directory tree must already exist. Creating an OS directory \
+             tree for remote\nconnections is not yet supported.</small>",
+        );
+        let oscontainer_bootstrap =
+            gtk::CheckButton::with_label("Create OS directory tree from container image");
+        let oscontainer_source_url = EntryCombo::new(vec![]);
+        oscontainer_source_url.top.set_halign(gtk::Align::Fill);
+        oscontainer_source_url.top.set_hexpand(true);
+        oscontainer_source_url.entry.set_hexpand(true);
+        let src_grid = gtk::Grid::builder()
+            .row_spacing(4)
+            .column_spacing(6)
+            .build();
+        src_grid.attach(&gtk::Label::new(Some("Source URI:")), 0, 0, 1, 1);
+        src_grid.attach(&oscontainer_source_url.top, 1, 0, 1, 1);
+        let oscontainer_source_insecure =
+            gtk::CheckButton::with_label("Do not verify TLS certificates of registry");
+        let oscontainer_source_user = gtk::Entry::new();
+        let oscontainer_source_passwd = gtk::PasswordEntry::new();
+        let auth_grid = gtk::Grid::builder()
+            .row_spacing(4)
+            .column_spacing(6)
+            .margin_start(12)
+            .build();
+        let user_label = gtk::Label::new(Some("Username:"));
+        user_label.set_halign(gtk::Align::End);
+        let passwd_label = gtk::Label::new(Some("Password:"));
+        passwd_label.set_halign(gtk::Align::End);
+        auth_grid.attach(&user_label, 0, 0, 1, 1);
+        auth_grid.attach(&passwd_label, 0, 1, 1, 1);
+        auth_grid.attach(&oscontainer_source_user, 1, 0, 1, 1);
+        auth_grid.attach(&oscontainer_source_passwd, 1, 1, 1, 1);
+        let oscontainer_auth_options =
+            gtk::Expander::new(Some("Credentials for accessing the source registry"));
+        oscontainer_auth_options.set_child(Some(&auth_grid));
+        let oscontainer_source = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        oscontainer_source.set_sensitive(false);
+        oscontainer_source.set_margin_start(10);
+        oscontainer_source.set_margin_end(10);
+        oscontainer_source.set_margin_top(10);
+        oscontainer_source.set_margin_bottom(10);
+        oscontainer_source.append(&src_grid);
+        oscontainer_source.append(&oscontainer_source_insecure);
+        oscontainer_source.append(&oscontainer_auth_options);
+        let oscontainer_rootpw = gtk::PasswordEntry::new();
+        oscontainer_rootpw.set_hexpand(true);
+        let oscontainer_rootpw_box = gtk::Box::new(gtk::Orientation::Horizontal, 3);
+        oscontainer_rootpw_box.set_sensitive(false);
+        oscontainer_rootpw_box.append(&gtk::Label::new(Some("Root password:")));
+        oscontainer_rootpw_box.append(&oscontainer_rootpw);
+        let vbox21 = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        vbox21.append(&hbox17);
+        vbox21.append(&oscontainer_notsupport);
+        vbox21.append(&oscontainer_notsupport_conn);
+        vbox21.append(&oscontainer_bootstrap);
+        vbox21.append(&oscontainer_source);
+        vbox21.append(&oscontainer_rootpw_box);
+        let page_oscontainer = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        page_oscontainer.append(&start_label(
+            "Provide the existing OS root _directory:",
+            &oscontainer_fs,
+        ));
+        page_oscontainer.append(&vbox21);
+
+        // VZ template
+        let container_template = gtk::Entry::new();
+        container_template.set_hexpand(true);
+        let page_vz = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        page_vz.append(&start_label(
+            "Select _container template:",
+            &container_template,
+        ));
+        page_vz.append(&container_template);
+
+        let method_pages = gtk::Stack::new();
+        method_pages.set_vhomogeneous(false);
+        for (page, widget) in [
+            (InstallPage::Iso, &page_iso),
+            (InstallPage::Url, &page_url),
+            (
+                InstallPage::Manual,
+                &gtk::Box::new(gtk::Orientation::Vertical, 0),
+            ),
+            (InstallPage::Import, &page_import),
+            (InstallPage::ContainerApp, &page_app),
+            (InstallPage::ContainerOs, &page_oscontainer),
+            (InstallPage::VzTemplate, &page_vz),
+        ] {
+            method_pages.add_named(widget, Some(page.name()));
+        }
+
+        // The OS
+        let os_list = OsList::new();
+        let detect_os = gtk::CheckButton::with_mnemonic(
+            "A_utomatically detect from the installation media / source",
+        );
+        detect_os.set_active(true);
+        let detect_os_spinner = gtk::Spinner::new();
+        let detect_os_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        detect_os_box.append(&detect_os);
+        detect_os_box.append(&detect_os_spinner);
+        let os_distro_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        os_distro_box.append(&start_label(
+            "C_hoose the operating system you are installing:",
+            &os_list.search_entry,
+        ));
+        os_distro_box.append(&os_list.search_entry);
+        os_distro_box.append(&detect_os_box);
+
+        let top = gtk::Box::new(gtk::Orientation::Vertical, 24);
+        top.append(&method_pages);
+        top.append(&os_distro_box);
+
+        InstallWidgets {
+            top,
+            method_pages,
+            mediacombo,
+            iso_browse,
+            url_combo,
+            url_options,
+            urlopts_entry,
+            import_entry,
+            import_browse,
+            kernel_info_box,
+            app_entry,
+            app_browse,
+            oscontainer_fs,
+            oscontainer_browse,
+            oscontainer_notsupport,
+            oscontainer_notsupport_conn,
+            oscontainer_bootstrap,
+            oscontainer_source,
+            oscontainer_source_url,
+            oscontainer_source_insecure,
+            oscontainer_auth_options,
+            oscontainer_source_user,
+            oscontainer_source_passwd,
+            oscontainer_rootpw_box,
+            oscontainer_rootpw,
+            container_template,
+            os_distro_box,
+            os_list,
+            detect_os_box,
+            detect_os,
+            detect_os_spinner,
+        }
+    }
+}
+
+/// Step 3: memory and CPUs.
+struct MemWidgets {
+    top: gtk::Box,
+    mem: gtk::SpinButton,
+    phys_mem_label: gtk::Label,
+    cpus: gtk::SpinButton,
+    phys_cpu_label: gtk::Label,
+}
+
+impl MemWidgets {
+    fn new() -> MemWidgets {
+        let mem = gtk::SpinButton::with_range(0.0, 8096.0, 1.0);
+        mem.set_halign(gtk::Align::Start);
+        mem.set_width_chars(7);
+        mem.update_property(&[gtk::accessible::Property::Label("mem")]);
+        let phys_mem_label = gtk::Label::new(Some("(Insert host mem)"));
+        phys_mem_label.set_halign(gtk::Align::Start);
+        phys_mem_label.set_hexpand(true);
+        let cpus = gtk::SpinButton::with_range(0.0, 128.0, 1.0);
+        cpus.set_halign(gtk::Align::Start);
+        cpus.set_width_chars(7);
+        cpus.update_property(&[gtk::accessible::Property::Label("cpus")]);
+        let phys_cpu_label = gtk::Label::new(Some("Insert Phys cpu count"));
+        phys_cpu_label.set_halign(gtk::Align::Start);
+        phys_cpu_label.set_hexpand(true);
+
+        let table3 = gtk::Grid::builder()
+            .row_spacing(4)
+            .column_spacing(6)
+            .build();
+        for (row, (text, spin, label)) in [
+            ("_Memory:", &mem, &phys_mem_label),
+            ("C_PUs:", &cpus, &phys_cpu_label),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let l = gtk::Label::with_mnemonic(text);
+            l.set_halign(gtk::Align::End);
+            l.set_valign(gtk::Align::Start);
+            l.set_margin_top(6);
+            l.set_mnemonic_widget(Some(spin));
+            let b = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            b.append(spin);
+            b.append(label);
+            table3.attach(&l, 0, row as i32, 1, 1);
+            table3.attach(&b, 1, row as i32, 1, 1);
+        }
+        let label15 = gtk::Label::new(Some("Choose Memory and CPU settings:"));
+        label15.set_halign(gtk::Align::Start);
+        let vbox12 = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        vbox12.append(&label15);
+        vbox12.append(&table3);
+        let top = gtk::Box::new(gtk::Orientation::Vertical, 40);
+        top.append(&vbox12);
+        MemWidgets {
+            top,
+            mem,
+            phys_mem_label,
+            cpus,
+            phys_cpu_label,
+        }
+    }
+}
+
+/// `_GuestData`: what the pages so far chose for the guest.
+#[derive(Debug, Default, Clone)]
+// Read by the summary and install steps, ported next.
+#[allow(dead_code)]
+struct GuestData {
+    /// The OS short id (`guest.osinfo.name`).
+    osinfo: Option<String>,
+    name: Option<String>,
+    location: Option<String>,
+    cdrom: Option<String>,
+    extra_args: Option<String>,
+    livecd: bool,
+    /// `guest.os.init`, for an application container.
+    init: Option<String>,
+    /// The `/` filesystem of a container: `(type, source)`.
+    filesystem: Option<(Option<String>, String)>,
+    vcpus: u32,
+    /// KiB.
+    memory: u64,
+}
+
 pub struct Inner {
     window: gtk::Window,
     header_pagenum: gtk::Label,
@@ -119,6 +548,17 @@ pub struct Inner {
     arch_row: GridRow,
     machine: SimpleCombo,
     machine_row: GridRow,
+
+    // Steps 2 and 3
+    inst: InstallWidgets,
+    memw: MemWidgets,
+
+    gdata: RefCell<GuestData>,
+    storage_browser: RefCell<Option<StorageBrowser>>,
+    detect_os_in_progress: Cell<bool>,
+    os_already_detected_for_media: Cell<bool>,
+    /// Bumped per detection run, so a timed out one is ignored.
+    detect_seq: Cell<u64>,
 
     conn: RefCell<Option<VmmConnection>>,
     conn_handler: RefCell<Option<glib::SignalHandlerId>>,
@@ -273,11 +713,18 @@ impl VmmCreateVM {
 
         let pages = gtk::Stack::new();
         pages.set_vexpand(true);
-        pages.add_named(&page_name, Some("0"));
-        for nr in PAGE_INSTALL..=PAGE_FINISH {
+        let inst = InstallWidgets::new();
+        let memw = MemWidgets::new();
+        pages.add_named(&page_name, Some(&PAGE_NAME.to_string()));
+        pages.add_named(&inst.top, Some(&PAGE_INSTALL.to_string()));
+        pages.add_named(&memw.top, Some(&PAGE_MEM.to_string()));
+        for nr in PAGE_STORAGE..=PAGE_FINISH {
             let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
             pages.add_named(&page, Some(&nr.to_string()));
         }
+        // Size the window to the shown page only.
+        pages.set_vhomogeneous(false);
+        pages.set_hhomogeneous(false);
 
         let cancel = gtk::Button::with_mnemonic("_Cancel");
         let back = gtk::Button::with_mnemonic("_Back");
@@ -340,6 +787,13 @@ impl VmmCreateVM {
             arch_row,
             machine,
             machine_row,
+            inst,
+            memw,
+            gdata: RefCell::default(),
+            storage_browser: RefCell::default(),
+            detect_os_in_progress: Cell::new(false),
+            os_already_detected_for_media: Cell::new(false),
+            detect_seq: Cell::new(0),
             conn: RefCell::default(),
             conn_handler: RefCell::default(),
             caps: RefCell::default(),
@@ -400,6 +854,36 @@ impl VmmCreateVM {
             .widget
             .connect_selected_notify(self.handler(VmmCreateVM::machine_changed));
 
+        // Install page listeners
+        let inst = &i.inst;
+        inst.iso_browse
+            .connect_clicked(self.handler(VmmCreateVM::browse_iso));
+        inst.import_browse
+            .connect_clicked(self.handler(VmmCreateVM::browse_import));
+        inst.app_browse
+            .connect_clicked(self.handler(VmmCreateVM::browse_app));
+        inst.oscontainer_browse
+            .connect_clicked(self.handler(VmmCreateVM::browse_oscontainer));
+        inst.oscontainer_bootstrap
+            .connect_toggled(self.handler(VmmCreateVM::container_source_toggle));
+        inst.detect_os
+            .connect_toggled(self.handler(VmmCreateVM::detect_os_toggled));
+        let changed = self.handler::<()>(|t| {
+            let entry = t.0.inst.mediacombo.entry.clone();
+            t.detectable_media_widget_changed(Some(&entry));
+        });
+        inst.mediacombo.connect_changed(move || changed(&()));
+        inst.mediacombo
+            .entry
+            .connect_activate(self.handler(|t| t.detectable_media_widget_changed(None)));
+        inst.url_combo.entry.connect_changed(self.handler(|t| {
+            let entry = t.0.inst.url_combo.entry.clone();
+            t.detectable_media_widget_changed(Some(&entry));
+        }));
+        inst.url_combo
+            .entry
+            .connect_activate(self.handler(|t| t.detectable_media_widget_changed(None)));
+
         let close = self.handler::<()>(VmmCreateVM::close_requested);
         i.window.connect_close_request(move |_| {
             close(&());
@@ -436,7 +920,11 @@ impl VmmCreateVM {
             engine::get().decrement_window_counter();
         }
         self.0.window.set_visible(false);
+        if let Some(b) = self.0.storage_browser.borrow().as_ref() {
+            b.close();
+        }
         self.set_conn(None);
+        self.0.gdata.replace(GuestData::default());
     }
 
     /// `_close_requested`: nothing was created yet, so nothing to clean
@@ -487,6 +975,45 @@ impl VmmCreateVM {
         i.populating.set(false);
 
         self.set_conn(activeconn);
+
+        // Everything from this point forward should be connection
+        // independent
+        let inst = &i.inst;
+        let config = engine::get().config();
+
+        // Distro/Variant
+        inst.os_list.reset_state();
+        i.os_already_detected_for_media.set(false);
+
+        let media_rows =
+            |urls: Vec<String>| urls.into_iter().map(|u| (Some(u.clone()), u)).collect();
+
+        // Install URL
+        inst.urlopts_entry.set_text("");
+        inst.url_combo.entry.set_text("");
+        inst.url_options.set_expanded(false);
+        inst.url_combo.set_rows(media_rows(config.get_media_urls()));
+
+        // Install import
+        inst.import_entry.set_text("");
+
+        // Install container app
+        inst.app_entry.set_text("/bin/sh");
+
+        // Install container OS
+        inst.oscontainer_fs.set_text("");
+        inst.oscontainer_source_url.entry.set_text("");
+        inst.oscontainer_source_user.set_text("");
+        inst.oscontainer_source_passwd.set_text("");
+        inst.oscontainer_source_insecure.set_active(false);
+        inst.oscontainer_bootstrap.set_active(false);
+        inst.oscontainer_auth_options.set_expanded(false);
+        inst.oscontainer_rootpw.set_text("");
+        inst.oscontainer_source_url
+            .set_rows(media_rows(config.get_container_urls()));
+
+        // Install VZ container from template
+        inst.container_template.set_text("centos-7-x86_64");
     }
 
     /// `_set_caps_state`: the install methods this guest type allows.
@@ -633,6 +1160,8 @@ impl VmmCreateVM {
         i.vz_install_box.set_visible(is_vz);
         i.virt_install_box
             .set_visible(!is_container_only && !is_vz_container);
+
+        i.inst.kernel_info_box.set_visible(!installable_arch);
         self.set_page_num_text(i.cur_page.get());
     }
 
@@ -721,6 +1250,38 @@ impl VmmCreateVM {
             i.vz_virt_type_exe.set_active(!has_hvm && has_exe);
             i.populating.set(false);
         }
+
+        // ISO media
+        // Dependent on connection so we need to do this here
+        i.inst.mediacombo.set_conn(Some(conn.clone()));
+        i.inst.mediacombo.reset_state(false);
+
+        // Allow container bootstrap only for local connection and
+        // only if virt-bootstrap is installed. Otherwise, show message.
+        let is_local = !conn.is_remote();
+        let vb_installed = is_virt_bootstrap_installed();
+        let vb_enabled = is_local && vb_installed;
+        let inst = &i.inst;
+        inst.oscontainer_notsupport_conn.set_visible(!is_local);
+        inst.oscontainer_notsupport.set_visible(!vb_installed);
+        inst.oscontainer_bootstrap.set_visible(vb_enabled);
+        inst.oscontainer_source.set_visible(vb_enabled);
+        inst.oscontainer_rootpw_box.set_visible(vb_enabled);
+
+        // Memory
+        let memory = conn.host_memory_size();
+        i.memw.phys_mem_label.set_markup(&format!(
+            "<span size='small'>Up to {} available on the host</span>",
+            pretty_memory(memory)
+        ));
+        i.memw.mem.set_range(50.0, (memory / 1024) as f64);
+
+        // CPU
+        let phys_cpus = conn.host_active_processor_count();
+        i.memw.phys_cpu_label.set_markup(&format!(
+            "<span size='small'>Up to {phys_cpus} available</span>"
+        ));
+        i.memw.cpus.set_range(1.0, phys_cpus.max(1) as f64);
     }
 
     fn conn_state_changed(&self) {
@@ -1183,11 +1744,24 @@ impl VmmCreateVM {
 
     fn forward_clicked(&self) {
         let curpage = self.0.cur_page.get();
-        if !self.validate(curpage) {
-            return;
+        if curpage == PAGE_INSTALL {
+            // Make sure we have detected the OS before validating the
+            // page
+            if self.start_detect_os_if_needed(true) {
+                return;
+            }
         }
-        self.0.forward.grab_focus();
-        self.set_page(self.get_next_pagenum(curpage));
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            if !this.validate(curpage).await {
+                return;
+            }
+            this.0.forward.grab_focus();
+            if curpage == PAGE_NAME {
+                this.set_install_page();
+            }
+            this.set_page(this.get_next_pagenum(curpage));
+        });
     }
 
     /// `set_current_page` plus `_page_changed`.
@@ -1206,9 +1780,11 @@ impl VmmCreateVM {
 
     // Page validation routines
 
-    fn validate(&self, pagenum: usize) -> bool {
+    async fn validate(&self, pagenum: usize) -> bool {
         match pagenum {
             PAGE_NAME => self.validate_intro_page(),
+            PAGE_INSTALL => self.validate_install_page().await,
+            PAGE_MEM => self.validate_mem_page(),
             _ => true,
         }
     }
@@ -1216,5 +1792,568 @@ impl VmmCreateVM {
     /// `_validate_intro_page`: the guest has to resolve.
     fn validate_intro_page(&self) -> bool {
         self.0.capsinfo.borrow().is_some()
+    }
+
+    fn validate_mem_page(&self) -> bool {
+        let mut gdata = self.0.gdata.borrow_mut();
+        gdata.vcpus = self.0.memw.cpus.value() as u32;
+        gdata.memory = self.0.memw.mem.value() as u64 * 1024;
+        true
+    }
+
+    fn is_container_install(&self) -> bool {
+        matches!(
+            self.get_config_install_page(),
+            InstallPage::ContainerApp | InstallPage::ContainerOs | InstallPage::VzTemplate
+        )
+    }
+
+    /// `_get_config_detectable_media`: `(cdrom, location)`.
+    fn get_config_detectable_media(&self) -> (Option<String>, Option<String>) {
+        match self.get_config_install_page() {
+            InstallPage::Iso => (Some(self.0.inst.mediacombo.get_path(false)), None),
+            InstallPage::Url => (None, Some(self.0.inst.url_combo.entry.text().to_string())),
+            _ => (None, None),
+        }
+        .map_empty()
+    }
+
+    /// `_get_config_url_info`.
+    fn get_config_url_info(&self, store_media: bool) -> (String, String) {
+        let media = self.0.inst.url_combo.entry.text().trim().to_string();
+        let extra = self.0.inst.urlopts_entry.text().trim().to_string();
+        if !media.is_empty() && store_media {
+            engine::get().config().add_media_url(&media);
+        }
+        (media, extra)
+    }
+
+    /// `_get_config_oscontainer_source_url`.
+    fn get_config_oscontainer_source_url(&self, store_media: bool) -> String {
+        let src_url = self
+            .0
+            .inst
+            .oscontainer_source_url
+            .entry
+            .text()
+            .trim()
+            .to_string();
+        if !src_url.is_empty() && store_media {
+            engine::get().config().add_container_url(&src_url);
+        }
+        src_url
+    }
+
+    /// `_change_os_detect`.
+    fn change_os_detect(&self, sensitive: bool) {
+        let os_list = &self.0.inst.os_list;
+        os_list.set_sensitive(sensitive);
+        if !sensitive && os_list.get_selected_os().is_none() {
+            os_list
+                .search_entry
+                .set_text("Waiting for install media / source");
+        }
+    }
+
+    /// `_set_install_page`: step 2's widgets for the chosen method.
+    fn set_install_page(&self) {
+        let i = &self.0;
+        let instpage = self.get_config_install_page();
+        let is_remote = i.conn.borrow().as_ref().is_some_and(|c| c.is_remote());
+
+        // Setting OS value for container doesn't matter presently
+        i.inst
+            .os_distro_box
+            .set_visible(!self.is_container_install());
+
+        let enabledetect =
+            instpage == InstallPage::Url || (instpage == InstallPage::Iso && !is_remote);
+        i.inst.detect_os_box.set_visible(enabledetect);
+        let dodetect = enabledetect && i.inst.detect_os.is_active();
+        self.change_os_detect(!dodetect);
+
+        // Manual installs have nothing to ask for
+        let has_install = instpage != InstallPage::Manual;
+        i.inst.method_pages.set_visible(has_install);
+        if !has_install {
+            i.inst.os_list.search_entry.grab_focus();
+        }
+        i.inst.method_pages.set_visible_child_name(instpage.name());
+    }
+
+    // Install page listeners
+
+    /// `_detectable_media_widget_changed`.
+    fn detectable_media_widget_changed(&self, entry: Option<&gtk::Entry>) {
+        self.0.os_already_detected_for_media.set(false);
+        // If the text entry widget has focus, don't fire
+        // detect_media_os, it means the user is probably typing. It
+        // will be detected when the user activates the widget, or we
+        // try to switch pages
+        if entry.is_some_and(|e| e.has_focus() || e.focus_child().is_some()) {
+            return;
+        }
+        self.start_detect_os_if_needed(false);
+    }
+
+    fn detect_os_toggled(&self) {
+        let detect_os = &self.0.inst.detect_os;
+        if !detect_os.get_visible() {
+            return;
+        }
+        // We are only here if the user explicitly changed detection UI
+        let dodetect = detect_os.is_active();
+        self.change_os_detect(!dodetect);
+        if dodetect {
+            self.0.os_already_detected_for_media.set(false);
+            self.start_detect_os_if_needed(false);
+        }
+    }
+
+    /// `_browse_file`: the storage browser, filling `entry` (or
+    /// calling `cb`) with the pick.
+    fn browse_file(&self, reason: BrowseReason, cb: impl Fn(&str) + 'static) {
+        let i = &self.0;
+        let Some(conn) = i.conn.borrow().clone() else {
+            return;
+        };
+        // A browser for an older connection is thrown away.
+        let stale = i
+            .storage_browser
+            .borrow()
+            .as_ref()
+            .is_some_and(|b| b.conn() != conn);
+        if stale {
+            i.storage_browser.replace(None);
+        }
+        storagebrowse::browse(&i.storage_browser, &conn, &i.window, reason, cb);
+    }
+
+    fn browse_entry(&self, entry: &gtk::Entry, reason: BrowseReason) {
+        let entry = entry.clone();
+        self.browse_file(reason, move |path| entry.set_text(path));
+    }
+
+    fn browse_iso(&self) {
+        let media = self.0.inst.mediacombo.clone();
+        self.browse_file(BrowseReason::IsoMedia, move |path| media.set_path(path));
+    }
+
+    fn browse_import(&self) {
+        self.browse_entry(&self.0.inst.import_entry, BrowseReason::Image);
+    }
+
+    fn browse_app(&self) {
+        self.browse_entry(&self.0.inst.app_entry, BrowseReason::Image);
+    }
+
+    fn browse_oscontainer(&self) {
+        self.browse_entry(&self.0.inst.oscontainer_fs, BrowseReason::Fs);
+    }
+
+    /// `_container_source_toggle`: enable the container source URL
+    /// entry on checkbox click.
+    fn container_source_toggle(&self) {
+        let inst = &self.0.inst;
+        let enable_src = inst.oscontainer_bootstrap.is_active();
+        inst.oscontainer_source.set_sensitive(enable_src);
+        inst.oscontainer_rootpw_box.set_sensitive(enable_src);
+
+        // Auto-generate a path if not specified
+        if enable_src && inst.oscontainer_fs.text().is_empty() {
+            let fs_dir = if is_root() {
+                "/var/lib/libvirt/filesystems".to_string()
+            } else {
+                glib::home_dir()
+                    .join(".local/share/libvirt/filesystems")
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            let default_name = self.generate_name("generic", true);
+            inst.oscontainer_fs
+                .set_text(&format!("{fs_dir}/{default_name}"));
+        }
+    }
+
+    /// `Guest.generate_name` for this connection's guests.
+    fn generate_name(&self, os_name: &str, is_container: bool) -> String {
+        let i = &self.0;
+        let names: Vec<String> = i
+            .conn
+            .borrow()
+            .as_ref()
+            .map(|c| c.list_vms().iter().map(|v| v.get_name()).collect())
+            .unwrap_or_default();
+        let arch = i
+            .capsinfo
+            .borrow()
+            .as_ref()
+            .and_then(|c| c.arch.clone())
+            .unwrap_or_default();
+        let host_arch = i
+            .caps
+            .borrow()
+            .as_ref()
+            .and_then(|c| c.host.cpu.arch.clone());
+        virtinst_core::guest::generate_name(
+            os_name,
+            is_container,
+            &arch,
+            host_arch.as_deref(),
+            |n| names.iter().any(|x| x == n),
+        )
+    }
+
+    // OS detection
+
+    /// `_start_detect_os_if_needed`: kicks off OS detection when there's
+    /// media to detect and it hasn't been detected yet. `true` when it
+    /// started.
+    fn start_detect_os_if_needed(&self, forward_after_finish: bool) -> bool {
+        let i = &self.0;
+        let (cdrom, location) = self.get_config_detectable_media();
+        if i.detect_os_in_progress.get()
+            || i.cur_page.get() != PAGE_INSTALL
+            || (cdrom.is_none() && location.is_none())
+            || !i.inst.detect_os.is_active()
+            || i.os_already_detected_for_media.get()
+        {
+            return false;
+        }
+        self.do_start_detect_os(cdrom, location, forward_after_finish);
+        true
+    }
+
+    fn do_start_detect_os(
+        &self,
+        cdrom: Option<String>,
+        location: Option<String>,
+        forward_after_finish: bool,
+    ) {
+        let i = &self.0;
+        eprintln!(
+            "Starting OS detection thread for cdrom={} location={}",
+            cdrom.as_deref().unwrap_or("None"),
+            location.as_deref().unwrap_or("None")
+        );
+        i.detect_os_in_progress.set(true);
+        i.forward.set_sensitive(false);
+        i.inst.os_list.search_entry.set_text("Detecting...");
+        i.inst.detect_os_spinner.start();
+        let seq = i.detect_seq.get() + 1;
+        i.detect_seq.set(seq);
+
+        let is_remote = i.conn.borrow().as_ref().is_some_and(|c| c.is_remote());
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let detect = gio::spawn_blocking(move || {
+                // `installer.detect_distro`
+                let db = virtinst_core::osinfo::OsDb::load_default().ok()?;
+                let os = if let Some(location) = location {
+                    db.guess_os_by_tree(&location)
+                } else if let Some(cdrom) = cdrom {
+                    if is_remote {
+                        eprintln!("Can't detect distro for cdrom remote connection.");
+                        None
+                    } else {
+                        db.guess_os_by_iso(&cdrom)
+                    }
+                } else {
+                    None
+                };
+                os.map(|o| o.short_id())
+            });
+            // A hard time limit, in case detection hangs (like a slow
+            // URL lookup)
+            let distro = glib::future_with_timeout(
+                std::time::Duration::from_secs(DETECT_TIMEOUT.into()),
+                detect,
+            )
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .flatten();
+            if this.0.detect_seq.get() == seq {
+                this.report_detect_os(distro, forward_after_finish);
+            }
+        });
+    }
+
+    /// `_report_detect_os_progress`, once detection finished or timed
+    /// out.
+    fn report_detect_os(&self, distro: Option<String>, forward_after_finish: bool) {
+        let i = &self.0;
+        i.inst.detect_os_spinner.stop();
+        eprintln!(
+            "Finished UI OS detection. distro={}",
+            distro.as_deref().unwrap_or("None")
+        );
+        i.forward.set_sensitive(true);
+        i.os_already_detected_for_media.set(true);
+        i.detect_os_in_progress.set(false);
+
+        if !i.inst.detect_os.is_active() {
+            // If the user changed the OS detect checkbox in the
+            // meantime, don't update the UI
+            return;
+        }
+        let os = distro.and_then(|d| oslist::all_os().iter().find(|o| o.name == d).cloned());
+        match os {
+            Some(os) => i.inst.os_list.select_os(&os),
+            None => {
+                i.inst.os_list.reset_state();
+                i.inst.os_list.search_entry.set_text("None detected");
+            }
+        }
+        if forward_after_finish {
+            let this = self.clone();
+            glib::idle_add_local_once(move || this.forward_clicked());
+        }
+    }
+
+    // Page validation
+
+    /// `_validate_oscontainer_bootstrap`.
+    async fn validate_oscontainer_bootstrap(
+        &self,
+        fs: &str,
+        src_url: &str,
+        user: &str,
+        passwd: &str,
+    ) -> bool {
+        let parent = Some(&self.0.window);
+        // Check if the source path was provided
+        if src_url.is_empty() {
+            error::val_err(parent, "Source URL is required").await;
+            return false;
+        }
+        // Require username and password when authenticate to source
+        // registry.
+        if !user.is_empty() && passwd.is_empty() {
+            error::val_err(
+                parent,
+                "Please specify password for accessing source registry",
+            )
+            .await;
+            return false;
+        }
+        // Validate destination path
+        let path = std::path::Path::new(fs);
+        if !path.exists() {
+            return true;
+        }
+        if !path.is_dir() {
+            error::val_err(parent, &format!("Destination path is not directory: {fs}")).await;
+            return false;
+        }
+        // `os.access(fs, os.W_OK)`
+        let writable = gio::File::for_path(path)
+            .query_info(
+                gio::FILE_ATTRIBUTE_ACCESS_CAN_WRITE,
+                gio::FileQueryInfoFlags::NONE,
+                gio::Cancellable::NONE,
+            )
+            .is_ok_and(|info| info.boolean(gio::FILE_ATTRIBUTE_ACCESS_CAN_WRITE));
+        if !writable {
+            error::val_err(
+                parent,
+                &format!("No write permissions for directory path: {fs}"),
+            )
+            .await;
+            return false;
+        }
+        if std::fs::read_dir(path).is_ok_and(|mut d| d.next().is_none()) {
+            return true;
+        }
+        // Show Yes/No dialog if the destination is not empty
+        error::yes_no(
+            parent,
+            "OS root directory is not empty",
+            Some(
+                "Creating root file system in a non-empty directory might fail due to file \
+                 conflicts.\nWould you like to continue?",
+            ),
+        )
+        .await
+    }
+
+    /// `_validate_install_page`.
+    async fn validate_install_page(&self) -> bool {
+        let i = &self.0;
+        let parent = Some(&i.window);
+        let Some(conn) = i.conn.borrow().clone() else {
+            return false;
+        };
+        let instmethod = self.get_config_install_page();
+        let mut location = None;
+        let mut extra = None;
+        let mut cdrom = None;
+        let mut init = None;
+        let mut fs = None;
+        let mut template = None;
+        let osobj = i.inst.os_list.get_selected_os();
+
+        match instmethod {
+            InstallPage::Iso => {
+                let media = i.inst.mediacombo.get_path(false);
+                if media.is_empty() {
+                    error::val_err(parent, "An install media selection is required.").await;
+                    return false;
+                }
+                cdrom = Some(media);
+            }
+            InstallPage::Url => {
+                let (media, opts) = self.get_config_url_info(false);
+                if media.is_empty() {
+                    error::val_err(parent, "An install tree is required.").await;
+                    return false;
+                }
+                location = Some(media);
+                extra = Some(opts).filter(|e| !e.is_empty());
+            }
+            InstallPage::Import => {
+                let import_path = i.inst.import_entry.text().to_string();
+                if import_path.is_empty() {
+                    error::val_err(parent, "A storage path to import is required.").await;
+                    return false;
+                }
+                let exists = match conn.handle() {
+                    Some(handle) => {
+                        let is_remote = conn.is_remote();
+                        let path = import_path.clone();
+                        gio::spawn_blocking(move || {
+                            virtinst_core::storage::path_definitely_exists(
+                                handle.connect(),
+                                &path,
+                                is_remote,
+                            )
+                        })
+                        .await
+                        .unwrap_or(false)
+                    }
+                    None => false,
+                };
+                if !exists {
+                    error::val_err(parent, "The import path must point to an existing storage.")
+                        .await;
+                    return false;
+                }
+            }
+            InstallPage::ContainerApp => {
+                let text = i.inst.app_entry.text().to_string();
+                if text.is_empty() {
+                    error::val_err(parent, "An application path is required.").await;
+                    return false;
+                }
+                init = Some(text);
+            }
+            InstallPage::ContainerOs => {
+                let text = i.inst.oscontainer_fs.text().to_string();
+                if text.is_empty() {
+                    error::val_err(parent, "An OS directory path is required.").await;
+                    return false;
+                }
+                if i.inst.oscontainer_bootstrap.is_active() {
+                    let src_url = self.get_config_oscontainer_source_url(false);
+                    let user = i.inst.oscontainer_source_user.text().trim().to_string();
+                    let passwd = i.inst.oscontainer_source_passwd.text().to_string();
+                    if !self
+                        .validate_oscontainer_bootstrap(&text, &src_url, &user, &passwd)
+                        .await
+                    {
+                        return false;
+                    }
+                }
+                fs = Some(text);
+            }
+            InstallPage::VzTemplate => {
+                let text = i.inst.container_template.text().to_string();
+                if text.is_empty() {
+                    error::val_err(parent, "A template name is required.").await;
+                    return false;
+                }
+                template = Some(text);
+            }
+            InstallPage::Manual => {}
+        }
+
+        if !self.is_container_install() && osobj.is_none() {
+            let msg = format!("You must select an OS.\n\n{}", OsList::EOL_TEXT);
+            error::val_err(parent, &msg).await;
+            return false;
+        }
+
+        let os_name = osobj
+            .as_ref()
+            .map_or_else(|| "generic".to_string(), |o| o.name.clone());
+        let is_container = i
+            .capsinfo
+            .borrow()
+            .as_ref()
+            .is_some_and(|c| c.os_type.as_deref() == Some("exe"));
+        let name = self.generate_name(&os_name, is_container);
+        if let Err(e) = virtinst_core::storage::validate_generic_name("Guest", &name) {
+            error::val_err(parent, &format!("Error setting default name.\n\n{e}")).await;
+            return false;
+        }
+        {
+            let mut gdata = i.gdata.borrow_mut();
+            gdata.init = init;
+            gdata.filesystem = fs
+                .map(|f| (None, f))
+                .or(template.map(|t| (Some("template".to_string()), t)));
+            gdata.location = location;
+            gdata.cdrom = cdrom;
+            gdata.extra_args = extra;
+            gdata.livecd = false;
+            gdata.osinfo = osobj.as_ref().map(|o| o.name.clone());
+            gdata.name = Some(name);
+        }
+
+        // Change the default values suggested to the user.
+        let arch = i
+            .capsinfo
+            .borrow()
+            .as_ref()
+            .and_then(|c| c.arch.clone())
+            .unwrap_or_default();
+        let res = osobj
+            .as_ref()
+            .and_then(|o| o.full_id.as_deref())
+            .and_then(oslist::lookup_osinfo)
+            .map(|o| o.get_recommended_resources())
+            .unwrap_or_default();
+        let ram = res.get_recommended_ram(&arch);
+        let n_cpus = res.get_recommended_ncpus(&arch);
+        eprintln!(
+            "Recommended resources for os={os_name}: ram={ram:?} ncpus={n_cpus:?} storage={:?}",
+            res.get_recommended_storage(&arch)
+        );
+        let ram_size = ram.map_or(DEFAULT_MEM, |r| (r / (1024 * 1024)) as f64);
+        i.memw.mem.set_value(ram_size);
+        i.memw.cpus.set_value(n_cpus.unwrap_or(1) as f64);
+
+        // Validation passed, store the install path (if there is one)
+        // in gsettings
+        self.get_config_oscontainer_source_url(true);
+        if instmethod == InstallPage::Iso {
+            i.inst.mediacombo.get_path(true);
+        }
+        self.get_config_url_info(true);
+        true
+    }
+}
+
+/// `(None, None)` for empty strings, as Python's falsy checks do.
+trait MapEmpty {
+    fn map_empty(self) -> Self;
+}
+
+impl MapEmpty for (Option<String>, Option<String>) {
+    fn map_empty(self) -> Self {
+        (
+            self.0.filter(|s| !s.is_empty()),
+            self.1.filter(|s| !s.is_empty()),
+        )
     }
 }
