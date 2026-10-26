@@ -7,9 +7,8 @@
 //!
 //! **Not ported yet**: the openAuth credentials dialog (`connectauth.py`
 //! — plain `virConnectOpen` covers local URIs and polkit agents),
-//! libvirt event callbacks (needs the libvirt-glib gir binding, ticket
-//! 09 — the tick polls instead, which is upstream's own fallback for
-//! drivers without events), networks/pools/nodedevs, and the
+//! network/pool/nodedev events (only domain events are registered, in
+//! `connevents`), networks/pools/nodedevs, and the
 //! per-connection `pretty-name` setting.
 
 use std::cell::{Cell, RefCell};
@@ -22,9 +21,11 @@ use gtk::glib::prelude::*;
 use gtk::glib::subclass::prelude::*;
 use gtk::glib::subclass::Signal;
 use virt::connect::Connect;
+use virt::sys;
 use virtinst_core::capabilities::caps::Capabilities;
 use virtinst_core::connection::Uri;
 
+use crate::connevents::{self, DomainEvent};
 use crate::domain::{DomainSnapshot, VmmDomain};
 use crate::engine;
 use crate::statsmanager::{PollFlags, RawSample};
@@ -34,7 +35,8 @@ use crate::statsmanager::{PollFlags, RawSample};
 /// so a worker thread mid-call keeps the connection alive past a
 /// user-initiated disconnect.
 #[derive(Debug)]
-pub struct ConnHandle(Connect);
+/// The open connection plus its domain event callback ids.
+pub struct ConnHandle(Connect, Vec<std::ffi::c_int>);
 
 impl ConnHandle {
     pub fn connect(&self) -> &Connect {
@@ -44,6 +46,7 @@ impl ConnHandle {
 
 impl Drop for ConnHandle {
     fn drop(&mut self) {
+        connevents::deregister(&self.0, &self.1);
         let _ = self.0.close();
     }
 }
@@ -398,10 +401,13 @@ impl VmmConnection {
         self.change_state(ConnState::Connecting);
         let uri = self.get_uri();
         let this = self.clone();
+        let weak = glib::SendWeakRef::from(self.downgrade());
         glib::spawn_future_local(async move {
             let uri2 = uri.clone();
             let res = gio::spawn_blocking(move || {
                 let conn = Connect::open(Some(&uri2)).map_err(|e| e.message().to_string())?;
+                // `_add_conn_events`
+                let event_ids = connevents::register(&conn, &weak);
                 // `_hostinfo = getInfo()`; [2] is the active CPU count.
                 let info = conn.get_node_info().ok();
                 let hostcpus = info.as_ref().map(|i| i.cpus).unwrap_or(0);
@@ -411,7 +417,10 @@ impl VmmConnection {
                     .ok()
                     .and_then(|xml| Capabilities::parse(&xml).ok());
                 let host_cpu_model = caps.and_then(|c| c.host.cpu.model);
-                Ok((conn, (hostcpus, hostmem, host_cpu_model)))
+                Ok((
+                    ConnHandle(conn, event_ids),
+                    (hostcpus, hostmem, host_cpu_model),
+                ))
             })
             .await
             .unwrap_or_else(|_| Err("Connect thread panicked".to_string()));
@@ -420,7 +429,7 @@ impl VmmConnection {
                     this.imp().hostcpus.set(hostcpus);
                     this.imp().hostmem.set(hostmem);
                     this.imp().host_cpu_model.replace(host_cpu_model);
-                    this.imp().handle.replace(Some(Arc::new(ConnHandle(conn))));
+                    this.imp().handle.replace(Some(Arc::new(conn)));
                     this.change_state(ConnState::Active);
                     this.tick();
                     done(None);
@@ -484,6 +493,22 @@ impl VmmConnection {
                 _ => {}
             }
         });
+    }
+
+    /// `_domain_lifecycle_event`, `_domain_agent_lifecycle_event` and
+    /// `_domain_xml_misc_event`, matched by UUID rather than name.
+    pub(crate) fn domain_event(&self, uuid: &str, event: DomainEvent) {
+        let Some(vm) = self.list_vms().into_iter().find(|v| v.get_uuid() == uuid) else {
+            // A domain we don't know yet (newly defined or started).
+            self.tick();
+            return;
+        };
+        // Deleting external snapshots sends this for a shutoff VM, and
+        // recaching then shows it as paused.
+        if event == DomainEvent::AgentLifecycle && vm.status() == sys::VIR_DOMAIN_SHUTOFF {
+            return;
+        }
+        glib::spawn_future_local(async move { vm.recache_from_event_loop().await });
     }
 
     fn reconcile(&self, polled: Vec<(DomainSnapshot, RawSample)>, flags: PollFlags) {

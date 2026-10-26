@@ -978,8 +978,9 @@ impl VmmVMWindow {
     fn vm_state_changed(&self) {
         if self.is_visible() {
             self.refresh_vm_state();
-            // Upstream gets XML-changed events from libvirt; a state
-            // change is when the live XML most often changes.
+            // Domain events already re-read the XML; this covers
+            // drivers without them, where a state change is when the
+            // live XML most often changes.
             self.refresh_xml();
         }
     }
