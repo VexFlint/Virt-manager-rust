@@ -3512,10 +3512,6 @@ impl VmmDetails {
         let count = |tag| devices.map_or(0, |d| d.find_all(doc, tag).len());
         let a = |name| attr(doc, el, name);
         match row.hwtype {
-            HwType::Disk => {
-                // vmmDeleteStorage isn't ported yet
-                self.disable_device_remove("Removing disks is not available yet in this version.");
-            }
             HwType::Input => {
                 let typ = a("type");
                 if matches!(typ.as_deref(), Some("mouse" | "keyboard"))
@@ -3589,10 +3585,27 @@ impl VmmDetails {
         if !row.hwtype.is_removable() || !self.0.config_remove.is_sensitive() {
             return;
         }
-        self.remove_non_disk(&row).await;
+        if row.hwtype == HwType::Disk {
+            self.remove_disk(&row);
+        } else {
+            self.remove_non_disk(&row).await;
+        }
     }
 
-    /// `_remove_non_disk`, with `remove_devobj_internal`.
+    /// `_remove_disk`.
+    fn remove_disk(&self, row: &HwRow) {
+        let (Some(id), Some((x, el))) = (self.device_id(row), self.device_element(row)) else {
+            return;
+        };
+        let disk = crate::delete::DiskData::from_disk(&x.doc, el);
+        crate::delete::DeleteDialog::show(
+            self.parent().as_ref(),
+            &self.0.vm,
+            crate::delete::DeleteKind::Disk { id, disk },
+        );
+    }
+
+    /// `_remove_non_disk`.
     async fn remove_non_disk(&self, row: &HwRow) {
         let parent = self.parent();
         let config = crate::engine::get().config();
@@ -3607,44 +3620,10 @@ impl VmmDetails {
         if !ok {
             return;
         }
-        let (Some(id), Some(x)) = (self.device_id(row), self.0.vm.xmlobj()) else {
+        let Some(id) = self.device_id(row) else {
             return;
         };
-        let devxml = virtinst_xml::parse_libvirt_xml(&x.xml)
-            .ok()
-            .and_then(|doc| {
-                let root = doc.root_element()?;
-                let dev = virtinst_core::devices::find_device(&doc, root, &id)?;
-                virtinst_xml::element_to_string(doc, dev).ok()
-            })
-            .unwrap_or_default();
-        glib::g_debug!("virt-manager", "Removing device: {devxml}");
-
-        // Define the change
-        if let Err(e) = self.0.vm.remove_device(&id).await {
-            crate::error::show_err(
-                parent.as_ref(),
-                &format!("Error Removing Device: {e}"),
-                None,
-                "",
-            )
-            .await;
-            return;
-        }
-
-        // Try to hot remove
-        if let Err(e) = self.0.vm.detach_device(devxml).await {
-            glib::g_debug!("virt-manager", "Device could not be hotUNplugged: {e}");
-            crate::error::show_info(
-                parent.as_ref(),
-                "Device could not be removed from the running machine",
-                Some(&format!(
-                    "This change will take effect after the next guest shutdown.\n\n{e}"
-                )),
-                None,
-                crate::error::Buttons::Ok,
-            )
-            .await;
+        if !crate::delete::remove_devobj_internal(parent.as_ref(), &self.0.vm, &id, false).await {
             return;
         }
 

@@ -492,6 +492,56 @@ fn baseline_hypervisor_cpu(
 
 /// A storage volume or local file that `_copy_nvram_file` made or
 /// will remove.
+/// `DeviceDisk.path_in_use_by`, blocking: the VMs on `conn` using
+/// `path` for a disk or for direct kernel boot. Volume backing chains
+/// aren't followed.
+pub(crate) fn path_in_use_by(conn: &Connect, path: &str) -> Result<Vec<String>, String> {
+    let doms = conn
+        .list_all_domains(0)
+        .map_err(|e| e.message().to_string())?;
+    let mut ret = vec![];
+    for dom in doms {
+        let Ok(xml) = dom.get_xml_desc(0) else {
+            continue;
+        };
+        let Ok(doc) = virtinst_xml::parse_libvirt_xml(&xml) else {
+            continue;
+        };
+        let Some(root) = doc.root_element() else {
+            continue;
+        };
+        let name = dom.get_name().unwrap_or_default();
+        let boot = ["kernel", "initrd", "dtb"].iter().any(|k| {
+            virtinst_xml::resolve_path(&doc, root, &["os", k])
+                .is_some_and(|e| e.text_content(&doc) == path)
+        });
+        let disk = virtinst_xml::resolve_path(&doc, root, &["devices"])
+            .map(|devs| devs.find_all(&doc, "disk"))
+            .unwrap_or_default()
+            .into_iter()
+            .any(|d| virtinst_core::devices::disk::source_path(&doc, d).as_deref() == Some(path));
+        if boot || disk {
+            ret.push(name);
+        }
+    }
+    Ok(ret)
+}
+
+/// `vmmDomain.delete(force=True)`, blocking: undefine along with
+/// snapshot metadata, managed save and NVRAM.
+pub(crate) fn delete_domain(dom: &Domain, has_nvram: bool) -> Result<(), String> {
+    let mut flags =
+        sys::VIR_DOMAIN_UNDEFINE_SNAPSHOTS_METADATA | sys::VIR_DOMAIN_UNDEFINE_MANAGED_SAVE;
+    if has_nvram {
+        flags |= sys::VIR_DOMAIN_UNDEFINE_NVRAM;
+    }
+    if let Err(e) = dom.undefine_flags(flags) {
+        eprintln!("libvirt undefineFlags failed, falling back to old style: {e}");
+        dom.undefine().map_err(|e| e.message().to_string())?;
+    }
+    Ok(())
+}
+
 enum NvramFile {
     Vol(virt::storage_vol::StorageVol),
     Local(String),
@@ -903,7 +953,7 @@ impl VmmDomain {
         self.emit_by_name::<()>("state-changed", &[]);
     }
 
-    fn handle(&self) -> Result<std::sync::Arc<crate::connection::ConnHandle>, String> {
+    pub(crate) fn handle(&self) -> Result<std::sync::Arc<crate::connection::ConnHandle>, String> {
         let conn = self.conn().ok_or("Connection closed")?;
         conn.handle().ok_or_else(|| "Not connected".to_string())
     }
@@ -1253,41 +1303,8 @@ impl VmmDomain {
     /// `path` for a disk or for direct kernel boot. Volume backing
     /// chains aren't followed.
     pub async fn path_in_use_by(&self, path: String) -> Result<Vec<String>, String> {
-        self.with_domain(move |conn, _| {
-            let doms = conn
-                .list_all_domains(0)
-                .map_err(|e| e.message().to_string())?;
-            let mut ret = vec![];
-            for dom in doms {
-                let Ok(xml) = dom.get_xml_desc(0) else {
-                    continue;
-                };
-                let Ok(doc) = virtinst_xml::parse_libvirt_xml(&xml) else {
-                    continue;
-                };
-                let Some(root) = doc.root_element() else {
-                    continue;
-                };
-                let name = dom.get_name().unwrap_or_default();
-                let boot = ["kernel", "initrd", "dtb"].iter().any(|k| {
-                    virtinst_xml::resolve_path(&doc, root, &["os", k])
-                        .is_some_and(|e| e.text_content(&doc) == path)
-                });
-                let disk = virtinst_xml::resolve_path(&doc, root, &["devices"])
-                    .map(|devs| devs.find_all(&doc, "disk"))
-                    .unwrap_or_default()
-                    .into_iter()
-                    .any(|d| {
-                        virtinst_core::devices::disk::source_path(&doc, d).as_deref()
-                            == Some(path.as_str())
-                    });
-                if boot || disk {
-                    ret.push(name);
-                }
-            }
-            Ok(ret)
-        })
-        .await
+        self.with_domain(move |conn, _| path_in_use_by(conn, &path))
+            .await
     }
 
     /// The storage volume behind a disk, as `(path, capacity)`:
