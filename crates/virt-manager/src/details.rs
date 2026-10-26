@@ -11,6 +11,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use virtinst_xml::{Document, Element};
@@ -1796,8 +1797,6 @@ impl VmmDetails {
             repopulating: Cell::new(false),
         }));
         this.disable_apply();
-        // Device removal arrives with the edit port.
-        this.0.config_remove.set_sensitive(false);
         let weak = Rc::downgrade(&this.0);
         this.0.hw_list.connect_row_selected(move |_, _| {
             if let Some(inner) = weak.upgrade() {
@@ -1984,6 +1983,14 @@ impl VmmDetails {
             });
         }
 
+        let weak = Rc::downgrade(&self.0);
+        i.config_remove.connect_clicked(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                let this = VmmDetails(inner);
+                glib::spawn_future_local(async move { this.config_remove().await });
+            }
+        });
+        self.init_menus();
         let weak = Rc::downgrade(&self.0);
         i.config_cancel.connect_clicked(move |_| {
             // Remove current changes and deactivate 'apply' button
@@ -3345,6 +3352,9 @@ impl VmmDetails {
         };
         let i = &self.0;
         i.refreshing.set(true);
+        i.config_remove.set_sensitive(true);
+        i.config_remove
+            .set_tooltip_text(Some("Remove this device from the virtual machine"));
         match row.hwtype {
             HwType::General => {
                 self.refresh_overview_page();
@@ -3414,9 +3424,233 @@ impl VmmDetails {
             }
             _ => i.hw_panel.set_visible_child(&i.unported),
         }
+        self.check_device_remove(&row);
         i.refreshing.set(false);
         self.disable_apply();
         i.config_remove.set_visible(row.hwtype.is_removable());
+    }
+
+    /// `_init_menus` and `_popup_addhw_menu_cb`: the hardware list's
+    /// right-click menu.
+    fn init_menus(&self) {
+        let i = &self.0;
+        let actions = gio::SimpleActionGroup::new();
+        // The Add Hardware wizard isn't ported yet.
+        let addhw = gio::SimpleAction::new("add-hardware", None);
+        addhw.set_enabled(false);
+        actions.add_action(&addhw);
+        let rmhw = gio::SimpleAction::new("remove-hardware", None);
+        let weak = Rc::downgrade(&self.0);
+        rmhw.connect_activate(move |_, _| {
+            if let Some(inner) = weak.upgrade() {
+                let this = VmmDetails(inner);
+                glib::spawn_future_local(async move { this.config_remove().await });
+            }
+        });
+        actions.add_action(&rmhw);
+        i.top_box.insert_action_group("hw", Some(&actions));
+
+        // Not parented to the list itself, which treats every child as
+        // a row when it is repopulated.
+        let popover = gtk::PopoverMenu::from_model(None::<&gio::MenuModel>);
+        popover.set_parent(&i.top_box);
+        popover.set_has_arrow(false);
+        popover.set_halign(gtk::Align::Start);
+
+        let click = gtk::GestureClick::new();
+        click.set_button(gtk::gdk::BUTTON_SECONDARY);
+        let weak = Rc::downgrade(&self.0);
+        click.connect_pressed(move |_, _, x, y| {
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            // force select the list entry before showing popup_menu
+            let Some(listrow) = inner.hw_list.row_at_y(y as i32) else {
+                return;
+            };
+            inner.hw_list.select_row(Some(&listrow));
+            let menu = gio::Menu::new();
+            menu.append(Some("_Add Hardware"), Some("hw.add-hardware"));
+            if inner.config_remove.is_visible() {
+                menu.append(Some("_Remove Hardware"), Some("hw.remove-hardware"));
+            }
+            rmhw.set_enabled(inner.config_remove.is_sensitive());
+            popover.set_menu_model(Some(&menu));
+            let point = inner
+                .hw_list
+                .compute_point(
+                    &inner.top_box,
+                    &gtk::graphene::Point::new(x as f32, y as f32),
+                )
+                .unwrap_or_else(|| gtk::graphene::Point::new(x as f32, y as f32));
+            popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
+                point.x() as i32,
+                point.y() as i32,
+                1,
+                1,
+            )));
+            popover.popup();
+        });
+        i.hw_list.add_controller(click);
+    }
+
+    /// `_disable_device_remove`.
+    fn disable_device_remove(&self, tooltip: &str) {
+        self.0.config_remove.set_sensitive(false);
+        self.0.config_remove.set_tooltip_text(Some(tooltip));
+    }
+
+    /// The `_disable_device_remove` calls of the `_refresh_*_page`s.
+    fn check_device_remove(&self, row: &HwRow) {
+        const UNSUPPORTED: &str = "Hypervisor does not support removing this device";
+        const ATTACHED: &str = "Cannot remove controller while devices are attached.";
+        let Some((x, el)) = self.device_element(row) else {
+            return;
+        };
+        let doc = &x.doc;
+        let devices = virtinst_xml::resolve_path(doc, x.root(), &["devices"]);
+        let count = |tag| devices.map_or(0, |d| d.find_all(doc, tag).len());
+        let a = |name| attr(doc, el, name);
+        match row.hwtype {
+            HwType::Disk => {
+                // vmmDeleteStorage isn't ported yet
+                self.disable_device_remove("Removing disks is not available yet in this version.");
+            }
+            HwType::Input => {
+                let typ = a("type");
+                if matches!(typ.as_deref(), Some("mouse" | "keyboard"))
+                    && matches!(a("bus").as_deref(), Some("xen" | "ps2"))
+                {
+                    self.disable_device_remove(UNSUPPORTED);
+                }
+            }
+            HwType::Video => {
+                if count("graphics") > 0 && count("video") <= 1 {
+                    self.disable_device_remove(
+                        "Cannot remove last video device while Graphics/Display is attached.",
+                    );
+                }
+            }
+            HwType::Controller => {
+                let ctype = a("type").unwrap_or_default();
+                let index: Option<i64> = a("index").and_then(|i| i.parse().ok());
+                let is_x86 = matches!(x.guest.os.arch.as_deref(), Some("x86_64" | "i686"));
+                if is_x86 && ctype == "usb" {
+                    self.disable_device_remove(UNSUPPORTED);
+                }
+                // `get_attached_devices`
+                let attached = match ctype.as_str() {
+                    "pci" => {
+                        self.disable_device_remove(UNSUPPORTED);
+                        false
+                    }
+                    "scsi" | "sata" | "ide" | "fdc" => devices.is_some_and(|d| {
+                        d.find_all(doc, "disk").iter().any(|disk| {
+                            let controller: Option<i64> =
+                                child_attr(doc, *disk, &["address"], "controller")
+                                    .and_then(|c| c.parse().ok());
+                            child_attr(doc, *disk, &["target"], "bus").as_deref()
+                                == Some(ctype.as_str())
+                                && controller == index
+                        })
+                    }),
+                    "virtio-serial" => devices.is_some_and(|d| {
+                        let channel = d.find_all(doc, "channel").iter().any(|c| {
+                            let controller: Option<i64> =
+                                child_attr(doc, *c, &["address"], "controller")
+                                    .and_then(|c| c.parse().ok());
+                            child_attr(doc, *c, &["address"], "type").as_deref()
+                                == Some("virtio-serial")
+                                && controller == index
+                        });
+                        // virtio console is implied to be on virtio-serial index=0
+                        let console = index == Some(0)
+                            && d.find_all(doc, "console").iter().any(|c| {
+                                child_attr(doc, *c, &["target"], "type").as_deref()
+                                    == Some("virtio")
+                            });
+                        channel || console
+                    }),
+                    _ => false,
+                };
+                if attached {
+                    self.disable_device_remove(ATTACHED);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `_config_remove`.
+    async fn config_remove(&self) {
+        let Some(row) = self.get_hw_row() else {
+            return;
+        };
+        if !row.hwtype.is_removable() || !self.0.config_remove.is_sensitive() {
+            return;
+        }
+        self.remove_non_disk(&row).await;
+    }
+
+    /// `_remove_non_disk`, with `remove_devobj_internal`.
+    async fn remove_non_disk(&self, row: &HwRow) {
+        let parent = self.parent();
+        let config = crate::engine::get().config();
+        let ok = crate::error::chkbox_helper(
+            parent.as_ref(),
+            || config.get_confirm_removedev(),
+            |v| config.set_confirm_removedev(v),
+            "Are you sure you want to remove this device?",
+            None,
+        )
+        .await;
+        if !ok {
+            return;
+        }
+        let (Some(id), Some(x)) = (self.device_id(row), self.0.vm.xmlobj()) else {
+            return;
+        };
+        let devxml = virtinst_xml::parse_libvirt_xml(&x.xml)
+            .ok()
+            .and_then(|doc| {
+                let root = doc.root_element()?;
+                let dev = virtinst_core::devices::find_device(&doc, root, &id)?;
+                virtinst_xml::element_to_string(doc, dev).ok()
+            })
+            .unwrap_or_default();
+        glib::g_debug!("virt-manager", "Removing device: {devxml}");
+
+        // Define the change
+        if let Err(e) = self.0.vm.remove_device(&id).await {
+            crate::error::show_err(
+                parent.as_ref(),
+                &format!("Error Removing Device: {e}"),
+                None,
+                "",
+            )
+            .await;
+            return;
+        }
+
+        // Try to hot remove
+        if let Err(e) = self.0.vm.detach_device(devxml).await {
+            glib::g_debug!("virt-manager", "Device could not be hotUNplugged: {e}");
+            crate::error::show_info(
+                parent.as_ref(),
+                "Device could not be removed from the running machine",
+                Some(&format!(
+                    "This change will take effect after the next guest shutdown.\n\n{e}"
+                )),
+                None,
+                crate::error::Buttons::Ok,
+            )
+            .await;
+            return;
+        }
+
+        // the config change refreshes the page, rather than leaving it
+        // untouched because it thinks changes are in progress
+        self.disable_apply();
     }
 
     /// `_refresh_os_page`. Inspection (libguestfs) isn't supported, so
