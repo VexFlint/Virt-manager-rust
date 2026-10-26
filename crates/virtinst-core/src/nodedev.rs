@@ -25,6 +25,8 @@ pub struct NodeDevice {
     pub drm_type: Option<String>,
     /// `<devnode>` paths, in document order.
     pub devnodes: Vec<String>,
+    /// `./capability/uuid`, for `mdev` devices.
+    pub uuid: Option<String>,
 }
 
 fn text(doc: &Document, el: Element, path: &[&str]) -> Option<String> {
@@ -64,6 +66,7 @@ impl NodeDevice {
                 .into_iter()
                 .map(|d| d.text_content(&doc))
                 .collect(),
+            uuid: cap_text("uuid"),
         })
     }
 
@@ -82,6 +85,92 @@ impl NodeDevice {
             })
             .or(self.devnodes.first())
             .map(String::as_str)
+    }
+}
+
+/// `_compare_int`'s `_intify`: `None` for a missing or bad value.
+fn intify(val: Option<&str>) -> Option<i64> {
+    let val = val?.trim();
+    if let Some(pos) = val.find("0x") {
+        i64::from_str_radix(&val[pos + 2..], 16).ok()
+    } else {
+        val.parse().ok()
+    }
+}
+
+/// `_compare_int`: a value the hostdev doesn't set matches anything.
+fn compare_int(nodedev_val: Option<&str>, hostdev_val: Option<&str>) -> bool {
+    let hostdev_val = intify(hostdev_val);
+    hostdev_val.is_none() || intify(nodedev_val) == hostdev_val
+}
+
+/// `uuid.UUID(val)`, as 32 lowercase hex digits.
+fn normalize_uuid(val: &str) -> Option<String> {
+    let val = val.trim();
+    let val = val.strip_prefix("urn:uuid:").unwrap_or(val);
+    let hex: String = val
+        .chars()
+        .filter(|c| !matches!(c, '-' | '{' | '}'))
+        .collect::<String>()
+        .to_lowercase();
+    (hex.len() == 32 && hex.chars().all(|c| c.is_ascii_hexdigit())).then_some(hex)
+}
+
+impl NodeDevice {
+    /// `get_mdev_uuid`: libvirt 7.3.0 added `<uuid>`; before that the
+    /// name is `mdev_$UUID_WITH_UNDERSCORES`.
+    pub fn get_mdev_uuid(&self) -> String {
+        match &self.uuid {
+            Some(uuid) => uuid.clone(),
+            None => self.name.get(5..).unwrap_or_default().replace('_', "-"),
+        }
+    }
+
+    /// `compare_to_hostdev`: whether `hostdev` (a `<hostdev>`) passes
+    /// this device through.
+    pub fn compare_to_hostdev(&self, doc: &Document, hostdev: Element) -> bool {
+        let hattr = |path: &[&str], name: &str| {
+            virtinst_xml::resolve_path(doc, hostdev, path)
+                .and_then(|e| e.attribute(doc, name))
+                .map(str::to_string)
+        };
+        let addr = |name: &str| hattr(&["source", "address"], name);
+        let htype = hostdev.attribute(doc, "type");
+        match self.device_type.as_deref() {
+            Some("pci") => {
+                htype == Some("pci")
+                    && compare_int(self.domain.as_deref(), addr("domain").as_deref())
+                    && compare_int(self.bus.as_deref(), addr("bus").as_deref())
+                    && compare_int(self.slot.as_deref(), addr("slot").as_deref())
+                    && compare_int(self.function.as_deref(), addr("function").as_deref())
+            }
+            Some("usb_device") => {
+                htype == Some("usb")
+                    && compare_int(
+                        self.product_id.as_deref(),
+                        hattr(&["source", "product"], "id").as_deref(),
+                    )
+                    && compare_int(
+                        self.vendor_id.as_deref(),
+                        hattr(&["source", "vendor"], "id").as_deref(),
+                    )
+                    && compare_int(self.bus.as_deref(), addr("bus").as_deref())
+                    && compare_int(self.device.as_deref(), addr("device").as_deref())
+            }
+            // Upstream's `_compare_uuid` returns a truthy -1 for a value
+            // it can't parse; a bad UUID matches nothing here.
+            Some("mdev") => {
+                htype == Some("mdev")
+                    && match (
+                        normalize_uuid(&self.get_mdev_uuid()),
+                        addr("uuid").as_deref().and_then(normalize_uuid),
+                    ) {
+                        (Some(a), Some(b)) => a == b,
+                        _ => false,
+                    }
+            }
+            _ => false,
+        }
     }
 }
 
@@ -184,5 +273,44 @@ mod tests {
         assert_eq!(pretty_name(&drm, &[]), "pci_0000_00_02_0 (render)");
         let usb = NodeDevice::parse(USB).unwrap();
         assert_eq!(pretty_name(&usb, &[]), "001:002 Linux Foundation 0x0001");
+    }
+
+    fn hostdev(xml: &str) -> (Document, Element) {
+        let doc = virtinst_xml::parse_libvirt_xml(xml).unwrap();
+        let el = doc.root_element().unwrap();
+        (doc, el)
+    }
+
+    #[test]
+    fn compare_to_hostdev() {
+        let pci = NodeDevice::parse(PCI).unwrap();
+        let usb = NodeDevice::parse(USB).unwrap();
+        let (doc, el) = hostdev(
+            "<hostdev type='pci'><source><address domain='0x0000' bus='0x00' \
+             slot='0x02' function='0x0'/></source></hostdev>",
+        );
+        assert!(pci.compare_to_hostdev(&doc, el));
+        assert!(!usb.compare_to_hostdev(&doc, el));
+        let (doc, el) = hostdev(
+            "<hostdev type='pci'><source><address domain='0x0000' bus='0x00' \
+             slot='0x03' function='0x0'/></source></hostdev>",
+        );
+        assert!(!pci.compare_to_hostdev(&doc, el));
+        // vendor/product only: the unset bus/device match anything
+        let (doc, el) = hostdev(
+            "<hostdev type='usb'><source><vendor id='0x1d6b'/>\
+             <product id='0x0001'/></source></hostdev>",
+        );
+        assert!(usb.compare_to_hostdev(&doc, el));
+        let mdev = NodeDevice::parse(
+            "<device><name>mdev_4b20d080_1b54_4048_85b3_a6a62d165c01</name>\
+             <capability type='mdev'/></device>",
+        )
+        .unwrap();
+        let (doc, el) = hostdev(
+            "<hostdev type='mdev'><source>\
+             <address uuid='4B20D080-1B54-4048-85B3-A6A62D165C01'/></source></hostdev>",
+        );
+        assert!(mdev.compare_to_hostdev(&doc, el));
     }
 }

@@ -42,11 +42,13 @@ mod spicedisplay;
 mod spicegtksession;
 mod sshtunnels;
 mod statsmanager;
+mod tpmdetails;
 mod usbdevicewidget;
 mod viewers;
 mod vmmenu;
 mod vmwindow;
 mod vncdisplay;
+mod vsockdetails;
 
 use clap::Parser;
 
