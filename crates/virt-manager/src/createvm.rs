@@ -10,13 +10,14 @@ use gtk::{gio, glib};
 use virtinst_core::capabilities::{Capabilities, CapsInfo};
 use virtinst_core::install::{prefers_uefi, GuestCapsDefaults};
 
-use crate::addstorage::{plan_disk, AddStorage, DiskPlan, DiskRequest};
+use crate::addstorage::{get_default_path, plan_disk, AddStorage, DiskPlan, DiskRequest};
 use crate::connection::VmmConnection;
 use crate::devpages::{EntryCombo, Grid, GridRow, SimpleCombo};
 use crate::domain::pretty_hv;
 use crate::engine;
 use crate::error;
 use crate::mediacombo::MediaCombo;
+use crate::netlist::{NetList, NetSelection};
 use crate::oslist::{self, OsList};
 use crate::storagebrowse::{self, BrowseReason, StorageBrowser};
 
@@ -490,6 +491,118 @@ impl MemWidgets {
     }
 }
 
+/// Step 5: the summary, the name and the network.
+struct FinishWidgets {
+    top: gtk::Box,
+    name: gtk::Entry,
+    summary_os: gtk::Label,
+    summary_install: gtk::Label,
+    summary_mem: gtk::Label,
+    summary_cpu: gtk::Label,
+    summary_storage: gtk::Label,
+    summary_storage_path: gtk::Label,
+    customize: gtk::CheckButton,
+    advanced_expander: gtk::Expander,
+    netdev_ui_align: gtk::Box,
+}
+
+impl FinishWidgets {
+    fn new() -> FinishWidgets {
+        let summary_title = gtk::Label::new(None);
+        summary_title.set_markup("Ready to begin the installation");
+        summary_title.set_halign(gtk::Align::Start);
+
+        let name = gtk::Entry::new();
+        name.set_halign(gtk::Align::Start);
+        name.set_width_chars(40);
+        name.update_property(&[gtk::accessible::Property::Label("create-vm-name")]);
+        let value = || {
+            let l = gtk::Label::new(Some("label"));
+            l.set_halign(gtk::Align::Start);
+            l
+        };
+        let summary_os = value();
+        let summary_install = value();
+        let summary_mem = value();
+        let summary_cpu = value();
+        let summary_storage = value();
+        summary_storage.set_wrap(true);
+        let summary_storage_path = value();
+        summary_storage_path.set_ellipsize(gtk::pango::EllipsizeMode::Start);
+        summary_storage_path.set_max_width_chars(27);
+        let box3 = gtk::Box::new(gtk::Orientation::Horizontal, 3);
+        box3.append(&summary_storage);
+        box3.append(&summary_storage_path);
+        let customize = gtk::CheckButton::with_mnemonic("C_ustomize configuration before install");
+        customize.set_valign(gtk::Align::Start);
+
+        let table4 = gtk::Grid::builder()
+            .halign(gtk::Align::Start)
+            .row_spacing(6)
+            .column_spacing(6)
+            .build();
+        let rows: [(&str, &gtk::Widget); 6] = [
+            ("_Name:", name.upcast_ref()),
+            ("OS:", summary_os.upcast_ref()),
+            ("Install:", summary_install.upcast_ref()),
+            ("Memory:", summary_mem.upcast_ref()),
+            ("CPUs:", summary_cpu.upcast_ref()),
+            ("Storage:", box3.upcast_ref()),
+        ];
+        for (row, (text, widget)) in rows.into_iter().enumerate() {
+            let l = gtk::Label::with_mnemonic(text);
+            l.set_halign(gtk::Align::End);
+            l.add_css_class("vmm-lighter");
+            if row == 0 {
+                l.set_mnemonic_widget(Some(&name));
+            }
+            table4.attach(&l, 0, row as i32, 1, 1);
+            table4.attach(widget, 1, row as i32, 1, 1);
+        }
+        table4.attach(&customize, 1, 6, 1, 1);
+
+        let vbox16 = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        vbox16.append(&summary_title);
+        vbox16.append(&table4);
+
+        let netdev_ui_align = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let grid17 = gtk::Grid::builder()
+            .margin_start(12)
+            .margin_top(6)
+            .row_spacing(6)
+            .build();
+        grid17.attach(&netdev_ui_align, 0, 0, 1, 1);
+        let advanced_expander = gtk::Expander::with_mnemonic("N_etwork selection");
+        advanced_expander.set_child(Some(&grid17));
+
+        let top = gtk::Box::new(gtk::Orientation::Vertical, 15);
+        top.append(&vbox16);
+        top.append(&advanced_expander);
+        FinishWidgets {
+            top,
+            name,
+            summary_os,
+            summary_install,
+            summary_mem,
+            summary_cpu,
+            summary_storage,
+            summary_storage_path,
+            customize,
+            advanced_expander,
+            netdev_ui_align,
+        }
+    }
+}
+
+/// The NIC the finish page picked.
+#[derive(Clone)]
+// Read by the install step, ported next.
+#[allow(dead_code)]
+struct NewInterface {
+    selection: NetSelection,
+    mac: String,
+}
+
 /// `_GuestData`: what the pages so far chose for the guest.
 #[derive(Default, Clone)]
 // Read by the summary and install steps, ported next.
@@ -510,6 +623,7 @@ struct GuestData {
     /// KiB.
     memory: u64,
     disk: Option<Rc<DiskPlan>>,
+    interface: Option<NewInterface>,
 }
 
 pub struct Inner {
@@ -557,6 +671,8 @@ pub struct Inner {
     enable_storage: gtk::CheckButton,
     storage_align: gtk::Box,
     addstorage: Rc<AddStorage>,
+    fin: FinishWidgets,
+    netlist: RefCell<Option<Rc<NetList>>>,
 
     gdata: RefCell<GuestData>,
     storage_browser: RefCell<Option<StorageBrowser>>,
@@ -734,8 +850,8 @@ impl VmmCreateVM {
         storage_area.append(&enable_storage);
         storage_area.append(&storage_align);
         pages.add_named(&storage_area, Some(&PAGE_STORAGE.to_string()));
-        let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        pages.add_named(&page, Some(&PAGE_FINISH.to_string()));
+        let fin = FinishWidgets::new();
+        pages.add_named(&fin.top, Some(&PAGE_FINISH.to_string()));
         // Size the window to the shown page only.
         pages.set_vhomogeneous(false);
         pages.set_hhomogeneous(false);
@@ -806,6 +922,8 @@ impl VmmCreateVM {
             enable_storage,
             storage_align,
             addstorage,
+            fin,
+            netlist: RefCell::default(),
             gdata: RefCell::default(),
             storage_browser: RefCell::default(),
             detect_os_in_progress: Cell::new(false),
@@ -908,6 +1026,13 @@ impl VmmCreateVM {
                 VmmCreateVM(inner).browse_entry(entry, BrowseReason::Image);
             }
         });
+        // Summary page listeners
+        i.fin
+            .name
+            .connect_changed(self.handler(VmmCreateVM::name_changed));
+        i.finish
+            .connect_clicked(self.handler(VmmCreateVM::finish_clicked));
+
         i.enable_storage.connect_toggled(self.handler(|t| {
             let active = t.0.enable_storage.is_active();
             t.0.storage_align.set_sensitive(active);
@@ -1047,6 +1172,14 @@ impl VmmCreateVM {
         // Storage
         i.enable_storage.set_active(true);
         i.addstorage.reset_state();
+
+        // Final page
+        i.fin.name.set_text("");
+        i.fin.customize.set_active(false);
+        // `Customize configuration before install` needs the details
+        // window on a guest that isn't defined yet, not ported.
+        i.fin.customize.set_sensitive(false);
+        i.fin.customize.set_tooltip_text(Some("Not supported yet"));
     }
 
     /// `_set_caps_state`: the install methods this guest type allows.
@@ -1319,6 +1452,19 @@ impl VmmCreateVM {
         // Storage
         i.addstorage.set_conn(Some(conn.clone()));
         i.addstorage.reset_state();
+
+        // Networking
+        i.fin.advanced_expander.set_expanded(false);
+        let netlist = NetList::new(Some(conn.clone()));
+        let grid = gtk::Grid::builder()
+            .row_spacing(6)
+            .column_spacing(6)
+            .build();
+        grid.attach(&netlist.top_label, 0, 0, 1, 1);
+        grid.attach(&netlist.top_box, 1, 0, 1, 1);
+        i.fin.netdev_ui_align.append(&grid);
+        netlist.reset_state();
+        i.netlist.replace(Some(netlist));
     }
 
     fn conn_state_changed(&self) {
@@ -1345,6 +1491,11 @@ impl VmmCreateVM {
         }
         i.capsinfo.replace(None);
         i.caps.replace(None);
+        if i.netlist.take().is_some() {
+            while let Some(child) = i.fin.netdev_ui_align.first_child() {
+                i.fin.netdev_ui_align.remove(&child);
+            }
+        }
 
         let Some(conn) = newconn else {
             self.show_startup_error("No active connection to install on.", true);
@@ -1807,6 +1958,7 @@ impl VmmCreateVM {
         i.cur_page.set(pagenum);
         i.pages.set_visible_child_name(&pagenum.to_string());
         if pagenum == PAGE_FINISH {
+            self.populate_summary();
             i.finish.grab_focus();
         }
         i.back.set_sensitive(pagenum != PAGE_NAME);
@@ -1823,6 +1975,7 @@ impl VmmCreateVM {
             PAGE_INSTALL => self.validate_install_page().await,
             PAGE_MEM => self.validate_mem_page(),
             PAGE_STORAGE => self.validate_storage_page().await,
+            PAGE_FINISH => self.validate_final_page().await,
             _ => true,
         }
     }
@@ -1830,6 +1983,189 @@ impl VmmCreateVM {
     /// `_validate_intro_page`: the guest has to resolve.
     fn validate_intro_page(&self) -> bool {
         self.0.capsinfo.borrow().is_some()
+    }
+
+    /// `_name_changed`: the default disk path follows the name.
+    fn name_changed(&self) {
+        let i = &self.0;
+        let newname = i.fin.name.text().to_string();
+        if i.cur_page.get() != PAGE_FINISH || newname.is_empty() {
+            return;
+        }
+        if !self.is_default_storage() {
+            return;
+        }
+        let Some(conn) = i.conn.borrow().clone() else {
+            return;
+        };
+        let Some(handle) = conn.handle() else {
+            return;
+        };
+        let fmt = conn.get_default_storage_format();
+        let is_session = conn.is_qemu_unprivileged();
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let name = newname.clone();
+            let path = gio::spawn_blocking(move || {
+                get_default_path(handle.connect(), &name, fmt.as_deref(), &[], is_session)
+            })
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .flatten();
+            // Only if the name didn't change again meanwhile.
+            if this.0.fin.name.text() == newname {
+                this.populate_summary_storage(path.as_deref());
+            }
+        });
+    }
+
+    /// `_is_default_storage`.
+    fn is_default_storage(&self) -> bool {
+        self.0.addstorage.is_default_storage() && !self.should_skip_disk_page()
+    }
+
+    /// `_populate_summary_storage`.
+    fn populate_summary_storage(&self, path: Option<&str>) {
+        let i = &self.0;
+        let gdata = i.gdata.borrow();
+        let mut storagesize = String::new();
+        let storagepath = if let Some(disk) = &gdata.disk {
+            if let Some(vol) = &disk.vol_install {
+                storagesize = format!(
+                    "{:.1} GiB",
+                    vol.capacity as f64 / (1024.0 * 1024.0 * 1024.0)
+                );
+            }
+            let path = path.or(disk.path.as_deref()).unwrap_or_default();
+            format!(
+                "<span size='small'>{}</span>",
+                glib::markup_escape_text(path)
+            )
+        } else if let Some((_, source)) = &gdata.filesystem {
+            format!(
+                "<span size='small'>{}</span>",
+                glib::markup_escape_text(source)
+            )
+        } else {
+            "None".to_string()
+        };
+        i.fin.summary_storage.set_markup(&storagesize);
+        i.fin.summary_storage.set_visible(!storagesize.is_empty());
+        i.fin.summary_storage_path.set_markup(&storagepath);
+    }
+
+    /// `_populate_summary`.
+    fn populate_summary(&self) {
+        let i = &self.0;
+        let install = match self.get_config_install_page() {
+            InstallPage::Iso => "Local CDROM/ISO",
+            InstallPage::Url => "URL Install Tree",
+            InstallPage::Import => "Import existing OS image",
+            InstallPage::Manual => "Manual install",
+            InstallPage::ContainerApp => "Application container",
+            InstallPage::ContainerOs => "Operating system container",
+            InstallPage::VzTemplate => "Virtuozzo container",
+        };
+        let (os_label, mem, cpu) = {
+            let gdata = i.gdata.borrow();
+            let os = gdata
+                .osinfo
+                .as_deref()
+                .and_then(|n| oslist::all_os().iter().find(|o| o.name == n).cloned())
+                .unwrap_or_else(virtinst_core::osinfo::OsVariant::generic);
+            (
+                os.label,
+                pretty_memory(gdata.memory),
+                gdata.vcpus.to_string(),
+            )
+        };
+        i.fin.summary_os.set_text(&os_label);
+        i.fin.summary_install.set_text(install);
+        i.fin.summary_mem.set_text(&mem);
+        i.fin.summary_cpu.set_text(&cpu);
+        self.populate_summary_storage(None);
+
+        let nsource = i
+            .netlist
+            .borrow()
+            .as_ref()
+            .and_then(|n| n.get_network_selection())
+            .and_then(|sel| sel.1);
+        if nsource.is_none() {
+            i.fin.advanced_expander.set_expanded(true);
+        }
+    }
+
+    /// `_validate_final_page`.
+    async fn validate_final_page(&self) -> bool {
+        let i = &self.0;
+        let parent = Some(&i.window);
+        let Some(conn) = i.conn.borrow().clone() else {
+            return false;
+        };
+        // HV + Arch selection
+        let name = i.fin.name.text().to_string();
+        if Some(&name) != i.gdata.borrow().name.as_ref() {
+            // `Guest.validate_name`
+            let res =
+                virtinst_core::storage::validate_generic_name("Guest", &name).and_then(|_| {
+                    if conn.list_vms().iter().any(|v| v.get_name() == name) {
+                        Err(format!("Guest name '{name}' is already in use."))
+                    } else {
+                        Ok(())
+                    }
+                });
+            if let Err(e) = res {
+                error::val_err_text2(parent, "Invalid guest name", Some(&e)).await;
+                return false;
+            }
+            i.gdata.borrow_mut().name = Some(name);
+            if self.is_default_storage() {
+                eprintln!(
+                    "User changed VM name and using default storage, re-validating with new \
+                     default storage path."
+                );
+                if !self.validate_storage_page().await {
+                    return false;
+                }
+            }
+        }
+
+        let mac = virtinst_core::cloner::generate_mac(conn.is_qemu());
+        let Some(netlist) = i.netlist.borrow().clone() else {
+            return false;
+        };
+        let Some(selection) = netlist.get_network_selection() else {
+            return false;
+        };
+        if let Err(e) = netlist
+            .validate_device(&i.window, &selection.0, selection.1.as_deref(), &mac)
+            .await
+        {
+            error::show_err(
+                parent,
+                &format!("Uncaught error validating install parameters: {e}"),
+                None,
+                "",
+            )
+            .await;
+            return false;
+        }
+        i.gdata.borrow_mut().interface = Some(NewInterface { selection, mac });
+        true
+    }
+
+    /// `_finish_clicked`.
+    fn finish_clicked(&self) {
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            // Validate the final page
+            if !this.validate(this.0.cur_page.get()).await {
+                return;
+            }
+            eprintln!("Starting create finish() sequence");
+        });
     }
 
     /// `_validate_storage_page`.
@@ -2463,6 +2799,9 @@ impl VmmCreateVM {
         let ram_size = ram.map_or(DEFAULT_MEM, |r| (r / (1024 * 1024)) as f64);
         i.memw.mem.set_value(ram_size);
         i.memw.cpus.set_value(n_cpus.unwrap_or(1) as f64);
+        i.fin
+            .name
+            .set_text(i.gdata.borrow().name.as_deref().unwrap_or_default());
         if let Some(storage) = res.get_recommended_storage(&arch) {
             i.addstorage
                 .set_size((storage / (1024 * 1024 * 1024)) as f64);
