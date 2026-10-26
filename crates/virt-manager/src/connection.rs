@@ -172,6 +172,73 @@ mod imp {
     }
 }
 
+/// A virtual network, reduced to what the NIC source list shows
+/// (`vmmNetwork` plus its `xmlobj`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NetInfo {
+    pub name: String,
+    pub active: bool,
+    pub forward_mode: Option<String>,
+    pub forward_dev: Option<String>,
+    pub virtualport_type: Option<String>,
+    /// `(name, default)`.
+    pub portgroups: Vec<(String, bool)>,
+}
+
+impl NetInfo {
+    /// Parses `<network>` XML.
+    pub fn parse(name: String, active: bool, xml: &str) -> NetInfo {
+        let mut info = NetInfo {
+            name,
+            active,
+            ..Default::default()
+        };
+        let Ok(doc) = virtinst_xml::parse_libvirt_xml(xml) else {
+            return info;
+        };
+        let Some(root) = doc.root_element() else {
+            return info;
+        };
+        let attr = |path: &[&str], name: &str| {
+            virtinst_xml::resolve_path(&doc, root, path)
+                .and_then(|e| e.attribute(&doc, name))
+                .map(str::to_string)
+        };
+        info.forward_mode = attr(&["forward"], "mode");
+        info.forward_dev = attr(&["forward"], "dev");
+        info.virtualport_type = attr(&["virtualport"], "type");
+        info.portgroups = root
+            .find_all(&doc, "portgroup")
+            .into_iter()
+            .filter_map(|pg| {
+                let name = pg.attribute(&doc, "name")?.to_string();
+                Some((name, pg.attribute(&doc, "default") == Some("yes")))
+            })
+            .collect();
+        info
+    }
+
+    /// `vmmNetwork.pretty_forward_mode`.
+    pub fn pretty_forward_mode(&self) -> String {
+        let dev = self.forward_dev.as_deref();
+        match (self.forward_mode.as_deref(), dev) {
+            (None, _) => "Isolated network".into(),
+            (Some("nat"), Some(dev)) => format!("NAT to {dev}"),
+            (Some("nat"), None) => "NAT".into(),
+            (Some("route"), Some(dev)) => format!("Route to {dev}"),
+            (Some("route"), None) => "Routed network".into(),
+            (Some(mode), _) => {
+                let mut c = mode.chars();
+                let cap: String = c
+                    .next()
+                    .map(|f| f.to_uppercase().chain(c).collect())
+                    .unwrap_or_default();
+                format!("{cap} network")
+            }
+        }
+    }
+}
+
 glib::wrapper! {
     pub struct VmmConnection(ObjectSubclass<imp::VmmConnection>);
 }
@@ -230,6 +297,38 @@ impl VmmConnection {
 
     pub fn handle(&self) -> Option<Arc<ConnHandle>> {
         self.imp().handle.borrow().clone()
+    }
+
+    /// `list_nets`, fetched on a worker.
+    pub async fn list_nets(&self) -> Vec<NetInfo> {
+        let Some(handle) = self.handle() else {
+            return vec![];
+        };
+        gio::spawn_blocking(move || {
+            let nets = handle.connect().list_all_networks(0).unwrap_or_default();
+            nets.iter()
+                .filter_map(|n| {
+                    let name = n.get_name().ok()?;
+                    let active = n.is_active().unwrap_or(false);
+                    let xml = n.get_xml_desc(0).ok()?;
+                    Some(NetInfo::parse(name, active, &xml))
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    pub fn is_remote(&self) -> bool {
+        !virtinst_core::connection::Uri::parse(&self.get_uri())
+            .hostname
+            .is_empty()
+    }
+
+    /// `is_qemu_unprivileged`: a `qemu:///session` style connection.
+    pub fn is_qemu_unprivileged(&self) -> bool {
+        let uri = virtinst_core::connection::Uri::parse(&self.get_uri());
+        uri.scheme.split('+').next() == Some("qemu") && uri.path.trim_matches('/') == "session"
     }
 
     pub fn list_vms(&self) -> Vec<VmmDomain> {

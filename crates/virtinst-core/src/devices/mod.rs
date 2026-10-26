@@ -12,6 +12,8 @@
 //! shape), not a driver-strategy trait. Only ~9 of these files actually
 //! branch on driver family upstream; this isn't a pervasive concern.
 
+mod edit;
+
 pub mod disk;
 pub use disk::DeviceDisk;
 
