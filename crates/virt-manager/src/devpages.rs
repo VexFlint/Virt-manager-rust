@@ -112,7 +112,7 @@ fn value_label() -> gtk::Label {
 /// (`uiutil.set_grid_row_visible`).
 #[derive(Clone)]
 pub struct GridRow {
-    label: gtk::Label,
+    pub(crate) label: gtk::Label,
     widget: gtk::Widget,
 }
 
@@ -557,6 +557,217 @@ impl PanicPage {
     pub fn refresh(&self, doc: &Document, el: Element) {
         self.model
             .set_text(&attr(doc, el, &[], "model").unwrap_or_default());
+    }
+}
+
+/// `char-*`: serial, parallel, console and channel devices.
+pub struct CharPage {
+    pub page: gtk::Box,
+    title: gtk::Label,
+    dev_type: gtk::Label,
+    /// `(row, value)` for source path, source host, bind host, target
+    /// type, target name, state and clipboard.
+    rows: Vec<(GridRow, gtk::Label)>,
+}
+
+impl CharPage {
+    pub fn new() -> CharPage {
+        let title = title("insert type");
+        let dev_type = value_label();
+        let mut g = Grid::new();
+        g.row("Device type:", &dev_type);
+        let rows = [
+            "Source path:",
+            "Source host:",
+            "Bind host:",
+            "Target type:",
+            "Target name:",
+            "State:",
+            "Clipboard:",
+        ]
+        .iter()
+        .map(|text| {
+            let value = value_label();
+            (g.row(text, &value), value)
+        })
+        .collect();
+        CharPage {
+            page: g.page(&title),
+            title,
+            dev_type,
+            rows,
+        }
+    }
+
+    /// `_refresh_char_page`. `primary` is `serial_is_console_dup`.
+    pub fn refresh(&self, doc: &Document, el: Element, tag: &str, primary: bool) {
+        let target_port: Option<i64> =
+            attr(doc, el, &["target"], "port").and_then(|p| p.parse().ok());
+        let dev_type = attr(doc, el, &[], "type").unwrap_or_else(|| "pty".into());
+        let show_target_type = !matches!(tag, "serial" | "parallel");
+        let target_name = attr(doc, el, &["target"], "name");
+        let is_qemuga = target_name.as_deref() == Some("org.qemu.guest_agent.0");
+        let show_clipboard = attr(doc, el, &[], "type").as_deref() == Some("qemu-vdagent");
+
+        let mut typelabel = match tag {
+            "serial" => "Serial Device".to_string(),
+            "parallel" => "Parallel Device".to_string(),
+            "console" => "Console Device".to_string(),
+            "channel" => "Channel Device".to_string(),
+            other => {
+                let mut c = other.chars();
+                let cap: String = c
+                    .next()
+                    .map(|f| f.to_uppercase().chain(c).collect())
+                    .unwrap_or_default();
+                format!("{cap} Device")
+            }
+        };
+        if let Some(port) = target_port {
+            if tag == "console" || !show_target_type {
+                typelabel += &format!(" {}", port + 1);
+            }
+        }
+        if primary {
+            typelabel += " (Primary Console)";
+        }
+        self.title.set_markup(&format!(
+            "<b>{}</b>",
+            gtk::glib::markup_escape_text(&typelabel)
+        ));
+        self.dev_type.set_text(&dev_type);
+
+        // `CharSource`: the first `<source>`, plus the connect/bind
+        // sources by mode.
+        let sources = el.find_all(doc, "source");
+        let by_mode = |mode: &str, name: &str| {
+            sources
+                .iter()
+                .find(|s| s.attribute(doc, "mode") == Some(mode))
+                .and_then(|s| s.attribute(doc, name))
+                .map(str::to_string)
+        };
+        let build_host_str = |host: Option<String>, port: Option<String>| {
+            let mut ret = host.unwrap_or_default();
+            if let Some(port) = port.and_then(|p| p.parse::<i64>().ok()) {
+                ret += &format!(":{port}");
+            }
+            Some(ret).filter(|r| !r.is_empty())
+        };
+        let first = sources.first().copied();
+        let path = first
+            .and_then(|s| s.attribute(doc, "path"))
+            .map(str::to_string);
+        let clipboard = first
+            .and_then(|s| s.find(doc, "clipboard"))
+            .and_then(|c| c.attribute(doc, "copypaste"))
+            == Some("yes");
+        let values: [(Option<String>, Option<bool>); 7] = [
+            (path, None),
+            (
+                build_host_str(by_mode("connect", "host"), by_mode("connect", "service")),
+                None,
+            ),
+            (
+                build_host_str(by_mode("bind", "host"), by_mode("bind", "service")),
+                None,
+            ),
+            (
+                show_target_type
+                    .then(|| attr(doc, el, &["target"], "type"))
+                    .flatten(),
+                None,
+            ),
+            (target_name, None),
+            // Only for the qemu guest agent, which we get async
+            // notifications about connection state.
+            (attr(doc, el, &["target"], "state"), Some(is_qemuga)),
+            (
+                Some(if clipboard { "On" } else { "Off" }.to_string()),
+                Some(show_clipboard),
+            ),
+        ];
+        for ((row, label), (val, doshow)) in self.rows.iter().zip(values) {
+            row.set_visible(doshow.unwrap_or(val.is_some()));
+            label.set_text(val.as_deref().unwrap_or("-"));
+        }
+    }
+}
+
+/// `controller-*`.
+pub struct ControllerPage {
+    pub page: gtk::Box,
+    ctype: gtk::Label,
+    pub model: SimpleCombo,
+    model_row: GridRow,
+    devices: gtk::ListBox,
+    devices_row: GridRow,
+}
+
+impl ControllerPage {
+    pub fn new() -> ControllerPage {
+        let ctype = value_label();
+        let model = SimpleCombo::unsorted(vec![], str::to_string);
+        let devices = gtk::ListBox::new();
+        devices.set_selection_mode(gtk::SelectionMode::None);
+        let scroll = gtk::ScrolledWindow::builder()
+            .child(&devices)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .min_content_height(80)
+            .min_content_width(300)
+            .has_frame(true)
+            .build();
+        let mut g = Grid::new();
+        g.row("Type:", &ctype);
+        let model_row = g.row("M_odel:", &model.widget);
+        let devices_row = g.row("Devices:", &scroll);
+        devices_row.label.set_valign(gtk::Align::Start);
+        ControllerPage {
+            page: g.page(&title("Controller")),
+            ctype,
+            model,
+            model_row,
+            devices,
+            devices_row,
+        }
+    }
+
+    /// `_refresh_controller_page`. `type_label` is
+    /// `controller_pretty_desc`; `attached` lists the disks on a
+    /// disk controller as "<hw-list label> on <address>".
+    pub fn refresh(
+        &self,
+        doc: &Document,
+        el: Element,
+        type_label: &str,
+        attached: Option<Vec<String>>,
+    ) {
+        let ctype = attr(doc, el, &[], "type").unwrap_or_default();
+        self.devices.remove_all();
+        self.devices_row.set_visible(attached.is_some());
+        for info in attached.iter().flatten() {
+            let l = gtk::Label::new(Some(info));
+            l.set_xalign(0.0);
+            l.set_margin_start(3);
+            self.devices.append(&l);
+        }
+        self.ctype.set_text(type_label);
+
+        // `populate_controller_model_combo`
+        let rows = virtinst_core::devices::controller::model_rows(&ctype);
+        let n_rows = rows.len();
+        self.model.set_values(
+            rows.into_iter()
+                .map(|(v, l)| (v.map(str::to_string), l.to_string()))
+                .collect(),
+        );
+        let mut model = attr(doc, el, &[], "model");
+        let show_model = (model.is_some() || n_rows > 1) && ctype != "pci";
+        self.model_row.set_visible(show_model);
+        if ctype == "usb" && model.as_deref().is_some_and(|m| m.contains("xhci")) {
+            model = Some("usb3".into());
+        }
+        self.model.set(model.as_deref());
     }
 }
 
