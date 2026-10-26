@@ -1031,6 +1031,15 @@ impl VmmDomain {
         self.redefine_xmlobj(guest).await
     }
 
+    /// `define_os`: `guest.set_os_name`, storing the OS's libosinfo id
+    /// in the metadata (`None` for the generic OS).
+    pub async fn define_os(&self, os_id: Option<String>) -> Result<(), String> {
+        let mut guest = self.make_xmlobj_to_define().await?;
+        let root = guest.root();
+        virtinst_core::guest::set_os_id(&mut guest.doc, root, os_id.as_deref());
+        self.redefine_xmlobj(guest).await
+    }
+
     /// `define_overview`: `None` leaves a field alone, `Some(None)`
     /// clears it.
     pub async fn define_overview(
