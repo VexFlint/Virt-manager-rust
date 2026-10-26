@@ -146,3 +146,273 @@ pub struct Guest {
     #[xml(nested)]
     pub xmlns_qemu: DomainXmlnsQemu,
 }
+
+// Upstream `Guest`'s boot order helpers and the `define_boot` edits of
+// `<os>`, over a domain document. Device ids are upstream's
+// `get_xml_id()`: `./devices/<tag>[<n>]`, n counted per tag from 1.
+
+/// `get_bootable_devices(exclude_redirdev=True)`'s xml ids, each with
+/// its element: every disk, then every interface, then every hostdev.
+fn bootable_devices(
+    doc: &virtinst_xml::Document,
+    root: virtinst_xml::Element,
+) -> Vec<(String, virtinst_xml::Element)> {
+    let Some(devices) = root.find(doc, "devices") else {
+        return vec![];
+    };
+    ["disk", "interface", "hostdev"]
+        .into_iter()
+        .flat_map(|tag| {
+            devices
+                .find_all(doc, tag)
+                .into_iter()
+                .enumerate()
+                .map(move |(i, el)| (format!("./devices/{tag}[{}]", i + 1), el))
+        })
+        .collect()
+}
+
+/// The xml ids of `get_bootable_devices(exclude_redirdev=True)`.
+pub fn bootable_device_ids(
+    doc: &virtinst_xml::Document,
+    root: virtinst_xml::Element,
+) -> Vec<String> {
+    bootable_devices(doc, root)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect()
+}
+
+fn old_boot_order(doc: &virtinst_xml::Document, root: virtinst_xml::Element) -> Vec<String> {
+    let Some(os) = root.find(doc, "os") else {
+        return vec![];
+    };
+    os.find_all(doc, "boot")
+        .into_iter()
+        .filter_map(|b| b.attribute(doc, "dev").map(str::to_string))
+        .collect()
+}
+
+/// `_convert_old_boot_order`: `<os><boot dev=...>` as device ids.
+fn convert_old_boot_order(
+    doc: &virtinst_xml::Document,
+    root: virtinst_xml::Element,
+) -> Vec<String> {
+    let devs = bootable_devices(doc, root);
+    let first = |pred: &dyn Fn(&str, virtinst_xml::Element) -> bool| {
+        devs.iter()
+            .find(|(id, el)| pred(id, *el))
+            .map(|(id, _)| id.clone())
+    };
+    let disk_device =
+        |el: virtinst_xml::Element| el.attribute(doc, "device").unwrap_or("disk").to_string();
+    let is_disk = |id: &str| id.starts_with("./devices/disk[");
+    let cdrom = first(&|id, el| is_disk(id) && disk_device(el) == "cdrom");
+    let floppy = first(&|id, el| is_disk(id) && disk_device(el) == "floppy");
+    let disk =
+        first(&|id, el| is_disk(id) && !matches!(disk_device(el).as_str(), "cdrom" | "floppy"));
+    let net = first(&|id, _| id.starts_with("./devices/interface["));
+    old_boot_order(doc, root)
+        .iter()
+        .filter_map(|b| match b.as_str() {
+            "network" => net.clone(),
+            "hd" => disk.clone(),
+            "cdrom" => cdrom.clone(),
+            "fd" => floppy.clone(),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `get_boot_order(legacy=...)`.
+pub fn get_boot_order(
+    doc: &virtinst_xml::Document,
+    root: virtinst_xml::Element,
+    legacy: bool,
+) -> Vec<String> {
+    if legacy {
+        return old_boot_order(doc, root);
+    }
+    let mut order: Vec<(String, u32)> = bootable_devices(doc, root)
+        .into_iter()
+        .filter_map(|(id, el)| {
+            let order = el
+                .find(doc, "boot")?
+                .attribute(doc, "order")?
+                .parse()
+                .ok()?;
+            Some((id, order))
+        })
+        .collect();
+    if order.is_empty() {
+        // No devices individually marked bootable, convert traditional
+        // boot XML to fine grained
+        return convert_old_boot_order(doc, root);
+    }
+    order.sort_by_key(|(_, o)| *o);
+    order.into_iter().map(|(id, _)| id).collect()
+}
+
+/// `set_boot_order(boot_order, legacy=...)`.
+pub fn set_boot_order(
+    doc: &mut virtinst_xml::Document,
+    root: virtinst_xml::Element,
+    boot_order: &[String],
+    legacy: bool,
+) {
+    let os = virtinst_xml::resolve_or_create_path(doc, root, &["os"]);
+    // Unset the traditional boot order
+    for b in os.find_all(doc, "boot") {
+        let _ = b.detach(doc);
+    }
+    if legacy {
+        for dev in boot_order {
+            let b = virtinst_xml::Element::new(doc, "boot");
+            b.set_attribute(doc, "dev", dev.as_str());
+            os.push_child(doc, b)
+                .expect("a fresh element always attaches");
+        }
+        return;
+    }
+    // Unset device boot order
+    if let Some(devices) = root.find(doc, "devices") {
+        for dev in devices.child_elements(doc) {
+            if let Some(boot) = dev.find(doc, "boot") {
+                boot.mut_attributes(doc).remove("order");
+                if boot.attributes(doc).is_empty() && boot.child_elements(doc).is_empty() {
+                    let _ = boot.detach(doc);
+                }
+            }
+        }
+    }
+    let devs = bootable_devices(doc, root);
+    for (idx, id) in boot_order.iter().enumerate() {
+        if let Some((_, el)) = devs.iter().find(|(i, _)| i == id) {
+            let boot = virtinst_xml::resolve_or_create_path(doc, *el, &["boot"]);
+            boot.set_attribute(doc, "order", (idx + 1).to_string());
+        }
+    }
+}
+
+/// Sets (or, for `None`, removes) a text child of `<os>`, such as
+/// `kernel`, `initrd`, `dtb`, `cmdline` or `init`.
+pub fn set_os_text(
+    doc: &mut virtinst_xml::Document,
+    root: virtinst_xml::Element,
+    tag: &str,
+    val: Option<&str>,
+) {
+    let os = virtinst_xml::resolve_or_create_path(doc, root, &["os"]);
+    match val {
+        Some(v) => virtinst_xml::resolve_or_create_path(doc, os, &[tag]).set_text_content(doc, v),
+        None => virtinst_xml::remove_path_if_present(doc, os, &[tag])
+            .expect("removing a plain child element cannot fail"),
+    }
+}
+
+/// `os.bootmenu_enable = val`.
+pub fn set_bootmenu(doc: &mut virtinst_xml::Document, root: virtinst_xml::Element, val: bool) {
+    let os = virtinst_xml::resolve_or_create_path(doc, root, &["os"]);
+    let menu = virtinst_xml::resolve_or_create_path(doc, os, &["bootmenu"]);
+    menu.set_attribute(doc, "enable", if val { "yes" } else { "no" });
+}
+
+/// `os.set_initargs_string`: the arguments split shell-style.
+pub fn set_initargs_string(
+    doc: &mut virtinst_xml::Document,
+    root: virtinst_xml::Element,
+    argstring: &str,
+) -> Result<(), String> {
+    let args = shlex::split(argstring).ok_or("No closing quotation")?;
+    let os = virtinst_xml::resolve_or_create_path(doc, root, &["os"]);
+    for a in os.find_all(doc, "initarg") {
+        let _ = a.detach(doc);
+    }
+    for val in args {
+        let a = virtinst_xml::Element::new_with_text(doc, "initarg", &val);
+        os.push_child(doc, a)
+            .expect("a fresh element always attaches");
+    }
+    Ok(())
+}
+
+/// `vmmDomain.get_init`'s args: shell-quoted and space-joined.
+pub fn initargs_string(os: &DomainOs) -> String {
+    os.initargs
+        .iter()
+        .map(|a| {
+            let v = a.val.as_deref().unwrap_or("");
+            shlex::try_quote(v)
+                .map(|q| q.into_owned())
+                .unwrap_or_else(|_| v.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+mod boot_tests {
+    use super::*;
+
+    const XML: &str = "<domain><os><type>hvm</type><boot dev='cdrom'/><boot dev='hd'/></os>\
+        <devices><disk device='disk'/><disk device='cdrom'/><interface type='network'/>\
+        <redirdev bus='usb'><boot order='9'/></redirdev></devices></domain>";
+
+    fn parse(xml: &str) -> (virtinst_xml::Document, virtinst_xml::Element) {
+        let doc = virtinst_xml::parse_libvirt_xml(xml).unwrap();
+        let root = doc.root_element().unwrap();
+        (doc, root)
+    }
+
+    #[test]
+    fn old_boot_order_converts_to_device_ids() {
+        let (doc, root) = parse(XML);
+        assert_eq!(get_boot_order(&doc, root, true), ["cdrom", "hd"]);
+        assert_eq!(
+            get_boot_order(&doc, root, false),
+            ["./devices/disk[2]", "./devices/disk[1]"]
+        );
+        assert_eq!(
+            bootable_device_ids(&doc, root),
+            [
+                "./devices/disk[1]",
+                "./devices/disk[2]",
+                "./devices/interface[1]"
+            ]
+        );
+    }
+
+    #[test]
+    fn device_boot_order_round_trip() {
+        let (mut doc, root) = parse(XML);
+        let order = vec![
+            "./devices/interface[1]".to_string(),
+            "./devices/disk[1]".to_string(),
+        ];
+        set_boot_order(&mut doc, root, &order, false);
+        assert_eq!(get_boot_order(&doc, root, false), order);
+        let x = doc.write_str().unwrap();
+        assert!(
+            !x.contains("dev=\"cdrom\"") && !x.contains("order=\"9\""),
+            "{x}"
+        );
+        set_boot_order(&mut doc, root, &["network".into()], true);
+        assert_eq!(get_boot_order(&doc, root, true), ["network"]);
+    }
+
+    #[test]
+    fn os_edits() {
+        let (mut doc, root) =
+            parse("<domain><os><type>exe</type><init>/bin/sh</init></os></domain>");
+        set_os_text(&mut doc, root, "kernel", Some("/vmlinuz"));
+        set_os_text(&mut doc, root, "init", None);
+        set_bootmenu(&mut doc, root, true);
+        set_initargs_string(&mut doc, root, "-c 'echo hi'").unwrap();
+        assert!(set_initargs_string(&mut doc, root, "'open").is_err());
+        let guest = Guest::from_element(&doc, root);
+        assert_eq!(guest.os.kernel.as_deref(), Some("/vmlinuz"));
+        assert_eq!(guest.os.init, None);
+        assert_eq!(guest.os.bootmenu_enable, Some(true));
+        assert_eq!(initargs_string(&guest.os), "-c 'echo hi'");
+    }
+}

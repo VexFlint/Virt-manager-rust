@@ -57,6 +57,11 @@ enum Edit {
     Topology,
     Mem,
     MemShared,
+    Autostart,
+    BootOrder,
+    BootMenu,
+    Kernel,
+    Init,
 }
 
 impl HwType {
@@ -1064,6 +1069,194 @@ impl MemoryPage {
     }
 }
 
+/// One `boot-list` row: `[XML boot type, display name, icon name,
+/// enabled, can select]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BootRow {
+    key: Option<String>,
+    label: String,
+    icon: Option<String>,
+    active: bool,
+    can_select: bool,
+}
+
+/// An entry with its Browse button (`boot-kernel` + `boot-kernel-browse`).
+fn path_entry() -> (gtk::Box, gtk::Entry, gtk::Button) {
+    let entry = gtk::Entry::new();
+    entry.set_hexpand(true);
+    let browse = gtk::Button::with_label("Browse");
+    let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    hbox.set_hexpand(true);
+    hbox.append(&entry);
+    hbox.append(&browse);
+    (hbox, entry, browse)
+}
+
+/// The Boot Options page (`boot-*`).
+struct BootPage {
+    page: gtk::Grid,
+    autostart: gtk::CheckButton,
+    order_frame: gtk::Box,
+    menu: gtk::CheckButton,
+    list: gtk::ListBox,
+    rows: RefCell<Vec<BootRow>>,
+    moveup: gtk::Button,
+    movedown: gtk::Button,
+    kernel_expander: gtk::Expander,
+    kernel_enable: gtk::CheckButton,
+    kernel_box: gtk::Box,
+    kernel: gtk::Entry,
+    kernel_browse: gtk::Button,
+    initrd: gtk::Entry,
+    initrd_browse: gtk::Button,
+    dtb_label: gtk::Label,
+    dtb_box: gtk::Box,
+    dtb: gtk::Entry,
+    dtb_browse: gtk::Button,
+    kernel_args: gtk::Entry,
+    init_frame: gtk::Box,
+    init_path: gtk::Entry,
+    init_args: gtk::Entry,
+}
+
+impl BootPage {
+    fn new() -> BootPage {
+        let autostart = gtk::CheckButton::with_mnemonic("Start virt_ual machine on host boot up");
+        autostart.set_halign(gtk::Align::Start);
+
+        let menu = gtk::CheckButton::with_mnemonic("Enable boot me_nu");
+        menu.set_halign(gtk::Align::Start);
+        let list = gtk::ListBox::new();
+        list.set_selection_mode(gtk::SelectionMode::Single);
+        list.update_property(&[gtk::accessible::Property::Label("Boot device order")]);
+        let scroll = gtk::ScrolledWindow::builder()
+            .child(&list)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .has_frame(true)
+            .width_request(125)
+            .height_request(125)
+            .propagate_natural_width(true)
+            .build();
+        let moveup = gtk::Button::from_icon_name("go-up");
+        moveup.update_property(&[gtk::accessible::Property::Label("Move up")]);
+        moveup.set_sensitive(false);
+        let movedown = gtk::Button::from_icon_name("go-down");
+        movedown.update_property(&[gtk::accessible::Property::Label("Move down")]);
+        movedown.set_sensitive(false);
+        let buttons = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        buttons.append(&moveup);
+        buttons.append(&movedown);
+        let table = gtk::Grid::builder()
+            .row_spacing(6)
+            .column_spacing(6)
+            .halign(gtk::Align::Start)
+            .build();
+        table.attach(&scroll, 0, 0, 1, 1);
+        table.attach(&buttons, 1, 0, 1, 1);
+        let order_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        order_box.append(&menu);
+        order_box.append(&table);
+
+        let kernel_enable = gtk::CheckButton::with_mnemonic("Ena_ble direct kernel boot");
+        kernel_enable.set_halign(gtk::Align::Start);
+        let (kernel_hbox, kernel, kernel_browse) = path_entry();
+        let (initrd_hbox, initrd, initrd_browse) = path_entry();
+        let (dtb_box, dtb, dtb_browse) = path_entry();
+        let kernel_args = gtk::Entry::new();
+        kernel_args.set_hexpand(true);
+        let ktable = gtk::Grid::builder()
+            .column_spacing(6)
+            .row_spacing(6)
+            .build();
+        ktable.set_hexpand(true);
+        let dtb_label = left_label("D_TB path:");
+        dtb_label.set_mnemonic_widget(Some(&dtb));
+        for (row, (text, widget, mnemonic)) in [
+            (
+                "Ke_rnel path:",
+                kernel_hbox.upcast_ref::<gtk::Widget>(),
+                &kernel,
+            ),
+            ("_Initrd path:", initrd_hbox.upcast_ref(), &initrd),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let label = left_label(text);
+            label.set_mnemonic_widget(Some(mnemonic));
+            ktable.attach(&label, 0, row as i32, 1, 1);
+            ktable.attach(widget, 1, row as i32, 1, 1);
+        }
+        ktable.attach(&dtb_label, 0, 2, 1, 1);
+        ktable.attach(&dtb_box, 1, 2, 1, 1);
+        let args_label = left_label("Kernel ar_gs:");
+        args_label.set_mnemonic_widget(Some(&kernel_args));
+        ktable.attach(&args_label, 0, 3, 1, 1);
+        ktable.attach(&kernel_args, 1, 3, 1, 1);
+        let kernel_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        kernel_box.append(&ktable);
+        let kernel_vbox = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        kernel_vbox.set_margin_start(12);
+        kernel_vbox.append(&kernel_enable);
+        kernel_vbox.append(&kernel_box);
+        let kernel_expander = gtk::Expander::new(None);
+        let exp_label = gtk::Label::new(None);
+        exp_label.set_markup_with_mnemonic("<b>Dir_ect kernel boot</b>");
+        kernel_expander.set_label_widget(Some(&exp_label));
+        kernel_expander.set_child(Some(&kernel_vbox));
+
+        let init_path = gtk::Entry::new();
+        let init_args = gtk::Entry::new();
+        let igrid = gtk::Grid::builder()
+            .row_spacing(6)
+            .column_spacing(6)
+            .build();
+        for (row, (text, entry)) in [("Init _path:", &init_path), ("Init ar_gs:", &init_args)]
+            .into_iter()
+            .enumerate()
+        {
+            let label = left_label(text);
+            label.set_mnemonic_widget(Some(entry));
+            igrid.attach(&label, 0, row as i32, 1, 1);
+            igrid.attach(entry, 1, row as i32, 1, 1);
+        }
+
+        let page = gtk::Grid::builder().row_spacing(24).build();
+        let order_frame = frame("Boot device order", &order_box);
+        let init_frame = frame("Container init", &igrid);
+        page.attach(&frame("Autostart", &autostart), 0, 0, 1, 1);
+        page.attach(&order_frame, 0, 1, 1, 1);
+        page.attach(&kernel_expander, 0, 2, 1, 1);
+        page.attach(&init_frame, 0, 3, 1, 1);
+
+        BootPage {
+            page,
+            autostart,
+            order_frame,
+            menu,
+            list,
+            rows: RefCell::default(),
+            moveup,
+            movedown,
+            kernel_expander,
+            kernel_enable,
+            kernel_box,
+            kernel,
+            kernel_browse,
+            initrd,
+            initrd_browse,
+            dtb_label,
+            dtb_box,
+            dtb,
+            dtb_browse,
+            kernel_args,
+            init_frame,
+            init_path,
+            init_args,
+        }
+    }
+}
+
 struct Inner {
     vm: VmmDomain,
     is_customize_dialog: bool,
@@ -1074,6 +1267,7 @@ struct Inner {
     overview: Overview,
     cpu: CpuPage,
     memory: MemoryPage,
+    boot: BootPage,
     unported: gtk::Label,
     config_remove: gtk::Button,
     config_cancel: gtk::Button,
@@ -1113,6 +1307,7 @@ impl VmmDetails {
         let overview = Overview::new();
         let cpu = CpuPage::new();
         let memory = MemoryPage::new();
+        let boot = BootPage::new();
         let unported = gtk::Label::new(Some("This page is not available yet in this version."));
         unported.set_valign(gtk::Align::Start);
         unported.set_xalign(0.0);
@@ -1120,6 +1315,7 @@ impl VmmDetails {
         hw_panel.add_named(&overview.page, Some("overview"));
         hw_panel.add_named(&cpu.page, Some("cpu"));
         hw_panel.add_named(&memory.page, Some("memory"));
+        hw_panel.add_named(&boot.page, Some("boot"));
         hw_panel.add_named(&unported, Some("unported"));
         let panel_scroll = gtk::ScrolledWindow::builder()
             .child(&hw_panel)
@@ -1159,6 +1355,7 @@ impl VmmDetails {
             overview,
             cpu,
             memory,
+            boot,
             unported,
             config_remove,
             config_cancel,
@@ -1236,6 +1433,41 @@ impl VmmDetails {
         let cb = with(Self::curmem_changed);
         i.memory.memory.connect_value_changed(move |_| cb());
 
+        let b = &i.boot;
+        let cb = enable(Edit::Autostart);
+        b.autostart.connect_toggled(move |_| cb());
+        let cb = enable(Edit::BootMenu);
+        b.menu.connect_toggled(move |_| cb());
+        for entry in [&b.kernel, &b.initrd, &b.dtb, &b.kernel_args] {
+            let cb = enable(Edit::Kernel);
+            entry.connect_changed(move |_| cb());
+        }
+        for entry in [&b.init_path, &b.init_args] {
+            let cb = enable(Edit::Init);
+            entry.connect_changed(move |_| cb());
+        }
+        let cb = with(Self::boot_kernel_toggled);
+        b.kernel_enable.connect_toggled(move |_| cb());
+        let cb = with(Self::config_bootdev_selected);
+        b.list.connect_row_selected(move |_, _| cb());
+        let cb = with(|this| this.config_boot_move(true));
+        b.moveup.connect_clicked(move |_| cb());
+        let cb = with(|this| this.config_boot_move(false));
+        b.movedown.connect_clicked(move |_| cb());
+        for (button, entry) in [
+            (&b.kernel_browse, &b.kernel),
+            (&b.initrd_browse, &b.initrd),
+            (&b.dtb_browse, &b.dtb),
+        ] {
+            let weak = Rc::downgrade(&self.0);
+            let entry = entry.clone();
+            button.connect_clicked(move |_| {
+                if let Some(inner) = weak.upgrade() {
+                    VmmDetails(inner).browse_file(&entry);
+                }
+            });
+        }
+
         let weak = Rc::downgrade(&self.0);
         i.config_cancel.connect_clicked(move |_| {
             // Remove current changes and deactivate 'apply' button
@@ -1251,6 +1483,275 @@ impl VmmDetails {
                     this.config_apply(None).await;
                 });
             }
+        });
+    }
+
+    /// `_browse_file` into `entry`. The storage browser isn't ported
+    /// yet, so this offers the local file chooser.
+    fn browse_file(&self, entry: &gtk::Entry) {
+        let dialog = gtk::FileDialog::builder()
+            .title("Locate or create storage volume")
+            .modal(true)
+            .build();
+        let entry = entry.clone();
+        dialog.open(
+            self.parent().as_ref(),
+            gtk::gio::Cancellable::NONE,
+            move |res| {
+                if let Some(path) = res.ok().and_then(|f| f.path()) {
+                    entry.set_text(&path.to_string_lossy());
+                }
+            },
+        );
+    }
+
+    /// `_boot_kernel_toggled_cb`.
+    fn boot_kernel_toggled(&self) {
+        let b = &self.0.boot;
+        b.kernel_box.set_sensitive(b.kernel_enable.is_active());
+        self.enable_apply(Edit::Kernel);
+    }
+
+    /// `_get_config_boot_order`.
+    fn get_config_boot_order(&self) -> Vec<String> {
+        self.0
+            .boot
+            .rows
+            .borrow()
+            .iter()
+            .filter(|r| r.active)
+            .filter_map(|r| r.key.clone())
+            .collect()
+    }
+
+    fn get_config_boot_selection(&self) -> Option<BootRow> {
+        let idx = self.0.boot.list.selected_row()?.index();
+        self.0.boot.rows.borrow().get(idx as usize).cloned()
+    }
+
+    /// `_config_bootdev_selected`.
+    fn config_bootdev_selected(&self) {
+        let b = &self.0.boot;
+        let selection = self.get_config_boot_selection().and_then(|r| r.key);
+        let devs = self.get_config_boot_order();
+        let pos = selection
+            .as_ref()
+            .and_then(|s| devs.iter().position(|d| d == s));
+        b.movedown
+            .set_sensitive(pos.is_some_and(|p| p + 1 != devs.len()));
+        b.moveup.set_sensitive(pos.is_some_and(|p| p != 0));
+    }
+
+    /// Rebuilds `boot-list` from its rows, keeping the selected key.
+    fn redraw_boot_list(&self, select: Option<String>) {
+        let b = &self.0.boot;
+        b.list.remove_all();
+        let rows = b.rows.borrow().clone();
+        for (idx, row) in rows.iter().enumerate() {
+            let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            hbox.set_margin_top(3);
+            hbox.set_margin_bottom(3);
+            hbox.set_margin_start(3);
+            hbox.set_margin_end(6);
+            let check = gtk::CheckButton::new();
+            check.set_active(row.active);
+            check.set_visible(row.can_select);
+            check.update_property(&[gtk::accessible::Property::Label(&row.label)]);
+            let weak = Rc::downgrade(&self.0);
+            check.connect_toggled(move |_| {
+                if let Some(inner) = weak.upgrade() {
+                    VmmDetails(inner).config_boot_toggled(idx);
+                }
+            });
+            hbox.append(&check);
+            if let Some(icon) = &row.icon {
+                hbox.append(&gtk::Image::from_icon_name(icon));
+            }
+            let label = gtk::Label::new(Some(&row.label));
+            label.set_xalign(0.0);
+            label.set_sensitive(row.active);
+            hbox.append(&label);
+            b.list
+                .append(&gtk::ListBoxRow::builder().child(&hbox).build());
+        }
+        let idx = select.and_then(|k| rows.iter().position(|r| r.key.as_ref() == Some(&k)));
+        b.list
+            .select_row(idx.and_then(|i| b.list.row_at_index(i as i32)).as_ref());
+        self.config_bootdev_selected();
+    }
+
+    /// `_config_boot_toggled_cb`.
+    fn config_boot_toggled(&self, idx: usize) {
+        let active = {
+            let mut rows = self.0.boot.rows.borrow_mut();
+            let Some(row) = rows.get_mut(idx) else {
+                return;
+            };
+            row.active = !row.active;
+            row.active
+        };
+        if let Some(lbrow) = self.0.boot.list.row_at_index(idx as i32) {
+            if let Some(label) = lbrow
+                .child()
+                .and_then(|c| c.last_child())
+                .and_downcast::<gtk::Label>()
+            {
+                label.set_sensitive(active);
+            }
+        }
+        self.config_bootdev_selected();
+        self.enable_apply(Edit::BootOrder);
+    }
+
+    /// `_config_boot_move`.
+    fn config_boot_move(&self, move_up: bool) {
+        let Some(row) = self.get_config_boot_selection() else {
+            return;
+        };
+        let Some(key) = row.key.clone() else {
+            return;
+        };
+        {
+            let mut rows = self.0.boot.rows.borrow_mut();
+            let Some(idx) = rows.iter().position(|r| r.key.as_ref() == Some(&key)) else {
+                return;
+            };
+            // Swap with the neighbouring active row
+            let other = if move_up {
+                idx.checked_sub(1)
+            } else {
+                Some(idx + 1).filter(|i| *i < rows.len())
+            };
+            let Some(other) = other.filter(|o| rows[*o].active) else {
+                return;
+            };
+            rows.swap(idx, other);
+        }
+        self.redraw_boot_list(Some(key));
+        self.enable_apply(Edit::BootOrder);
+    }
+
+    /// `_make_boot_rows`.
+    fn make_boot_rows(&self) -> Vec<BootRow> {
+        let row = |key: &str, label: &str, icon: &str| BootRow {
+            key: Some(key.into()),
+            label: label.into(),
+            icon: Some(icon.into()),
+            active: false,
+            can_select: true,
+        };
+        if !self.0.vm.can_use_device_boot_order() {
+            return vec![
+                row("hd", "Hard Disk", "drive-harddisk"),
+                row("cdrom", "CDROM", "media-optical"),
+                row("network", "Network (PXE)", "network-idle"),
+                row("fd", "Floppy", "media-floppy"),
+            ];
+        }
+        let mut ret = vec![];
+        if let Some(x) = self.0.vm.xmlobj() {
+            let hw_rows = self.0.rows.borrow();
+            for id in virtinst_core::guest::bootable_device_ids(&x.doc, x.root()) {
+                if let Some(hw) = hw_rows.iter().find(|r| r.key() == id) {
+                    ret.push(row(&id, &hw.label, &hw.icon));
+                }
+            }
+        }
+        if ret.is_empty() {
+            ret.push(BootRow {
+                key: None,
+                label: "No bootable devices".into(),
+                icon: None,
+                active: false,
+                can_select: false,
+            });
+        }
+        ret
+    }
+
+    /// `_refresh_boot_order`.
+    fn refresh_boot_order(&self) {
+        let mut boot_rows = self.make_boot_rows();
+        let mut ordered = vec![];
+        for key in self.0.vm.get_boot_order() {
+            if let Some(pos) = boot_rows.iter().position(|r| r.key.as_ref() == Some(&key)) {
+                let mut row = boot_rows.remove(pos);
+                row.active = true;
+                ordered.push(row);
+            }
+        }
+        ordered.extend(boot_rows);
+        self.0.boot.rows.replace(ordered);
+        self.redraw_boot_list(None);
+    }
+
+    /// `_refresh_boot_page`.
+    fn refresh_boot_page(&self) {
+        let i = &self.0;
+        let b = &i.boot;
+        let Some(x) = i.vm.xmlobj() else {
+            return;
+        };
+        let os = &x.guest.os;
+        let os_type = os.os_type.as_deref();
+        let is_container = os_type == Some("exe");
+        let is_xenpv = matches!(os_type, Some("xen" | "linux" | "xenpvh"));
+        b.order_frame.set_visible(!is_container && !is_xenpv);
+        b.kernel_expander.set_visible(!is_container);
+        b.init_frame.set_visible(is_container);
+
+        // Kernel/initrd boot
+        let expand = [&os.kernel, &os.dtb, &os.initrd, &os.kernel_args]
+            .iter()
+            .any(|v| v.is_some());
+        // If the user unsets kernel/initrd by unchecking the 'enable
+        // kernel boot' box, we keep the previous values cached in the
+        // text fields to allow easy switching back and forth.
+        let keep_text = |entry: &gtk::Entry, guestval: &Option<String>| {
+            let guestval = guestval.as_deref().unwrap_or("");
+            if !entry.text().trim().is_empty() && guestval.is_empty() {
+                return;
+            }
+            entry.set_text(guestval);
+        };
+        keep_text(&b.kernel, &os.kernel);
+        keep_text(&b.initrd, &os.initrd);
+        keep_text(&b.dtb, &os.dtb);
+        keep_text(&b.kernel_args, &os.kernel_args);
+        if expand {
+            // Only 'expand' if requested, so a refresh doesn't
+            // magically unexpand the UI the user just touched
+            b.kernel_expander.set_expanded(true);
+        }
+        b.kernel_enable.set_active(expand);
+        b.kernel_box.set_sensitive(expand);
+
+        // Only show dtb if it's supported
+        let arch = os.arch.as_deref().unwrap_or("");
+        let show_dtb = !b.dtb.text().trim().is_empty()
+            || x.guest.domain_type.as_deref() == Some("test")
+            || arch.contains("arm")
+            || arch.contains("microblaze")
+            || arch.contains("ppc");
+        b.dtb_label.set_visible(show_dtb);
+        b.dtb_box.set_visible(show_dtb);
+
+        // <init> populate
+        b.init_path.set_text(os.init.as_deref().unwrap_or(""));
+        b.init_args
+            .set_text(&virtinst_core::guest::initargs_string(os));
+
+        // Boot menu populate
+        b.menu.set_active(os.bootmenu_enable.unwrap_or(false));
+        self.refresh_boot_order();
+
+        // Refresh autostart (a libvirt call)
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let autoval = this.0.vm.get_autostart().await;
+            let chk = &this.0.boot.autostart;
+            chk.set_sensitive(autoval.is_some());
+            this.quietly(|| chk.set_active(autoval.unwrap_or(false)));
         });
     }
 
@@ -1379,6 +1880,7 @@ impl VmmDetails {
             HwType::General => self.apply_overview().await,
             HwType::Cpu => Ok(self.apply_vcpus().await),
             HwType::Memory => Ok(self.apply_memory().await),
+            HwType::Boot => Ok(self.apply_boot_options().await),
             _ => Ok(true),
         };
         let success = match res {
@@ -1437,6 +1939,81 @@ impl VmmDetails {
                 hotplug,
             )
             .await)
+    }
+
+    /// `_apply_boot_options`.
+    async fn apply_boot_options(&self) -> bool {
+        let b = &self.0.boot;
+        let parent = self.parent();
+        if self.edited(Edit::Autostart) {
+            if let Err(e) = self.0.vm.set_autostart(b.autostart.is_active()).await {
+                crate::error::show_err(
+                    parent.as_ref(),
+                    &format!("Error changing autostart value: {e}"),
+                    None,
+                    "",
+                )
+                .await;
+                return false;
+            }
+        }
+
+        let mut edits = crate::domain::BootEdits::default();
+        if self.edited(Edit::BootOrder) {
+            edits.boot_order = Some(self.get_config_boot_order());
+        }
+        if self.edited(Edit::BootMenu) {
+            edits.boot_menu = Some(b.menu.is_active());
+        }
+        if self.edited(Edit::Kernel) {
+            // `_get_text(..., checksens=True)`
+            let text = |e: &gtk::Entry| {
+                if !e.is_sensitive() || !WidgetExt::is_visible(e) || !b.kernel_box.is_sensitive() {
+                    return String::new();
+                }
+                e.text().trim().to_string()
+            };
+            let k = crate::domain::KernelBoot {
+                kernel: text(&b.kernel),
+                initrd: text(&b.initrd),
+                dtb: if b.dtb_box.is_visible() {
+                    text(&b.dtb)
+                } else {
+                    String::new()
+                },
+                kernel_args: text(&b.kernel_args),
+            };
+            if !k.initrd.is_empty() && k.kernel.is_empty() {
+                crate::error::val_err(
+                    parent.as_ref(),
+                    "Cannot set initrd without specifying a kernel path",
+                )
+                .await;
+                return false;
+            }
+            if !k.kernel_args.is_empty() && k.kernel.is_empty() {
+                crate::error::val_err(
+                    parent.as_ref(),
+                    "Cannot set kernel arguments without specifying a kernel path",
+                )
+                .await;
+                return false;
+            }
+            edits.kernel = Some(k);
+        }
+        if self.edited(Edit::Init) {
+            let init = b.init_path.text().trim().to_string();
+            let initargs = b.init_args.text().trim().to_string();
+            if init.is_empty() {
+                crate::error::val_err(parent.as_ref(), "An init path must be specified").await;
+                return false;
+            }
+            edits.init = Some((init, initargs));
+        }
+
+        let vm = self.0.vm.clone();
+        self.change_config(async move { vm.define_boot(edits).await }, None)
+            .await
     }
 
     /// `_apply_vcpus`.
@@ -1665,6 +2242,10 @@ impl VmmDetails {
             HwType::Memory => {
                 self.refresh_config_memory();
                 i.hw_panel.set_visible_child_name("memory");
+            }
+            HwType::Boot => {
+                self.refresh_boot_page();
+                i.hw_panel.set_visible_child_name("boot");
             }
             _ => i.hw_panel.set_visible_child(&i.unported),
         }

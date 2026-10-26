@@ -18,7 +18,7 @@ pub mod domain;
 pub mod install;
 pub mod osinfo;
 
-mod guest;
+pub mod guest;
 pub use guest::Guest;
 
 #[cfg(test)]

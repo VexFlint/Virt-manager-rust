@@ -202,6 +202,25 @@ pub fn validate_generic_name(name_label: &str, val: &str) -> Result<(), String> 
     Ok(())
 }
 
+/// The direct kernel boot fields of `define_boot`; empty means unset.
+#[derive(Debug, Clone, Default)]
+pub struct KernelBoot {
+    pub kernel: String,
+    pub initrd: String,
+    pub dtb: String,
+    pub kernel_args: String,
+}
+
+/// `define_boot`'s arguments; `None` leaves a part alone.
+#[derive(Debug, Clone, Default)]
+pub struct BootEdits {
+    pub boot_order: Option<Vec<String>>,
+    pub boot_menu: Option<bool>,
+    pub kernel: Option<KernelBoot>,
+    /// `(init, initargs)`.
+    pub init: Option<(String, String)>,
+}
+
 /// `_edit_shared_mem`.
 fn edit_shared_mem(doc: &mut virtinst_xml::Document, root: virtinst_xml::Element, shared: bool) {
     if shared {
@@ -943,6 +962,73 @@ impl VmmDomain {
             x.guest.memory_backing.source_type.as_deref() == Some("memfd"),
             None,
         )
+    }
+
+    /// `get_autostart`; `None` when libvirt can't say.
+    pub async fn get_autostart(&self) -> Option<bool> {
+        self.with_domain(|_, dom| dom.get_autostart().map_err(|e| e.message().to_string()))
+            .await
+            .ok()
+    }
+
+    /// `set_autostart`.
+    pub async fn set_autostart(&self, val: bool) -> Result<(), String> {
+        self.with_domain(move |_, dom| {
+            dom.set_autostart(val)
+                .map(|_| ())
+                .map_err(|e| e.message().to_string())
+        })
+        .await
+    }
+
+    /// `can_use_device_boot_order`: `conn_device_boot_order`, which
+    /// only the qemu and test drivers support.
+    pub fn can_use_device_boot_order(&self) -> bool {
+        let uri = self.conn().map(|c| c.get_uri()).unwrap_or_default();
+        let scheme = virtinst_core::connection::Uri::parse(&uri).scheme;
+        let driver = scheme.split('+').next().unwrap_or("");
+        matches!(driver, "qemu" | "test")
+    }
+
+    /// `get_boot_order`.
+    pub fn get_boot_order(&self) -> Vec<String> {
+        match self.xmlobj() {
+            Some(x) => virtinst_core::guest::get_boot_order(
+                &x.doc,
+                x.root(),
+                !self.can_use_device_boot_order(),
+            ),
+            None => vec![],
+        }
+    }
+
+    /// `define_boot`.
+    pub async fn define_boot(&self, edits: BootEdits) -> Result<(), String> {
+        use virtinst_core::guest as g;
+        let legacy = !self.can_use_device_boot_order();
+        let mut guest = self.make_xmlobj_to_define().await?;
+        let root = guest.root();
+        let doc = &mut guest.doc;
+        if let Some(order) = &edits.boot_order {
+            g::set_boot_order(doc, root, order, legacy);
+        }
+        if let Some(menu) = edits.boot_menu {
+            g::set_bootmenu(doc, root, menu);
+        }
+        if let Some((init, initargs)) = &edits.init {
+            g::set_os_text(doc, root, "init", Some(init));
+            g::set_initargs_string(doc, root, initargs)?;
+        }
+        if let Some(k) = &edits.kernel {
+            fn some(s: &str) -> Option<&str> {
+                Some(s).filter(|s| !s.is_empty())
+            }
+            g::set_os_text(doc, root, "kernel", some(&k.kernel));
+            g::set_os_text(doc, root, "initrd", some(&k.initrd));
+            g::set_os_text(doc, root, "dtb", some(&k.dtb));
+            g::set_os_text(doc, root, "cmdline", some(&k.kernel_args));
+        }
+        self.redefine_xmlobj(guest).await
     }
 
     /// `define_overview`: `None` leaves a field alone, `Some(None)`
