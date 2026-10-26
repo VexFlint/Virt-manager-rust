@@ -39,6 +39,8 @@ pub struct GuestInfo {
     pub os_virtionet: bool,
     /// `guest.osinfo.supported_netmodels()`.
     pub os_netmodels: Vec<String>,
+    /// `guest.osinfo.supports_virtioscsi()`.
+    pub os_virtioscsi: bool,
 }
 
 impl GuestInfo {
@@ -91,6 +93,16 @@ impl GuestInfo {
         } else {
             "ich6"
         }
+    }
+
+    /// `Guest.supports_virtioscsi`. `is_qemu` is the connection's.
+    pub fn supports_virtioscsi(&self, is_qemu: bool) -> bool {
+        crate::install::domain_skeleton::supports_virtio(
+            self.arch(),
+            self.machine.as_deref(),
+            is_qemu,
+            self.os_virtioscsi,
+        )
     }
 
     /// `DeviceInterface.default_model`. `is_qemu` is the connection's.
@@ -580,6 +592,149 @@ fn fill_hostdev(
     Ok(())
 }
 
+/// `DeviceDisk.num_to_target`: 1 -> `a`, 26 -> `z`, 27 -> `aa`.
+pub fn num_to_target(num: usize) -> String {
+    let mut num = num;
+    let mut digits = vec![];
+    for factor in 0..3u32 {
+        let base = 26usize.pow(factor + 1);
+        let mut amt = (num % base) / 26usize.pow(factor);
+        if amt == 0 && num >= base {
+            amt = 26;
+        }
+        num -= amt;
+        digits.insert(0, amt);
+    }
+    digits
+        .into_iter()
+        .filter(|d| *d != 0)
+        .map(|d| (b'a' + d as u8 - 1) as char)
+        .collect()
+}
+
+/// `DeviceDisk.get_target_prefix`: the prefix and how many disks it
+/// numbers.
+fn target_prefix(bus: &str, device: &str) -> (&'static str, usize) {
+    match bus {
+        "virtio" => ("vd", 1024),
+        "xen" => ("xvd", 1024),
+        _ if bus == "fdc" || device == "floppy" => ("fd", 2),
+        "ide" => ("hd", 4),
+        // sata, scsi, usb, sd
+        _ => ("sd", 1024),
+    }
+}
+
+/// `DeviceDisk.generate_target`: the first free target for the bus,
+/// or the first one past the used ones.
+pub fn generate_target(bus: &str, device: &str, used: &[String]) -> Result<String, String> {
+    let (prefix, maxnode) = target_prefix(bus, device);
+    let mut skip: Vec<&str> = used
+        .iter()
+        .map(String::as_str)
+        .filter(|t| t.starts_with(prefix))
+        .collect();
+    skip.sort();
+    let mut first_found = None;
+    for i in 0..maxnode {
+        let gen_t = format!("{prefix}{}", num_to_target(i + 1));
+        if let Some(pos) = skip.iter().position(|t| *t == gen_t) {
+            skip.remove(pos);
+            continue;
+        }
+        if skip.is_empty() {
+            return Ok(gen_t);
+        }
+        first_found.get_or_insert(gen_t);
+    }
+    first_found.ok_or_else(|| {
+        if maxnode == 1 {
+            format!("Only {maxnode} disk for bus '{bus}' are supported")
+        } else {
+            format!("Only {maxnode} disks for bus '{bus}' are supported")
+        }
+    })
+}
+
+/// The storage page's disk: `vmmAddStorage.build_device` with the
+/// advanced options the user changed, and `set_defaults`.
+#[derive(Clone, Debug, Default)]
+pub struct NewDisk {
+    pub device: String,
+    pub bus: String,
+    pub target: String,
+    pub path: Option<String>,
+    /// The storage's type and format; `None` keeps `type='file'`.
+    pub props: Option<super::disk::PathProps>,
+    /// A volume is made for it with `allocation=0`.
+    pub sparse_install: bool,
+    pub cache: Option<Option<String>>,
+    pub discard: Option<Option<String>>,
+    pub readonly: Option<bool>,
+    pub shareable: Option<bool>,
+    pub removable: Option<bool>,
+    pub serial: Option<String>,
+}
+
+/// Builds a [`NewDisk`]. `is_qemu`/`is_xen` are the connection's.
+pub fn disk(doc: &mut Document, d: &NewDisk, is_qemu: bool, is_xen: bool) -> Element {
+    use super::disk as dd;
+    let el = new(doc, "disk");
+    el.set_attribute(doc, "type", "file");
+    el.set_attribute(doc, "device", &d.device);
+    let props = d.props.clone().unwrap_or(dd::PathProps {
+        dev_type: "file".into(),
+        format: None,
+    });
+    // `conn_disk_driver_name_qemu`
+    dd::set_source_path(doc, el, d.path.as_deref(), Some(&props), is_qemu);
+    if is_xen && props.dev_type == "block" && d.path.is_some() {
+        set_attr(doc, el, "driver", "name", Some("phy"));
+    }
+    set_attr(doc, el, "target", "dev", Some(&d.target));
+    set_attr(doc, el, "target", "bus", Some(&d.bus));
+
+    if let Some(v) = &d.cache {
+        dd::set_driver_attr(doc, el, "cache", v.as_deref());
+    }
+    if let Some(v) = &d.discard {
+        dd::set_driver_attr(doc, el, "discard", v.as_deref());
+    }
+    let is_cdrom = d.device == "cdrom";
+    if let Some(v) = d.readonly {
+        dd::set_marker(doc, el, "readonly", v);
+    }
+    if let Some(v) = d.shareable {
+        dd::set_marker(doc, el, "shareable", v);
+    }
+    if let Some(v) = d.removable {
+        dd::set_removable(doc, el, v);
+    }
+    if let Some(v) = &d.serial {
+        dd::set_serial(doc, el, Some(v));
+    }
+
+    // `set_defaults`
+    if is_cdrom {
+        dd::set_marker(doc, el, "readonly", true);
+    }
+    let is_disk = d.device == "disk";
+    let mut discard_unmap = is_qemu && is_disk && d.sparse_install;
+    if is_qemu && is_disk && props.dev_type == "block" {
+        discard_unmap = true;
+        if super::edit::attr(doc, el, &["driver"], "cache").is_none() {
+            set_attr(doc, el, "driver", "cache", Some("none"));
+        }
+        if super::edit::attr(doc, el, &["driver"], "io").is_none() {
+            set_attr(doc, el, "driver", "io", Some("native"));
+        }
+    }
+    if discard_unmap && super::edit::attr(doc, el, &["driver"], "discard").is_none() {
+        set_attr(doc, el, "driver", "discard", Some("unmap"));
+    }
+    el
+}
+
 /// `get_xml()` of a built device: the element on its own.
 pub fn to_xml(build: impl FnOnce(&mut Document) -> Element) -> String {
     let mut doc = Document::new();
@@ -676,6 +831,106 @@ mod tests {
                 "controller@type=usb"
             ]
         );
+    }
+
+    #[test]
+    fn disk_targets() {
+        assert_eq!(num_to_target(1), "a");
+        assert_eq!(num_to_target(26), "z");
+        assert_eq!(num_to_target(27), "aa");
+        assert_eq!(num_to_target(703), "aaa");
+        let used = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            generate_target("virtio", "disk", &used(&["vda", "sda"])).unwrap(),
+            "vdb"
+        );
+        // Past the used ones, like upstream, rather than filling a hole.
+        assert_eq!(
+            generate_target("virtio", "disk", &used(&["vdb"])).unwrap(),
+            "vdc"
+        );
+        assert_eq!(generate_target("sata", "cdrom", &[]).unwrap(), "sda");
+        assert_eq!(
+            generate_target("fdc", "floppy", &used(&["fda"])).unwrap(),
+            "fdb"
+        );
+        assert!(generate_target("ide", "disk", &used(&["hda", "hdb", "hdc", "hdd"])).is_err());
+    }
+
+    #[test]
+    fn disks() {
+        let d = NewDisk {
+            device: "disk".into(),
+            bus: "virtio".into(),
+            target: "vdb".into(),
+            path: Some("/var/lib/libvirt/images/vm.qcow2".into()),
+            props: Some(super::super::disk::PathProps {
+                dev_type: "file".into(),
+                format: Some("qcow2".into()),
+            }),
+            sparse_install: true,
+            serial: Some("abc".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            shape(|doc| disk(doc, &d, true, false)),
+            [
+                "disk",
+                "disk@device=disk",
+                "disk@type=file",
+                "disk/source",
+                "disk/source@file=/var/lib/libvirt/images/vm.qcow2",
+                "disk/driver",
+                "disk/driver@discard=unmap",
+                "disk/driver@name=qemu",
+                "disk/driver@type=qcow2",
+                "disk/target",
+                "disk/target@bus=virtio",
+                "disk/target@dev=vdb",
+                "disk/serial",
+                "disk/serial=abc",
+            ]
+        );
+        let cd = NewDisk {
+            device: "cdrom".into(),
+            bus: "sata".into(),
+            target: "sda".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            shape(|doc| disk(doc, &cd, true, false)),
+            [
+                "disk",
+                "disk@device=cdrom",
+                "disk@type=file",
+                "disk/target",
+                "disk/target@bus=sata",
+                "disk/target@dev=sda",
+                "disk/readonly",
+            ]
+        );
+        let blk = NewDisk {
+            device: "disk".into(),
+            bus: "scsi".into(),
+            target: "sda".into(),
+            path: Some("/dev/sdb".into()),
+            props: Some(super::super::disk::PathProps {
+                dev_type: "block".into(),
+                format: None,
+            }),
+            ..Default::default()
+        };
+        let s = shape(|doc| disk(doc, &blk, true, false));
+        for want in [
+            "disk@type=block",
+            "disk/source@dev=/dev/sdb",
+            "disk/driver@type=raw",
+            "disk/driver@cache=none",
+            "disk/driver@io=native",
+            "disk/driver@discard=unmap",
+        ] {
+            assert!(s.contains(&want.to_string()), "{want} in {s:?}");
+        }
     }
 
     #[test]

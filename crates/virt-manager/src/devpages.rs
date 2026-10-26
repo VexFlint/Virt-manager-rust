@@ -280,7 +280,7 @@ pub(crate) fn title(text: &str) -> gtk::Label {
     l
 }
 
-fn attr(doc: &Document, el: Element, path: &[&str], name: &str) -> Option<String> {
+pub(crate) fn xml_attr(doc: &Document, el: Element, path: &[&str], name: &str) -> Option<String> {
     virtinst_xml::resolve_path(doc, el, path)
         .and_then(|e| e.attribute(doc, name))
         .map(str::to_string)
@@ -385,8 +385,8 @@ impl InputPage {
 
     /// `_refresh_input_page`.
     pub fn refresh(&self, doc: &Document, el: Element) {
-        let typ = attr(doc, el, &[], "type").unwrap_or_default();
-        let bus = attr(doc, el, &[], "bus").unwrap_or_default();
+        let typ = xml_attr(doc, el, &[], "type").unwrap_or_default();
+        let bus = xml_attr(doc, el, &[], "bus").unwrap_or_default();
         let mode = match typ.as_str() {
             "tablet" => Some("Absolute Movement"),
             "mouse" => Some("Relative Movement"),
@@ -423,7 +423,7 @@ impl SoundPage {
     }
 
     pub fn refresh(&self, doc: &Document, el: Element) {
-        self.model.set(attr(doc, el, &[], "model").as_deref());
+        self.model.set(xml_attr(doc, el, &[], "model").as_deref());
     }
 }
 
@@ -472,9 +472,10 @@ impl VideoPage {
 
     /// `_refresh_video_page`.
     pub fn refresh(&self, doc: &Document, el: Element) {
-        self.model.set(attr(doc, el, &["model"], "type").as_deref());
+        self.model
+            .set(xml_attr(doc, el, &["model"], "type").as_deref());
         self.sync_3d_row();
-        match attr(doc, el, &["model", "acceleration"], "accel3d") {
+        match xml_attr(doc, el, &["model", "acceleration"], "accel3d") {
             None => self.accel3d.set_inconsistent(true),
             Some(v) => {
                 self.accel3d.set_inconsistent(false);
@@ -520,8 +521,8 @@ impl WatchdogPage {
     }
 
     pub fn refresh(&self, doc: &Document, el: Element) {
-        self.model.set(attr(doc, el, &[], "model").as_deref());
-        self.action.set(attr(doc, el, &[], "action").as_deref());
+        self.model.set(xml_attr(doc, el, &[], "model").as_deref());
+        self.action.set(xml_attr(doc, el, &[], "action").as_deref());
     }
 }
 
@@ -550,7 +551,7 @@ impl SmartcardPage {
     }
 
     pub fn refresh(&self, doc: &Document, el: Element) {
-        self.mode.set(attr(doc, el, &[], "mode").as_deref());
+        self.mode.set(xml_attr(doc, el, &[], "mode").as_deref());
     }
 }
 
@@ -582,12 +583,12 @@ impl RedirPage {
 
     /// `_refresh_redir_page`; the title is the device's hw-list label.
     pub fn refresh(&self, doc: &Document, el: Element, label: &str) {
-        let typ = attr(doc, el, &[], "type").unwrap_or_default();
+        let typ = xml_attr(doc, el, &[], "type").unwrap_or_default();
         let address = (typ == "tcp").then(|| {
             format!(
                 "{}:{}",
-                attr(doc, el, &["source"], "host").unwrap_or_default(),
-                attr(doc, el, &["source"], "service").unwrap_or_default()
+                xml_attr(doc, el, &["source"], "host").unwrap_or_default(),
+                xml_attr(doc, el, &["source"], "service").unwrap_or_default()
             )
         });
         self.title.set_markup(&gtk::glib::markup_escape_text(label));
@@ -654,7 +655,7 @@ impl PanicPage {
 
     pub fn refresh(&self, doc: &Document, el: Element) {
         self.model
-            .set_text(&attr(doc, el, &[], "model").unwrap_or_default());
+            .set_text(&xml_attr(doc, el, &[], "model").unwrap_or_default());
     }
 }
 
@@ -700,12 +701,12 @@ impl CharPage {
     /// `_refresh_char_page`. `primary` is `serial_is_console_dup`.
     pub fn refresh(&self, doc: &Document, el: Element, tag: &str, primary: bool) {
         let target_port: Option<i64> =
-            attr(doc, el, &["target"], "port").and_then(|p| p.parse().ok());
-        let dev_type = attr(doc, el, &[], "type").unwrap_or_else(|| "pty".into());
+            xml_attr(doc, el, &["target"], "port").and_then(|p| p.parse().ok());
+        let dev_type = xml_attr(doc, el, &[], "type").unwrap_or_else(|| "pty".into());
         let show_target_type = !matches!(tag, "serial" | "parallel");
-        let target_name = attr(doc, el, &["target"], "name");
+        let target_name = xml_attr(doc, el, &["target"], "name");
         let is_qemuga = target_name.as_deref() == Some("org.qemu.guest_agent.0");
-        let show_clipboard = attr(doc, el, &[], "type").as_deref() == Some("qemu-vdagent");
+        let show_clipboard = xml_attr(doc, el, &[], "type").as_deref() == Some("qemu-vdagent");
 
         let mut typelabel = match tag {
             "serial" => "Serial Device".to_string(),
@@ -772,14 +773,14 @@ impl CharPage {
             ),
             (
                 show_target_type
-                    .then(|| attr(doc, el, &["target"], "type"))
+                    .then(|| xml_attr(doc, el, &["target"], "type"))
                     .flatten(),
                 None,
             ),
             (target_name, None),
             // Only for the qemu guest agent, which we get async
             // notifications about connection state.
-            (attr(doc, el, &["target"], "state"), Some(is_qemuga)),
+            (xml_attr(doc, el, &["target"], "state"), Some(is_qemuga)),
             (
                 Some(if clipboard { "On" } else { "Off" }.to_string()),
                 Some(show_clipboard),
@@ -840,7 +841,7 @@ impl ControllerPage {
         type_label: &str,
         attached: Option<Vec<String>>,
     ) {
-        let ctype = attr(doc, el, &[], "type").unwrap_or_default();
+        let ctype = xml_attr(doc, el, &[], "type").unwrap_or_default();
         self.devices.remove_all();
         self.devices_row.set_visible(attached.is_some());
         for info in attached.iter().flatten() {
@@ -859,7 +860,7 @@ impl ControllerPage {
                 .map(|(v, l)| (v.map(str::to_string), l.to_string()))
                 .collect(),
         );
-        let mut model = attr(doc, el, &[], "model");
+        let mut model = xml_attr(doc, el, &[], "model");
         let show_model = (model.is_some() || n_rows > 1) && ctype != "pci";
         self.model_row.set_visible(show_model);
         if ctype == "usb" && model.as_deref().is_some_and(|m| m.contains("xhci")) {
@@ -912,14 +913,14 @@ impl HostdevPage {
     /// `_refresh_hostdev_page`; `pretty_name` is the matching node
     /// device's, else `hostdev_pretty_name`.
     pub fn refresh(&self, doc: &Document, el: Element, pretty_name: &str) {
-        let htype = attr(doc, el, &[], "type").unwrap_or_default();
+        let htype = xml_attr(doc, el, &[], "type").unwrap_or_default();
         // `rom_bar` is `is_onoff`, and unset means on
-        let rom_bar = attr(doc, el, &["rom"], "bar").map_or(true, |b| b == "on");
+        let rom_bar = xml_attr(doc, el, &["rom"], "bar").map_or(true, |b| b == "on");
         self.rombar_row.set_visible(htype == "pci");
         self.startup_policy_row.set_visible(htype == "usb");
         if htype == "usb" {
             self.startup_policy
-                .set(attr(doc, el, &["source"], "startupPolicy").as_deref());
+                .set(xml_attr(doc, el, &["source"], "startupPolicy").as_deref());
         }
         self.title.set_markup(&format!(
             "<b>Physical {} Device</b>",

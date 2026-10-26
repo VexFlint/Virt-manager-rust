@@ -14,6 +14,7 @@
 
 mod about;
 mod addhardware;
+mod addstorage;
 mod asyncjob;
 mod config;
 mod connection;

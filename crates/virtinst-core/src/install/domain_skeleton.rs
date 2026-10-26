@@ -286,7 +286,12 @@ fn is_arm_machvirt(arch: &str, machine: Option<&str>) -> bool {
 /// itself (`self.conn.is_bhyve()`, a URI-scheme check like `is_qemu`,
 /// not an arch/machine check), kept out of this function to match
 /// upstream's own structure.
-fn supports_virtio(arch: &str, machine: Option<&str>, is_qemu: bool, os_support: bool) -> bool {
+pub(crate) fn supports_virtio(
+    arch: &str,
+    machine: Option<&str>,
+    is_qemu: bool,
+    os_support: bool,
+) -> bool {
     if !is_qemu {
         return false;
     }

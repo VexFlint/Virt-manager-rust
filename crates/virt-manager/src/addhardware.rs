@@ -3,19 +3,21 @@
 //! under the blue header on the right; Finish builds the device,
 //! hotplugs it into a running VM and adds it to the persistent config.
 //!
-//! **Not ported yet**: the Storage page (`addstorage.py`), whose row
-//! stays insensitive, and the XML editor tab (`xmleditor.py`).
+//! **Not ported yet**: the XML editor tab (`xmleditor.py`), the
+//! storage browser behind "Manage..." (a local file chooser stands in)
+//! and `check_path_search`'s permission fixups.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gtk::glib;
 use gtk::prelude::*;
-use virtinst_core::devices::build::{self, GuestInfo, NewChar, NewInterface};
+use virtinst_core::devices::build::{self, GuestInfo, NewChar, NewDisk, NewInterface};
 use virtinst_core::devices::DeviceId;
 use virtinst_core::nodedev::NodeDevice;
 use virtinst_xml::{Document, Element};
 
+use crate::addstorage::AddStorage;
 use crate::devpages::{input_pretty_name, sound_pretty_model, watchdog_pretty_action};
 use crate::devpages::{EntryCombo, Grid, GridRow, SimpleCombo};
 use crate::domain::VmmDomain;
@@ -93,6 +95,9 @@ enum Validate {
     Network(NewInterface),
     /// `_validate_hostdev_collision`: the node device passed through.
     Hostdev(Box<NodeDevice>),
+    /// `vmmAddStorage.validate_device`: the disk's path, device type,
+    /// shareable and readonly.
+    Disk(Option<String>, String, bool, bool),
 }
 
 /// A device ready to add: `build` makes its element. `usb_replace` is
@@ -102,6 +107,10 @@ struct NewDev {
     build: BuildFn,
     usb_replace: Option<(DeviceId, Option<String>)>,
     validate: Validate,
+    /// A disk's volume to create first (`build_storage`).
+    vol_install: Option<virtinst_core::storage::VolInstall>,
+    /// `vmm_controller`: the virtio-scsi controller a disk brings.
+    controller: Option<BuildFn>,
 }
 
 impl NewDev {
@@ -110,6 +119,8 @@ impl NewDev {
             build: Rc::new(build),
             usb_replace: None,
             validate: Validate::None,
+            vol_install: None,
+            controller: None,
         }
     }
 
@@ -207,6 +218,176 @@ fn py_list(names: &[String]) -> String {
     format!("[{}]", quoted.join(", "))
 }
 
+/// `_build_disk_device_combo`'s rows: device, icon, label.
+const DISK_DEVICES: [(&str, &str, &str); 4] = [
+    ("disk", "drive-harddisk", "Disk device"),
+    ("cdrom", "media-optical", "CDROM device"),
+    ("floppy", "media-floppy", "Floppy device"),
+    ("lun", "drive-harddisk", "LUN Passthrough"),
+];
+
+/// `disk_old_recommended_buses`.
+fn disk_old_recommended_buses(guest: &GuestInfo, is_test: bool, is_xen: bool) -> Vec<&'static str> {
+    let mut ret = vec![];
+    if guest.is_hvm() || is_test {
+        if !guest.is_q35() {
+            ret.push("ide");
+        }
+        ret.extend(["sata", "fdc", "scsi", "usb"]);
+        if matches!(guest.domain_type.as_deref(), Some("qemu" | "kvm" | "test")) {
+            ret.extend(["sd", "virtio"]);
+        }
+    }
+    if is_xen || is_test {
+        ret.push("xen");
+    }
+    ret
+}
+
+/// `disk_recommended_buses`: domcaps' buses when it lists them, that
+/// fit the device type.
+fn disk_recommended_buses(buses: &[String], devtype: &str) -> Vec<String> {
+    let fits: &[&str] = match devtype {
+        "disk" => &["ide", "sata", "scsi", "sd", "usb", "virtio", "xen"],
+        "floppy" => &["fdc"],
+        "cdrom" => &["ide", "sata", "scsi", "usb"],
+        "lun" => &["scsi"],
+        _ => &[],
+    };
+    buses
+        .iter()
+        .filter(|b| fits.contains(&b.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// A drop-down of icon and label rows, like the GtkComboBox with a
+/// pixbuf renderer upstream uses for `storage-devtype`.
+fn icon_dropdown(rows: &[(&str, &str)]) -> gtk::DropDown {
+    let labels: Vec<&str> = rows.iter().map(|(_, l)| *l).collect();
+    let icons: Vec<String> = rows.iter().map(|(i, _)| i.to_string()).collect();
+    let dropdown = gtk::DropDown::from_strings(&labels);
+    dropdown.set_halign(gtk::Align::Start);
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(|_, item| {
+        let item = item.downcast_ref::<gtk::ListItem>().unwrap();
+        let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        hbox.append(&gtk::Image::new());
+        hbox.append(&gtk::Label::new(None));
+        item.set_child(Some(&hbox));
+    });
+    factory.connect_bind(move |_, item| {
+        let item = item.downcast_ref::<gtk::ListItem>().unwrap();
+        let Some(hbox) = item.child().and_downcast::<gtk::Box>() else {
+            return;
+        };
+        let text = item
+            .item()
+            .and_downcast::<gtk::StringObject>()
+            .map(|o| o.string().to_string())
+            .unwrap_or_default();
+        if let Some(image) = hbox.first_child().and_downcast::<gtk::Image>() {
+            image.set_icon_name(icons.get(item.position() as usize).map(String::as_str));
+        }
+        if let Some(label) = hbox.last_child().and_downcast::<gtk::Label>() {
+            label.set_text(&text);
+        }
+    });
+    dropdown.set_factory(Some(&factory));
+    dropdown
+}
+
+/// What the storage page's worker found: `vmmAddStorage.build_device`
+/// up to the disk's XML.
+struct DiskPlan {
+    path: Option<String>,
+    props: Option<virtinst_core::devices::disk::PathProps>,
+    vol_install: Option<virtinst_core::storage::VolInstall>,
+}
+
+/// What [`plan_disk`] needs from the page.
+struct DiskRequest {
+    vmname: String,
+    is_default_storage: bool,
+    entry_path: String,
+    size: f64,
+    fmt: Option<String>,
+    collide_paths: Vec<String>,
+    is_session: bool,
+    is_local: bool,
+}
+
+/// Blocking: `get_default_path`, `set_source_path` (`manage_path`) and,
+/// for storage that doesn't exist yet, `build_vol_install`.
+fn plan_disk(conn: &virt::connect::Connect, req: &DiskRequest) -> Result<DiskPlan, String> {
+    use virtinst_core::storage;
+    let path = if req.is_default_storage {
+        // `get_default_path`
+        match storage::lookup_default_pool(conn, req.is_session) {
+            Some(pool) => {
+                let suffix = storage::file_extension_for_format(req.fmt.as_deref());
+                let suffix = if suffix.is_empty() {
+                    ".img".into()
+                } else {
+                    suffix
+                };
+                let name =
+                    storage::find_free_name(&pool, &req.vmname, &suffix, &req.collide_paths)?;
+                let target = pool.xml.target_path.clone().unwrap_or_default();
+                Some(format!("{}/{name}", target.trim_end_matches('/')))
+            }
+            None => None,
+        }
+    } else {
+        Some(req.entry_path.clone()).filter(|p| !p.is_empty())
+    };
+    let Some(path) = path else {
+        return Ok(DiskPlan {
+            path: None,
+            props: None,
+            vol_install: None,
+        });
+    };
+    let path = path.strip_prefix("file://").unwrap_or(&path).to_string();
+    let managed = storage::manage_path(conn, &path)?;
+    if let Some(vol) = &managed.vol {
+        return Ok(DiskPlan {
+            path: Some(managed.path),
+            props: Some(storage::vol_path_props(vol)),
+            vol_install: None,
+        });
+    }
+    if managed.pool.is_none() && req.is_local && std::path::Path::new(&managed.path).exists() {
+        let props = crate::domain::path_props(conn, &managed.path, req.is_local);
+        return Ok(DiskPlan {
+            path: Some(managed.path),
+            props: Some(props),
+            vol_install: None,
+        });
+    }
+    // `wants_storage_creation`: if the user changed the default disk
+    // format to raw, assume they want to maximize performance, so fully
+    // allocate the disk image. Otherwise use sparse
+    let sparse = req.fmt.as_deref() != Some("raw");
+    let volname = managed.path.rsplit('/').next().unwrap_or_default();
+    let pool = managed.pool.as_ref().map(|p| &p.xml);
+    let mut vol = storage::VolInstall::new(volname, pool, req.size, sparse, None)?;
+    if vol.supports_format() {
+        glib::g_debug!(
+            "virt-manager",
+            "Using default prefs format={:?} for path={}",
+            req.fmt,
+            managed.path
+        );
+        vol.format = req.fmt.clone().or(vol.format);
+    }
+    Ok(DiskPlan {
+        path: Some(managed.path),
+        props: Some(vol.path_props()),
+        vol_install: Some(vol),
+    })
+}
+
 fn page_box(child: &impl IsA<gtk::Widget>) -> gtk::Box {
     let b = gtk::Box::new(gtk::Orientation::Vertical, 6);
     b.append(child);
@@ -231,6 +412,10 @@ struct Inner {
     controller_model: SimpleCombo,
     controller_model_row: GridRow,
     controller_tooltip: gtk::Image,
+    addstorage: Rc<AddStorage>,
+    storage_devtype: gtk::DropDown,
+    storage_devtypes: Vec<&'static str>,
+    storage_bustype: SimpleCombo,
     netlist: Rc<NetList>,
     mac_address: gtk::CheckButton,
     create_mac_address: gtk::Entry,
@@ -325,6 +510,29 @@ impl AddHardware {
         row.set_mnemonic(&controller_type.widget);
         let controller_model_row = g.row("_Model:", &controller_model.widget);
         let controller_page = page_box(&g.into_grid());
+
+        // Storage
+        let addstorage = AddStorage::new(conn.clone());
+        // LUN passthrough is a qemu thing.
+        let disk_devices: Vec<_> = DISK_DEVICES
+            .iter()
+            .filter(|(d, _, _)| *d != "lun" || is_qemu || is_test)
+            .collect();
+        let storage_devtype = icon_dropdown(
+            &disk_devices
+                .iter()
+                .map(|(_, icon, label)| (*icon, *label))
+                .collect::<Vec<_>>(),
+        );
+        let storage_devtypes: Vec<&'static str> = disk_devices.iter().map(|(d, _, _)| *d).collect();
+        let storage_bustype = SimpleCombo::unsorted(vec![], crate::details::disk_pretty_bus);
+        let mut g = Grid::new();
+        g.row("_Device type:", &storage_devtype);
+        g.row("_Bus type:", &storage_bustype.widget);
+        let disk_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        disk_page.append(&addstorage.top_box);
+        disk_page.append(&g.into_grid());
+        disk_page.append(&addstorage.advanced_top_box);
 
         // Network
         let netlist = NetList::new(conn.clone());
@@ -551,6 +759,7 @@ impl AddHardware {
         create_pages.set_vhomogeneous(false);
         create_pages.set_hhomogeneous(false);
         for (page, widget) in [
+            (Page::Disk, &disk_page),
             (Page::Controller, &controller_page),
             (Page::Network, &network_page),
             (Page::Input, &input_page),
@@ -634,6 +843,10 @@ impl AddHardware {
             controller_model,
             controller_model_row,
             controller_tooltip,
+            addstorage,
+            storage_devtype,
+            storage_devtypes,
+            storage_bustype,
             netlist,
             mac_address,
             create_mac_address,
@@ -701,6 +914,18 @@ impl AddHardware {
         i.char_target_name.entry.connect_changed(move |_| cb());
         let cb = with(AddHardware::change_char_auto_socket);
         i.char_auto_socket.connect_toggled(move |_| cb());
+        let cb = with(AddHardware::change_storage_devtype);
+        i.storage_devtype.connect_selected_notify(move |_| cb());
+        let cb = with(AddHardware::storage_bus_changed);
+        i.storage_bustype
+            .widget
+            .connect_selected_notify(move |_| cb());
+        let weak = Rc::downgrade(&this.0);
+        i.addstorage.connect_browse_clicked(move |entry| {
+            if let Some(inner) = weak.upgrade() {
+                AddHardware(inner).browse_storage(entry);
+            }
+        });
         let cb = with(AddHardware::change_macaddr_use);
         i.mac_address.connect_toggled(move |_| cb());
         let cb = with(AddHardware::hostdev_row_selected);
@@ -792,6 +1017,11 @@ impl AddHardware {
         let i = &self.0;
         self.set_hw_selection(0);
 
+        // Storage params
+        i.storage_devtype.set_selected(0);
+        self.change_storage_devtype();
+        i.addstorage.reset_state();
+
         // Network init
         let newmac = i.vm.conn().and_then(|c| generate_mac(&c));
         i.mac_address.set_active(newmac.is_some());
@@ -825,6 +1055,192 @@ impl AddHardware {
             let (have_shared_mem, _) = i.vm.has_shared_mem().await;
             i.fs.set_have_shared_mem(have_shared_mem);
         });
+    }
+
+    /// `storage-devtype`'s pick.
+    fn storage_devtype(&self) -> &'static str {
+        let i = &self.0;
+        i.storage_devtypes
+            .get(i.storage_devtype.selected() as usize)
+            .copied()
+            .unwrap_or("disk")
+    }
+
+    /// `_refresh_disk_bus`: the buses for the device type, the first
+    /// disk of that type's bus picked. The domcaps fetch is async.
+    fn refresh_disk_bus(&self, devtype: &'static str) {
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let i = &this.0;
+            let caps = i.vm.get_domain_capabilities().await;
+            let guest = guest_info(&i.vm);
+            let conn = i.vm.conn();
+            let is_test = conn.as_ref().is_some_and(|c| c.is_test());
+            let is_xen = conn.as_ref().is_some_and(|c| c.is_xen());
+            let buses: Vec<String> =
+                match caps.as_deref().and_then(|c| c.devices.disk.get_enum("bus")) {
+                    Some(e) => e.values.clone(),
+                    None => disk_old_recommended_buses(&guest, is_test, is_xen)
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                };
+            if this.storage_devtype() != devtype {
+                return;
+            }
+            let buses = disk_recommended_buses(&buses, devtype);
+            i.storage_bustype.set_values(
+                buses
+                    .iter()
+                    .map(|b| (Some(b.clone()), crate::details::disk_pretty_bus(b)))
+                    .collect(),
+            );
+            // By default, select bus of the first disk assigned to the VM
+            let default_bus = i.vm.xmlobj().and_then(|x| {
+                virtinst_xml::resolve_path(&x.doc, x.root(), &["devices"])?
+                    .find_all(&x.doc, "disk")
+                    .into_iter()
+                    .find(|d| d.attribute(&x.doc, "device").unwrap_or("disk") == devtype)
+                    .and_then(|d| crate::devpages::xml_attr(&x.doc, d, &["target"], "bus"))
+            });
+            match default_bus {
+                Some(bus) => i.storage_bustype.set(Some(&bus)),
+                None if !buses.is_empty() => i.storage_bustype.widget.set_selected(0),
+                None => (),
+            }
+            this.storage_bus_changed();
+        });
+    }
+
+    /// `_change_storage_devtype`.
+    fn change_storage_devtype(&self) {
+        let devtype = self.storage_devtype();
+        self.refresh_disk_bus(devtype);
+        let allow_create = !matches!(devtype, "cdrom" | "floppy");
+        self.0.addstorage.set_allow_create(allow_create);
+    }
+
+    /// `_storage_bus_changed_cb`.
+    fn storage_bus_changed(&self) {
+        let bus = self.0.storage_bustype.get();
+        self.0.addstorage.set_disk_bus(bus.as_deref());
+    }
+
+    /// `_browse_file`: picks a local file into `entry`. The storage
+    /// browser (`storagebrowse.py`) isn't ported yet, so this is its
+    /// "Browse Local" button.
+    fn browse_storage(&self, entry: &gtk::Entry) {
+        let entry = entry.clone();
+        let window = self.0.window.clone();
+        glib::spawn_future_local(async move {
+            let dialog = gtk::FileDialog::builder()
+                .title("Locate existing storage")
+                .modal(true)
+                .build();
+            if let Ok(file) = dialog.open_future(Some(&window)).await {
+                if let Some(path) = file.path() {
+                    entry.set_text(&path.to_string_lossy());
+                }
+            }
+        });
+    }
+
+    /// `_build_storage`, with `vmmAddStorage.build_device`: the pool
+    /// and path lookups block, so this runs them on a worker.
+    async fn build_storage(&self) -> Result<NewDev, String> {
+        let i = &self.0;
+        let conn = i.vm.conn().ok_or("Not connected")?;
+        let handle = conn.handle().ok_or("Not connected")?;
+        let device = self.storage_devtype().to_string();
+        let bus = i.storage_bustype.get().ok_or("No bus selected")?;
+        let guest = guest_info(&i.vm);
+        let live = i.vm.xmlobj();
+        let inactive = i.vm.make_xmlobj_to_define().await?;
+        let disk_paths_targets =
+            |doc: &Document, root: Element| -> Vec<(Option<String>, Option<String>)> {
+                virtinst_xml::resolve_path(doc, root, &["devices"])
+                    .map(|d| d.find_all(doc, "disk"))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|d| {
+                        (
+                            virtinst_core::devices::disk::source_path(doc, d),
+                            crate::devpages::xml_attr(doc, d, &["target"], "dev"),
+                        )
+                    })
+                    .collect()
+            };
+        let live_disks = live
+            .as_ref()
+            .map(|x| disk_paths_targets(&x.doc, x.root()))
+            .unwrap_or_default();
+        let inactive_disks = disk_paths_targets(&inactive.doc, inactive.root());
+
+        let req = DiskRequest {
+            vmname: i.vm.get_name(),
+            is_default_storage: i.addstorage.is_default_storage(),
+            entry_path: i.addstorage.entry_path(),
+            size: i.addstorage.size(),
+            fmt: conn.get_default_storage_format(),
+            collide_paths: live_disks.iter().filter_map(|(p, _)| p.clone()).collect(),
+            is_session: conn.is_qemu_unprivileged(),
+            is_local: !conn.is_remote(),
+        };
+        let plan = gtk::gio::spawn_blocking(move || plan_disk(handle.connect(), &req))
+            .await
+            .map_err(|_| "Worker thread panicked".to_string())??;
+
+        // Generate target
+        let mut used: Vec<String> = vec![];
+        for t in live_disks
+            .iter()
+            .chain(&inactive_disks)
+            .filter_map(|(_, t)| t.clone())
+        {
+            if !used.contains(&t) {
+                used.push(t);
+            }
+        }
+        let target = build::generate_target(&bus, &device, &used)?;
+
+        let values = i.addstorage.get_values();
+        let d = NewDisk {
+            device: device.clone(),
+            bus,
+            target,
+            path: plan.path.clone(),
+            props: plan.props,
+            sparse_install: plan.vol_install.as_ref().is_some_and(|v| v.allocation == 0),
+            cache: values.cache,
+            discard: values.discard,
+            readonly: values.readonly,
+            shareable: values.shareable,
+            removable: values.removable,
+            serial: values.serial,
+        };
+        let is_qemu = conn.is_qemu();
+        let is_xen = conn.is_xen();
+        let shareable = d.shareable.unwrap_or(false);
+        let readonly = d.readonly.unwrap_or(device == "cdrom");
+        let mut dev = NewDev::new(move |doc| Ok(build::disk(doc, &d, is_qemu, is_xen)));
+        dev.validate = Validate::Disk(plan.path, device, shareable, readonly);
+        dev.vol_install = plan.vol_install;
+
+        // `_set_disk_controller`: add a SCSI controller with model
+        // virtio-scsi if needed
+        let has_any_scsi = live.as_ref().is_some_and(|x| {
+            virtinst_xml::resolve_path(&x.doc, x.root(), &["devices"])
+                .map(|d| d.find_all(&x.doc, "controller"))
+                .unwrap_or_default()
+                .iter()
+                .any(|c| c.attribute(&x.doc, "type") == Some("scsi"))
+        });
+        if !has_any_scsi && guest.supports_virtioscsi(is_qemu) {
+            dev.controller = Some(Rc::new(|doc: &mut Document| {
+                Ok(build::controller(doc, "scsi", Some("virtio-scsi"), Some(0)))
+            }));
+        }
+        Ok(dev)
     }
 
     /// `populate_network_model_combo`.
@@ -1323,7 +1739,7 @@ impl AddHardware {
                     ..dev
                 }
             }
-            Page::Disk => return Err("This device type isn't supported yet".into()),
+            Page::Disk => return Err("The storage page builds asynchronously".into()),
         })
     }
 
@@ -1366,7 +1782,12 @@ impl AddHardware {
     /// `_build_device`.
     async fn build_device(&self) -> Option<NewDev> {
         let page = self.get_hw_selection()?.page;
-        match self.build_device_page(page) {
+        let dev = if page == Page::Disk {
+            self.build_storage().await
+        } else {
+            self.build_device_page(page)
+        };
+        match dev {
             Ok(dev) => Some(dev),
             Err(e) => {
                 self.show_err(&format!("Error building device XML: {e}"), None)
@@ -1397,13 +1818,33 @@ impl AddHardware {
 
         let i = &self.0;
         i.window.set_cursor_from_name(Some("progress"));
+        let vol_install = dev.vol_install.clone();
+        let handle = i.vm.conn().and_then(|c| c.handle());
         let err = crate::asyncjob::run(
             Some(&i.window),
             "Creating device",
             "Depending on the device, this may take a few minutes to complete.",
             true,
-            // `_setup_device` only has work for disks.
-            |_| Ok(()),
+            // `_setup_device`: only disks have work, `build_storage`.
+            move |_| {
+                let (Some(vol), Some(handle)) = (vol_install, handle) else {
+                    return Ok(());
+                };
+                glib::g_debug!(
+                    "virt-manager",
+                    "Running build_storage() for vol={}",
+                    vol.name
+                );
+                vol.install(handle.connect()).map_err(|e| (e.clone(), e))?;
+                glib::g_debug!("virt-manager", "build_storage() complete");
+                if let Ok(pool) = virt::storage_pool::StoragePool::lookup_by_name(
+                    handle.connect(),
+                    &vol.pool_name,
+                ) {
+                    let _ = pool.refresh(0);
+                }
+                Ok(())
+            },
         )
         .await;
         // `_finish_cb`
@@ -1428,7 +1869,7 @@ impl AddHardware {
     async fn validate_device(&self, dev: &NewDev) -> Result<bool, String> {
         let i = &self.0;
         match &dev.validate {
-            Validate::None => (),
+            Validate::None | Validate::Disk(..) => (),
             Validate::Network(n) => {
                 i.netlist
                     .validate_device(&i.window, &n.nettype, n.source.as_deref(), &n.mac)
@@ -1463,6 +1904,34 @@ impl AddHardware {
                     )
                     .await;
                     if !res {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+        if let Validate::Disk(path, device, shareable, readonly) = &dev.validate {
+            // `vmmAddStorage.validate_device`
+            if path.is_none() && matches!(device.as_str(), "disk" | "lun") {
+                error::val_err(Some(&i.window), "A storage path must be specified.").await;
+                return Ok(false);
+            }
+            if let Some(path) = path {
+                // Disk collision
+                let names =
+                    i.vm.path_in_use_by(path.clone(), *shareable, *readonly)
+                        .await?;
+                if !names.is_empty() {
+                    let msg = format!(
+                        "Disk '{path}' is already in use by other guests {}",
+                        py_list(&names)
+                    );
+                    if !error::yes_no(
+                        Some(&i.window),
+                        &msg,
+                        Some("Do you really want to use the disk?"),
+                    )
+                    .await
+                    {
                         return Ok(false);
                     }
                 }
@@ -1514,9 +1983,25 @@ impl AddHardware {
 
         let xml = dev.xml()?;
         glib::g_debug!("virt-manager", "Adding device:\n{xml}");
+        let controller_xml = match &dev.controller {
+            Some(build) => {
+                let mut doc = Document::new();
+                let el = build(&mut doc)?;
+                let xml = virtinst_xml::element_to_string(doc, el).map_err(|e| e.to_string())?;
+                glib::g_debug!("virt-manager", "Adding controller:\n{xml}");
+                Some(xml)
+            }
+            None => None,
+        };
 
         // Hotplug device
-        if let Err(e) = vm.attach_device(xml).await {
+        let attach = async {
+            if let Some(cxml) = controller_xml {
+                vm.attach_device(cxml).await?;
+            }
+            vm.attach_device(xml).await
+        };
+        if let Err(e) = attach.await {
             glib::g_debug!("virt-manager", "Device could not be hotplugged: {e}");
             let (res, _) = error::run_dialog(
                 parent.map(|w| w.upcast_ref()),
@@ -1541,6 +2026,9 @@ impl AddHardware {
         }
 
         // Alter persistent config
+        if let Some(controller) = dev.controller.clone() {
+            vm.add_device(move |doc| controller(doc)).await?;
+        }
         let build = dev.build.clone();
         vm.add_device(move |doc| build(doc)).await?;
         Ok(false)
@@ -1595,6 +2083,7 @@ fn guest_info(vm: &VmmDomain) -> GuestInfo {
         is_uefi,
         os_virtiogpu: osinfo.as_ref().is_some_and(|o| o.supports_virtiogpu()),
         os_virtionet: osinfo.as_ref().is_some_and(|o| o.supports_virtionet()),
+        os_virtioscsi: osinfo.as_ref().is_some_and(|o| o.supports_virtioscsi()),
         os_netmodels: osinfo
             .as_ref()
             .map(|o| o.supported_netmodels())
@@ -1618,7 +2107,6 @@ fn generate_mac(conn: &crate::connection::VmmConnection) -> Option<String> {
 fn hw_options(guest: &GuestInfo) -> Vec<HwOption> {
     let is_hvm = guest.is_hvm();
     let not_hvm = Some("Not supported for this guest type.");
-    let unported = Some("This device type isn't supported yet.");
     // Every libvirt we support has `conn_nodedev`.
     let nodedev_err = Some("Connection does not support host device enumeration");
     let pci_err = if guest.is_container() {
@@ -1636,14 +2124,7 @@ fn hw_options(guest: &GuestInfo) -> Vec<HwOption> {
         devtype,
     };
     vec![
-        opt(
-            "Storage",
-            "drive-harddisk",
-            Page::Disk,
-            false,
-            unported,
-            None,
-        ),
+        opt("Storage", "drive-harddisk", Page::Disk, true, None, None),
         opt(
             "Controller",
             "device_pci",
