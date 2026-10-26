@@ -612,6 +612,7 @@ impl VmmVMWindow {
         self.close_inner();
         let i = &self.0;
         i.console.vmwindow_cleanup();
+        i.details.cleanup();
         for (obj, id) in i.handlers.take() {
             obj.disconnect(id);
         }

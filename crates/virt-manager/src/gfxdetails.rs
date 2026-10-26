@@ -8,7 +8,7 @@ use gtk::glib;
 use gtk::prelude::*;
 use virtinst_xml::{Document, Element};
 
-use crate::devpages::{GridRow, SimpleCombo};
+use crate::devpages::{EntryCombo, GridRow, SimpleCombo};
 
 /// `_EDIT_GFX_*`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,105 +58,13 @@ impl GfxValues {
     }
 }
 
-/// The `graphics-address` combo, which has an entry: a row, or a typed
-/// address. GTK4 has no non-deprecated combo with an entry, so this is
-/// an entry plus a drop-down button.
-struct AddressCombo {
-    top: gtk::Box,
-    entry: gtk::Entry,
-    popover: gtk::Popover,
-    rows: Vec<(Option<String>, String)>,
-    active: Cell<Option<usize>>,
-    setting: Cell<bool>,
-}
-
-impl AddressCombo {
-    fn new(rows: Vec<(Option<String>, String)>) -> Rc<AddressCombo> {
-        let entry = gtk::Entry::new();
-        let list = gtk::ListBox::new();
-        list.set_selection_mode(gtk::SelectionMode::None);
-        for (_, label) in &rows {
-            let l = gtk::Label::new(Some(label));
-            l.set_xalign(0.0);
-            l.set_margin_top(3);
-            l.set_margin_bottom(3);
-            l.set_margin_start(3);
-            list.append(&l);
-        }
-        let popover = gtk::Popover::new();
-        popover.set_child(Some(&list));
-        let button = gtk::MenuButton::new();
-        button.set_popover(Some(&popover));
-        let top = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        top.add_css_class("linked");
-        top.set_halign(gtk::Align::Start);
-        top.append(&entry);
-        top.append(&button);
-        let this = Rc::new(AddressCombo {
-            top,
-            entry,
-            popover,
-            rows,
-            active: Cell::new(None),
-            setting: Cell::new(false),
-        });
-        let weak = Rc::downgrade(&this);
-        this.entry.connect_changed(move |_| {
-            if let Some(this) = weak.upgrade() {
-                if !this.setting.get() {
-                    this.active.set(None);
-                }
-            }
-        });
-        let weak = Rc::downgrade(&this);
-        list.connect_row_activated(move |_, row| {
-            if let Some(this) = weak.upgrade() {
-                this.set_active(row.index() as usize);
-                this.popover.popdown();
-            }
-        });
-        this
-    }
-
-    fn set_active(&self, idx: usize) {
-        let Some((_, label)) = self.rows.get(idx) else {
-            return;
-        };
-        // Signals run with `active` already set, so listeners read the
-        // row's value.
-        self.active.set(Some(idx));
-        self.setting.set(true);
-        self.entry.set_text(label);
-        self.setting.set(false);
-    }
-
-    /// `get_list_selection`: the row's value, else the typed text.
-    fn get(&self) -> Option<String> {
-        match self.active.get() {
-            Some(idx) => self.rows[idx].0.clone(),
-            None => Some(self.entry.text().trim().to_string()).filter(|t| !t.is_empty()),
-        }
-    }
-
-    /// `set_list_selection`: an unlisted value goes in the entry.
-    fn set(&self, val: Option<&str>) {
-        match self.rows.iter().position(|(v, _)| v.as_deref() == val) {
-            Some(idx) => self.set_active(idx),
-            None => {
-                self.active.set(None);
-                self.entry.set_text(val.unwrap_or_default());
-            }
-        }
-    }
-}
-
 type ChangedCb = Box<dyn Fn()>;
 
 pub struct GraphicsDetails {
     pub top_box: gtk::Grid,
     gtype: SimpleCombo,
     listen_type: SimpleCombo,
-    address: Rc<AddressCombo>,
+    address: Rc<EntryCombo>,
     address_row: GridRow,
     port_row: GridRow,
     port_auto: gtk::CheckButton,
@@ -205,7 +113,7 @@ impl GraphicsDetails {
             ],
             str::to_string,
         );
-        let address = AddressCombo::new(vec![
+        let address = EntryCombo::new(vec![
             (None, "Hypervisor default".into()),
             (Some("127.0.0.1".into()), "Localhost only".into()),
             (Some("0.0.0.0".into()), "All interfaces".into()),
@@ -479,6 +387,18 @@ impl GraphicsDetails {
         self.sync_ui();
         // This comes last
         self.active_edits.borrow_mut().clear();
+    }
+
+    /// `build_device`'s values: every field counts as edited.
+    pub fn build_values(&self) -> GfxValues {
+        self.active_edits.replace(vec![
+            GfxEdit::Type,
+            GfxEdit::Listen,
+            GfxEdit::Port,
+            GfxEdit::Opengl,
+            GfxEdit::Passwd,
+        ]);
+        self.get_values()
     }
 
     /// `get_values`.

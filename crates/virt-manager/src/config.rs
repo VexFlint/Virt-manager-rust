@@ -85,6 +85,43 @@ impl StatsColumn {
     }
 }
 
+/// `CSSDATA`: the wizards' blue header, and lighter summary text.
+const CSSDATA: &str = "
+/* Lighter colored text in some wizard summary fields */
+.vmm-lighter {
+    color: @insensitive_fg_color;
+}
+
+/* Text on the blue header in our wizards */
+.vmm-header-text {
+    color: white;
+}
+
+/* Subtext on the blue header in our wizards */
+.vmm-header-subtext {
+    color: #59B0E2;
+}
+
+/* The blue header */
+.vmm-header {
+    background-color: #0072A8;
+}
+";
+
+/// Installs [`CSSDATA`] for the whole display, as `vmmConfig` does.
+pub fn install_css() {
+    let Some(display) = gtk::gdk::Display::default() else {
+        return;
+    };
+    let provider = gtk::CssProvider::new();
+    provider.load_from_string(CSSDATA);
+    gtk::style_context_add_provider_for_display(
+        &display,
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+}
+
 pub struct Config {
     root: gio::Settings,
     connections: gio::Settings,

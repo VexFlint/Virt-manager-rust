@@ -77,6 +77,8 @@ pub use video::DeviceVideo;
 pub mod list;
 pub use list::DeviceList;
 
+pub mod build;
+
 pub mod new_device;
 pub use new_device::{CharDevice, NewDevice};
 

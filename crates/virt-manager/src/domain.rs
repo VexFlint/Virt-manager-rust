@@ -1409,6 +1409,38 @@ impl VmmDomain {
         Ok(())
     }
 
+    /// `attach_device`: hotplug `devxml` into the running VM.
+    pub async fn attach_device(&self, devxml: String) -> Result<(), String> {
+        if !self.is_active() {
+            return Ok(());
+        }
+        glib::g_debug!("virt-manager", "attach_device with xml=\n{devxml}");
+        self.with_domain(move |_, dom| {
+            dom.attach_device(&devxml)
+                .map(|_| ())
+                .map_err(|e| e.message().to_string())
+        })
+        .await?;
+        self.ensure_latest_xml().await;
+        Ok(())
+    }
+
+    /// `add_device`: append the device `build` makes to the inactive
+    /// config.
+    pub async fn add_device(
+        &self,
+        build: impl Fn(&mut virtinst_xml::Document) -> Result<virtinst_xml::Element, String>,
+    ) -> Result<(), String> {
+        let mut guest = self.make_xmlobj_to_define().await?;
+        let root = guest.root();
+        let dev = build(&mut guest.doc)?;
+        let devices = virtinst_xml::resolve_or_create_path(&mut guest.doc, root, &["devices"]);
+        devices
+            .push_child(&mut guest.doc, dev)
+            .map_err(|e| e.to_string())?;
+        self.redefine_xmlobj(guest).await
+    }
+
     /// `define_*(do_hotplug=True)`, then `hotplug(device=...)`: the
     /// edited live device goes to `updateDeviceFlags`.
     pub async fn hotplug_device(

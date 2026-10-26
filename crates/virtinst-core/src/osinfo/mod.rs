@@ -535,6 +535,11 @@ impl OsInfo {
             || self.has_device_id("http://pcisig.com/pci/1af4/1048")
     }
 
+    /// Upstream's `osdict.py`'s `supports_virtiogpu()`: virtio1.0-gpu.
+    pub fn supports_virtiogpu(&self) -> bool {
+        self.has_device_id("http://pcisig.com/pci/1af4/1050")
+    }
+
     /// Upstream's `osdict.py`'s `supports_virtionet()` — same shape.
     pub fn supports_virtionet(&self) -> bool {
         self.has_device_id("http://pcisig.com/pci/1af4/1000")

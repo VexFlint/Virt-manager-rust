@@ -2,7 +2,8 @@
 //! watchdog, smartcard, redirected USB, RNG and panic notifier. Each is
 //! one frame from `details.ui`; the Apply side lives in `details.rs`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use gtk::prelude::*;
 use virtinst_xml::{Document, Element};
@@ -97,6 +98,98 @@ impl SimpleCombo {
             }
         };
         self.widget.set_selected(idx as u32);
+    }
+}
+
+/// A combo with an entry (`graphics-address`, `char-target-name`): a
+/// row, or typed text. GTK4 has no non-deprecated combo with an entry, so this is
+/// an entry plus a drop-down button.
+pub struct EntryCombo {
+    pub top: gtk::Box,
+    pub entry: gtk::Entry,
+    popover: gtk::Popover,
+    rows: Vec<(Option<String>, String)>,
+    active: Cell<Option<usize>>,
+    setting: Cell<bool>,
+}
+
+impl EntryCombo {
+    pub fn new(rows: Vec<(Option<String>, String)>) -> Rc<EntryCombo> {
+        let entry = gtk::Entry::new();
+        let list = gtk::ListBox::new();
+        list.set_selection_mode(gtk::SelectionMode::None);
+        for (_, label) in &rows {
+            let l = gtk::Label::new(Some(label));
+            l.set_xalign(0.0);
+            l.set_margin_top(3);
+            l.set_margin_bottom(3);
+            l.set_margin_start(3);
+            list.append(&l);
+        }
+        let popover = gtk::Popover::new();
+        popover.set_child(Some(&list));
+        let button = gtk::MenuButton::new();
+        button.set_popover(Some(&popover));
+        let top = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        top.add_css_class("linked");
+        top.set_halign(gtk::Align::Start);
+        top.append(&entry);
+        top.append(&button);
+        let this = Rc::new(EntryCombo {
+            top,
+            entry,
+            popover,
+            rows,
+            active: Cell::new(None),
+            setting: Cell::new(false),
+        });
+        let weak = Rc::downgrade(&this);
+        this.entry.connect_changed(move |_| {
+            if let Some(this) = weak.upgrade() {
+                if !this.setting.get() {
+                    this.active.set(None);
+                }
+            }
+        });
+        let weak = Rc::downgrade(&this);
+        list.connect_row_activated(move |_, row| {
+            if let Some(this) = weak.upgrade() {
+                this.set_active(row.index() as usize);
+                this.popover.popdown();
+            }
+        });
+        this
+    }
+
+    pub fn set_active(&self, idx: usize) {
+        let Some((_, label)) = self.rows.get(idx) else {
+            return;
+        };
+        // Signals run with `active` already set, so listeners read the
+        // row's value.
+        self.active.set(Some(idx));
+        self.setting.set(true);
+        self.entry.set_text(label);
+        self.setting.set(false);
+    }
+
+    /// `get_list_selection`: the row's value, else the typed text.
+    pub fn get(&self) -> Option<String> {
+        match self.active.get() {
+            Some(idx) => self.rows[idx].0.clone(),
+            None => Some(self.entry.text().trim().to_string()).filter(|t| !t.is_empty()),
+        }
+    }
+
+    /// `set_list_selection`: an unlisted value goes in the entry.
+    pub fn set(&self, val: Option<&str>) {
+        match self.rows.iter().position(|(v, _)| v.as_deref() == val) {
+            Some(idx) => self.set_active(idx),
+            None => {
+                self.active.set(None);
+                self.entry.set_text(val.unwrap_or_default());
+            }
+        }
     }
 }
 

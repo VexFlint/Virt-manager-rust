@@ -1623,6 +1623,7 @@ struct Inner {
     vsock: Rc<crate::vsockdetails::VsockDetails>,
     fs: Rc<crate::fsdetails::FsDetails>,
     fs_drivers_loaded: Cell<bool>,
+    addhw: RefCell<Option<crate::addhardware::AddHardware>>,
     graphics_title: gtk::Label,
     gfxdetails: Rc<crate::gfxdetails::GraphicsDetails>,
     unported: gtk::Label,
@@ -1655,8 +1656,6 @@ impl VmmDetails {
             .min_content_width(165)
             .build();
         let add_hardware = gtk::Button::with_mnemonic("A_dd Hardware");
-        // The Add Hardware wizard (ticket 12) isn't ported yet.
-        add_hardware.set_sensitive(false);
         let left = gtk::Box::new(gtk::Orientation::Vertical, 6);
         left.append(&hw_scroll);
         left.append(&add_hardware);
@@ -1785,6 +1784,7 @@ impl VmmDetails {
             vsock,
             fs,
             fs_drivers_loaded: Cell::new(false),
+            addhw: RefCell::default(),
             graphics_title,
             gfxdetails,
             unported,
@@ -1797,6 +1797,12 @@ impl VmmDetails {
             repopulating: Cell::new(false),
         }));
         this.disable_apply();
+        let weak = Rc::downgrade(&this.0);
+        add_hardware.connect_clicked(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                VmmDetails(inner).show_addhw();
+            }
+        });
         let weak = Rc::downgrade(&this.0);
         this.0.hw_list.connect_row_selected(move |_, _| {
             if let Some(inner) = weak.upgrade() {
@@ -3435,9 +3441,13 @@ impl VmmDetails {
     fn init_menus(&self) {
         let i = &self.0;
         let actions = gio::SimpleActionGroup::new();
-        // The Add Hardware wizard isn't ported yet.
         let addhw = gio::SimpleAction::new("add-hardware", None);
-        addhw.set_enabled(false);
+        let weak = Rc::downgrade(&self.0);
+        addhw.connect_activate(move |_, _| {
+            if let Some(inner) = weak.upgrade() {
+                VmmDetails(inner).show_addhw();
+            }
+        });
         actions.add_action(&addhw);
         let rmhw = gio::SimpleAction::new("remove-hardware", None);
         let weak = Rc::downgrade(&self.0);
@@ -4041,6 +4051,27 @@ impl VmmDetails {
 
     pub fn vmwindow_close(&self) {
         self.disable_apply();
+    }
+
+    /// `_cleanup`'s Add Hardware part.
+    pub fn cleanup(&self) {
+        if let Some(addhw) = self.0.addhw.take() {
+            addhw.cleanup();
+        }
+    }
+
+    /// `_show_addhw`.
+    fn show_addhw(&self) {
+        let Some(parent) = self.parent() else {
+            return;
+        };
+        let addhw = self
+            .0
+            .addhw
+            .borrow_mut()
+            .get_or_insert_with(|| crate::addhardware::AddHardware::new(&self.0.vm))
+            .clone();
+        addhw.show(&parent);
     }
 }
 

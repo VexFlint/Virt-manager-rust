@@ -126,6 +126,7 @@ impl Engine {
         virt::error::clear_error_callback();
 
         let config = Rc::new(Config::new());
+        crate::config::install_css();
         let connmanager = VmmConnectionManager::new(config.clone());
         let engine = Rc::new(Engine {
             app: app.clone(),
