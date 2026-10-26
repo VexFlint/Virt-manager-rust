@@ -28,3 +28,18 @@ pub struct DeviceSound {
     #[xml(path = "audio", attribute = "id")]
     pub audio_id: Option<String>,
 }
+
+// Editing an existing `<sound>` in place, for the details page.
+
+use virtinst_xml::{Document, Element};
+
+/// `sound_recommended_models`.
+pub const RECOMMENDED_MODELS: [&str; 3] = ["ich6", "ich9", "ac97"];
+
+/// `define_sound`'s `model`: a new model drops the guest address.
+pub fn set_model(doc: &mut Document, sound: Element, model: &str) {
+    if sound.attribute(doc, "model") != Some(model) {
+        super::edit::clear_address(doc, sound);
+    }
+    sound.set_attribute(doc, "model", model);
+}

@@ -63,3 +63,17 @@ pub struct DeviceSmartcard {
     #[xml(list)]
     pub certificates: Vec<Certificate>,
 }
+
+// Editing an existing `<smartcard>` in place, for the details page.
+
+/// `define_smartcard`'s `model`: the mode, with `type` reset to
+/// `default_type()` for it.
+pub fn set_mode(doc: &mut virtinst_xml::Document, sc: virtinst_xml::Element, mode: &str) {
+    sc.set_attribute(doc, "mode", mode);
+    let default_type = if mode == "passthrough" {
+        "spicevmc"
+    } else {
+        "tcp"
+    };
+    sc.set_attribute(doc, "type", default_type);
+}

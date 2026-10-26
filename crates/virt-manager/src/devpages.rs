@@ -1,0 +1,554 @@
+//! The details pages of the simpler devices: input, sound, video,
+//! watchdog, smartcard, redirected USB, RNG and panic notifier. Each is
+//! one frame from `details.ui`; the Apply side lives in `details.rs`.
+
+use std::cell::RefCell;
+
+use gtk::prelude::*;
+use virtinst_xml::{Document, Element};
+
+/// `uiutil.build_simple_combo`: `[xml value, label]` rows sorted by
+/// label. Unlike upstream, whose `set_list_selection` falls back to the
+/// first row and so shows a model the device doesn't have (a `cirrus`
+/// video reads "Bochs"), a value that isn't listed gets its own row.
+pub struct SimpleCombo {
+    pub widget: gtk::DropDown,
+    /// The built rows, sorted by label.
+    base: RefCell<Vec<(Option<String>, String)>>,
+    /// What the drop-down shows: `base`, plus the unlisted value.
+    values: RefCell<Vec<Option<String>>>,
+    pretty: fn(&str) -> String,
+}
+
+impl SimpleCombo {
+    /// `pretty` labels a value the device has that isn't listed.
+    pub fn new(values: Vec<(Option<String>, String)>, pretty: fn(&str) -> String) -> SimpleCombo {
+        let widget = gtk::DropDown::from_strings(&[]);
+        widget.set_halign(gtk::Align::Start);
+        let this = SimpleCombo {
+            widget,
+            base: RefCell::default(),
+            values: RefCell::default(),
+            pretty,
+        };
+        this.set_values(values);
+        this
+    }
+
+    pub fn set_values(&self, mut values: Vec<(Option<String>, String)>) {
+        values.sort_by(|a, b| a.1.cmp(&b.1));
+        self.base.replace(values);
+        self.show_rows(None);
+    }
+
+    fn show_rows(&self, extra: Option<&str>) {
+        let mut rows = self.base.borrow().clone();
+        if let Some(extra) = extra {
+            rows.push((Some(extra.to_string()), (self.pretty)(extra)));
+        }
+        let labels: Vec<&str> = rows.iter().map(|(_, l)| l.as_str()).collect();
+        self.values
+            .replace(rows.iter().map(|(v, _)| v.clone()).collect());
+        self.widget.set_model(Some(&gtk::StringList::new(&labels)));
+    }
+
+    pub fn get(&self) -> Option<String> {
+        self.values
+            .borrow()
+            .get(self.widget.selected() as usize)
+            .cloned()
+            .flatten()
+    }
+
+    /// `set_list_selection`.
+    pub fn set(&self, val: Option<&str>) {
+        let listed = self
+            .base
+            .borrow()
+            .iter()
+            .position(|(v, _)| v.as_deref() == val);
+        let idx = match (listed, val) {
+            (Some(idx), _) => {
+                self.show_rows(None);
+                idx
+            }
+            (None, Some(val)) => {
+                self.show_rows(Some(val));
+                self.base.borrow().len()
+            }
+            (None, None) => {
+                self.show_rows(None);
+                0
+            }
+        };
+        self.widget.set_selected(idx as u32);
+    }
+}
+
+fn value_label() -> gtk::Label {
+    let l = gtk::Label::new(None);
+    l.set_xalign(0.0);
+    l.set_halign(gtk::Align::Start);
+    l.set_selectable(true);
+    l
+}
+
+/// A label/value grid row, kept so the row can be hidden whole
+/// (`uiutil.set_grid_row_visible`).
+#[derive(Clone)]
+pub struct GridRow {
+    label: gtk::Label,
+    widget: gtk::Widget,
+}
+
+impl GridRow {
+    pub fn set_visible(&self, visible: bool) {
+        self.label.set_visible(visible);
+        self.widget.set_visible(visible);
+    }
+}
+
+struct Grid {
+    grid: gtk::Grid,
+    rows: i32,
+}
+
+impl Grid {
+    fn new() -> Grid {
+        let grid = gtk::Grid::builder()
+            .row_spacing(6)
+            .column_spacing(12)
+            .build();
+        Grid { grid, rows: 0 }
+    }
+
+    fn row(&mut self, text: &str, widget: &impl IsA<gtk::Widget>) -> GridRow {
+        let label = gtk::Label::with_mnemonic(text);
+        label.set_halign(gtk::Align::End);
+        label.set_mnemonic_widget(Some(widget));
+        self.grid.attach(&label, 0, self.rows, 1, 1);
+        self.grid.attach(widget, 1, self.rows, 1, 1);
+        self.rows += 1;
+        GridRow {
+            label,
+            widget: widget.clone().upcast(),
+        }
+    }
+
+    /// The page: the bold frame title over the indented grid.
+    fn page(self, title: &gtk::Label) -> gtk::Box {
+        title.set_xalign(0.0);
+        let frame = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        frame.append(title);
+        self.grid.set_margin_start(12);
+        frame.append(&self.grid);
+        let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        page.append(&frame);
+        page
+    }
+}
+
+fn title(text: &str) -> gtk::Label {
+    let l = gtk::Label::new(None);
+    l.set_markup(&format!("<b>{text}</b>"));
+    l
+}
+
+fn attr(doc: &Document, el: Element, path: &[&str], name: &str) -> Option<String> {
+    virtinst_xml::resolve_path(doc, el, path)
+        .and_then(|e| e.attribute(doc, name))
+        .map(str::to_string)
+}
+
+/// `vmmAddHardware.input_pretty_name`.
+pub fn input_pretty_name(typ: &str, bus: &str) -> String {
+    if typ == "tablet" && bus == "usb" {
+        return "EvTouch USB Graphics Tablet".into();
+    }
+    let typ_label = match typ {
+        "keyboard" => "Keyboard",
+        "mouse" => "Mouse",
+        "tablet" => "Tablet",
+        other => other,
+    };
+    let bus_label = match bus {
+        "ps2" => "PS/2",
+        "usb" => "USB",
+        "virtio" => "VirtIO",
+        "xen" => "Xen",
+        other => other,
+    };
+    format!("{bus_label} {typ_label}")
+}
+
+/// `vmmAddHardware.sound_pretty_model`.
+pub fn sound_pretty_model(model: &str) -> String {
+    let ret = model.to_uppercase();
+    if matches!(model, "ich6" | "ich9") {
+        format!("HDA ({ret})")
+    } else {
+        ret
+    }
+}
+
+/// `vmmAddHardware.watchdog_pretty_action`.
+pub fn watchdog_pretty_action(val: &str) -> String {
+    match val {
+        "reset" => "Forcefully reset the guest",
+        "shutdown" => "Gracefully shutdown the guest",
+        "poweroff" => "Forcefully power off the guest",
+        "pause" => "Pause the guest",
+        "none" => "No action",
+        "dump" => "Dump guest memory core",
+        other => other,
+    }
+    .into()
+}
+
+/// `vmmAddHardware.rng_pretty_type`.
+pub fn rng_pretty_type(val: &str) -> String {
+    match val {
+        "random" => "Random",
+        "egd" => "Entropy Gathering Daemon",
+        "builtin" => "Builtin RNG",
+        other => other,
+    }
+    .into()
+}
+
+/// `vmmAddHardware.redirdev_pretty_type`.
+pub fn redirdev_pretty_type(typ: &str) -> String {
+    match typ {
+        "tcp" => "TCP".into(),
+        "spicevmc" => "SpiceVMC".into(),
+        other => {
+            let mut c = other.chars();
+            c.next()
+                .map(|f| {
+                    f.to_uppercase()
+                        .chain(c.flat_map(char::to_lowercase))
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+    }
+}
+
+/// `input-dev-*`.
+pub struct InputPage {
+    pub page: gtk::Box,
+    dev_type: gtk::Label,
+    mode: gtk::Label,
+    mode_row: GridRow,
+}
+
+impl InputPage {
+    pub fn new() -> InputPage {
+        let mut g = Grid::new();
+        let dev_type = value_label();
+        let mode = value_label();
+        g.row("Type:", &dev_type);
+        let mode_row = g.row("Mode:", &mode);
+        InputPage {
+            page: g.page(&title("Virtual Input Device")),
+            dev_type,
+            mode,
+            mode_row,
+        }
+    }
+
+    /// `_refresh_input_page`.
+    pub fn refresh(&self, doc: &Document, el: Element) {
+        let typ = attr(doc, el, &[], "type").unwrap_or_default();
+        let bus = attr(doc, el, &[], "bus").unwrap_or_default();
+        let mode = match typ.as_str() {
+            "tablet" => Some("Absolute Movement"),
+            "mouse" => Some("Relative Movement"),
+            _ => None,
+        };
+        self.dev_type.set_text(&input_pretty_name(&typ, &bus));
+        self.mode.set_text(mode.unwrap_or_default());
+        self.mode_row.set_visible(mode.is_some());
+    }
+}
+
+/// `sound-model`.
+pub struct SoundPage {
+    pub page: gtk::Box,
+    pub model: SimpleCombo,
+}
+
+impl SoundPage {
+    /// `build_sound_combo`.
+    pub fn new() -> SoundPage {
+        let model = SimpleCombo::new(
+            virtinst_core::devices::sound::RECOMMENDED_MODELS
+                .iter()
+                .map(|m| (Some(m.to_string()), sound_pretty_model(m)))
+                .collect(),
+            sound_pretty_model,
+        );
+        let mut g = Grid::new();
+        g.row("M_odel:", &model.widget);
+        SoundPage {
+            page: g.page(&title("Sound Device")),
+            model,
+        }
+    }
+
+    pub fn refresh(&self, doc: &Document, el: Element) {
+        self.model.set(attr(doc, el, &[], "model").as_deref());
+    }
+}
+
+/// `video-model`, `video-3d`.
+pub struct VideoPage {
+    pub page: gtk::Box,
+    pub model: SimpleCombo,
+    pub accel3d: gtk::CheckButton,
+    accel3d_row: GridRow,
+}
+
+impl VideoPage {
+    pub fn new() -> VideoPage {
+        let model = SimpleCombo::new(vec![], crate::details::video_pretty_model);
+        let accel3d = gtk::CheckButton::new();
+        let mut g = Grid::new();
+        g.row("M_odel:", &model.widget);
+        let accel3d_row = g.row("_3D acceleration:", &accel3d);
+        VideoPage {
+            page: g.page(&title("Video")),
+            model,
+            accel3d,
+            accel3d_row,
+        }
+    }
+
+    /// `build_video_combo`.
+    pub fn build_models(&self, conn: Option<&crate::connection::VmmConnection>) {
+        let (is_xen, is_qemu) =
+            conn.map_or((false, false), |c| (c.is_xen(), c.is_qemu() || c.is_test()));
+        let mut values: Vec<_> = virtinst_core::devices::video::recommended_models(is_xen, is_qemu)
+            .iter()
+            .map(|m| (Some(m.to_string()), crate::details::video_pretty_model(m)))
+            .collect();
+        if values.is_empty() {
+            values.push((None, "Hypervisor default".into()));
+        }
+        self.model.set_values(values);
+    }
+
+    /// `_video_model_changed_cb`'s row toggle.
+    pub fn sync_3d_row(&self) {
+        self.accel3d_row
+            .set_visible(self.model.get().as_deref() == Some("virtio"));
+    }
+
+    /// `_refresh_video_page`.
+    pub fn refresh(&self, doc: &Document, el: Element) {
+        self.model.set(attr(doc, el, &["model"], "type").as_deref());
+        self.sync_3d_row();
+        match attr(doc, el, &["model", "acceleration"], "accel3d") {
+            None => self.accel3d.set_inconsistent(true),
+            Some(v) => {
+                self.accel3d.set_inconsistent(false);
+                self.accel3d.set_active(v == "yes");
+            }
+        }
+    }
+}
+
+/// `watchdog-model`, `watchdog-action`.
+pub struct WatchdogPage {
+    pub page: gtk::Box,
+    pub model: SimpleCombo,
+    pub action: SimpleCombo,
+}
+
+impl WatchdogPage {
+    /// `build_watchdogmodel_combo`, `build_watchdogaction_combo`.
+    pub fn new() -> WatchdogPage {
+        use virtinst_core::devices::watchdog::{ACTIONS, MODELS};
+        let model = SimpleCombo::new(
+            MODELS
+                .iter()
+                .map(|m| (Some(m.to_string()), m.to_uppercase()))
+                .collect(),
+            |m| m.to_uppercase(),
+        );
+        let action = SimpleCombo::new(
+            ACTIONS
+                .iter()
+                .map(|a| (Some(a.to_string()), watchdog_pretty_action(a)))
+                .collect(),
+            watchdog_pretty_action,
+        );
+        let mut g = Grid::new();
+        g.row("M_odel:", &model.widget);
+        g.row("Ac_tion:", &action.widget);
+        WatchdogPage {
+            page: g.page(&title("Watchdog")),
+            model,
+            action,
+        }
+    }
+
+    pub fn refresh(&self, doc: &Document, el: Element) {
+        self.model.set(attr(doc, el, &[], "model").as_deref());
+        self.action.set(attr(doc, el, &[], "action").as_deref());
+    }
+}
+
+/// `smartcard-mode`.
+pub struct SmartcardPage {
+    pub page: gtk::Box,
+    pub mode: SimpleCombo,
+}
+
+impl SmartcardPage {
+    /// `build_smartcard_mode_combo`.
+    pub fn new() -> SmartcardPage {
+        let mode = SimpleCombo::new(
+            vec![
+                (Some("passthrough".into()), "Passthrough".into()),
+                (Some("host".into()), "Host".into()),
+            ],
+            str::to_string,
+        );
+        let mut g = Grid::new();
+        g.row("M_ode:", &mode.widget);
+        SmartcardPage {
+            page: g.page(&title("Smartcard Device")),
+            mode,
+        }
+    }
+
+    pub fn refresh(&self, doc: &Document, el: Element) {
+        self.mode.set(attr(doc, el, &[], "mode").as_deref());
+    }
+}
+
+/// `redir-*`.
+pub struct RedirPage {
+    pub page: gtk::Box,
+    title: gtk::Label,
+    dev_type: gtk::Label,
+    address: gtk::Label,
+    address_row: GridRow,
+}
+
+impl RedirPage {
+    pub fn new() -> RedirPage {
+        let title = title("Redirected device");
+        let dev_type = value_label();
+        let address = value_label();
+        let mut g = Grid::new();
+        g.row("Type:", &dev_type);
+        let address_row = g.row("Address:", &address);
+        RedirPage {
+            page: g.page(&title),
+            title,
+            dev_type,
+            address,
+            address_row,
+        }
+    }
+
+    /// `_refresh_redir_page`; the title is the device's hw-list label.
+    pub fn refresh(&self, doc: &Document, el: Element, label: &str) {
+        let typ = attr(doc, el, &[], "type").unwrap_or_default();
+        let address = (typ == "tcp").then(|| {
+            format!(
+                "{}:{}",
+                attr(doc, el, &["source"], "host").unwrap_or_default(),
+                attr(doc, el, &["source"], "service").unwrap_or_default()
+            )
+        });
+        self.title.set_markup(&gtk::glib::markup_escape_text(label));
+        self.dev_type.set_text(&redirdev_pretty_type(&typ));
+        self.address
+            .set_text(address.as_deref().unwrap_or_default());
+        self.address_row.set_visible(address.is_some());
+    }
+}
+
+/// `rng-*`.
+pub struct RngPage {
+    pub page: gtk::Box,
+    rng_type: gtk::Label,
+    device: gtk::Label,
+    device_row: GridRow,
+}
+
+impl RngPage {
+    pub fn new() -> RngPage {
+        let rng_type = value_label();
+        let device = value_label();
+        let mut g = Grid::new();
+        g.row("Type:", &rng_type);
+        let device_row = g.row("Host Device:", &device);
+        RngPage {
+            page: g.page(&title("Random Number Generator")),
+            rng_type,
+            device,
+            device_row,
+        }
+    }
+
+    /// `_refresh_rng_page`. `device` is `<backend>`'s text.
+    pub fn refresh(&self, doc: &Document, el: Element) {
+        let backend = el.find(doc, "backend");
+        let model = backend
+            .and_then(|b| b.attribute(doc, "model"))
+            .unwrap_or_default()
+            .to_string();
+        let device = backend.map(|b| b.text_content(doc)).unwrap_or_default();
+        self.device_row.set_visible(model == "random");
+        self.rng_type.set_text(&rng_pretty_type(&model));
+        self.device.set_text(device.trim());
+    }
+}
+
+/// `panic-model`.
+pub struct PanicPage {
+    pub page: gtk::Box,
+    model: gtk::Label,
+}
+
+impl PanicPage {
+    pub fn new() -> PanicPage {
+        let model = value_label();
+        let mut g = Grid::new();
+        g.row("Model:", &model);
+        PanicPage {
+            page: g.page(&title("Panic Notifier")),
+            model,
+        }
+    }
+
+    pub fn refresh(&self, doc: &Document, el: Element) {
+        self.model
+            .set_text(&attr(doc, el, &[], "model").unwrap_or_default());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pretty_names() {
+        assert_eq!(
+            input_pretty_name("tablet", "usb"),
+            "EvTouch USB Graphics Tablet"
+        );
+        assert_eq!(input_pretty_name("mouse", "ps2"), "PS/2 Mouse");
+        assert_eq!(input_pretty_name("keyboard", "virtio"), "VirtIO Keyboard");
+        assert_eq!(sound_pretty_model("ich9"), "HDA (ICH9)");
+        assert_eq!(sound_pretty_model("ac97"), "AC97");
+        assert_eq!(redirdev_pretty_type("spicevmc"), "SpiceVMC");
+        assert_eq!(redirdev_pretty_type("pty"), "Pty");
+        assert_eq!(rng_pretty_type("egd"), "Entropy Gathering Daemon");
+        assert_eq!(watchdog_pretty_action("dump"), "Dump guest memory core");
+    }
+}

@@ -68,6 +68,12 @@ enum Edit {
     NetModel,
     NetSource,
     NetLinkstate,
+    SoundModel,
+    SmartcardMode,
+    VideoModel,
+    Video3d,
+    WatchdogModel,
+    WatchdogAction,
 }
 
 impl HwType {
@@ -1592,6 +1598,14 @@ struct Inner {
     os: OsPage,
     disk: DiskPage,
     network: NetworkPage,
+    input: crate::devpages::InputPage,
+    sound: crate::devpages::SoundPage,
+    video: crate::devpages::VideoPage,
+    watchdog: crate::devpages::WatchdogPage,
+    smartcard: crate::devpages::SmartcardPage,
+    redir: crate::devpages::RedirPage,
+    rng: crate::devpages::RngPage,
+    panic: crate::devpages::PanicPage,
     unported: gtk::Label,
     config_remove: gtk::Button,
     config_cancel: gtk::Button,
@@ -1635,6 +1649,16 @@ impl VmmDetails {
         let os = OsPage::new();
         let disk = DiskPage::new(vm.conn());
         let network = NetworkPage::new(vm.conn());
+        use crate::devpages as dp;
+        let input = dp::InputPage::new();
+        let sound = dp::SoundPage::new();
+        let video = dp::VideoPage::new();
+        video.build_models(vm.conn().as_ref());
+        let watchdog = dp::WatchdogPage::new();
+        let smartcard = dp::SmartcardPage::new();
+        let redir = dp::RedirPage::new();
+        let rng = dp::RngPage::new();
+        let panic = dp::PanicPage::new();
         let unported = gtk::Label::new(Some("This page is not available yet in this version."));
         unported.set_valign(gtk::Align::Start);
         unported.set_xalign(0.0);
@@ -1646,6 +1670,14 @@ impl VmmDetails {
         hw_panel.add_named(&os.page, Some("os"));
         hw_panel.add_named(&disk.page, Some("disk"));
         hw_panel.add_named(&network.page, Some("network"));
+        hw_panel.add_named(&input.page, Some("input"));
+        hw_panel.add_named(&sound.page, Some("sound"));
+        hw_panel.add_named(&video.page, Some("video"));
+        hw_panel.add_named(&watchdog.page, Some("watchdog"));
+        hw_panel.add_named(&smartcard.page, Some("smartcard"));
+        hw_panel.add_named(&redir.page, Some("redir"));
+        hw_panel.add_named(&rng.page, Some("rng"));
+        hw_panel.add_named(&panic.page, Some("panic"));
         hw_panel.add_named(&unported, Some("unported"));
         let panel_scroll = gtk::ScrolledWindow::builder()
             .child(&hw_panel)
@@ -1689,6 +1721,14 @@ impl VmmDetails {
             os,
             disk,
             network,
+            input,
+            sound,
+            video,
+            watchdog,
+            smartcard,
+            redir,
+            rng,
+            panic,
             unported,
             config_remove,
             config_cancel,
@@ -1790,6 +1830,27 @@ impl VmmDetails {
             .connect_selected_notify(move |_| cb());
         let cb = enable(Edit::NetLinkstate);
         i.network.link_state.connect_toggled(move |_| cb());
+        let cb = enable(Edit::SoundModel);
+        i.sound.model.widget.connect_selected_notify(move |_| cb());
+        let cb = enable(Edit::SmartcardMode);
+        i.smartcard
+            .mode
+            .widget
+            .connect_selected_notify(move |_| cb());
+        let cb = enable(Edit::WatchdogModel);
+        i.watchdog
+            .model
+            .widget
+            .connect_selected_notify(move |_| cb());
+        let cb = enable(Edit::WatchdogAction);
+        i.watchdog
+            .action
+            .widget
+            .connect_selected_notify(move |_| cb());
+        let cb = with(Self::video_model_changed);
+        i.video.model.widget.connect_selected_notify(move |_| cb());
+        let cb = with(Self::video_3d_toggled);
+        i.video.accel3d.connect_toggled(move |_| cb());
         let rweak = Rc::downgrade(&self.0);
         i.network.refresh_ip.connect_clicked(move |_| {
             if let Some(inner) = rweak.upgrade() {
@@ -2263,6 +2324,10 @@ impl VmmDetails {
             HwType::Os => Ok(self.apply_os().await),
             HwType::Disk => Ok(self.apply_disk(&row).await),
             HwType::Nic => Ok(self.apply_network(&row).await),
+            HwType::Sound => Ok(self.apply_sound(&row).await),
+            HwType::Smartcard => Ok(self.apply_smartcard(&row).await),
+            HwType::Video => Ok(self.apply_video(&row).await),
+            HwType::Watchdog => Ok(self.apply_watchdog(&row).await),
             _ => Ok(true),
         };
         let success = match res {
@@ -2424,6 +2489,158 @@ impl VmmDetails {
             mac: child_attr(&x.doc, el, &["mac"], "address"),
             idx: row.device.as_ref()?.1,
         })
+    }
+
+    /// `_refresh_{input,sound,video,...}_page` for the pages in
+    /// `devpages.rs`.
+    fn refresh_simple_device_page(&self, row: &HwRow) {
+        let i = &self.0;
+        let Some((x, el)) = self.device_element(row) else {
+            return;
+        };
+        let doc = &x.doc;
+        let name = match row.hwtype {
+            HwType::Input => {
+                i.input.refresh(doc, el);
+                "input"
+            }
+            HwType::Sound => {
+                i.sound.refresh(doc, el);
+                "sound"
+            }
+            HwType::Video => {
+                i.video.refresh(doc, el);
+                "video"
+            }
+            HwType::Watchdog => {
+                i.watchdog.refresh(doc, el);
+                "watchdog"
+            }
+            HwType::Smartcard => {
+                i.smartcard.refresh(doc, el);
+                "smartcard"
+            }
+            HwType::Redirdev => {
+                i.redir.refresh(doc, el, &row.label);
+                "redir"
+            }
+            HwType::Rng => {
+                i.rng.refresh(doc, el);
+                "rng"
+            }
+            HwType::Panic => {
+                i.panic.refresh(doc, el);
+                "panic"
+            }
+            _ => return,
+        };
+        i.hw_panel.set_visible_child_name(name);
+    }
+
+    /// `_video_model_changed_cb`.
+    fn video_model_changed(&self) {
+        self.0.video.sync_3d_row();
+        self.enable_apply(Edit::VideoModel);
+    }
+
+    /// `_video_3d_toggled_cb`.
+    fn video_3d_toggled(&self) {
+        self.0.video.accel3d.set_inconsistent(false);
+        self.enable_apply(Edit::Video3d);
+    }
+
+    fn device_id(&self, row: &HwRow) -> Option<virtinst_core::devices::DeviceId> {
+        let (x, el) = self.device_element(row)?;
+        let (tag, idx) = row.device.as_ref()?;
+        Some(virtinst_core::devices::device_id(&x.doc, el, tag, *idx))
+    }
+
+    /// `_change_config(define_func, kwargs, devobj=devobj)` for the
+    /// simple devices: the same edit goes to the inactive config, then
+    /// to the running VM.
+    async fn change_device_config(
+        &self,
+        row: &HwRow,
+        edit: impl Fn(&mut Document, Element) + Clone + 'static,
+    ) -> bool {
+        let Some(id) = self.device_id(row) else {
+            return false;
+        };
+        let vm = self.0.vm.clone();
+        let hotplug_vm = vm.clone();
+        let (hid, hedit) = (id.clone(), edit.clone());
+        self.change_config(
+            async move { vm.define_device(&id, edit).await },
+            Some(Box::pin(async move {
+                hotplug_vm.hotplug_device(&hid, hedit).await
+            })),
+        )
+        .await
+    }
+
+    /// `_apply_sound`.
+    async fn apply_sound(&self, row: &HwRow) -> bool {
+        let model = self
+            .edited(Edit::SoundModel)
+            .then(|| self.0.sound.model.get())
+            .flatten();
+        self.change_device_config(row, move |doc, el| {
+            if let Some(model) = &model {
+                virtinst_core::devices::sound::set_model(doc, el, model);
+            }
+        })
+        .await
+    }
+
+    /// `_apply_smartcard`.
+    async fn apply_smartcard(&self, row: &HwRow) -> bool {
+        let mode = self
+            .edited(Edit::SmartcardMode)
+            .then(|| self.0.smartcard.mode.get())
+            .flatten();
+        self.change_device_config(row, move |doc, el| {
+            if let Some(mode) = &mode {
+                virtinst_core::devices::smartcard::set_mode(doc, el, mode);
+            }
+        })
+        .await
+    }
+
+    /// `_apply_video`.
+    async fn apply_video(&self, row: &HwRow) -> bool {
+        let v = &self.0.video;
+        let model = self
+            .edited(Edit::VideoModel)
+            .then(|| v.model.get())
+            .flatten();
+        let accel3d = self.edited(Edit::Video3d).then(|| v.accel3d.is_active());
+        self.change_device_config(row, move |doc, el| {
+            use virtinst_core::devices::video;
+            if let Some(model) = &model {
+                video::set_model(doc, el, model);
+            }
+            if let Some(accel3d) = accel3d {
+                video::set_accel3d(doc, el, accel3d);
+            }
+        })
+        .await
+    }
+
+    /// `_apply_watchdog`.
+    async fn apply_watchdog(&self, row: &HwRow) -> bool {
+        let w = &self.0.watchdog;
+        let model = self.edited(Edit::WatchdogModel).then(|| w.model.get());
+        let action = self.edited(Edit::WatchdogAction).then(|| w.action.get());
+        self.change_device_config(row, move |doc, el| {
+            use virtinst_core::devices::watchdog;
+            if let Some(model) = &model {
+                watchdog::set_model(doc, el, model.as_deref());
+            }
+            if let Some(action) = &action {
+                watchdog::set_action(doc, el, action.as_deref());
+            }
+        })
+        .await
     }
 
     /// `_apply_network`.
@@ -2755,6 +2972,14 @@ impl VmmDetails {
                 self.refresh_network_page(&row);
                 i.hw_panel.set_visible_child_name("network");
             }
+            HwType::Input
+            | HwType::Sound
+            | HwType::Video
+            | HwType::Watchdog
+            | HwType::Smartcard
+            | HwType::Redirdev
+            | HwType::Rng
+            | HwType::Panic => self.refresh_simple_device_page(&row),
             _ => i.hw_panel.set_visible_child(&i.unported),
         }
         i.refreshing.set(false);
