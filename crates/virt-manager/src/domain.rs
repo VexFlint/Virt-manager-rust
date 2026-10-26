@@ -375,30 +375,14 @@ fn edit_disk(
 
 /// `diskbackend.manage_path`'s view of a path: a libvirt volume's type
 /// and format when it is one, else what a local `stat` says.
-fn path_props(
+pub(crate) fn path_props(
     conn: &Connect,
     path: &str,
     is_local: bool,
 ) -> virtinst_core::devices::disk::PathProps {
     use virtinst_core::devices::disk::PathProps;
     if let Ok(vol) = virt::storage_vol::StorageVol::lookup_by_path(conn, path) {
-        let dev_type = match vol.get_info().map(|i| i.kind) {
-            Ok(sys::VIR_STORAGE_VOL_BLOCK) => "block",
-            Ok(sys::VIR_STORAGE_VOL_DIR) => "dir",
-            Ok(sys::VIR_STORAGE_VOL_NETWORK) | Ok(sys::VIR_STORAGE_VOL_NETDIR) => "network",
-            _ => "file",
-        };
-        let format = vol.get_xml_desc(0).ok().and_then(|xml| {
-            let doc = virtinst_xml::parse_libvirt_xml(&xml).ok()?;
-            let root = doc.root_element()?;
-            virtinst_xml::resolve_path(&doc, root, &["target", "format"])?
-                .attribute(&doc, "type")
-                .map(str::to_string)
-        });
-        return PathProps {
-            dev_type: dev_type.into(),
-            format,
-        };
+        return virtinst_core::storage::vol_path_props(&vol);
     }
     let dev_type = match std::fs::metadata(path) {
         Ok(md) if is_local && md.is_dir() => "dir",
@@ -490,41 +474,26 @@ fn baseline_hypervisor_cpu(
         .ok()
 }
 
-/// A storage volume or local file that `_copy_nvram_file` made or
-/// will remove.
 /// `DeviceDisk.path_in_use_by`, blocking: the VMs on `conn` using
-/// `path` for a disk or for direct kernel boot. Volume backing chains
-/// aren't followed.
-pub(crate) fn path_in_use_by(conn: &Connect, path: &str) -> Result<Vec<String>, String> {
+/// `path` for a disk, for direct kernel boot, or as the backing store
+/// of a volume a disk uses.
+pub(crate) fn path_in_use_by(
+    conn: &Connect,
+    path: &str,
+    shareable: bool,
+    read_only: bool,
+) -> Result<Vec<String>, String> {
     let doms = conn
         .list_all_domains(0)
         .map_err(|e| e.message().to_string())?;
-    let mut ret = vec![];
-    for dom in doms {
-        let Ok(xml) = dom.get_xml_desc(0) else {
-            continue;
-        };
-        let Ok(doc) = virtinst_xml::parse_libvirt_xml(&xml) else {
-            continue;
-        };
-        let Some(root) = doc.root_element() else {
-            continue;
-        };
-        let name = dom.get_name().unwrap_or_default();
-        let boot = ["kernel", "initrd", "dtb"].iter().any(|k| {
-            virtinst_xml::resolve_path(&doc, root, &["os", k])
-                .is_some_and(|e| e.text_content(&doc) == path)
-        });
-        let disk = virtinst_xml::resolve_path(&doc, root, &["devices"])
-            .map(|devs| devs.find_all(&doc, "disk"))
-            .unwrap_or_default()
-            .into_iter()
-            .any(|d| virtinst_core::devices::disk::source_path(&doc, d).as_deref() == Some(path));
-        if boot || disk {
-            ret.push(name);
-        }
-    }
-    Ok(ret)
+    let vms: Vec<(String, String)> = doms
+        .iter()
+        .filter_map(|dom| Some((dom.get_name().ok()?, dom.get_xml_desc(0).ok()?)))
+        .collect();
+    let volmap = virtinst_core::storage::get_volmap(conn);
+    Ok(virtinst_core::storage::path_in_use_by(
+        path, &volmap, &vms, shareable, read_only,
+    ))
 }
 
 /// `vmmDomain.delete(force=True)`, blocking: undefine along with
@@ -542,6 +511,8 @@ pub(crate) fn delete_domain(dom: &Domain, has_nvram: bool) -> Result<(), String>
     Ok(())
 }
 
+/// A storage volume or local file that `_copy_nvram_file` made or
+/// will remove.
 enum NvramFile {
     Vol(virt::storage_vol::StorageVol),
     Local(String),
@@ -1321,10 +1292,14 @@ impl VmmDomain {
     }
 
     /// `DeviceDisk.path_in_use_by`: the VMs on this connection using
-    /// `path` for a disk or for direct kernel boot. Volume backing
-    /// chains aren't followed.
-    pub async fn path_in_use_by(&self, path: String) -> Result<Vec<String>, String> {
-        self.with_domain(move |conn, _| path_in_use_by(conn, &path))
+    /// `path`.
+    pub async fn path_in_use_by(
+        &self,
+        path: String,
+        shareable: bool,
+        read_only: bool,
+    ) -> Result<Vec<String>, String> {
+        self.with_domain(move |conn, _| path_in_use_by(conn, &path, shareable, read_only))
             .await
     }
 

@@ -18,6 +18,7 @@ pub mod domain;
 pub mod install;
 pub mod nodedev;
 pub mod osinfo;
+pub mod storage;
 
 pub mod guest;
 pub use guest::Guest;

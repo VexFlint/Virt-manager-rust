@@ -1123,17 +1123,6 @@ fn path_entry() -> (gtk::Box, gtk::Entry, gtk::Button) {
     (hbox, entry, browse)
 }
 
-/// `vmmAddStorage`'s `_EDIT_*`: which advanced disk options changed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum StorageEdit {
-    Cache,
-    Discard,
-    Readonly,
-    Shareable,
-    Removable,
-    Serial,
-}
-
 /// A "Hypervisor default" plus values drop-down (`build_simple_combo`
 /// with a `None` first row).
 struct ModeCombo {
@@ -1201,14 +1190,7 @@ struct DiskPage {
     target_type: gtk::Label,
     bus_label: gtk::Label,
     size: gtk::Label,
-    readonly: gtk::CheckButton,
-    shareable: gtk::CheckButton,
-    removable: gtk::CheckButton,
-    removable_label: gtk::Label,
-    serial: gtk::Entry,
-    cache: ModeCombo,
-    discard: ModeCombo,
-    storage_edits: RefCell<Vec<StorageEdit>>,
+    addstorage: Rc<crate::addstorage::AddStorage>,
 }
 
 impl DiskPage {
@@ -1227,7 +1209,7 @@ impl DiskPage {
         let source_label = value();
         source_label.set_ellipsize(gtk::pango::EllipsizeMode::Start);
         source_label.update_property(&[gtk::accessible::Property::Label("disk-source-label")]);
-        let mediacombo = crate::mediacombo::MediaCombo::new(conn);
+        let mediacombo = crate::mediacombo::MediaCombo::new(conn.clone());
         mediacombo.set_mnemonic_label(&source_mnemonic);
         mediacombo.show_clear_icon();
         let browse = gtk::Button::with_mnemonic("_Browse");
@@ -1257,39 +1239,11 @@ impl DiskPage {
         grid.attach(&right("Storage size:"), 0, 3, 1, 1);
         grid.attach(&size, 1, 3, 1, 1);
 
-        let readonly = gtk::CheckButton::new();
-        let shareable = gtk::CheckButton::new();
-        let removable = gtk::CheckButton::new();
-        let serial = gtk::Entry::new();
-        let cache = ModeCombo::new(&virtinst_core::devices::disk::CACHE_MODES);
-        let discard = ModeCombo::new(&virtinst_core::devices::disk::DISCARD_MODES);
-        let adv = gtk::Grid::builder()
-            .row_spacing(6)
-            .column_spacing(6)
-            .margin_start(12)
-            .margin_top(6)
-            .build();
-        let mut row = 0;
-        let mut add = |text: &str, w: &gtk::Widget| {
-            let l = right(text);
-            l.set_mnemonic_widget(Some(w));
-            adv.attach(&l, 0, row, 1, 1);
-            adv.attach(w, 1, row, 1, 1);
-            row += 1;
-            l
-        };
-        add("R_eadonly:", readonly.upcast_ref());
-        add("Sharea_ble:", shareable.upcast_ref());
-        let removable_label = add("Removab_le:", removable.upcast_ref());
-        add("Seria_l:", serial.upcast_ref());
-        add("Cac_he mode:", cache.widget.upcast_ref());
-        add("Discard mod_e:", discard.widget.upcast_ref());
-        let advanced = gtk::Expander::with_mnemonic("Advanced _options");
-        advanced.set_child(Some(&adv));
+        let addstorage = crate::addstorage::AddStorage::new(conn);
 
         let vbox = gtk::Box::new(gtk::Orientation::Vertical, 12);
         vbox.append(&grid);
-        vbox.append(&advanced);
+        vbox.append(&addstorage.advanced_top_box);
         let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
         page.append(&frame("Virtual Disk", &vbox));
         DiskPage {
@@ -1301,36 +1255,19 @@ impl DiskPage {
             target_type,
             bus_label,
             size,
-            readonly,
-            shareable,
-            removable,
-            removable_label,
-            serial,
-            cache,
-            discard,
-            storage_edits: RefCell::default(),
+            addstorage,
         }
-    }
-
-    /// `vmmAddStorage.set_disk_bus`: removable only applies to USB.
-    fn set_disk_bus(&self, bus: Option<&str>) {
-        let show = bus == Some("usb");
-        self.removable.set_visible(show);
-        self.removable_label.set_visible(show);
     }
 
     /// `vmmAddStorage.get_values`.
     fn get_values(&self, edits: &mut crate::domain::DiskEdits) {
-        for e in self.storage_edits.borrow().iter() {
-            match e {
-                StorageEdit::Cache => edits.cache = Some(self.cache.get()),
-                StorageEdit::Discard => edits.discard = Some(self.discard.get()),
-                StorageEdit::Readonly => edits.readonly = Some(self.readonly.is_active()),
-                StorageEdit::Shareable => edits.shareable = Some(self.shareable.is_active()),
-                StorageEdit::Removable => edits.removable = Some(self.removable.is_active()),
-                StorageEdit::Serial => edits.serial = Some(Some(self.serial.text().to_string())),
-            }
-        }
+        let v = self.addstorage.get_values();
+        edits.cache = v.cache;
+        edits.discard = v.discard;
+        edits.readonly = v.readonly;
+        edits.shareable = v.shareable;
+        edits.removable = v.removable;
+        edits.serial = v.serial.map(Some);
     }
 }
 
@@ -1945,28 +1882,8 @@ impl VmmDetails {
         i.disk.mediacombo.connect_changed(cb);
         let cb = with(Self::disk_source_browse_clicked);
         i.disk.browse.connect_clicked(move |_| cb());
-        let sweak = Rc::downgrade(&self.0);
-        let storage = |edit: StorageEdit| {
-            let weak = sweak.clone();
-            move || {
-                if let Some(inner) = weak.upgrade() {
-                    VmmDetails(inner).storage_changed(edit);
-                }
-            }
-        };
-        let d = &i.disk;
-        let cb = storage(StorageEdit::Cache);
-        d.cache.widget.connect_selected_notify(move |_| cb());
-        let cb = storage(StorageEdit::Discard);
-        d.discard.widget.connect_selected_notify(move |_| cb());
-        let cb = storage(StorageEdit::Readonly);
-        d.readonly.connect_toggled(move |_| cb());
-        let cb = storage(StorageEdit::Shareable);
-        d.shareable.connect_toggled(move |_| cb());
-        let cb = storage(StorageEdit::Removable);
-        d.removable.connect_toggled(move |_| cb());
-        let cb = storage(StorageEdit::Serial);
-        d.serial.connect_changed(move |_| cb());
+        let cb = with(Self::storage_changed);
+        i.disk.addstorage.connect_changed(cb);
         let cb = with(Self::boot_kernel_toggled);
         b.kernel_enable.connect_toggled(move |_| cb());
         let cb = with(Self::config_bootdev_selected);
@@ -3105,7 +3022,7 @@ impl VmmDetails {
             } else {
                 self.0
                     .vm
-                    .path_in_use_by(path.clone())
+                    .path_in_use_by(path.clone(), false, false)
                     .await
                     .unwrap_or_default()
             };
@@ -3657,16 +3574,11 @@ impl VmmDetails {
             .select_os(&crate::oslist::lookup_os_by_full_id(os_id.as_deref()));
     }
 
-    /// `vmmAddStorage`'s `_change_cb`.
-    fn storage_changed(&self, edit: StorageEdit) {
+    /// `vmmAddStorage`'s `changed`.
+    fn storage_changed(&self) {
         if self.0.refreshing.get() {
             return;
         }
-        let mut edits = self.0.disk.storage_edits.borrow_mut();
-        if !edits.contains(&edit) {
-            edits.push(edit);
-        }
-        drop(edits);
         self.enable_apply(Edit::Disk);
     }
 
@@ -3791,22 +3703,18 @@ impl VmmDetails {
         }
 
         // vmmAddStorage.set_dev
-        d.set_disk_bus(bus.as_deref());
-        d.cache
-            .set(child_attr(doc, el, &["driver"], "cache").as_deref());
-        d.discard
-            .set(child_attr(doc, el, &["driver"], "discard").as_deref());
-        d.serial.set_text(
+        d.addstorage.set_dev(
+            bus.as_deref(),
+            child_attr(doc, el, &["driver"], "cache").as_deref(),
+            child_attr(doc, el, &["driver"], "discard").as_deref(),
             &virtinst_xml::resolve_path(doc, el, &["serial"])
                 .map(|e| e.text_content(doc))
                 .unwrap_or_default(),
+            el.find(doc, "readonly").is_some(),
+            is_cdrom,
+            el.find(doc, "shareable").is_some(),
+            child_attr(doc, el, &["target"], "removable").as_deref() == Some("on"),
         );
-        d.readonly.set_active(el.find(doc, "readonly").is_some());
-        d.readonly.set_sensitive(!is_cdrom);
-        d.shareable.set_active(el.find(doc, "shareable").is_some());
-        d.removable
-            .set_active(child_attr(doc, el, &["target"], "removable").as_deref() == Some("on"));
-        d.storage_edits.borrow_mut().clear();
 
         // conn.get_vol_by_path, off the main thread
         if !has_storage {

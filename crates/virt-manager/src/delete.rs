@@ -149,7 +149,7 @@ fn do_we_default(
     if info.is_empty() && diskdata.is_media {
         info.push("Storage is a media device.".to_string());
     }
-    match crate::domain::path_in_use_by(conn, path) {
+    match crate::domain::path_in_use_by(conn, path, false, false) {
         Ok(mut names) if names.len() > 1 => {
             names.retain(|n| n != vm_name);
             info.push(format!(

@@ -12,7 +12,7 @@
 //! `#[xml(nested)]`.
 
 pub mod container;
-mod domain_skeleton;
+pub(crate) mod domain_skeleton;
 pub mod import;
 pub mod iso;
 pub mod manual;

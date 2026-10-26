@@ -359,6 +359,38 @@ impl VmmConnection {
         .unwrap_or_default()
     }
 
+    /// `_host_disk_space`: the default pool's free bytes, refreshed
+    /// first; `None` when there's no active default pool.
+    pub async fn default_pool_available(&self) -> Option<u64> {
+        let handle = self.handle()?;
+        let session = self.is_qemu_unprivileged();
+        gio::spawn_blocking(move || {
+            let pool = virtinst_core::storage::lookup_default_pool(handle.connect(), session)?;
+            if !pool.pool.is_active().ok()? {
+                return None;
+            }
+            let _ = pool.pool.refresh(0);
+            pool.pool.get_info().ok().map(|i| i.available)
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    /// `get_default_storage_format`: the preference, with `default`
+    /// meaning qcow2 (every qemu we support has it).
+    pub fn get_default_storage_format(&self) -> Option<String> {
+        let raw = engine::get().config().get_default_storage_format_raw();
+        if raw != "default" {
+            return Some(raw);
+        }
+        let fmt = crate::config::DEFAULT_STORAGE_FORMAT_FROM_CONFIG;
+        if fmt != "qcow2" || self.is_qemu() || self.is_test() {
+            return Some(fmt.to_string());
+        }
+        None
+    }
+
     /// `vmmNetwork.start`, by name.
     pub async fn start_net(&self, name: &str) -> Result<(), String> {
         let handle = self.handle().ok_or("Not connected")?;
