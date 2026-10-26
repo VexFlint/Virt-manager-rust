@@ -62,6 +62,7 @@ enum Edit {
     BootMenu,
     Kernel,
     Init,
+    OsName,
 }
 
 impl HwType {
@@ -1092,6 +1093,30 @@ fn path_entry() -> (gtk::Box, gtk::Entry, gtk::Button) {
     (hbox, entry, browse)
 }
 
+/// The OS information page (`details-os-*`).
+struct OsPage {
+    page: gtk::Box,
+    os_list: Rc<crate::oslist::OsList>,
+}
+
+impl OsPage {
+    fn new() -> OsPage {
+        let os_list = crate::oslist::OsList::new();
+        let align = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        align.set_hexpand(true);
+        align.set_margin_top(3);
+        align.set_margin_bottom(3);
+        align.append(&os_list.search_entry);
+        let os_frame = frame("Operating Sys_tem", &align);
+        if let Some(label) = os_frame.first_child().and_downcast::<gtk::Label>() {
+            label.set_mnemonic_widget(Some(&os_list.search_entry));
+        }
+        let page = gtk::Box::new(gtk::Orientation::Vertical, 18);
+        page.append(&os_frame);
+        OsPage { page, os_list }
+    }
+}
+
 /// The Boot Options page (`boot-*`).
 struct BootPage {
     page: gtk::Grid,
@@ -1268,6 +1293,7 @@ struct Inner {
     cpu: CpuPage,
     memory: MemoryPage,
     boot: BootPage,
+    os: OsPage,
     unported: gtk::Label,
     config_remove: gtk::Button,
     config_cancel: gtk::Button,
@@ -1308,6 +1334,7 @@ impl VmmDetails {
         let cpu = CpuPage::new();
         let memory = MemoryPage::new();
         let boot = BootPage::new();
+        let os = OsPage::new();
         let unported = gtk::Label::new(Some("This page is not available yet in this version."));
         unported.set_valign(gtk::Align::Start);
         unported.set_xalign(0.0);
@@ -1316,6 +1343,7 @@ impl VmmDetails {
         hw_panel.add_named(&cpu.page, Some("cpu"));
         hw_panel.add_named(&memory.page, Some("memory"));
         hw_panel.add_named(&boot.page, Some("boot"));
+        hw_panel.add_named(&os.page, Some("os"));
         hw_panel.add_named(&unported, Some("unported"));
         let panel_scroll = gtk::ScrolledWindow::builder()
             .child(&hw_panel)
@@ -1356,6 +1384,7 @@ impl VmmDetails {
             cpu,
             memory,
             boot,
+            os,
             unported,
             config_remove,
             config_cancel,
@@ -1446,6 +1475,8 @@ impl VmmDetails {
             let cb = enable(Edit::Init);
             entry.connect_changed(move |_| cb());
         }
+        let cb = enable(Edit::OsName);
+        i.os.os_list.connect_os_selected(move |_| cb());
         let cb = with(Self::boot_kernel_toggled);
         b.kernel_enable.connect_toggled(move |_| cb());
         let cb = with(Self::config_bootdev_selected);
@@ -1881,6 +1912,7 @@ impl VmmDetails {
             HwType::Cpu => Ok(self.apply_vcpus().await),
             HwType::Memory => Ok(self.apply_memory().await),
             HwType::Boot => Ok(self.apply_boot_options().await),
+            HwType::Os => Ok(self.apply_os().await),
             _ => Ok(true),
         };
         let success = match res {
@@ -2013,6 +2045,17 @@ impl VmmDetails {
 
         let vm = self.0.vm.clone();
         self.change_config(async move { vm.define_boot(edits).await }, None)
+            .await
+    }
+
+    /// `_apply_os`.
+    async fn apply_os(&self) -> bool {
+        if !self.edited(Edit::OsName) {
+            return true;
+        }
+        let os_id = self.0.os.os_list.get_selected_os().and_then(|o| o.full_id);
+        let vm = self.0.vm.clone();
+        self.change_config(async move { vm.define_os(os_id).await }, None)
             .await
     }
 
@@ -2247,11 +2290,30 @@ impl VmmDetails {
                 self.refresh_boot_page();
                 i.hw_panel.set_visible_child_name("boot");
             }
+            HwType::Os => {
+                self.refresh_os_page();
+                i.hw_panel.set_visible_child_name("os");
+            }
             _ => i.hw_panel.set_visible_child(&i.unported),
         }
         i.refreshing.set(false);
         self.disable_apply();
         i.config_remove.set_visible(row.hwtype.is_removable());
+    }
+
+    /// `_refresh_os_page`. Inspection (libguestfs) isn't supported, so
+    /// the applications list and its refresh button stay hidden, as
+    /// upstream hides them when `inspection_supported()` is false.
+    fn refresh_os_page(&self) {
+        let os_id = self
+            .0
+            .vm
+            .xmlobj()
+            .and_then(|x| x.guest.metadata.libosinfo.os_id.clone());
+        self.0
+            .os
+            .os_list
+            .select_os(&crate::oslist::lookup_os_by_full_id(os_id.as_deref()));
     }
 
     /// `_refresh_overview_page`.

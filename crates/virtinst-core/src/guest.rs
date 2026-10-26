@@ -336,6 +336,51 @@ pub fn set_initargs_string(
     Ok(())
 }
 
+const LIBOSINFO_NS: &str = "http://libosinfo.org/xmlns/libvirt/domain/1.0";
+
+/// `_set_os_obj`'s `_metadata.libosinfo.os_id = obj.full_id`: `None`
+/// (the `generic` pseudo-OS) drops the libosinfo metadata, along with
+/// the `<metadata>` element if nothing else is left in it.
+pub fn set_os_id(
+    doc: &mut virtinst_xml::Document,
+    root: virtinst_xml::Element,
+    os_id: Option<&str>,
+) {
+    let Some(os_id) = os_id else {
+        if let Some(metadata) = root.find(doc, "metadata") {
+            if let Some(lo) = metadata.find(doc, "libosinfo") {
+                let _ = lo.detach(doc);
+            }
+            if !metadata.has_children_ignore_whitespace(doc) {
+                let _ = metadata.detach(doc);
+            }
+        }
+        return;
+    };
+    let metadata = virtinst_xml::resolve_or_create_path(doc, root, &["metadata"]);
+    let lo = match metadata.find(doc, "libosinfo") {
+        Some(lo) => lo,
+        None => {
+            let lo = virtinst_xml::Element::new(doc, "libosinfo:libosinfo");
+            lo.set_namespace_decl(doc, "libosinfo", LIBOSINFO_NS);
+            metadata
+                .push_child(doc, lo)
+                .expect("a fresh element always attaches");
+            lo
+        }
+    };
+    let os = match lo.find(doc, "os") {
+        Some(os) => os,
+        None => {
+            let os = virtinst_xml::Element::new(doc, "libosinfo:os");
+            lo.push_child(doc, os)
+                .expect("a fresh element always attaches");
+            os
+        }
+    };
+    os.set_attribute(doc, "id", os_id);
+}
+
 /// `vmmDomain.get_init`'s args: shell-quoted and space-joined.
 pub fn initargs_string(os: &DomainOs) -> String {
     os.initargs
@@ -414,5 +459,34 @@ mod boot_tests {
         assert_eq!(guest.os.init, None);
         assert_eq!(guest.os.bootmenu_enable, Some(true));
         assert_eq!(initargs_string(&guest.os), "-c 'echo hi'");
+    }
+
+    #[test]
+    fn os_id_round_trips() {
+        let (mut doc, root) = parse("<domain><name>x</name></domain>");
+        set_os_id(&mut doc, root, Some("http://fedoraproject.org/fedora/40"));
+        set_os_id(&mut doc, root, Some("http://fedoraproject.org/fedora/41"));
+        let xml = doc.write_str().unwrap();
+        assert!(
+            xml.contains("xmlns:libosinfo=\"http://libosinfo.org/xmlns/libvirt/domain/1.0\""),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<libosinfo:os id=\"http://fedoraproject.org/fedora/41\"/>"),
+            "{xml}"
+        );
+        let reparsed = virtinst_xml::parse_libvirt_xml(&xml).unwrap();
+        let r = reparsed.root_element().unwrap();
+        let md = crate::domain::metadata::DomainMetadata::from_element(
+            &reparsed,
+            r.find(&reparsed, "metadata").unwrap(),
+        );
+        assert_eq!(
+            md.libosinfo.os_id.as_deref(),
+            Some("http://fedoraproject.org/fedora/41")
+        );
+        assert_eq!(Guest::from_element(&reparsed, r).metadata, md);
+        set_os_id(&mut doc, root, None);
+        assert!(!doc.write_str().unwrap().contains("metadata"));
     }
 }

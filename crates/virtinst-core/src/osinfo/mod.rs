@@ -255,6 +255,134 @@ impl OsDb {
     }
 }
 
+impl OsDb {
+    /// `list_os(sortkey="label")` plus vmmOSList's "generic entries
+    /// last" ordering: every entry, the `generic` pseudo-OS included,
+    /// natural-sorted by label with numbers sorted in reverse (so the
+    /// newest release of a distro comes first).
+    pub fn list_os_variants(&self) -> Vec<OsVariant> {
+        let mut list: Vec<OsVariant> = self.all_os().iter().map(OsVariant::from_os).collect();
+        list.push(OsVariant::generic());
+        list.sort_by_cached_key(|o| alphanum_key(&o.label));
+        list.sort_by_key(OsVariant::always_show);
+        list
+    }
+}
+
+/// `alphanum_key`: lowercase text runs, with digit runs negated so
+/// higher numbers sort first.
+fn alphanum_key(val: &str) -> Vec<Result<i64, String>> {
+    let mut out = Vec::new();
+    let mut rest = val;
+    while !rest.is_empty() {
+        let digit = rest.starts_with(|c: char| c.is_ascii_digit());
+        let end = rest
+            .find(|c: char| c.is_ascii_digit() != digit)
+            .unwrap_or(rest.len());
+        let (run, tail) = rest.split_at(end);
+        out.push(match run.parse::<i64>() {
+            Ok(n) if digit => Ok(-n),
+            _ => Err(run.to_lowercase()),
+        });
+        rest = tail;
+    }
+    out
+}
+
+/// Days since 1970-01-01 for a `YYYY-MM-DD` date.
+fn days_from_ymd(date: &str) -> Option<i64> {
+    let mut it = date.splitn(3, '-').map(|p| p.parse::<i64>().ok());
+    let (y, m, d) = (it.next()??, it.next()??, it.next()??);
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146097 + doe - 719468)
+}
+
+fn today_days() -> i64 {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    (secs / 86400) as i64
+}
+
+/// `_OsVariant._get_eol`: past its EOL date, or (with no EOL date and
+/// not a rolling release) released more than ten years ago.
+fn compute_eol(eol: &str, release: &str, release_status: &str, today: i64) -> bool {
+    if let Some(eol) = days_from_ymd(eol) {
+        return today >= eol;
+    }
+    if release_status == "rolling" {
+        return false;
+    }
+    days_from_ymd(release).is_some_and(|rel| today > rel + 365 * 10)
+}
+
+/// One row of the OS picker: upstream's `_OsVariant` reduced to what
+/// the GUI reads, detached from libosinfo so it can be cached. The
+/// `generic` pseudo-OS has no `full_id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OsVariant {
+    /// Primary short-id (`fedora40`).
+    pub name: String,
+    /// Display name (`Fedora 40`).
+    pub label: String,
+    pub full_id: Option<String>,
+    pub eol: bool,
+}
+
+impl OsVariant {
+    fn from_os(os: &OsInfo) -> OsVariant {
+        let product = os.ptr as *mut ffi::OsinfoProduct;
+        let (eol, release, status) = unsafe {
+            (
+                c_str_to_string(ffi::osinfo_product_get_eol_date_string(product)),
+                c_str_to_string(ffi::osinfo_product_get_release_date_string(product)),
+                c_str_to_string(ffi::osinfo_entity_get_param_value(
+                    os.ptr as *mut ffi::OsinfoEntity,
+                    ffi::OSINFO_OS_PROP_RELEASE_STATUS.as_ptr() as *const _,
+                )),
+            )
+        };
+        OsVariant {
+            name: os.short_id(),
+            label: os.name(),
+            full_id: Some(os.id()).filter(|s| !s.is_empty()),
+            eol: compute_eol(&eol, &release, &status, today_days()),
+        }
+    }
+
+    /// `_OSDB._os_generic`.
+    pub fn generic() -> OsVariant {
+        OsVariant {
+            name: "generic".into(),
+            label: "Generic or unknown OS. Usage is not recommended.".into(),
+            full_id: None,
+            eol: false,
+        }
+    }
+
+    pub fn is_generic(&self) -> bool {
+        self.name == "generic"
+    }
+
+    /// `is_linux_generic`: `linux2022` and friends.
+    pub fn is_linux_generic(&self) -> bool {
+        self.name
+            .strip_prefix("linux")
+            .is_some_and(|y| y.len() >= 4 && y[..4].bytes().all(|b| b.is_ascii_digit()))
+    }
+
+    /// oslist.py's `_always_show`.
+    pub fn always_show(&self) -> bool {
+        self.is_generic() || self.is_linux_generic()
+    }
+}
+
 impl Drop for OsDb {
     fn drop(&mut self) {
         unsafe { gobject_sys::g_object_unref(self.ptr as *mut gobject_sys::GObject) };
@@ -770,6 +898,39 @@ mod tests {
         assert!(
             !fedora.requires_firmware_efi("x86_64"),
             "fedora25 declares no firmware requirements at all -- defaults to false"
+        );
+    }
+
+    #[test]
+    fn alphanum_key_sorts_newest_first() {
+        let mut v = vec!["Fedora 9", "Fedora 40", "fedora 41", "Alpine"];
+        v.sort_by_key(|s| alphanum_key(s));
+        assert_eq!(v, ["Alpine", "fedora 41", "Fedora 40", "Fedora 9"]);
+    }
+
+    #[test]
+    fn eol_rules() {
+        let today = days_from_ymd("2026-10-26").unwrap();
+        assert!(compute_eol("2020-01-01", "", "", today));
+        assert!(!compute_eol("2030-01-01", "2000-01-01", "", today));
+        assert!(!compute_eol("", "2000-01-01", "rolling", today));
+        assert!(compute_eol("", "2010-01-01", "", today));
+        assert!(!compute_eol("", "2020-01-01", "", today));
+        assert!(!compute_eol("", "", "", today));
+        assert_eq!(days_from_ymd("1970-01-01"), Some(0));
+    }
+
+    #[test]
+    fn list_os_variants_puts_generic_last() {
+        let db = OsDb::load_default().expect("osinfo-db loads");
+        let list = db.list_os_variants();
+        assert!(list.last().unwrap().always_show());
+        assert!(list.iter().any(|o| o.is_generic()));
+        let f25 = list.iter().find(|o| o.name == "fedora25").unwrap();
+        assert!(f25.eol);
+        assert_eq!(
+            f25.full_id.as_deref(),
+            Some("http://fedoraproject.org/fedora/25")
         );
     }
 }
