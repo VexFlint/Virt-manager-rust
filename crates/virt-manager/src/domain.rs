@@ -234,6 +234,105 @@ pub struct DiskEdits {
     pub serial: Option<Option<String>>,
 }
 
+/// `define_network`'s arguments; `None` leaves a part alone.
+#[derive(Debug, Clone, Default)]
+pub struct NetworkEdits {
+    /// `(ntype, source, mode, portgroup)`.
+    pub source: Option<crate::netlist::NetSelection>,
+    pub model: Option<Option<String>>,
+    pub linkstate: Option<bool>,
+}
+
+/// Which NIC to edit: `compare_device` matches by MAC and index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NicId {
+    pub mac: Option<String>,
+    pub idx: usize,
+}
+
+fn edit_network(
+    doc: &mut virtinst_xml::Document,
+    iface: virtinst_xml::Element,
+    edits: &NetworkEdits,
+) {
+    use virtinst_core::devices::network as n;
+    if let Some((ntype, source, mode, portgroup)) = &edits.source {
+        n::set_source(
+            doc,
+            iface,
+            ntype,
+            source.as_deref(),
+            mode.as_deref(),
+            portgroup.as_deref(),
+        );
+    }
+    if let Some(model) = &edits.model {
+        n::set_model(doc, iface, model.as_deref());
+    }
+    if let Some(up) = edits.linkstate {
+        n::set_link_state(doc, iface, up);
+    }
+}
+
+/// `virNetworkGetDHCPLeases`, which the virt crate doesn't wrap:
+/// `(mac, type, ipaddr)` per lease.
+fn dhcp_leases(net: &virt::network::Network) -> Vec<(String, i32, String)> {
+    use std::ffi::CStr;
+    let mut leases: *mut sys::virNetworkDHCPLeasePtr = std::ptr::null_mut();
+    // SAFETY: libvirt fills `leases` with `n` lease pointers we own and
+    // free below, along with the array itself.
+    unsafe {
+        let n = sys::virNetworkGetDHCPLeases(net.as_ptr(), std::ptr::null(), &mut leases, 0);
+        if n < 0 || leases.is_null() {
+            return vec![];
+        }
+        let str_of = |p: *mut std::os::raw::c_char| {
+            if p.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr(p).to_string_lossy().into_owned()
+            }
+        };
+        let mut ret = vec![];
+        for i in 0..n as usize {
+            let lease = *leases.add(i);
+            ret.push((
+                str_of((*lease).mac),
+                (*lease).type_,
+                str_of((*lease).ipaddr),
+            ));
+            sys::virNetworkDHCPLeaseFree(lease);
+        }
+        extern "C" {
+            fn free(ptr: *mut std::ffi::c_void);
+        }
+        free(leases as *mut std::ffi::c_void);
+        ret
+    }
+}
+
+/// `_IPFetcher.get`'s `extract_dom` over `virDomainInterfaceAddresses`
+/// results: the last IPv4 and non-link-local IPv6 (with prefix) for `mac`.
+fn extract_dom_ips(
+    ifaces: &[virt::domain::Interface],
+    mac: &str,
+) -> (Option<String>, Option<String>) {
+    let (mut ipv4, mut ipv6) = (None, None);
+    for iface in ifaces.iter().filter(|i| i.hwaddr == mac) {
+        let (mut v4, mut v6) = (None, None);
+        for a in &iface.addrs {
+            if a.typed == sys::VIR_IP_ADDR_TYPE_IPV4 as i64 {
+                v4 = Some(a.addr.clone());
+            } else if a.typed == sys::VIR_IP_ADDR_TYPE_IPV6 as i64 && !a.addr.starts_with("fe80") {
+                v6 = Some(format!("{}/{}", a.addr, a.prefix));
+            }
+        }
+        ipv4 = v4.or(ipv4);
+        ipv6 = v6.or(ipv6);
+    }
+    (ipv4, ipv6)
+}
+
 /// Which disk to edit: `compare_device` matches disks by target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiskId {
@@ -1212,6 +1311,113 @@ impl VmmDomain {
         .await
         .ok()
         .flatten()
+    }
+
+    /// `define_network` for the persistent config.
+    pub async fn define_network(&self, id: NicId, edits: NetworkEdits) -> Result<(), String> {
+        let mut guest = self.make_xmlobj_to_define().await?;
+        let root = guest.root();
+        let iface = virtinst_core::devices::network::find_interface(
+            &guest.doc,
+            root,
+            id.mac.as_deref(),
+            id.idx,
+        )
+        .ok_or("Could not find specified device in the inactive VM configuration")?;
+        edit_network(&mut guest.doc, iface, &edits);
+        self.redefine_xmlobj(guest).await
+    }
+
+    /// `define_network(do_hotplug=True)`.
+    pub async fn hotplug_network(&self, id: NicId, edits: NetworkEdits) -> Result<(), String> {
+        if !self.is_active() {
+            return Ok(());
+        }
+        let x = self.xmlobj().ok_or("No domain XML")?;
+        let mut doc = virtinst_xml::parse_libvirt_xml(&x.xml).map_err(|e| e.to_string())?;
+        let root = doc.root_element().ok_or("Empty domain XML")?;
+        let iface =
+            virtinst_core::devices::network::find_interface(&doc, root, id.mac.as_deref(), id.idx)
+                .ok_or("Could not find the device in the running VM")?;
+        edit_network(&mut doc, iface, &edits);
+        let devxml = virtinst_xml::element_to_string(doc, iface).map_err(|e| e.to_string())?;
+        glib::g_debug!("virt-manager", "update_device with xml=\n{devxml}");
+        self.with_domain(move |_, dom| {
+            dom.update_device_flags(&devxml, sys::VIR_DOMAIN_DEVICE_MODIFY_LIVE)
+                .map(|_| ())
+                .map_err(|e| e.message().to_string())
+        })
+        .await?;
+        self.ensure_latest_xml().await;
+        Ok(())
+    }
+
+    /// `agent_ready`: the guest agent channel reports `connected`.
+    fn agent_ready(&self) -> bool {
+        let Some(x) = self.xmlobj() else {
+            return false;
+        };
+        let doc = &x.doc;
+        virtinst_xml::resolve_path(doc, x.root(), &["devices"])
+            .map(|d| d.find_all(doc, "channel"))
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|c| c.find(doc, "target"))
+            .any(|t| {
+                t.attribute(doc, "name") == Some("org.qemu.guest_agent.0")
+                    && t.attribute(doc, "state") == Some("connected")
+            })
+    }
+
+    /// `get_ips` / `refresh_ips`: the NIC's addresses from the guest
+    /// agent, then the network's DHCP leases, then the ARP table.
+    pub async fn get_ips(
+        &self,
+        mac: String,
+        network: Option<String>,
+    ) -> (Option<String>, Option<String>) {
+        let active = self.is_active();
+        let agent = active && self.agent_ready();
+        self.with_domain(move |conn, dom| {
+            let addrs = |src: u32| {
+                if active {
+                    dom.interface_addresses(src, 0).unwrap_or_default()
+                } else {
+                    vec![]
+                }
+            };
+            if agent {
+                let r =
+                    extract_dom_ips(&addrs(sys::VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_AGENT), &mac);
+                if r.0.is_some() || r.1.is_some() {
+                    return Ok(r);
+                }
+            }
+            if let Some(net) = network
+                .as_deref()
+                .and_then(|n| virt::network::Network::lookup_by_name(conn, n).ok())
+            {
+                let (mut ipv4, mut ipv6) = (None, None);
+                for (lmac, ltype, ip) in dhcp_leases(&net) {
+                    if lmac == mac {
+                        if ltype == sys::VIR_IP_ADDR_TYPE_IPV4 as i32 {
+                            ipv4 = Some(ip);
+                        } else if ltype == sys::VIR_IP_ADDR_TYPE_IPV6 as i32 {
+                            ipv6 = Some(ip);
+                        }
+                    }
+                }
+                if ipv4.is_some() || ipv6.is_some() {
+                    return Ok((ipv4, ipv6));
+                }
+            }
+            Ok(extract_dom_ips(
+                &addrs(sys::VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_ARP),
+                &mac,
+            ))
+        })
+        .await
+        .unwrap_or((None, None))
     }
 
     /// `define_disk` for the persistent config.

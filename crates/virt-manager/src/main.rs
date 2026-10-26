@@ -31,6 +31,7 @@ mod libvirtglib;
 mod manager;
 mod manager_row;
 mod mediacombo;
+mod netlist;
 mod oslist;
 mod preferences;
 mod serialcon;

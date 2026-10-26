@@ -65,6 +65,9 @@ enum Edit {
     OsName,
     DiskPath,
     Disk,
+    NetModel,
+    NetSource,
+    NetLinkstate,
 }
 
 impl HwType {
@@ -1138,6 +1141,17 @@ impl ModeCombo {
         }
     }
 
+    /// Replaces the listed values, keeping "Hypervisor default" first.
+    fn set_modes(&self, modes: &[&str]) {
+        let mut values = vec![None];
+        values.extend(modes.iter().map(|m| Some(m.to_string())));
+        let labels: Vec<&str> = std::iter::once("Hypervisor default")
+            .chain(modes.iter().copied())
+            .collect();
+        self.widget.set_model(Some(&gtk::StringList::new(&labels)));
+        self.values.replace(values);
+    }
+
     fn get(&self) -> Option<String> {
         self.values
             .borrow()
@@ -1301,6 +1315,76 @@ impl DiskPage {
                 StorageEdit::Removable => edits.removable = Some(self.removable.is_active()),
                 StorageEdit::Serial => edits.serial = Some(Some(self.serial.text().to_string())),
             }
+        }
+    }
+}
+
+/// The network page (`network-*`).
+struct NetworkPage {
+    page: gtk::Box,
+    netlist: Rc<crate::netlist::NetList>,
+    model: ModeCombo,
+    mac: gtk::Label,
+    ip: gtk::Label,
+    refresh_ip: gtk::Button,
+    link_state: gtk::CheckButton,
+}
+
+impl NetworkPage {
+    fn new(conn: Option<crate::connection::VmmConnection>) -> NetworkPage {
+        let right = |text: &str| {
+            let l = gtk::Label::with_mnemonic(text);
+            l.set_halign(gtk::Align::End);
+            l
+        };
+        let netlist = crate::netlist::NetList::new(conn);
+        let model = ModeCombo::new(&[]);
+        let mac = left_label("");
+        mac.set_selectable(true);
+        let ip = left_label("");
+        ip.set_selectable(true);
+        let refresh_ip = gtk::Button::from_icon_name("view-refresh");
+        refresh_ip.set_halign(gtk::Align::Start);
+        refresh_ip.set_valign(gtk::Align::Center);
+        refresh_ip.update_property(&[gtk::accessible::Property::Label("refresh-ip")]);
+        let ip_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        ip_box.append(&ip);
+        ip_box.append(&refresh_ip);
+        let link_state = gtk::CheckButton::with_label("active");
+        link_state.set_halign(gtk::Align::Start);
+
+        let grid = gtk::Grid::builder()
+            .row_spacing(6)
+            .column_spacing(12)
+            .build();
+        grid.attach(&netlist.top_label, 0, 0, 1, 1);
+        grid.attach(&netlist.top_box, 1, 0, 1, 1);
+        let model_label = right("Device mode_l:");
+        model_label.set_mnemonic_widget(Some(&model.widget));
+        grid.attach(&model_label, 0, 1, 1, 1);
+        grid.attach(&model.widget, 1, 1, 1, 1);
+        // The MAC is only editable in the customize dialog.
+        grid.attach(&right("MAC address:"), 0, 2, 1, 1);
+        grid.attach(&mac, 1, 2, 1, 1);
+        let ip_label = right("I_P address:");
+        ip_label.set_mnemonic_widget(Some(&refresh_ip));
+        grid.attach(&ip_label, 0, 3, 1, 1);
+        grid.attach(&ip_box, 1, 3, 1, 1);
+        let link_label = right("Link _state:");
+        link_label.set_mnemonic_widget(Some(&link_state));
+        grid.attach(&link_label, 0, 4, 1, 1);
+        grid.attach(&link_state, 1, 4, 1, 1);
+
+        let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        page.append(&frame("Virtual Network Interface", &grid));
+        NetworkPage {
+            page,
+            netlist,
+            model,
+            mac,
+            ip,
+            refresh_ip,
+            link_state,
         }
     }
 }
@@ -1507,6 +1591,7 @@ struct Inner {
     boot: BootPage,
     os: OsPage,
     disk: DiskPage,
+    network: NetworkPage,
     unported: gtk::Label,
     config_remove: gtk::Button,
     config_cancel: gtk::Button,
@@ -1549,6 +1634,7 @@ impl VmmDetails {
         let boot = BootPage::new();
         let os = OsPage::new();
         let disk = DiskPage::new(vm.conn());
+        let network = NetworkPage::new(vm.conn());
         let unported = gtk::Label::new(Some("This page is not available yet in this version."));
         unported.set_valign(gtk::Align::Start);
         unported.set_xalign(0.0);
@@ -1559,6 +1645,7 @@ impl VmmDetails {
         hw_panel.add_named(&boot.page, Some("boot"));
         hw_panel.add_named(&os.page, Some("os"));
         hw_panel.add_named(&disk.page, Some("disk"));
+        hw_panel.add_named(&network.page, Some("network"));
         hw_panel.add_named(&unported, Some("unported"));
         let panel_scroll = gtk::ScrolledWindow::builder()
             .child(&hw_panel)
@@ -1601,6 +1688,7 @@ impl VmmDetails {
             boot,
             os,
             disk,
+            network,
             unported,
             config_remove,
             config_cancel,
@@ -1693,6 +1781,24 @@ impl VmmDetails {
         }
         let cb = enable(Edit::OsName);
         i.os.os_list.connect_os_selected(move |_| cb());
+        let cb = enable(Edit::NetSource);
+        i.network.netlist.connect_changed(cb);
+        let cb = enable(Edit::NetModel);
+        i.network
+            .model
+            .widget
+            .connect_selected_notify(move |_| cb());
+        let cb = enable(Edit::NetLinkstate);
+        i.network.link_state.connect_toggled(move |_| cb());
+        let rweak = Rc::downgrade(&self.0);
+        i.network.refresh_ip.connect_clicked(move |_| {
+            if let Some(inner) = rweak.upgrade() {
+                let this = VmmDetails(inner);
+                if let Some(row) = this.get_hw_row() {
+                    this.set_network_ip_details(&row);
+                }
+            }
+        });
         let cb = enable(Edit::DiskPath);
         i.disk.mediacombo.connect_changed(cb);
         let cb = with(Self::disk_source_browse_clicked);
@@ -2156,6 +2262,7 @@ impl VmmDetails {
             HwType::Boot => Ok(self.apply_boot_options().await),
             HwType::Os => Ok(self.apply_os().await),
             HwType::Disk => Ok(self.apply_disk(&row).await),
+            HwType::Nic => Ok(self.apply_network(&row).await),
             _ => Ok(true),
         };
         let success = match res {
@@ -2309,6 +2416,42 @@ impl VmmDetails {
         let devices = virtinst_xml::resolve_path(&x.doc, x.root(), &["devices"])?;
         let el = *devices.find_all(&x.doc, &tag).get(idx)?;
         Some((x, el))
+    }
+
+    fn nic_id(&self, row: &HwRow) -> Option<crate::domain::NicId> {
+        let (x, el) = self.device_element(row)?;
+        Some(crate::domain::NicId {
+            mac: child_attr(&x.doc, el, &["mac"], "address"),
+            idx: row.device.as_ref()?.1,
+        })
+    }
+
+    /// `_apply_network`.
+    async fn apply_network(&self, row: &HwRow) -> bool {
+        let Some(id) = self.nic_id(row) else {
+            return false;
+        };
+        let n = &self.0.network;
+        let mut edits = crate::domain::NetworkEdits::default();
+        if self.edited(Edit::NetModel) {
+            edits.model = Some(n.model.get());
+        }
+        if self.edited(Edit::NetSource) {
+            edits.source = n.netlist.get_network_selection();
+        }
+        if self.edited(Edit::NetLinkstate) {
+            edits.linkstate = Some(n.link_state.is_active());
+        }
+        let vm = self.0.vm.clone();
+        let hotplug_vm = vm.clone();
+        let (hid, hedits) = (id.clone(), edits.clone());
+        self.change_config(
+            async move { vm.define_network(id, edits).await },
+            Some(Box::pin(async move {
+                hotplug_vm.hotplug_network(hid, hedits).await
+            })),
+        )
+        .await
     }
 
     /// `_apply_disk`.
@@ -2608,6 +2751,10 @@ impl VmmDetails {
                 self.refresh_disk_page(&row);
                 i.hw_panel.set_visible_child_name("disk");
             }
+            HwType::Nic => {
+                self.refresh_network_page(&row);
+                i.hw_panel.set_visible_child_name("network");
+            }
             _ => i.hw_panel.set_visible_child(&i.unported),
         }
         i.refreshing.set(false);
@@ -2667,6 +2814,68 @@ impl VmmDetails {
                 }
             },
         );
+    }
+
+    /// `_set_network_ip_details`, fetched off the main thread.
+    fn set_network_ip_details(&self, row: &HwRow) {
+        let Some((x, el)) = self.device_element(row) else {
+            return;
+        };
+        let mac = child_attr(&x.doc, el, &["mac"], "address").unwrap_or_default();
+        let (ntype, source, network) =
+            virtinst_core::devices::network::interface_source(&x.doc, el);
+        let network = if ntype == "network" { source } else { network };
+        let this = self.clone();
+        let key = row.key();
+        glib::spawn_future_local(async move {
+            let (ipv4, ipv6) = this.0.vm.get_ips(mac, network).await;
+            if this.get_hw_row().map(|r| r.key()) != Some(key) {
+                return;
+            }
+            let label = [ipv4, ipv6]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join("\n");
+            this.0
+                .network
+                .ip
+                .set_text(if label.is_empty() { "Unknown" } else { &label });
+        });
+    }
+
+    /// `_refresh_network_page`.
+    fn refresh_network_page(&self, row: &HwRow) {
+        let Some((x, el)) = self.device_element(row) else {
+            return;
+        };
+        let doc = &x.doc;
+        let n = &self.0.network;
+        let os = &x.guest.os;
+        n.model
+            .set_modes(&virtinst_core::devices::network::recommended_models(
+                x.guest.domain_type.as_deref().unwrap_or(""),
+                os.os_type.as_deref().unwrap_or(""),
+                os.arch.as_deref().unwrap_or(""),
+                os.machine.as_deref().unwrap_or(""),
+            ));
+        n.model
+            .set(child_attr(doc, el, &["model"], "type").as_deref());
+        n.mac
+            .set_text(&child_attr(doc, el, &["mac"], "address").unwrap_or_default());
+        let state = child_attr(doc, el, &["link"], "state");
+        n.link_state
+            .set_active(state.is_none() || state.as_deref() == Some("up"));
+        n.ip.set_text("Unknown");
+        self.set_network_ip_details(row);
+
+        let (nettype, source, network) = virtinst_core::devices::network::interface_source(doc, el);
+        n.netlist.set_dev(crate::netlist::NetDev {
+            nettype,
+            source,
+            network,
+            portgroup: child_attr(doc, el, &["source"], "portgroup"),
+        });
     }
 
     /// `_refresh_disk_page`.
