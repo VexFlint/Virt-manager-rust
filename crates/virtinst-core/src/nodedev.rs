@@ -31,6 +31,8 @@ pub struct NodeDevice {
     pub type_id: Option<String>,
     /// `_capability_type`: `./capability/capability/@type`.
     pub capability_type: Option<String>,
+    /// `./capability/host`, for `scsi_host` devices.
+    pub host: Option<String>,
 }
 
 fn text(doc: &Document, el: Element, path: &[&str]) -> Option<String> {
@@ -76,6 +78,7 @@ impl NodeDevice {
                 .and_then(|c| c.find(&doc, "capability"))
                 .and_then(|c| c.attribute(&doc, "type"))
                 .map(str::to_string),
+            host: cap_text("host"),
         })
     }
 

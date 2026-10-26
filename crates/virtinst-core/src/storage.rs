@@ -631,6 +631,228 @@ impl VolInstall {
     }
 }
 
+const DEFAULT_DEV_TARGET: &str = "/dev";
+const DEFAULT_SCSI_TARGET: &str = "/dev/disk/by-path";
+const DEFAULT_MPATH_TARGET: &str = "/dev/mapper";
+
+/// `StoragePool.list_types`: the types `pretty_pool_type` names.
+pub const POOL_TYPES: &[&str] = &[
+    "dir", "disk", "fs", "gluster", "iscsi", "logical", "mpath", "netfs", "rbd", "scsi", "zfs",
+];
+
+/// A pool to define: `virtinst.StoragePool` as the new pool wizard
+/// builds it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NewPool {
+    pub name: String,
+    pub pool_type: String,
+    pub target_path: Option<String>,
+    pub host: Option<String>,
+    /// `source_path`: `<dir>`, `<adapter>` or `<device>` by type.
+    pub source_path: Option<String>,
+    pub format: Option<String>,
+    pub iqn: Option<String>,
+    pub source_name: Option<String>,
+}
+
+impl NewPool {
+    pub fn supports_target_path(&self) -> bool {
+        matches!(
+            self.pool_type.as_str(),
+            "dir" | "fs" | "netfs" | "iscsi" | "scsi" | "mpath"
+        )
+    }
+
+    pub fn supports_source_name(&self) -> bool {
+        matches!(
+            self.pool_type.as_str(),
+            "logical" | "gluster" | "rbd" | "zfs"
+        )
+    }
+
+    pub fn supports_source_path(&self) -> bool {
+        matches!(
+            self.pool_type.as_str(),
+            "fs" | "netfs" | "disk" | "iscsi" | "scsi" | "gluster"
+        )
+    }
+
+    pub fn supports_hosts(&self) -> bool {
+        matches!(
+            self.pool_type.as_str(),
+            "netfs" | "iscsi" | "gluster" | "rbd"
+        )
+    }
+
+    pub fn supports_format(&self) -> bool {
+        matches!(self.pool_type.as_str(), "fs" | "netfs" | "disk")
+    }
+
+    pub fn supports_iqn(&self) -> bool {
+        self.pool_type == "iscsi"
+    }
+
+    /// `default_target_path`.
+    pub fn default_target_path(&self, is_session: bool) -> Option<String> {
+        if !self.supports_target_path() {
+            return None;
+        }
+        match self.pool_type.as_str() {
+            "dir" | "netfs" | "fs" => Some(format!(
+                "{}/{}",
+                preferred_default_pool_path(is_session),
+                self.name
+            )),
+            "iscsi" | "scsi" => Some(DEFAULT_SCSI_TARGET.into()),
+            "mpath" => Some(DEFAULT_MPATH_TARGET.into()),
+            _ => None,
+        }
+    }
+
+    /// `default_source_name`.
+    pub fn default_source_name(&self) -> Option<String> {
+        match self.pool_type.as_str() {
+            "rbd" => Some("rbd".into()),
+            "gluster" => Some("gv0".into()),
+            _ => None,
+        }
+    }
+
+    /// `validate`: the name, then the defaults for what's unset.
+    pub fn validate(&mut self, conn: &Connect, is_session: bool) -> Result<(), String> {
+        validate_generic_name("Storage object", &self.name)?;
+        if StoragePool::lookup_by_name(conn, &self.name).is_ok() {
+            return Err(format!(
+                "Name '{}' already in use by another pool.",
+                self.name
+            ));
+        }
+        if self.target_path.as_deref().unwrap_or_default().is_empty() {
+            // disk is a bit special, in that it demands a target path,
+            // but basically can't handle anything other than /dev
+            self.target_path = if self.pool_type == "disk" {
+                Some(DEFAULT_DEV_TARGET.into())
+            } else {
+                self.default_target_path(is_session)
+            };
+        }
+        if self.source_name.is_none() {
+            self.source_name = self.default_source_name();
+        }
+        if self.format.is_none() && self.supports_format() {
+            self.format = Some("auto".into());
+        }
+        // There is no explicit "auto" type for disk pools, but leaving out
+        // the format type seems to do the job for existing formatted disks
+        if self.pool_type == "disk" && self.format.as_deref() == Some("auto") {
+            self.format = None;
+        }
+        Ok(())
+    }
+
+    /// `get_disk_type`'s `<pool>` XML.
+    pub fn to_xml(&self) -> String {
+        let mut source = String::new();
+        if let Some(fmt) = &self.format {
+            source += &format!("<format type='{}'/>", xml_escape(fmt));
+        }
+        if let Some(host) = &self.host {
+            source += &format!("<host name='{}'/>", xml_escape(host));
+        }
+        if let Some(path) = &self.source_path {
+            let path = xml_escape(path);
+            source += &match self.pool_type.as_str() {
+                "netfs" | "gluster" => format!("<dir path='{path}'/>"),
+                "scsi" => format!("<adapter name='{path}'/>"),
+                _ => format!("<device path='{path}'/>"),
+            };
+        }
+        if let Some(name) = &self.source_name {
+            source += &format!("<name>{}</name>", xml_escape(name));
+        }
+        if let Some(iqn) = &self.iqn {
+            source += &format!("<initiator><iqn name='{}'/></initiator>", xml_escape(iqn));
+        }
+        let mut xml = format!(
+            "<pool type='{}'><name>{}</name>",
+            xml_escape(&self.pool_type),
+            xml_escape(&self.name)
+        );
+        if !source.is_empty() {
+            xml += &format!("<source>{source}</source>");
+        }
+        if let Some(target) = &self.target_path {
+            xml += &format!("<target><path>{}</path></target>", xml_escape(target));
+        }
+        xml + "</pool>"
+    }
+
+    /// `install(create=True, build=build)` then autostart: on a
+    /// failure past the define, the pool is undefined again.
+    pub fn install(&self, conn: &Connect, build: bool) -> Result<(), String> {
+        let pool = StoragePool::define_xml(conn, &self.to_xml(), 0)
+            .map_err(|e| format!("Could not define storage pool: {e}"))?;
+        let mut res = Ok(());
+        if build {
+            res = pool
+                .build(sys::VIR_STORAGE_POOL_BUILD_NEW)
+                .map(|_| ())
+                .map_err(|e| format!("Could not build storage pool: {e}"));
+        }
+        if res.is_ok() {
+            res = pool
+                .create(0)
+                .map(|_| ())
+                .map_err(|e| format!("Could not start storage pool: {e}"));
+        }
+        if res.is_ok() {
+            res = pool
+                .set_autostart(true)
+                .map(|_| ())
+                .map_err(|e| format!("Could not set pool autostart flag: {e}"));
+        }
+        if res.is_err() {
+            // Try and clean up the leftover pool
+            if let Err(e) = pool.undefine() {
+                eprintln!("Error cleaning up pool after failure: {e}");
+            }
+        }
+        res
+    }
+}
+
+/// `StoragePool.find_free_name`: `basename`, or with a number added,
+/// not used by any pool.
+pub fn find_free_pool_name(conn: &Connect, basename_: &str) -> String {
+    let names: Vec<String> = fetch_all_pools(conn)
+        .into_iter()
+        .map(|p| p.xml.name)
+        .collect();
+    generate_name(basename_, "", |n| names.iter().any(|x| x == n))
+}
+
+/// `StoragePool.pool_list_from_sources`: the source names libvirt
+/// finds for `pool_type` (volume groups, for `logical`).
+pub fn pool_list_from_sources(conn: &Connect, pool_type: &str) -> Vec<String> {
+    let xml = match conn.find_storage_pool_sources(pool_type, Some("<source/>"), 0) {
+        Ok(xml) => xml,
+        Err(e) => {
+            eprintln!("Pool enumeration failed: {e}");
+            return vec![];
+        }
+    };
+    let Ok(doc) = virtinst_xml::parse_libvirt_xml(&xml) else {
+        return vec![];
+    };
+    let Some(root) = doc.root_element() else {
+        return vec![];
+    };
+    root.find_all(&doc, "source")
+        .into_iter()
+        .filter_map(|s| s.find(&doc, "name").map(|n| n.text_content(&doc)))
+        .collect()
+}
+
 /// `XMLBuilder.validate_generic_name`: only `/` is forbidden,
 /// matching QEMU.
 pub fn validate_generic_name(name_label: &str, val: &str) -> Result<(), String> {
@@ -835,6 +1057,46 @@ mod tests {
         assert_eq!(vol.capacity, 1024);
         assert_eq!(vol.pretty_name("dir"), "a.qcow2");
         assert_eq!(vol.pretty_name("iscsi"), "a.qcow2 (/i/a.qcow2)");
+    }
+
+    #[test]
+    fn new_pool() {
+        let mut pool = NewPool {
+            name: "nfs".into(),
+            pool_type: "netfs".into(),
+            host: Some("srv".into()),
+            source_path: Some("/export".into()),
+            format: Some("auto".into()),
+            ..Default::default()
+        };
+        assert!(pool.supports_hosts() && pool.supports_format());
+        assert_eq!(
+            pool.default_target_path(false).as_deref(),
+            Some("/var/lib/libvirt/images/nfs")
+        );
+        pool.target_path = pool.default_target_path(false);
+        assert_eq!(
+            pool.to_xml(),
+            "<pool type='netfs'><name>nfs</name><source><format type='auto'/>\
+             <host name='srv'/><dir path='/export'/></source>\
+             <target><path>/var/lib/libvirt/images/nfs</path></target></pool>"
+        );
+        let scsi = NewPool {
+            name: "s".into(),
+            pool_type: "scsi".into(),
+            source_path: Some("host0".into()),
+            ..Default::default()
+        };
+        assert!(scsi.to_xml().contains("<adapter name='host0'/>"));
+        assert_eq!(
+            NewPool {
+                pool_type: "rbd".into(),
+                ..Default::default()
+            }
+            .default_source_name()
+            .as_deref(),
+            Some("rbd")
+        );
     }
 
     #[test]

@@ -10,6 +10,7 @@ use gtk::{gio, glib};
 use virtinst_core::storage::{self, PoolXml, VolXml};
 
 use crate::connection::VmmConnection;
+use crate::createpool::CreatePool;
 use crate::createvol::CreateVolume;
 use crate::error;
 
@@ -219,6 +220,7 @@ pub struct Inner {
     /// sets it for the create VM wizard, which isn't ported yet.
     name_hint: RefCell<Option<String>>,
     addvol: RefCell<Option<CreateVolume>>,
+    addpool: RefCell<Option<CreatePool>>,
     /// The volume to select once the list is filled.
     pending_vol: RefCell<Option<String>>,
     browse_clicked: RefCell<Option<Callback>>,
@@ -442,6 +444,7 @@ impl HostStorage {
             vol_sensitive_cb,
             name_hint: RefCell::default(),
             addvol: RefCell::default(),
+            addpool: RefCell::default(),
             pending_vol: RefCell::default(),
             browse_clicked: RefCell::default(),
             volume_chosen: RefCell::default(),
@@ -490,6 +493,8 @@ impl HostStorage {
         self.pool_refresh.connect_clicked(move |_| cb());
         let cb = self.with(|t| t.spawn(|t| async move { t.pool_apply().await }));
         self.pool_apply.connect_clicked(move |_| cb());
+        let cb = self.with(HostStorage::pool_add_clicked);
+        self.pool_add.connect_clicked(move |_| cb());
         let cb = self.with(HostStorage::vol_add_clicked);
         self.vol_add.connect_clicked(move |_| cb());
         let cb = self.with(|t| t.spawn(|t| async move { t.vol_delete_clicked().await }));
@@ -591,6 +596,9 @@ impl HostStorage {
         if let Some(a) = self.addvol.borrow().as_ref() {
             a.close();
         }
+        if let Some(a) = self.addpool.borrow().as_ref() {
+            a.close();
+        }
         self.vol_menu.popdown();
     }
 
@@ -618,8 +626,7 @@ impl HostStorage {
     /// `_refresh_conn_state`.
     fn refresh_conn_state(&self) {
         let conn_active = self.conn.is_active();
-        // The pool wizard (`createpool.py`) isn't ported yet.
-        self.pool_add.set_sensitive(false);
+        self.pool_add.set_sensitive(conn_active);
         self.spawn(|t| async move { t.populate_pools().await });
         if !conn_active {
             self.set_error_page("Connection not active.");
@@ -868,6 +875,26 @@ impl HostStorage {
     //////////////////////////////
     // Volume action listeners //
     //////////////////////////////
+
+    /// `_pool_add_cb`.
+    fn pool_add_clicked(&self) {
+        eprintln!("Launching 'Add Pool' wizard");
+        let addpool = self.addpool.borrow().clone();
+        let addpool = addpool.unwrap_or_else(|| {
+            let a = CreatePool::new(&self.conn);
+            let weak = self.weak();
+            a.connect_pool_created(move || {
+                if let Some(inner) = weak.upgrade() {
+                    HostStorage(inner).refresh_page();
+                }
+            });
+            *self.addpool.borrow_mut() = Some(a.clone());
+            a
+        });
+        if let Some(parent) = self.parent() {
+            addpool.show(&parent);
+        }
+    }
 
     /// `_vol_add_cb`.
     fn vol_add_clicked(&self) {
