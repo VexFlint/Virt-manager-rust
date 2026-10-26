@@ -10,6 +10,7 @@ use gtk::{gio, glib};
 use virtinst_core::capabilities::{Capabilities, CapsInfo};
 use virtinst_core::install::{prefers_uefi, GuestCapsDefaults};
 
+use crate::addstorage::{plan_disk, AddStorage, DiskPlan, DiskRequest};
 use crate::connection::VmmConnection;
 use crate::devpages::{EntryCombo, Grid, GridRow, SimpleCombo};
 use crate::domain::pretty_hv;
@@ -490,7 +491,7 @@ impl MemWidgets {
 }
 
 /// `_GuestData`: what the pages so far chose for the guest.
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 // Read by the summary and install steps, ported next.
 #[allow(dead_code)]
 struct GuestData {
@@ -508,6 +509,7 @@ struct GuestData {
     vcpus: u32,
     /// KiB.
     memory: u64,
+    disk: Option<Rc<DiskPlan>>,
 }
 
 pub struct Inner {
@@ -549,9 +551,12 @@ pub struct Inner {
     machine: SimpleCombo,
     machine_row: GridRow,
 
-    // Steps 2 and 3
+    // Steps 2 to 4
     inst: InstallWidgets,
     memw: MemWidgets,
+    enable_storage: gtk::CheckButton,
+    storage_align: gtk::Box,
+    addstorage: Rc<AddStorage>,
 
     gdata: RefCell<GuestData>,
     storage_browser: RefCell<Option<StorageBrowser>>,
@@ -718,10 +723,19 @@ impl VmmCreateVM {
         pages.add_named(&page_name, Some(&PAGE_NAME.to_string()));
         pages.add_named(&inst.top, Some(&PAGE_INSTALL.to_string()));
         pages.add_named(&memw.top, Some(&PAGE_MEM.to_string()));
-        for nr in PAGE_STORAGE..=PAGE_FINISH {
-            let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            pages.add_named(&page, Some(&nr.to_string()));
-        }
+        // Step 4: storage
+        let enable_storage =
+            gtk::CheckButton::with_mnemonic("_Enable storage for this virtual machine");
+        enable_storage.set_active(true);
+        let addstorage = AddStorage::new(None);
+        let storage_align = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        storage_align.append(&addstorage.top_box);
+        let storage_area = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        storage_area.append(&enable_storage);
+        storage_area.append(&storage_align);
+        pages.add_named(&storage_area, Some(&PAGE_STORAGE.to_string()));
+        let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        pages.add_named(&page, Some(&PAGE_FINISH.to_string()));
         // Size the window to the shown page only.
         pages.set_vhomogeneous(false);
         pages.set_hhomogeneous(false);
@@ -789,6 +803,9 @@ impl VmmCreateVM {
             machine_row,
             inst,
             memw,
+            enable_storage,
+            storage_align,
+            addstorage,
             gdata: RefCell::default(),
             storage_browser: RefCell::default(),
             detect_os_in_progress: Cell::new(false),
@@ -883,6 +900,18 @@ impl VmmCreateVM {
         inst.url_combo
             .entry
             .connect_activate(self.handler(|t| t.detectable_media_widget_changed(None)));
+
+        // Storage page listeners
+        let weak = Rc::downgrade(&self.0);
+        i.addstorage.connect_browse_clicked(move |entry| {
+            if let Some(inner) = weak.upgrade() {
+                VmmCreateVM(inner).browse_entry(entry, BrowseReason::Image);
+            }
+        });
+        i.enable_storage.connect_toggled(self.handler(|t| {
+            let active = t.0.enable_storage.is_active();
+            t.0.storage_align.set_sensitive(active);
+        }));
 
         let close = self.handler::<()>(VmmCreateVM::close_requested);
         i.window.connect_close_request(move |_| {
@@ -1014,6 +1043,10 @@ impl VmmCreateVM {
 
         // Install VZ container from template
         inst.container_template.set_text("centos-7-x86_64");
+
+        // Storage
+        i.enable_storage.set_active(true);
+        i.addstorage.reset_state();
     }
 
     /// `_set_caps_state`: the install methods this guest type allows.
@@ -1282,6 +1315,10 @@ impl VmmCreateVM {
             "<span size='small'>Up to {phys_cpus} available</span>"
         ));
         i.memw.cpus.set_range(1.0, phys_cpus.max(1) as f64);
+
+        // Storage
+        i.addstorage.set_conn(Some(conn.clone()));
+        i.addstorage.reset_state();
     }
 
     fn conn_state_changed(&self) {
@@ -1785,6 +1822,7 @@ impl VmmCreateVM {
             PAGE_NAME => self.validate_intro_page(),
             PAGE_INSTALL => self.validate_install_page().await,
             PAGE_MEM => self.validate_mem_page(),
+            PAGE_STORAGE => self.validate_storage_page().await,
             _ => true,
         }
     }
@@ -1792,6 +1830,92 @@ impl VmmCreateVM {
     /// `_validate_intro_page`: the guest has to resolve.
     fn validate_intro_page(&self) -> bool {
         self.0.capsinfo.borrow().is_some()
+    }
+
+    /// `_validate_storage_page`.
+    async fn validate_storage_page(&self) -> bool {
+        let i = &self.0;
+        let parent = Some(&i.window);
+        let Some(conn) = i.conn.borrow().clone() else {
+            return false;
+        };
+        let Some(handle) = conn.handle() else {
+            return false;
+        };
+        let instpage = self.get_config_install_page();
+        let is_import = instpage == InstallPage::Import;
+        let storage_enabled = is_import || i.enable_storage.is_active();
+
+        let mut disk = None;
+        if storage_enabled {
+            // `_get_storage_path` + `build_device`
+            let req = DiskRequest {
+                vmname: i.gdata.borrow().name.clone().unwrap_or_default(),
+                is_default_storage: !is_import && i.addstorage.is_default_storage(),
+                entry_path: if is_import {
+                    i.inst.import_entry.text().to_string()
+                } else {
+                    i.addstorage.entry_path()
+                },
+                size: i.addstorage.size(),
+                fmt: conn.get_default_storage_format(),
+                collide_paths: vec![],
+                is_session: conn.is_qemu_unprivileged(),
+                is_local: !conn.is_remote(),
+            };
+            let plan = gio::spawn_blocking(move || plan_disk(handle.connect(), &req))
+                .await
+                .unwrap_or_else(|_| Err("Worker thread panicked".to_string()));
+            let plan = match plan {
+                Ok(p) => p,
+                Err(e) => {
+                    error::val_err_text2(parent, "Storage parameter error.", Some(&e)).await;
+                    return false;
+                }
+            };
+
+            // `validate_device`
+            let Some(path) = plan.path.clone() else {
+                error::val_err(parent, "A storage path must be specified.").await;
+                return false;
+            };
+            let names = match conn.handle() {
+                Some(handle) => {
+                    let path = path.clone();
+                    gio::spawn_blocking(move || {
+                        crate::domain::path_in_use_by(handle.connect(), &path, false, false)
+                    })
+                    .await
+                    .unwrap_or_else(|_| Err("Worker thread panicked".to_string()))
+                }
+                None => Ok(vec![]),
+            };
+            let names = match names {
+                Ok(n) => n,
+                Err(e) => {
+                    error::val_err_text2(parent, "Storage parameter error.", Some(&e)).await;
+                    return false;
+                }
+            };
+            if !names.is_empty() {
+                let msg = format!(
+                    "Disk '{path}' is already in use by other guests {}",
+                    crate::addhardware::py_list(&names)
+                );
+                if !error::yes_no(parent, &msg, Some("Do you really want to use the disk?")).await {
+                    return false;
+                }
+            }
+            disk = Some(Rc::new(plan));
+        }
+
+        let mut gdata = i.gdata.borrow_mut();
+        if instpage == InstallPage::Iso {
+            // CD/ISO install and no disks implies LiveCD
+            gdata.livecd = !storage_enabled;
+        }
+        gdata.disk = disk;
+        true
     }
 
     fn validate_mem_page(&self) -> bool {
@@ -2292,6 +2416,7 @@ impl VmmCreateVM {
             .as_ref()
             .is_some_and(|c| c.os_type.as_deref() == Some("exe"));
         let name = self.generate_name(&os_name, is_container);
+        let is_import = instmethod == InstallPage::Import;
         if let Err(e) = virtinst_core::storage::validate_generic_name("Guest", &name) {
             error::val_err(parent, &format!("Error setting default name.\n\n{e}")).await;
             return false;
@@ -2308,6 +2433,12 @@ impl VmmCreateVM {
             gdata.livecd = false;
             gdata.osinfo = osobj.as_ref().map(|o| o.name.clone());
             gdata.name = Some(name);
+        }
+
+        // Kind of wonky, run storage validation now, which will assign
+        // the import path. Import installer skips the storage page.
+        if is_import && !self.validate_storage_page().await {
+            return false;
         }
 
         // Change the default values suggested to the user.
@@ -2332,6 +2463,10 @@ impl VmmCreateVM {
         let ram_size = ram.map_or(DEFAULT_MEM, |r| (r / (1024 * 1024)) as f64);
         i.memw.mem.set_value(ram_size);
         i.memw.cpus.set_value(n_cpus.unwrap_or(1) as f64);
+        if let Some(storage) = res.get_recommended_storage(&arch) {
+            i.addstorage
+                .set_size((storage / (1024 * 1024 * 1024)) as f64);
+        }
 
         // Validation passed, store the install path (if there is one)
         // in gsettings

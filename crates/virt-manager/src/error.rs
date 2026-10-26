@@ -277,13 +277,18 @@ pub async fn show_info(
 
 /// `vmmErrorDialog.val_err`: an "Input Error" box for form validation.
 pub async fn val_err(parent: Option<&gtk::Window>, text1: &str) {
+    val_err_text2(parent, text1, None).await
+}
+
+/// `val_err(text1, text2)`: with the error as secondary text.
+pub async fn val_err_text2(parent: Option<&gtk::Window>, text1: &str, text2: Option<&str>) {
     run_dialog(
         parent,
         DialogSpec {
             kind: MessageType::Error,
             buttons: Buttons::Ok,
             text1,
-            text2: None,
+            text2,
             title: "Input Error",
             details: None,
             chktext: None,

@@ -57,7 +57,7 @@ pub struct AddStorage {
     pub top_box: gtk::Box,
     /// `storage-advanced-box`.
     pub advanced_top_box: gtk::Box,
-    conn: Option<VmmConnection>,
+    conn: RefCell<Option<VmmConnection>>,
     storage_create: gtk::CheckButton,
     storage_create_box: gtk::Box,
     storage_size: gtk::SpinButton,
@@ -166,7 +166,7 @@ impl AddStorage {
         let this = Rc::new(AddStorage {
             top_box,
             advanced_top_box,
-            conn,
+            conn: RefCell::new(conn),
             storage_create,
             storage_create_box,
             storage_size,
@@ -261,7 +261,7 @@ impl AddStorage {
             label.set_markup(&format!("<span>{}</span>", glib::markup_escape_text(&text)));
         };
         set(&label, -1.0);
-        let Some(conn) = self.conn.clone() else {
+        let Some(conn) = self.conn.borrow().clone() else {
             return;
         };
         glib::spawn_future_local(async move {
@@ -269,6 +269,15 @@ impl AddStorage {
                 set(&label, avail as f64 / 1024.0 / 1024.0 / 1024.0);
             }
         });
+    }
+
+    pub fn set_conn(&self, conn: Option<VmmConnection>) {
+        self.conn.replace(conn);
+    }
+
+    /// `storage-size`, in GiB.
+    pub fn set_size(&self, size: f64) {
+        self.storage_size.set_value(size);
     }
 
     /// `reset_state`.
@@ -369,6 +378,102 @@ impl AddStorage {
         }
         ret
     }
+}
+
+/// What the storage page's worker found: `vmmAddStorage.build_device`
+/// up to the disk's XML.
+pub(crate) struct DiskPlan {
+    pub path: Option<String>,
+    pub props: Option<virtinst_core::devices::disk::PathProps>,
+    pub vol_install: Option<virtinst_core::storage::VolInstall>,
+}
+
+/// What [`plan_disk`] needs from the page.
+pub(crate) struct DiskRequest {
+    pub vmname: String,
+    pub is_default_storage: bool,
+    pub entry_path: String,
+    pub size: f64,
+    pub fmt: Option<String>,
+    pub collide_paths: Vec<String>,
+    pub is_session: bool,
+    pub is_local: bool,
+}
+
+/// Blocking: `get_default_path`, `set_source_path` (`manage_path`) and,
+/// for storage that doesn't exist yet, `build_vol_install`.
+pub(crate) fn plan_disk(
+    conn: &virt::connect::Connect,
+    req: &DiskRequest,
+) -> Result<DiskPlan, String> {
+    use virtinst_core::storage;
+    let path = if req.is_default_storage {
+        // `get_default_path`
+        match storage::lookup_default_pool(conn, req.is_session) {
+            Some(pool) => {
+                let suffix = storage::file_extension_for_format(req.fmt.as_deref());
+                let suffix = if suffix.is_empty() {
+                    ".img".into()
+                } else {
+                    suffix
+                };
+                let name =
+                    storage::find_free_name(&pool, &req.vmname, &suffix, &req.collide_paths)?;
+                let target = pool.xml.target_path.clone().unwrap_or_default();
+                Some(format!("{}/{name}", target.trim_end_matches('/')))
+            }
+            None => None,
+        }
+    } else {
+        Some(req.entry_path.clone()).filter(|p| !p.is_empty())
+    };
+    let Some(path) = path else {
+        return Ok(DiskPlan {
+            path: None,
+            props: None,
+            vol_install: None,
+        });
+    };
+    let path = path.strip_prefix("file://").unwrap_or(&path).to_string();
+    let managed = storage::manage_path(conn, &path)?;
+    if let Some(vol) = &managed.vol {
+        return Ok(DiskPlan {
+            path: Some(managed.path),
+            props: Some(storage::vol_path_props(vol)),
+            vol_install: None,
+        });
+    }
+    if managed.pool.is_none() && req.is_local && std::path::Path::new(&managed.path).exists() {
+        let props = crate::domain::path_props(conn, &managed.path, req.is_local);
+        return Ok(DiskPlan {
+            path: Some(managed.path),
+            props: Some(props),
+            vol_install: None,
+        });
+    }
+    // `wants_storage_creation`: if the user changed the default disk
+    // format to raw, assume they want to maximize performance, so fully
+    // allocate the disk image. Otherwise use sparse
+    let sparse = req.fmt.as_deref() != Some("raw");
+    let volname = managed.path.rsplit('/').next().unwrap_or_default();
+    let pool = managed.pool.as_ref().map(|p| &p.xml);
+    let mut vol = storage::VolInstall::new(volname, pool, req.size, sparse, None)?;
+    if vol.supports_format() {
+        glib::g_debug!(
+            "virt-manager",
+            "Using default prefs format={:?} for path={}",
+            req.fmt,
+            managed.path
+        );
+        vol.format = req.fmt.clone().or(vol.format);
+    }
+    // `DeviceDisk.validate`: the volume's name and size
+    vol.validate(conn)?;
+    Ok(DiskPlan {
+        path: Some(managed.path),
+        props: Some(vol.path_props()),
+        vol_install: Some(vol),
+    })
 }
 
 #[cfg(test)]
