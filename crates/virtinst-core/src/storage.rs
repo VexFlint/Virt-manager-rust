@@ -383,6 +383,16 @@ fn abspath(path: &str) -> String {
     format!("/{}", parts.join("/"))
 }
 
+/// `diskbackend.path_definitely_exists`: a managed volume, or a local
+/// file on a local connection. `false` means unsure, not absent.
+pub fn path_definitely_exists(conn: &Connect, path: &str, is_remote: bool) -> bool {
+    match check_if_path_managed(conn, path) {
+        Ok((Some(_), _)) => true,
+        Ok(_) => !is_remote && std::path::Path::new(path).exists(),
+        Err(_) => false,
+    }
+}
+
 /// `diskbackend.manage_path`: looks up the path's volume and pool. A
 /// local directory that isn't a pool yet becomes one (named after the
 /// directory, autostarted), as upstream does, so the path can be

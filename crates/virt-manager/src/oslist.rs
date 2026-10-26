@@ -82,10 +82,7 @@ impl OsList {
         let eol_warn = gtk::Label::new(None);
         eol_warn.set_markup(&format!(
             "<small>{}</small>",
-            glib::markup_escape_text(
-                "Can't find the operating system you are looking for?\n\
-                 Try selecting a similar distro or version, or use one of the 'Generic' options."
-            )
+            glib::markup_escape_text(OsList::EOL_TEXT)
         ));
         eol_warn.set_halign(gtk::Align::Start);
         eol_warn.set_xalign(0.0);
@@ -351,6 +348,35 @@ impl OsList {
     }
 
     // Public APIs
+
+    /// The "can't find your OS" hint, for the wizard's error text.
+    pub const EOL_TEXT: &'static str = "Can't find the operating system you are looking for?\n\
+         Try selecting a similar distro or version, or use one of the 'Generic' options.";
+
+    pub fn reset_state(&self) {
+        self.selected_os.replace(None);
+        self.search_entry.set_text("");
+        self.clear_filter();
+        self.list.unselect_all();
+        self.sync_os_selection();
+    }
+
+    pub fn set_sensitive(&self, sensitive: bool) {
+        if sensitive == self.search_entry.is_sensitive() {
+            return;
+        }
+        if !sensitive {
+            self.search_entry.set_sensitive(false);
+            self.reset_state();
+        } else {
+            let selected = self.selected_os.borrow().clone();
+            match selected {
+                Some(os) => self.select_os(&os),
+                None => self.reset_state(),
+            }
+            self.search_entry.set_sensitive(true);
+        }
+    }
 
     pub fn select_os(&self, vmosobj: &OsVariant) {
         self.clear_filter();

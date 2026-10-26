@@ -247,6 +247,10 @@ impl StorageBrowser {
         *self.0.finish_cb.borrow_mut() = Some(Box::new(cb));
     }
 
+    pub fn conn(&self) -> VmmConnection {
+        self.0.conn.clone()
+    }
+
     pub fn set_modal(&self, modal: bool) {
         self.0.window.set_modal(modal);
     }

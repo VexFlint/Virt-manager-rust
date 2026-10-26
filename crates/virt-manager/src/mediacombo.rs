@@ -89,10 +89,10 @@ type ChangedCb = Box<dyn Fn()>;
 
 pub struct MediaCombo {
     pub top_box: gtk::Box,
-    entry: gtk::Entry,
+    pub entry: gtk::Entry,
     list: gtk::ListBox,
     popover: gtk::Popover,
-    conn: Option<VmmConnection>,
+    conn: RefCell<Option<VmmConnection>>,
     /// The rows shown, `None` for the separator.
     rows: RefCell<Vec<Option<MediaRow>>>,
     /// The row the entry shows, until the text is edited.
@@ -141,7 +141,7 @@ impl MediaCombo {
             entry,
             list,
             popover,
-            conn,
+            conn: RefCell::new(conn),
             rows: RefCell::default(),
             active: Cell::new(None),
             setting: Cell::new(false),
@@ -194,7 +194,7 @@ impl MediaCombo {
             return;
         }
         self.drives.replace(Some(vec![]));
-        let Some(handle) = self.conn.as_ref().and_then(|c| c.handle()) else {
+        let Some(handle) = self.conn.borrow().as_ref().and_then(|c| c.handle()) else {
             return;
         };
         let weak = Rc::downgrade(self);
@@ -270,6 +270,11 @@ impl MediaCombo {
         self.active
             .set(active.and_then(|a| rows.iter().position(|r| r.as_ref() == Some(&a))));
         self.rows.replace(rows);
+    }
+
+    pub fn set_conn(&self, conn: Option<VmmConnection>) {
+        self.conn.replace(conn);
+        self.drives.replace(None);
     }
 
     /// `reset_state`.

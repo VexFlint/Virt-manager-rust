@@ -173,6 +173,40 @@ fn bootable_devices(
 }
 
 /// The xml ids of `get_bootable_devices(exclude_redirdev=True)`.
+/// `Guest.generate_name`: a free VM name from the OS short id, like
+/// `fedora40`, `fedora40-2`, or `vm1` for the generic OS.
+pub fn generate_name(
+    os_name: &str,
+    is_container: bool,
+    arch: &str,
+    host_arch: Option<&str>,
+    collides: impl Fn(&str) -> bool,
+) -> String {
+    let mut force_num = false;
+    let mut basename = os_name
+        .strip_suffix("-unknown")
+        .unwrap_or(os_name)
+        .to_string();
+    if os_name == "generic" {
+        force_num = true;
+        basename = if is_container { "container" } else { "vm" }.into();
+    }
+    if Some(arch) != host_arch {
+        let pretty = if arch == "armv7l" { "arm" } else { arch };
+        basename = format!("{basename}-{pretty}");
+        force_num = false;
+    }
+    // `generatename.generate_name(start_num=force_num and 1 or 2,
+    // sep=not force_num and "-" or "")`
+    let (start, sep) = if force_num { (1, "") } else { (2, "-") };
+    (!force_num)
+        .then(|| basename.clone())
+        .into_iter()
+        .chain((start..start + 100_000).map(|i| format!("{basename}{sep}{i}")))
+        .find(|n| !collides(n))
+        .unwrap_or(basename)
+}
+
 pub fn bootable_device_ids(
     doc: &virtinst_xml::Document,
     root: virtinst_xml::Element,
@@ -397,6 +431,33 @@ pub fn initargs_string(os: &DomainOs) -> String {
 
 #[cfg(test)]
 mod boot_tests {
+    #[test]
+    fn generate_name_like_upstream() {
+        let none = |_: &str| false;
+        let x86 = Some("x86_64");
+        assert_eq!(
+            generate_name("fedora40", false, "x86_64", x86, none),
+            "fedora40"
+        );
+        assert_eq!(
+            generate_name("fedora40", false, "x86_64", x86, |n| n == "fedora40"),
+            "fedora40-2"
+        );
+        assert_eq!(generate_name("generic", false, "x86_64", x86, none), "vm1");
+        assert_eq!(
+            generate_name("generic", true, "x86_64", x86, none),
+            "container1"
+        );
+        assert_eq!(
+            generate_name("generic", false, "armv7l", x86, none),
+            "vm-arm"
+        );
+        assert_eq!(
+            generate_name("win10-unknown", false, "x86_64", x86, none),
+            "win10"
+        );
+    }
+
     use super::*;
 
     const XML: &str = "<domain><os><type>hvm</type><boot dev='cdrom'/><boot dev='hd'/></os>\

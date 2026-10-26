@@ -256,6 +256,164 @@ impl OsDb {
 }
 
 impl OsDb {
+    /// Upstream's `guess_os_by_iso`: the OS libosinfo identifies from
+    /// an install ISO's volume descriptors.
+    pub fn guess_os_by_iso(&self, location: &str) -> Option<OsInfo> {
+        let c_loc = CString::new(location).ok()?;
+        unsafe {
+            let mut error: *mut glib_sys::GError = ptr::null_mut();
+            // transfer-ownership="full"
+            let media =
+                ffi::osinfo_media_create_from_location(c_loc.as_ptr(), ptr::null_mut(), &mut error);
+            if let Some(e) = take_glib_error(error) {
+                eprintln!("Error creating libosinfo media object: {e}");
+                return None;
+            }
+            if media.is_null() {
+                return None;
+            }
+            let os = if ffi::osinfo_db_identify_media(self.ptr, media) != 0 {
+                // transfer-ownership="full"
+                ffi::osinfo_media_get_os(media)
+            } else {
+                ptr::null_mut()
+            };
+            gobject_sys::g_object_unref(media as *mut gobject_sys::GObject);
+            (!os.is_null()).then_some(OsInfo { ptr: os })
+        }
+    }
+
+    /// Upstream's `guess_os_by_tree`: the OS of a network install tree
+    /// (a URL, or a local path).
+    pub fn guess_os_by_tree(&self, location: &str) -> Option<OsInfo> {
+        let location = if location.starts_with('/') {
+            format!("file://{location}")
+        } else {
+            location.to_string()
+        };
+        let c_loc = CString::new(location.clone()).ok()?;
+        unsafe {
+            let mut error: *mut glib_sys::GError = ptr::null_mut();
+            // transfer-ownership="full"
+            let tree =
+                ffi::osinfo_tree_create_from_location(c_loc.as_ptr(), ptr::null_mut(), &mut error);
+            if let Some(e) = take_glib_error(error) {
+                eprintln!("Error creating libosinfo tree object for location={location} : {e}");
+                return None;
+            }
+            if tree.is_null() {
+                return None;
+            }
+            let os = if ffi::osinfo_db_identify_tree(self.ptr, tree) != 0 {
+                // transfer-ownership="full"
+                ffi::osinfo_tree_get_os(tree)
+            } else {
+                ptr::null_mut()
+            };
+            gobject_sys::g_object_unref(tree as *mut gobject_sys::GObject);
+            (!os.is_null()).then_some(OsInfo { ptr: os })
+        }
+    }
+}
+
+/// One `<resources>` entry: `-1` is libosinfo's "not set".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResourceValues {
+    ram: i64,
+    n_cpus: i64,
+    storage: i64,
+}
+
+/// Upstream's `_OsResources`: the minimum and recommended resources,
+/// by arch (`all` for any arch).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OsResources {
+    minimum: Vec<(String, ResourceValues)>,
+    recommended: Vec<(String, ResourceValues)>,
+}
+
+impl OsResources {
+    fn get_key(
+        resources: &[(String, ResourceValues)],
+        key: fn(&ResourceValues) -> i64,
+        arch: &str,
+    ) -> Option<i64> {
+        for checkarch in [arch, "all"] {
+            // A later entry for the same arch wins, like the dict.
+            let val = resources
+                .iter()
+                .rev()
+                .find(|(a, _)| a == checkarch)
+                .map_or(-1, |(_, v)| key(v));
+            if val != -1 {
+                return Some(val);
+            }
+        }
+        None
+    }
+
+    fn get_minimum_key(&self, key: fn(&ResourceValues) -> i64, arch: &str) -> Option<i64> {
+        Self::get_key(&self.minimum, key, arch).filter(|v| *v > 0)
+    }
+
+    fn get_recommended_key(&self, key: fn(&ResourceValues) -> i64, arch: &str) -> Option<i64> {
+        if let Some(v) = Self::get_key(&self.recommended, key, arch).filter(|v| *v > 0) {
+            return Some(v);
+        }
+        // If we are looking for a recommended value, but the OS DB
+        // only has minimum resources tracked, double the minimum value
+        // as an approximation at a 'recommended' value
+        self.get_minimum_key(key, arch).map(|v| v * 2)
+    }
+
+    pub fn get_minimum_ram(&self, arch: &str) -> Option<i64> {
+        self.get_minimum_key(|r| r.ram, arch)
+    }
+
+    /// Bytes.
+    pub fn get_recommended_ram(&self, arch: &str) -> Option<i64> {
+        self.get_recommended_key(|r| r.ram, arch)
+    }
+
+    pub fn get_recommended_ncpus(&self, arch: &str) -> Option<i64> {
+        self.get_recommended_key(|r| r.n_cpus, arch)
+    }
+
+    /// Bytes.
+    pub fn get_recommended_storage(&self, arch: &str) -> Option<i64> {
+        self.get_recommended_key(|r| r.storage, arch)
+    }
+}
+
+/// # Safety
+/// `list` must be null or an owned `OsinfoResourcesList`; it's freed.
+unsafe fn take_resources_list(
+    list: *mut ffi::OsinfoResourcesList,
+) -> Vec<(String, ResourceValues)> {
+    if list.is_null() {
+        return vec![];
+    }
+    let l = list as *mut ffi::OsinfoList;
+    let mut ret = vec![];
+    for i in 0..ffi::osinfo_list_get_length(l) {
+        let r = ffi::osinfo_list_get_nth(l, i) as *mut ffi::OsinfoResources;
+        if r.is_null() {
+            continue;
+        }
+        ret.push((
+            c_str_to_string(ffi::osinfo_resources_get_architecture(r)),
+            ResourceValues {
+                ram: ffi::osinfo_resources_get_ram(r),
+                n_cpus: ffi::osinfo_resources_get_n_cpus(r) as i64,
+                storage: ffi::osinfo_resources_get_storage(r),
+            },
+        ));
+    }
+    gobject_sys::g_object_unref(list as *mut gobject_sys::GObject);
+    ret
+}
+
+impl OsDb {
     /// `list_os(sortkey="label")` plus vmmOSList's "generic entries
     /// last" ordering: every entry, the `generic` pseudo-OS included,
     /// natural-sorted by label with numbers sorted in reverse (so the
@@ -679,6 +837,19 @@ impl OsInfo {
         let supports_bios = self.supports_firmware_type("bios", arch, true);
         supports_efi && !supports_bios
     }
+
+    /// Upstream's `get_recommended_resources`.
+    pub fn get_recommended_resources(&self) -> OsResources {
+        unsafe {
+            // Both transfer-ownership="full".
+            OsResources {
+                minimum: take_resources_list(ffi::osinfo_os_get_minimum_resources(self.ptr)),
+                recommended: take_resources_list(ffi::osinfo_os_get_recommended_resources(
+                    self.ptr,
+                )),
+            }
+        }
+    }
 }
 
 impl Clone for OsInfo {
@@ -937,5 +1108,34 @@ mod tests {
             f25.full_id.as_deref(),
             Some("http://fedoraproject.org/fedora/25")
         );
+    }
+
+    #[test]
+    fn recommended_resources_fall_back_to_double_the_minimum() {
+        let v = |ram, n_cpus, storage| ResourceValues {
+            ram,
+            n_cpus,
+            storage,
+        };
+        let res = OsResources {
+            minimum: vec![("all".into(), v(1 << 30, 1, -1))],
+            recommended: vec![("x86_64".into(), v(-1, 2, 20 << 30))],
+        };
+        assert_eq!(res.get_recommended_ram("x86_64"), Some(2 << 30));
+        assert_eq!(res.get_recommended_ncpus("x86_64"), Some(2));
+        assert_eq!(res.get_recommended_ncpus("aarch64"), Some(2));
+        assert_eq!(res.get_recommended_storage("x86_64"), Some(20 << 30));
+        assert_eq!(res.get_recommended_storage("aarch64"), None);
+        assert_eq!(res.get_minimum_ram("x86_64"), Some(1 << 30));
+    }
+
+    #[test]
+    fn real_db_has_resources_and_rejects_bogus_media() {
+        let db = OsDb::load_default().expect("osinfo-db is installed on this machine");
+        let fedora25 = db.os("http://fedoraproject.org/fedora/25").unwrap();
+        let res = fedora25.get_recommended_resources();
+        assert!(res.get_recommended_ram("x86_64").unwrap() >= 1 << 30);
+        assert!(db.guess_os_by_iso("/nonexistent.iso").is_none());
+        assert!(db.guess_os_by_tree("/nonexistent").is_none());
     }
 }
