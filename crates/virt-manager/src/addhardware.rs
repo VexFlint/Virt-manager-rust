@@ -382,6 +382,8 @@ fn plan_disk(conn: &virt::connect::Connect, req: &DiskRequest) -> Result<DiskPla
         );
         vol.format = req.fmt.clone().or(vol.format);
     }
+    // `DeviceDisk.validate`: the volume's name and size
+    vol.validate(conn)?;
     Ok(DiskPlan {
         path: Some(managed.path),
         props: Some(vol.path_props()),
