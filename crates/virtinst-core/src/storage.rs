@@ -17,6 +17,9 @@ pub struct PoolXml {
     pub name: String,
     pub pool_type: String,
     pub target_path: Option<String>,
+    pub capacity: u64,
+    pub allocation: u64,
+    pub available: u64,
 }
 
 impl PoolXml {
@@ -26,10 +29,14 @@ impl PoolXml {
         let text = |path: &[&str]| {
             virtinst_xml::resolve_path(&doc, root, path).map(|e| e.text_content(&doc))
         };
+        let num = |tag: &str| text(&[tag]).and_then(|t| t.trim().parse().ok());
         Some(PoolXml {
             name: text(&["name"])?,
             pool_type: root.attribute(&doc, "type").unwrap_or_default().to_string(),
             target_path: text(&["target", "path"]),
+            capacity: num("capacity").unwrap_or(0),
+            allocation: num("allocation").unwrap_or(0),
+            available: num("available").unwrap_or(0),
         })
     }
 
@@ -41,6 +48,124 @@ impl PoolXml {
             _ => "file",
         }
     }
+}
+
+/// `POOL_TYPE_DESCS`/`vmmStoragePool.pretty_type`.
+pub fn pretty_pool_type(pool_type: &str) -> String {
+    let desc = match pool_type {
+        "dir" => "Filesystem Directory",
+        "fs" => "Pre-Formatted Block Device",
+        "netfs" => "Network Exported Directory",
+        "logical" => "LVM Volume Group",
+        "disk" => "Physical Disk Device",
+        "iscsi" => "iSCSI Target",
+        "scsi" => "SCSI Host Adapter",
+        "mpath" => "Multipath Device Enumerator",
+        "gluster" => "Gluster Filesystem",
+        "rbd" => "RADOS Block Device/Ceph",
+        "zfs" => "ZFS Pool",
+        _ => return format!("{pool_type} pool"),
+    };
+    desc.to_string()
+}
+
+/// `vmmStoragePool.supports_volume_creation`: with `clone`, whether
+/// the pool can clone volumes (`virStorageVolCreateXMLFrom`).
+pub fn supports_volume_creation(pool_type: &str, clone: bool) -> bool {
+    matches!(
+        pool_type,
+        "dir" | "fs" | "netfs" | "disk" | "logical" | "rbd"
+    ) || (!clone && pool_type == "zfs")
+}
+
+/// `_pretty_bytes`: GiB above 1 GiB, else MiB.
+pub fn pretty_bytes(val: u64) -> String {
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    if val > 1024 * 1024 * 1024 {
+        format!("{:2.2} GiB", val as f64 / GIB)
+    } else {
+        format!("{:2.2} MiB", val as f64 / (1024.0 * 1024.0))
+    }
+}
+
+/// The parts of a volume's XML the storage browser shows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VolXml {
+    pub name: String,
+    pub key: String,
+    pub target_path: String,
+    pub format: Option<String>,
+    pub capacity: u64,
+}
+
+impl VolXml {
+    pub fn parse(xml: &str) -> Option<VolXml> {
+        let doc = virtinst_xml::parse_libvirt_xml(xml).ok()?;
+        let root = doc.root_element()?;
+        let el = |path: &[&str]| virtinst_xml::resolve_path(&doc, root, path);
+        let text = |path: &[&str]| el(path).map(|e| e.text_content(&doc));
+        Some(VolXml {
+            name: text(&["name"])?,
+            key: text(&["key"]).unwrap_or_default(),
+            target_path: text(&["target", "path"]).unwrap_or_default(),
+            format: el(&["target", "format"])
+                .and_then(|e| e.attribute(&doc, "type"))
+                .map(str::to_string),
+            capacity: text(&["capacity"])
+                .and_then(|t| t.trim().parse().ok())
+                .unwrap_or(0),
+        })
+    }
+
+    /// `vmmStorageVolume.get_pretty_name`: iSCSI volumes add their key.
+    pub fn pretty_name(&self, pool_type: &str) -> String {
+        if pool_type != "iscsi" || self.key.is_empty() {
+            return self.name.clone();
+        }
+        format!("{} ({})", self.name, self.key)
+    }
+}
+
+/// `vmmLibvirtObject.define_name` + `vmmConnection.rename_object` for
+/// a pool: undefine it and define its XML under `newname`, putting the
+/// old XML back if that fails; autostart carries over.
+pub fn rename_pool(conn: &Connect, pool: &StoragePool, newname: &str) -> Result<(), String> {
+    let msg = |e: virt::error::Error| e.message().to_string();
+    let oldautostart = pool.get_autostart().unwrap_or(false);
+    let origxml = pool
+        .get_xml_desc(sys::VIR_STORAGE_XML_INACTIVE)
+        .map_err(msg)?;
+    let mut doc = virtinst_xml::parse_libvirt_xml(&origxml).map_err(|e| e.to_string())?;
+    let root = doc.root_element().ok_or("Pool XML has no root")?;
+    let name_el = root.find(&doc, "name").ok_or("Pool XML has no name")?;
+    if name_el.text_content(&doc) == newname {
+        return Ok(());
+    }
+    name_el.set_text_content(&mut doc, newname);
+    let newxml = doc
+        .write_str_with_opts(virtinst_xml::WriteOptions {
+            write_decl: false,
+            ..Default::default()
+        })
+        .map_err(|e| e.to_string())?;
+
+    pool.undefine().map_err(msg)?;
+    let newpool = match StoragePool::define_xml(conn, &newxml, 0) {
+        Ok(p) => p,
+        Err(renameerr) => {
+            return match StoragePool::define_xml(conn, &origxml, 0) {
+                Ok(_) => Err(renameerr.message().to_string()),
+                Err(fixerr) => Err(format!(
+                    "pool rename failed. Attempting to recover also failed.\n\n\
+                     Original error: {}\n\nRecover error: {}",
+                    renameerr.message(),
+                    fixerr.message()
+                )),
+            };
+        }
+    };
+    newpool.set_autostart(oldautostart).map_err(msg)?;
+    Ok(())
 }
 
 /// A pool and its XML.
@@ -606,11 +731,43 @@ mod tests {
     }
 
     #[test]
+    fn pretty() {
+        assert_eq!(pretty_bytes(20 * 1024 * 1024 * 1024), "20.00 GiB");
+        assert_eq!(pretty_bytes(512 * 1024 * 1024), "512.00 MiB");
+        assert_eq!(pretty_pool_type("dir"), "Filesystem Directory");
+        assert_eq!(pretty_pool_type("vstorage"), "vstorage pool");
+        assert!(supports_volume_creation("zfs", false));
+        assert!(!supports_volume_creation("zfs", true));
+        assert!(!supports_volume_creation("iscsi", false));
+        let pool = PoolXml::parse(
+            "<pool type='dir'><name>default</name><capacity unit='bytes'>100</capacity>\
+             <allocation unit='bytes'>40</allocation><available unit='bytes'>60</available>\
+             <target><path>/var/lib/libvirt/images</path></target></pool>",
+        )
+        .unwrap();
+        assert_eq!(
+            (pool.capacity, pool.allocation, pool.available),
+            (100, 40, 60)
+        );
+        let vol = VolXml::parse(
+            "<volume type='file'><name>a.qcow2</name><key>/i/a.qcow2</key>\
+             <capacity unit='bytes'>1024</capacity><target><path>/i/a.qcow2</path>\
+             <format type='qcow2'/></target></volume>",
+        )
+        .unwrap();
+        assert_eq!(vol.format.as_deref(), Some("qcow2"));
+        assert_eq!(vol.capacity, 1024);
+        assert_eq!(vol.pretty_name("dir"), "a.qcow2");
+        assert_eq!(vol.pretty_name("iscsi"), "a.qcow2 (/i/a.qcow2)");
+    }
+
+    #[test]
     fn vol_install() {
         let pool = PoolXml {
             name: "default".into(),
             pool_type: "dir".into(),
             target_path: Some("/var/lib/libvirt/images".into()),
+            ..Default::default()
         };
         let vol = VolInstall::new("vm.qcow2", Some(&pool), 2.0, true, Some("qcow2")).unwrap();
         assert_eq!(vol.capacity, 2 * 1024 * 1024 * 1024);

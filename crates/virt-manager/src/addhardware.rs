@@ -4,7 +4,7 @@
 //! hotplugs it into a running VM and adds it to the persistent config.
 //!
 //! **Not ported yet**: the XML editor tab (`xmleditor.py`), the
-//! storage browser behind "Manage..." (a local file chooser stands in)
+//! storage browser behind "Manage..."
 //! and `check_path_search`'s permission fixups.
 
 use std::cell::{Cell, RefCell};
@@ -25,6 +25,7 @@ use crate::error;
 use crate::fsdetails::FsDetails;
 use crate::gfxdetails::GraphicsDetails;
 use crate::netlist::NetList;
+use crate::storagebrowse::{self, BrowseReason, StorageBrowser};
 use crate::tpmdetails::TpmDetails;
 use crate::vsockdetails::VsockDetails;
 
@@ -400,6 +401,7 @@ pub struct AddHardware(Rc<Inner>);
 struct Inner {
     vm: VmmDomain,
     window: gtk::Window,
+    storagebrowser: RefCell<Option<StorageBrowser>>,
     hw_list: gtk::ListBox,
     options: Vec<HwOption>,
     top_pages: gtk::Stack,
@@ -832,6 +834,7 @@ impl AddHardware {
         let this = AddHardware(Rc::new(Inner {
             vm: vm.clone(),
             window,
+            storagebrowser: RefCell::default(),
             hw_list,
             options,
             top_pages,
@@ -1005,6 +1008,9 @@ impl AddHardware {
             glib::g_debug!("virt-manager", "Closing addhw");
             self.0.window.set_visible(false);
         }
+        if let Some(b) = self.0.storagebrowser.borrow().as_ref() {
+            b.close();
+        }
     }
 
     /// `_cleanup`.
@@ -1126,23 +1132,23 @@ impl AddHardware {
         self.0.addstorage.set_disk_bus(bus.as_deref());
     }
 
-    /// `_browse_file`: picks a local file into `entry`. The storage
-    /// browser (`storagebrowse.py`) isn't ported yet, so this is its
-    /// "Browse Local" button.
+    /// `_browse_file`: the storage browser fills `entry`.
     fn browse_storage(&self, entry: &gtk::Entry) {
+        let Some(conn) = self.0.vm.conn() else {
+            return;
+        };
         let entry = entry.clone();
-        let window = self.0.window.clone();
-        glib::spawn_future_local(async move {
-            let dialog = gtk::FileDialog::builder()
-                .title("Locate existing storage")
-                .modal(true)
-                .build();
-            if let Ok(file) = dialog.open_future(Some(&window)).await {
-                if let Some(path) = file.path() {
-                    entry.set_text(&path.to_string_lossy());
+        storagebrowse::browse(
+            &self.0.storagebrowser,
+            &conn,
+            &self.0.window,
+            BrowseReason::Image,
+            move |path| {
+                if !path.is_empty() {
+                    entry.set_text(path);
                 }
-            }
-        });
+            },
+        );
     }
 
     /// `_build_storage`, with `vmmAddStorage.build_device`: the pool
