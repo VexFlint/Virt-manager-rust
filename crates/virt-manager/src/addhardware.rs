@@ -3,17 +3,17 @@
 //! under the blue header on the right; Finish builds the device,
 //! hotplugs it into a running VM and adds it to the persistent config.
 //!
-//! **Not ported yet**: the Storage, Network and host device pages
-//! (`addstorage.py`, the nodedev list), whose rows stay insensitive,
-//! and the XML editor tab (`xmleditor.py`).
+//! **Not ported yet**: the Storage page (`addstorage.py`), whose row
+//! stays insensitive, and the XML editor tab (`xmleditor.py`).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gtk::glib;
 use gtk::prelude::*;
-use virtinst_core::devices::build::{self, GuestInfo, NewChar};
+use virtinst_core::devices::build::{self, GuestInfo, NewChar, NewInterface};
 use virtinst_core::devices::DeviceId;
+use virtinst_core::nodedev::NodeDevice;
 use virtinst_xml::{Document, Element};
 
 use crate::devpages::{input_pretty_name, sound_pretty_model, watchdog_pretty_action};
@@ -22,6 +22,7 @@ use crate::domain::VmmDomain;
 use crate::error;
 use crate::fsdetails::FsDetails;
 use crate::gfxdetails::GraphicsDetails;
+use crate::netlist::NetList;
 use crate::tpmdetails::TpmDetails;
 use crate::vsockdetails::VsockDetails;
 
@@ -85,12 +86,22 @@ struct HwOption {
 /// Makes a device's element in a document.
 type BuildFn = Rc<dyn Fn(&mut Document) -> Result<Element, String>>;
 
+/// What `_validate_device` checks beyond the XML.
+enum Validate {
+    None,
+    /// `self._netlist.validate_device(dev)`.
+    Network(NewInterface),
+    /// `_validate_hostdev_collision`: the node device passed through.
+    Hostdev(Box<NodeDevice>),
+}
+
 /// A device ready to add: `build` makes its element. `usb_replace` is
 /// the USB controller whose model changes instead
 /// (`_remove_usb_controller`).
 struct NewDev {
     build: BuildFn,
     usb_replace: Option<(DeviceId, Option<String>)>,
+    validate: Validate,
 }
 
 impl NewDev {
@@ -98,6 +109,7 @@ impl NewDev {
         NewDev {
             build: Rc::new(build),
             usb_replace: None,
+            validate: Validate::None,
         }
     }
 
@@ -138,6 +150,63 @@ const INPUT_DEVICES: [(&str, &str); 5] = [
     ("tablet", "virtio"),
 ];
 
+/// A `host-device` row: the node device (`None` for "No Devices
+/// Available"), label, sensitive, tooltip.
+type HostdevRow = (Option<NodeDevice>, String, bool, Option<String>);
+
+/// `_populate_hostdev_model`'s rows for `devtype`, sorted by label as
+/// the model is. `devs` is every node device with its `is_active()`.
+fn hostdev_rows(devtype: &str, devs: &[(NodeDevice, bool)]) -> Vec<HostdevRow> {
+    let all: Vec<NodeDevice> = devs.iter().map(|(d, _)| d.clone()).collect();
+    let pretty = |d: &NodeDevice| virtinst_core::nodedev::pretty_name(d, &all);
+    let netdevs: Vec<&NodeDevice> = all
+        .iter()
+        .filter(|d| d.device_type.as_deref() == Some("net"))
+        .collect();
+    let mut rows: Vec<HostdevRow> = devs
+        .iter()
+        .filter(|(d, _)| d.device_type.as_deref() == Some(devtype))
+        .filter(|(d, _)| !d.is_usb_linux_root_hub() && !d.is_pci_bridge())
+        .map(|(dev, active)| {
+            let mut prettyname = pretty(dev);
+            if devtype == "pci" {
+                for subdev in &netdevs {
+                    if subdev.parent.as_ref() == Some(&dev.name) {
+                        prettyname += &format!(" ({})", pretty(subdev));
+                    }
+                }
+            }
+            // parent device names are appended with mdev names in
+            // libvirt 7.8.0
+            if devtype == "mdev" && prettyname.chars().count() <= 41 {
+                for parentdev in &all {
+                    if dev.parent.as_ref() == Some(&parentdev.name) {
+                        prettyname = format!("{} {prettyname}", pretty(parentdev));
+                    }
+                }
+            }
+            let tooltip = (!active).then(|| {
+                format!(
+                    "{prettyname} is not active in the host system.\n\
+                     Please start the mdev in the host system before adding it to the guest."
+                )
+            });
+            (Some(dev.clone()), prettyname, *active, tooltip)
+        })
+        .collect();
+    rows.sort_by(|a, b| a.1.cmp(&b.1));
+    if rows.is_empty() {
+        rows.push((None, "No Devices Available".into(), false, None));
+    }
+    rows
+}
+
+/// Python's `str()` of a list of names: `['a', 'b']`.
+fn py_list(names: &[String]) -> String {
+    let quoted: Vec<String> = names.iter().map(|n| format!("'{n}'")).collect();
+    format!("[{}]", quoted.join(", "))
+}
+
 fn page_box(child: &impl IsA<gtk::Widget>) -> gtk::Box {
     let b = gtk::Box::new(gtk::Orientation::Vertical, 6);
     b.append(child);
@@ -162,9 +231,22 @@ struct Inner {
     controller_model: SimpleCombo,
     controller_model_row: GridRow,
     controller_tooltip: gtk::Image,
+    netlist: Rc<NetList>,
+    mac_address: gtk::CheckButton,
+    create_mac_address: gtk::Entry,
+    net_model: SimpleCombo,
     input_type: SimpleCombo,
     gfx: Rc<GraphicsDetails>,
     sound_model: SimpleCombo,
+    host_device: gtk::ListBox,
+    hostdev_rows: RefCell<Vec<HostdevRow>>,
+    /// Every node device, for `set_from_nodedev`.
+    nodedevs: RefCell<Vec<NodeDevice>>,
+    hostdev_usb_startup_policy: SimpleCombo,
+    hostdev_usb_startup_policy_row: gtk::Box,
+    /// Bumped per `_populate_hostdev_model`, so a slow fetch can't win
+    /// over a newer pick.
+    hostdev_generation: Cell<u32>,
     char_target_name: Rc<EntryCombo>,
     char_target_name_row: GridRow,
     char_device_type: SimpleCombo,
@@ -243,6 +325,75 @@ impl AddHardware {
         row.set_mnemonic(&controller_type.widget);
         let controller_model_row = g.row("_Model:", &controller_model.widget);
         let controller_page = page_box(&g.into_grid());
+
+        // Network
+        let netlist = NetList::new(conn.clone());
+        let mac_address = gtk::CheckButton::new();
+        mac_address.update_property(&[gtk::accessible::Property::Label("mac-address-enable")]);
+        let create_mac_address = gtk::Entry::new();
+        create_mac_address.set_max_length(17);
+        create_mac_address.set_text("aa:bb:cc:dd:ee:ff");
+        create_mac_address
+            .update_property(&[gtk::accessible::Property::Label("MAC Address Field")]);
+        let net_model = SimpleCombo::unsorted(vec![], str::to_string);
+        let net_grid = gtk::Grid::builder()
+            .row_spacing(9)
+            .column_spacing(6)
+            .build();
+        net_grid.attach(&netlist.top_label, 0, 0, 1, 1);
+        net_grid.attach(&netlist.top_box, 1, 0, 1, 1);
+        let mac_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        mac_box.append(&mac_address);
+        mac_box.append(&create_mac_address);
+        let mac_label = gtk::Label::with_mnemonic("_MAC address:");
+        mac_label.set_halign(gtk::Align::End);
+        mac_label.set_mnemonic_widget(Some(&create_mac_address));
+        net_grid.attach(&mac_label, 0, 1, 1, 1);
+        net_grid.attach(&mac_box, 1, 1, 1, 1);
+        let model_label = gtk::Label::with_mnemonic("Device mode_l:");
+        model_label.set_halign(gtk::Align::End);
+        model_label.set_mnemonic_widget(Some(&net_model.widget));
+        net_grid.attach(&model_label, 0, 2, 1, 1);
+        net_grid.attach(&net_model.widget, 1, 2, 1, 1);
+        let network_page = page_box(&net_grid);
+
+        // Host device
+        let host_device = gtk::ListBox::new();
+        host_device.set_selection_mode(gtk::SelectionMode::Browse);
+        host_device.update_property(&[gtk::accessible::Property::Label("host-device")]);
+        let host_scroll = gtk::ScrolledWindow::builder()
+            .child(&host_device)
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .has_frame(true)
+            .width_request(500)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        let mut values = vec![(None, "Hypervisor default".to_string())];
+        values.extend(
+            virtinst_core::devices::hostdev::STARTUP_POLICIES
+                .iter()
+                .map(|m| (Some(m.to_string()), m.to_string())),
+        );
+        let hostdev_usb_startup_policy = SimpleCombo::unsorted(values, str::to_string);
+        hostdev_usb_startup_policy.set(None);
+        let hostdev_usb_startup_policy_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let policy_label = gtk::Label::new(Some("Startup Policy:"));
+        hostdev_usb_startup_policy_row.append(&policy_label);
+        hostdev_usb_startup_policy_row.append(&hostdev_usb_startup_policy.widget);
+        let host_grid = gtk::Grid::builder()
+            .row_spacing(6)
+            .column_spacing(6)
+            .build();
+        let host_label = gtk::Label::with_mnemonic("Host _Device:");
+        host_label.set_halign(gtk::Align::Start);
+        host_label.set_mnemonic_widget(Some(&host_device));
+        host_grid.attach(&host_label, 0, 0, 1, 1);
+        host_grid.attach(&host_scroll, 0, 1, 1, 1);
+        host_grid.attach(&hostdev_usb_startup_policy_row, 0, 2, 1, 1);
+        let hostdev_page = page_box(&host_grid);
+        hostdev_page.set_vexpand(true);
 
         // Input
         let input_type = SimpleCombo::new(
@@ -401,9 +552,11 @@ impl AddHardware {
         create_pages.set_hhomogeneous(false);
         for (page, widget) in [
             (Page::Controller, &controller_page),
+            (Page::Network, &network_page),
             (Page::Input, &input_page),
             (Page::Graphics, &graphics_page),
             (Page::Sound, &sound_page),
+            (Page::Hostdev, &hostdev_page),
             (Page::Char, &char_page),
             (Page::Video, &video_page),
             (Page::Watchdog, &watchdog_page),
@@ -481,9 +634,19 @@ impl AddHardware {
             controller_model,
             controller_model_row,
             controller_tooltip,
+            netlist,
+            mac_address,
+            create_mac_address,
+            net_model,
             input_type,
             gfx,
             sound_model,
+            host_device,
+            hostdev_rows: RefCell::default(),
+            nodedevs: RefCell::default(),
+            hostdev_usb_startup_policy,
+            hostdev_usb_startup_policy_row,
+            hostdev_generation: Cell::new(0),
             char_target_name,
             char_target_name_row,
             char_device_type,
@@ -538,6 +701,10 @@ impl AddHardware {
         i.char_target_name.entry.connect_changed(move |_| cb());
         let cb = with(AddHardware::change_char_auto_socket);
         i.char_auto_socket.connect_toggled(move |_| cb());
+        let cb = with(AddHardware::change_macaddr_use);
+        i.mac_address.connect_toggled(move |_| cb());
+        let cb = with(AddHardware::hostdev_row_selected);
+        i.host_device.connect_row_selected(move |_, _| cb());
         let cb = with(AddHardware::change_controller_type);
         i.controller_type
             .widget
@@ -625,6 +792,16 @@ impl AddHardware {
         let i = &self.0;
         self.set_hw_selection(0);
 
+        // Network init
+        let newmac = i.vm.conn().and_then(|c| generate_mac(&c));
+        i.mac_address.set_active(newmac.is_some());
+        i.create_mac_address
+            .set_text(newmac.as_deref().unwrap_or_default());
+        self.change_macaddr_use();
+
+        i.netlist.reset_state();
+        self.populate_network_model_combo();
+
         // Char parameters
         i.char_path.set_text("");
         i.char_channel.set_text("");
@@ -648,6 +825,98 @@ impl AddHardware {
             let (have_shared_mem, _) = i.vm.has_shared_mem().await;
             i.fs.set_have_shared_mem(have_shared_mem);
         });
+    }
+
+    /// `populate_network_model_combo`.
+    fn populate_network_model_combo(&self) {
+        let i = &self.0;
+        let guest = guest_info(&i.vm);
+        let is_qemu = i.vm.conn().is_some_and(|c| c.is_qemu());
+        let mut values = vec![(None, "Hypervisor default".to_string())];
+        values.extend(
+            virtinst_core::devices::network::recommended_models(
+                guest.domain_type.as_deref().unwrap_or_default(),
+                guest.os_type.as_deref().unwrap_or_default(),
+                guest.arch.as_deref().unwrap_or_default(),
+                guest.machine.as_deref().unwrap_or_default(),
+            )
+            .into_iter()
+            .map(|m| (Some(m.to_string()), m.to_string())),
+        );
+        i.net_model.set_values(values);
+        i.net_model.set(guest.default_nic_model(is_qemu));
+    }
+
+    /// `_change_macaddr_use`.
+    fn change_macaddr_use(&self) {
+        let i = &self.0;
+        i.create_mac_address
+            .set_sensitive(i.mac_address.is_active());
+    }
+
+    /// `_populate_hostdev_model`: fetched on a worker, so Finish waits
+    /// for the rows.
+    fn populate_hostdev_model(&self, devtype: &'static str) {
+        let i = &self.0;
+        let gen = i.hostdev_generation.get() + 1;
+        i.hostdev_generation.set(gen);
+        i.hostdev_rows.replace(vec![]);
+        i.host_device.remove_all();
+        i.finish.set_sensitive(false);
+        let Some(conn) = i.vm.conn() else {
+            return;
+        };
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let devs = conn.list_nodedevs_with_state().await;
+            let i = &this.0;
+            if i.hostdev_generation.get() != gen {
+                return;
+            }
+            // `filter_nodedevs` takes the libvirt name of the type.
+            let nodedev_type = if devtype == "usb" {
+                "usb_device"
+            } else {
+                devtype
+            };
+            let rows = hostdev_rows(nodedev_type, &devs);
+            for (_, label, sensitive, tooltip) in &rows {
+                let l = gtk::Label::new(Some(label));
+                l.set_xalign(0.0);
+                l.set_margin_start(3);
+                l.set_margin_end(3);
+                l.set_margin_top(2);
+                l.set_margin_bottom(2);
+                l.set_sensitive(*sensitive);
+                l.set_tooltip_text(tooltip.as_deref());
+                i.host_device.append(&l);
+            }
+            i.hostdev_rows.replace(rows);
+            i.nodedevs
+                .replace(devs.into_iter().map(|(d, _)| d).collect());
+            i.host_device
+                .select_row(i.host_device.row_at_index(0).as_ref());
+            this.hostdev_row_selected();
+        });
+    }
+
+    /// `_hostdev_row_selected_cb`.
+    fn hostdev_row_selected(&self) {
+        let i = &self.0;
+        if self.get_hw_selection().map(|o| o.page) != Some(Page::Hostdev) {
+            return;
+        }
+        let sensitive = i
+            .host_device
+            .selected_row()
+            .and_then(|r| {
+                i.hostdev_rows
+                    .borrow()
+                    .get(r.index() as usize)
+                    .map(|row| row.2)
+            })
+            .unwrap_or(false);
+        i.finish.set_sensitive(sensitive);
     }
 
     fn set_hw_selection(&self, idx: i32) {
@@ -696,6 +965,14 @@ impl AddHardware {
             self.populate_char_device_type_combo();
             self.change_char_device_type();
             self.change_char_target_name();
+        }
+        if page == Page::Hostdev {
+            // Need to do this here, since we share the hostdev page
+            // between two separate HW options
+            let devtype = opt.devtype.unwrap_or("usb");
+            self.populate_hostdev_model(devtype);
+            i.hostdev_usb_startup_policy_row
+                .set_visible(devtype == "usb");
         }
         if page == Page::Controller {
             // We need to trigger this as it can desensitive 'finish'
@@ -995,9 +1272,58 @@ impl AddHardware {
                 let (auto_cid, cid) = i.vsock.get_values();
                 NewDev::new(move |doc| Ok(build::vsock(doc, auto_cid, cid)))
             }
-            Page::Disk | Page::Network | Page::Hostdev => {
-                return Err("This device type isn't supported yet".into())
+            Page::Network => {
+                let (nettype, source, source_mode, portgroup) =
+                    i.netlist
+                        .get_network_selection()
+                        .ok_or("No network source selected")?;
+                let mac = if i.mac_address.is_active() {
+                    i.create_mac_address.text().to_string()
+                } else {
+                    // `set_defaults`, here so the hotplugged and the
+                    // persistent device get the same MAC.
+                    conn.as_ref().and_then(generate_mac).unwrap_or_default()
+                };
+                let is_qemu = conn.as_ref().is_some_and(|c| c.is_qemu());
+                let default_model = guest.default_nic_model(is_qemu);
+                let n = NewInterface {
+                    nettype,
+                    source,
+                    source_mode,
+                    portgroup,
+                    mac,
+                    model: i.net_model.get(),
+                };
+                let mut dev = NewDev::new({
+                    let n = n.clone();
+                    move |doc| Ok(build::interface(doc, &n, default_model))
+                });
+                dev.validate = Validate::Network(n);
+                dev
             }
+            Page::Hostdev => {
+                let row = i
+                    .host_device
+                    .selected_row()
+                    .and_then(|r| i.hostdev_rows.borrow().get(r.index() as usize).cloned());
+                let nodedev = row.and_then(|r| r.0).ok_or("No host device selected")?;
+                let all = i.nodedevs.borrow().clone();
+                let is_xen = conn.as_ref().is_some_and(|c| c.is_xen());
+                let policy = i.hostdev_usb_startup_policy.get();
+                let dev = {
+                    let nodedev = nodedev.clone();
+                    NewDev::new(move |doc| {
+                        build::hostdev(doc, &nodedev, &all, is_xen, policy.as_deref())
+                    })
+                };
+                // `set_from_nodedev` raises for a type it can't pass.
+                dev.xml()?;
+                NewDev {
+                    validate: Validate::Hostdev(Box::new(nodedev)),
+                    ..dev
+                }
+            }
+            Page::Disk => return Err("This device type isn't supported yet".into()),
         })
     }
 
@@ -1059,6 +1385,15 @@ impl AddHardware {
         let Some(dev) = self.build_device().await else {
             return;
         };
+        match self.validate_device(&dev).await {
+            Ok(true) => (),
+            Ok(false) => return,
+            Err(e) => {
+                self.show_err(&format!("Error validating device parameters: {e}"), None)
+                    .await;
+                return;
+            }
+        }
 
         let i = &self.0;
         i.window.set_cursor_from_name(Some("progress"));
@@ -1087,6 +1422,53 @@ impl AddHardware {
         if !failure {
             self.close();
         }
+    }
+
+    /// `_validate_device`: whether to go on.
+    async fn validate_device(&self, dev: &NewDev) -> Result<bool, String> {
+        let i = &self.0;
+        match &dev.validate {
+            Validate::None => (),
+            Validate::Network(n) => {
+                i.netlist
+                    .validate_device(&i.window, &n.nettype, n.source.as_deref(), &n.mac)
+                    .await?
+            }
+            Validate::Hostdev(nodedev) => {
+                // `_validate_hostdev_collision`
+                let names: Vec<String> =
+                    i.vm.conn()
+                        .map(|c| c.list_vms())
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|vm| {
+                            vm.xmlobj().is_some_and(|x| {
+                                virtinst_xml::resolve_path(&x.doc, x.root(), &["devices"])
+                                    .map(|d| d.find_all(&x.doc, "hostdev"))
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .any(|h| nodedev.compare_to_hostdev(&x.doc, h))
+                            })
+                        })
+                        .map(|vm| vm.get_name())
+                        .collect();
+                if !names.is_empty() {
+                    let res = error::yes_no(
+                        Some(&i.window),
+                        &format!(
+                            "The device is already in use by other guests {}",
+                            py_list(&names)
+                        ),
+                        Some("Do you really want to use the device?"),
+                    )
+                    .await;
+                    if !res {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+        Ok(true)
     }
 
     /// `_add_device`: hotplug, asking whether to go on when that fails,
@@ -1196,14 +1578,13 @@ fn guest_info(vm: &VmmDomain) -> GuestInfo {
         .any(|g| g.find(doc, "gl").and_then(|gl| gl.attribute(doc, "enable")) == Some("yes"));
     let is_uefi = (os.loader.is_some() && os.loader_type.as_deref() == Some("pflash"))
         || os.firmware.as_deref() == Some("efi");
-    let os_virtiogpu = x
+    let osinfo = x
         .guest
         .metadata
         .libosinfo
         .os_id
         .as_deref()
-        .and_then(crate::oslist::lookup_osinfo)
-        .is_some_and(|o| o.supports_virtiogpu());
+        .and_then(crate::oslist::lookup_osinfo);
     GuestInfo {
         os_type: os.os_type.clone(),
         arch: os.arch.clone(),
@@ -1212,8 +1593,25 @@ fn guest_info(vm: &VmmDomain) -> GuestInfo {
         has_spice,
         has_gl,
         is_uefi,
-        os_virtiogpu,
+        os_virtiogpu: osinfo.as_ref().is_some_and(|o| o.supports_virtiogpu()),
+        os_virtionet: osinfo.as_ref().is_some_and(|o| o.supports_virtionet()),
+        os_netmodels: osinfo
+            .as_ref()
+            .map(|o| o.supported_netmodels())
+            .unwrap_or_default(),
     }
+}
+
+/// `DeviceInterface.generate_mac`: a random MAC no VM on `conn` uses.
+fn generate_mac(conn: &crate::connection::VmmConnection) -> Option<String> {
+    for _ in 0..256 {
+        let mac = virtinst_core::cloner::generate_mac(conn.is_qemu());
+        if crate::netlist::check_mac_in_use(conn, &mac).is_ok() {
+            return Some(mac);
+        }
+    }
+    glib::g_debug!("virt-manager", "Failed to generate non-conflicting MAC");
+    None
 }
 
 /// `_set_initial_state`'s `add_hw_option` rows.
@@ -1221,6 +1619,13 @@ fn hw_options(guest: &GuestInfo) -> Vec<HwOption> {
     let is_hvm = guest.is_hvm();
     let not_hvm = Some("Not supported for this guest type.");
     let unported = Some("This device type isn't supported yet.");
+    // Every libvirt we support has `conn_nodedev`.
+    let nodedev_err = Some("Connection does not support host device enumeration");
+    let pci_err = if guest.is_container() {
+        Some("Not supported for containers")
+    } else {
+        nodedev_err
+    };
     let vsock_err = Some("Not supported for this hypervisor/libvirt/arch combination.");
     let opt = |name, icon, page, sensitive: bool, errortxt: Option<&str>, devtype| HwOption {
         name,
@@ -1247,14 +1652,7 @@ fn hw_options(guest: &GuestInfo) -> Vec<HwOption> {
             None,
             None,
         ),
-        opt(
-            "Network",
-            "network-idle",
-            Page::Network,
-            false,
-            unported,
-            None,
-        ),
+        opt("Network", "network-idle", Page::Network, true, None, None),
         opt("Input", "input-mouse", Page::Input, is_hvm, not_hvm, None),
         opt(
             "Graphics",
@@ -1301,24 +1699,24 @@ fn hw_options(guest: &GuestInfo) -> Vec<HwOption> {
             "USB Host Device",
             "device_usb",
             Page::Hostdev,
-            false,
-            unported,
+            true,
+            nodedev_err,
             Some("usb"),
         ),
         opt(
             "PCI Host Device",
             "device_pci",
             Page::Hostdev,
-            false,
-            unported,
+            !guest.is_container(),
+            pci_err,
             Some("pci"),
         ),
         opt(
             "MDEV Host Device",
             "device_pci",
             Page::Hostdev,
-            false,
-            unported,
+            true,
+            nodedev_err,
             Some("mdev"),
         ),
         opt("Video", "video-display", Page::Video, true, None, None),
@@ -1391,6 +1789,41 @@ fn hw_row(opt: &HwOption) -> gtk::ListBoxRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hostdev_list() {
+        let parse = |xml: &str| NodeDevice::parse(xml).unwrap();
+        let pci = parse(
+            "<device><name>pci_0000_00_03_0</name><capability type='pci'>\
+             <domain>0</domain><bus>0</bus><slot>3</slot><function>0</function>\
+             <product id='0x100e'>82540EM</product><vendor id='0x8086'>Intel</vendor>\
+             </capability></device>",
+        );
+        let net = parse(
+            "<device><name>net_eth0</name><parent>pci_0000_00_03_0</parent>\
+             <capability type='net'><interface>eth0</interface></capability></device>",
+        );
+        let bridge = parse(
+            "<device><name>pci_0000_00_1c_0</name><capability type='pci'>\
+             <capability type='pci-bridge'/></capability></device>",
+        );
+        let hub = parse(
+            "<device><name>usb_usb1</name><capability type='usb_device'><bus>1</bus>\
+             <device>1</device><product id='0x0002'/><vendor id='0x1d6b'/>\
+             </capability></device>",
+        );
+        let devs = vec![(pci, true), (net, true), (bridge, true), (hub, false)];
+        let rows = hostdev_rows("pci", &devs);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1, "0000:00:03:0 Intel 82540EM (Interface eth0)");
+        assert!(rows[0].2 && rows[0].3.is_none());
+        let rows = hostdev_rows("usb_device", &devs);
+        assert_eq!(
+            (rows[0].0.is_none(), rows[0].1.as_str(), rows[0].2),
+            (true, "No Devices Available", false)
+        );
+        assert_eq!(py_list(&["a".into(), "b".into()]), "['a', 'b']");
+    }
 
     #[test]
     fn char_types() {
