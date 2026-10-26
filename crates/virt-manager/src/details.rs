@@ -75,6 +75,7 @@ enum Edit {
     WatchdogModel,
     WatchdogAction,
     Gfx,
+    ControllerModel,
 }
 
 impl HwType {
@@ -1607,6 +1608,8 @@ struct Inner {
     redir: crate::devpages::RedirPage,
     rng: crate::devpages::RngPage,
     panic: crate::devpages::PanicPage,
+    char_page: crate::devpages::CharPage,
+    controller: crate::devpages::ControllerPage,
     graphics_title: gtk::Label,
     gfxdetails: Rc<crate::gfxdetails::GraphicsDetails>,
     unported: gtk::Label,
@@ -1662,6 +1665,8 @@ impl VmmDetails {
         let redir = dp::RedirPage::new();
         let rng = dp::RngPage::new();
         let panic = dp::PanicPage::new();
+        let char_page = dp::CharPage::new();
+        let controller = dp::ControllerPage::new();
         let gfxdetails = crate::gfxdetails::GraphicsDetails::new(vm.conn());
         let graphics_title = dp::title("");
         let graphics_page = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -1689,6 +1694,8 @@ impl VmmDetails {
         hw_panel.add_named(&rng.page, Some("rng"));
         hw_panel.add_named(&panic.page, Some("panic"));
         hw_panel.add_named(&graphics_page, Some("graphics"));
+        hw_panel.add_named(&char_page.page, Some("char"));
+        hw_panel.add_named(&controller.page, Some("controller"));
         hw_panel.add_named(&unported, Some("unported"));
         let panel_scroll = gtk::ScrolledWindow::builder()
             .child(&hw_panel)
@@ -1740,6 +1747,8 @@ impl VmmDetails {
             redir,
             rng,
             panic,
+            char_page,
+            controller,
             graphics_title,
             gfxdetails,
             unported,
@@ -1858,6 +1867,11 @@ impl VmmDetails {
         let cb = enable(Edit::WatchdogAction);
         i.watchdog
             .action
+            .widget
+            .connect_selected_notify(move |_| cb());
+        let cb = enable(Edit::ControllerModel);
+        i.controller
+            .model
             .widget
             .connect_selected_notify(move |_| cb());
         let cb = enable(Edit::Gfx);
@@ -2344,6 +2358,7 @@ impl VmmDetails {
             HwType::Video => Ok(self.apply_video(&row).await),
             HwType::Watchdog => Ok(self.apply_watchdog(&row).await),
             HwType::Graphics => Ok(self.apply_graphics(&row).await),
+            HwType::Controller => Ok(self.apply_controller(&row).await),
             _ => Ok(true),
         };
         let success = match res {
@@ -2579,17 +2594,141 @@ impl VmmDetails {
         row: &HwRow,
         edit: impl Fn(&mut Document, Element) -> Result<(), String> + Clone + 'static,
     ) -> bool {
+        self.change_device_config_split(row, edit.clone(), edit)
+            .await
+    }
+
+    /// `change_device_config` where the running VM gets a different
+    /// edit than the inactive config.
+    async fn change_device_config_split(
+        &self,
+        row: &HwRow,
+        edit: impl Fn(&mut Document, Element) -> Result<(), String> + 'static,
+        hedit: impl Fn(&mut Document, Element) -> Result<(), String> + 'static,
+    ) -> bool {
         let Some(id) = self.device_id(row) else {
             return false;
         };
         let vm = self.0.vm.clone();
         let hotplug_vm = vm.clone();
-        let (hid, hedit) = (id.clone(), edit.clone());
+        let hid = id.clone();
         self.change_config(
             async move { vm.define_device(&id, edit).await },
             Some(Box::pin(async move {
                 hotplug_vm.hotplug_device(&hid, hedit).await
             })),
+        )
+        .await
+    }
+
+    /// `_refresh_char_page`.
+    fn refresh_char_page(&self, row: &HwRow) {
+        let Some((x, el)) = self.device_element(row) else {
+            return;
+        };
+        let Some((tag, _)) = &row.device else {
+            return;
+        };
+        let doc = &x.doc;
+        // `serial_is_console_dup` (`DeviceConsole.get_console_duplicate`)
+        let primary = tag == "serial"
+            && virtinst_xml::resolve_path(doc, x.root(), &["devices", "console"]).is_some_and(
+                |console| {
+                    let ctarget = child_attr(doc, console, &["target"], "type");
+                    attr(doc, console, "type") == attr(doc, el, "type")
+                        && ctarget.as_deref().map_or(true, |t| t == "serial")
+                },
+            );
+        self.0.char_page.refresh(doc, el, tag, primary);
+    }
+
+    /// `_refresh_controller_page`.
+    fn refresh_controller_page(&self, row: &HwRow) {
+        let Some((x, el)) = self.device_element(row) else {
+            return;
+        };
+        let doc = &x.doc;
+        let ctype = attr(doc, el, "type").unwrap_or_default();
+        let model = attr(doc, el, "model");
+        let attached = matches!(ctype.as_str(), "scsi" | "sata" | "ide" | "fdc").then(|| {
+            // `get_attached_devices`: disks on this bus whose drive
+            // address names this controller's index.
+            let index: Option<i64> = attr(doc, el, "index").and_then(|i| i.parse().ok());
+            let rows = self.0.rows.borrow();
+            let disks = virtinst_xml::resolve_path(doc, x.root(), &["devices"])
+                .map(|d| d.find_all(doc, "disk"))
+                .unwrap_or_default();
+            disks
+                .into_iter()
+                .enumerate()
+                .filter(|(_, d)| {
+                    let controller: Option<i64> = child_attr(doc, *d, &["address"], "controller")
+                        .and_then(|c| c.parse().ok());
+                    child_attr(doc, *d, &["target"], "bus").as_deref() == Some(ctype.as_str())
+                        && controller == index
+                })
+                .map(|(idx, d)| {
+                    let name = rows
+                        .iter()
+                        .find(|r| r.device == Some(("disk".to_string(), idx)))
+                        .map(|r| r.label.clone())
+                        .unwrap_or_default();
+                    // `DeviceAddress.pretty_desc`
+                    let a = |n| child_attr(doc, d, &["address"], n).unwrap_or("None".into());
+                    let address =
+                        if child_attr(doc, d, &["address"], "type").as_deref() == Some("drive") {
+                            format!(
+                                "{}:{}:{}:{}",
+                                a("controller"),
+                                a("bus"),
+                                a("target"),
+                                a("unit")
+                            )
+                        } else {
+                            "None".into()
+                        };
+                    format!("{name} on {address}")
+                })
+                .collect()
+        });
+        let type_label = controller_pretty_desc(&ctype, model.as_deref());
+        self.0.controller.refresh(doc, el, &type_label, attached);
+    }
+
+    /// `_apply_controller`.
+    async fn apply_controller(&self, row: &HwRow) -> bool {
+        let model = self
+            .edited(Edit::ControllerModel)
+            .then(|| self.0.controller.model.get());
+        let Some((x, el)) = self.device_element(row) else {
+            return false;
+        };
+        let is_usb = attr(&x.doc, el, "type").as_deref() == Some("usb");
+        let hmodel = model.clone();
+        self.change_device_config_split(
+            row,
+            move |doc, el| {
+                use virtinst_core::devices::controller as c;
+                let Some(model) = &model else {
+                    return Ok(());
+                };
+                if is_usb {
+                    let devices = el.parent(doc).ok_or("Controller has no parent")?;
+                    c::set_usb_model(doc, devices, model.as_deref());
+                } else {
+                    c::set_model(doc, el, model.as_deref());
+                }
+                Ok(())
+            },
+            // The running VM's USB controllers stay as they are; the
+            // device goes back to libvirt unchanged, like upstream's
+            // hotplug of the untouched live device.
+            move |doc, el| {
+                if let (Some(model), false) = (&hmodel, is_usb) {
+                    virtinst_core::devices::controller::set_model(doc, el, model.as_deref());
+                }
+                Ok(())
+            },
         )
         .await
     }
@@ -3037,6 +3176,14 @@ impl VmmDetails {
             HwType::Graphics => {
                 self.refresh_graphics_page(&row);
                 i.hw_panel.set_visible_child_name("graphics");
+            }
+            HwType::Char => {
+                self.refresh_char_page(&row);
+                i.hw_panel.set_visible_child_name("char");
+            }
+            HwType::Controller => {
+                self.refresh_controller_page(&row);
+                i.hw_panel.set_visible_child_name("controller");
             }
             _ => i.hw_panel.set_visible_child(&i.unported),
         }

@@ -2,7 +2,7 @@
 //! `virtinst-xml-derive` for the `#[derive(XmlBound)]` macro that
 //! generates code against the traits and helpers here.
 
-pub use edit_xml::{Document, EditXMLError, Element, ReadOptions, Result, WriteOptions};
+pub use edit_xml::{Document, EditXMLError, Element, Node, ReadOptions, Result, WriteOptions};
 pub use virtinst_xml_derive::XmlBound;
 
 /// `Document::parse_str`, but relaxed to not require an XML declaration
