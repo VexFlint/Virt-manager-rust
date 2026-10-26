@@ -184,6 +184,16 @@ pub fn remove_path_if_present(
     Ok(())
 }
 
+/// Serializes one element and its subtree on its own, e.g. a device
+/// for `virDomainUpdateDeviceFlags`. Consumes the document, since the
+/// element is moved to be its new root.
+pub fn element_to_string(mut doc: Document, el: Element) -> Result<String> {
+    el.detach(&mut doc)?;
+    doc.container().clear_children(&mut doc);
+    doc.push_root_node(el)?;
+    doc.write_str()
+}
+
 /// Repeated child elements — `#[xml(list)]` on a `Vec<T>` field, e.g.
 /// `Vec<DeviceDisk>` under a `<devices>` container. Deliberately
 /// **not** a `write_to`/reconcile-a-Vec design: nothing in this project
