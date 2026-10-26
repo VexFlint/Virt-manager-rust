@@ -17,7 +17,7 @@ use virtinst_core::devices::DeviceId;
 use virtinst_core::nodedev::NodeDevice;
 use virtinst_xml::{Document, Element};
 
-use crate::addstorage::AddStorage;
+use crate::addstorage::{plan_disk, AddStorage, DiskRequest};
 use crate::devpages::{input_pretty_name, sound_pretty_model, watchdog_pretty_action};
 use crate::devpages::{EntryCombo, Grid, GridRow, SimpleCombo};
 use crate::domain::VmmDomain;
@@ -214,7 +214,7 @@ fn hostdev_rows(devtype: &str, devs: &[(NodeDevice, bool)]) -> Vec<HostdevRow> {
 }
 
 /// Python's `str()` of a list of names: `['a', 'b']`.
-fn py_list(names: &[String]) -> String {
+pub(crate) fn py_list(names: &[String]) -> String {
     let quoted: Vec<String> = names.iter().map(|n| format!("'{n}'")).collect();
     format!("[{}]", quoted.join(", "))
 }
@@ -296,99 +296,6 @@ fn icon_dropdown(rows: &[(&str, &str)]) -> gtk::DropDown {
     });
     dropdown.set_factory(Some(&factory));
     dropdown
-}
-
-/// What the storage page's worker found: `vmmAddStorage.build_device`
-/// up to the disk's XML.
-struct DiskPlan {
-    path: Option<String>,
-    props: Option<virtinst_core::devices::disk::PathProps>,
-    vol_install: Option<virtinst_core::storage::VolInstall>,
-}
-
-/// What [`plan_disk`] needs from the page.
-struct DiskRequest {
-    vmname: String,
-    is_default_storage: bool,
-    entry_path: String,
-    size: f64,
-    fmt: Option<String>,
-    collide_paths: Vec<String>,
-    is_session: bool,
-    is_local: bool,
-}
-
-/// Blocking: `get_default_path`, `set_source_path` (`manage_path`) and,
-/// for storage that doesn't exist yet, `build_vol_install`.
-fn plan_disk(conn: &virt::connect::Connect, req: &DiskRequest) -> Result<DiskPlan, String> {
-    use virtinst_core::storage;
-    let path = if req.is_default_storage {
-        // `get_default_path`
-        match storage::lookup_default_pool(conn, req.is_session) {
-            Some(pool) => {
-                let suffix = storage::file_extension_for_format(req.fmt.as_deref());
-                let suffix = if suffix.is_empty() {
-                    ".img".into()
-                } else {
-                    suffix
-                };
-                let name =
-                    storage::find_free_name(&pool, &req.vmname, &suffix, &req.collide_paths)?;
-                let target = pool.xml.target_path.clone().unwrap_or_default();
-                Some(format!("{}/{name}", target.trim_end_matches('/')))
-            }
-            None => None,
-        }
-    } else {
-        Some(req.entry_path.clone()).filter(|p| !p.is_empty())
-    };
-    let Some(path) = path else {
-        return Ok(DiskPlan {
-            path: None,
-            props: None,
-            vol_install: None,
-        });
-    };
-    let path = path.strip_prefix("file://").unwrap_or(&path).to_string();
-    let managed = storage::manage_path(conn, &path)?;
-    if let Some(vol) = &managed.vol {
-        return Ok(DiskPlan {
-            path: Some(managed.path),
-            props: Some(storage::vol_path_props(vol)),
-            vol_install: None,
-        });
-    }
-    if managed.pool.is_none() && req.is_local && std::path::Path::new(&managed.path).exists() {
-        let props = crate::domain::path_props(conn, &managed.path, req.is_local);
-        return Ok(DiskPlan {
-            path: Some(managed.path),
-            props: Some(props),
-            vol_install: None,
-        });
-    }
-    // `wants_storage_creation`: if the user changed the default disk
-    // format to raw, assume they want to maximize performance, so fully
-    // allocate the disk image. Otherwise use sparse
-    let sparse = req.fmt.as_deref() != Some("raw");
-    let volname = managed.path.rsplit('/').next().unwrap_or_default();
-    let pool = managed.pool.as_ref().map(|p| &p.xml);
-    let mut vol = storage::VolInstall::new(volname, pool, req.size, sparse, None)?;
-    if vol.supports_format() {
-        glib::g_debug!(
-            "virt-manager",
-            "Using default prefs format={:?} for path={}",
-            req.fmt,
-            managed.path
-        );
-        vol.format = req.fmt.clone().or(vol.format);
-    }
-    // `DeviceDisk.validate`: the volume's name and size
-    vol.validate(conn)?;
-    Ok(DiskPlan {
-        path: Some(managed.path),
-        props: Some(vol.path_props()),
-        vol_install: Some(vol),
-    })
 }
 
 fn page_box(child: &impl IsA<gtk::Widget>) -> gtk::Box {
