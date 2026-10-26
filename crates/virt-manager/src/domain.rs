@@ -221,6 +221,99 @@ pub struct BootEdits {
     pub init: Option<(String, String)>,
 }
 
+/// `define_disk`'s arguments; `None` leaves a part alone.
+#[derive(Debug, Clone, Default)]
+pub struct DiskEdits {
+    /// New media path, `Some(None)` to eject.
+    pub path: Option<Option<String>>,
+    pub readonly: Option<bool>,
+    pub shareable: Option<bool>,
+    pub removable: Option<bool>,
+    pub cache: Option<Option<String>>,
+    pub discard: Option<Option<String>>,
+    pub serial: Option<Option<String>>,
+}
+
+/// Which disk to edit: `compare_device` matches disks by target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiskId {
+    pub target: Option<String>,
+    pub bus: Option<String>,
+}
+
+/// Applies `edits` to `disk`; `sync` is set for the persistent config,
+/// where a new path also updates the disk type and driver.
+fn edit_disk(
+    doc: &mut virtinst_xml::Document,
+    disk: virtinst_xml::Element,
+    edits: &DiskEdits,
+    sync: Option<&virtinst_core::devices::disk::PathProps>,
+    driver_qemu: bool,
+) {
+    use virtinst_core::devices::disk as d;
+    if let Some(path) = &edits.path {
+        d::set_source_path(doc, disk, path.as_deref(), sync, driver_qemu);
+    }
+    if let Some(v) = edits.readonly {
+        d::set_marker(doc, disk, "readonly", v);
+    }
+    if let Some(v) = edits.shareable {
+        d::set_marker(doc, disk, "shareable", v);
+    }
+    if let Some(v) = edits.removable {
+        d::set_removable(doc, disk, v);
+    }
+    if let Some(v) = &edits.serial {
+        d::set_serial(doc, disk, v.as_deref());
+    }
+    if let Some(v) = &edits.cache {
+        d::set_driver_attr(doc, disk, "cache", v.as_deref());
+    }
+    if let Some(v) = &edits.discard {
+        d::set_driver_attr(doc, disk, "discard", v.as_deref());
+    }
+}
+
+/// `diskbackend.manage_path`'s view of a path: a libvirt volume's type
+/// and format when it is one, else what a local `stat` says.
+fn path_props(
+    conn: &Connect,
+    path: &str,
+    is_local: bool,
+) -> virtinst_core::devices::disk::PathProps {
+    use virtinst_core::devices::disk::PathProps;
+    if let Ok(vol) = virt::storage_vol::StorageVol::lookup_by_path(conn, path) {
+        let dev_type = match vol.get_info().map(|i| i.kind) {
+            Ok(sys::VIR_STORAGE_VOL_BLOCK) => "block",
+            Ok(sys::VIR_STORAGE_VOL_DIR) => "dir",
+            Ok(sys::VIR_STORAGE_VOL_NETWORK) | Ok(sys::VIR_STORAGE_VOL_NETDIR) => "network",
+            _ => "file",
+        };
+        let format = vol.get_xml_desc(0).ok().and_then(|xml| {
+            let doc = virtinst_xml::parse_libvirt_xml(&xml).ok()?;
+            let root = doc.root_element()?;
+            virtinst_xml::resolve_path(&doc, root, &["target", "format"])?
+                .attribute(&doc, "type")
+                .map(str::to_string)
+        });
+        return PathProps {
+            dev_type: dev_type.into(),
+            format,
+        };
+    }
+    let dev_type = match std::fs::metadata(path) {
+        Ok(md) if is_local && md.is_dir() => "dir",
+        Ok(md) if is_local && std::os::unix::fs::FileTypeExt::is_block_device(&md.file_type()) => {
+            "block"
+        }
+        _ => "file",
+    };
+    PathProps {
+        dev_type: dev_type.into(),
+        format: None,
+    }
+}
+
 /// `_edit_shared_mem`.
 fn edit_shared_mem(doc: &mut virtinst_xml::Document, root: virtinst_xml::Element, shared: bool) {
     if shared {
@@ -1038,6 +1131,151 @@ impl VmmDomain {
         let root = guest.root();
         virtinst_core::guest::set_os_id(&mut guest.doc, root, os_id.as_deref());
         self.redefine_xmlobj(guest).await
+    }
+
+    fn is_local_conn(&self) -> bool {
+        let uri = self.conn().map(|c| c.get_uri()).unwrap_or_default();
+        virtinst_core::connection::Uri::parse(&uri)
+            .hostname
+            .is_empty()
+    }
+
+    /// `conn.support.conn_disk_driver_name_qemu()`.
+    fn disk_driver_name_qemu(&self) -> bool {
+        let uri = self.conn().map(|c| c.get_uri()).unwrap_or_default();
+        let scheme = virtinst_core::connection::Uri::parse(&uri).scheme;
+        matches!(scheme.split('+').next(), Some("qemu" | "test"))
+    }
+
+    /// `DeviceDisk.path_in_use_by`: the VMs on this connection using
+    /// `path` for a disk or for direct kernel boot. Volume backing
+    /// chains aren't followed.
+    pub async fn path_in_use_by(&self, path: String) -> Result<Vec<String>, String> {
+        self.with_domain(move |conn, _| {
+            let doms = conn
+                .list_all_domains(0)
+                .map_err(|e| e.message().to_string())?;
+            let mut ret = vec![];
+            for dom in doms {
+                let Ok(xml) = dom.get_xml_desc(0) else {
+                    continue;
+                };
+                let Ok(doc) = virtinst_xml::parse_libvirt_xml(&xml) else {
+                    continue;
+                };
+                let Some(root) = doc.root_element() else {
+                    continue;
+                };
+                let name = dom.get_name().unwrap_or_default();
+                let boot = ["kernel", "initrd", "dtb"].iter().any(|k| {
+                    virtinst_xml::resolve_path(&doc, root, &["os", k])
+                        .is_some_and(|e| e.text_content(&doc) == path)
+                });
+                let disk = virtinst_xml::resolve_path(&doc, root, &["devices"])
+                    .map(|devs| devs.find_all(&doc, "disk"))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .any(|d| {
+                        virtinst_core::devices::disk::source_path(&doc, d).as_deref()
+                            == Some(path.as_str())
+                    });
+                if boot || disk {
+                    ret.push(name);
+                }
+            }
+            Ok(ret)
+        })
+        .await
+    }
+
+    /// The storage volume behind a disk, as `(path, capacity)`:
+    /// `conn.get_vol_by_path`, or the named pool volume.
+    pub async fn disk_volume_info(
+        &self,
+        path: Option<String>,
+        volume: Option<(String, String)>,
+    ) -> Option<(String, u64)> {
+        self.with_domain(move |conn, _| {
+            let vol = match (&volume, &path) {
+                (Some((pool, vol)), _) => {
+                    virt::storage_pool::StoragePool::lookup_by_name(conn, pool)
+                        .and_then(|p| virt::storage_vol::StorageVol::lookup_by_name(&p, vol))
+                }
+                (None, Some(path)) => virt::storage_vol::StorageVol::lookup_by_path(conn, path),
+                (None, None) => return Ok(None),
+            };
+            Ok(vol.ok().and_then(|v| {
+                let capacity = v.get_info().ok()?.capacity;
+                Some((v.get_path().ok()?, capacity))
+            }))
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    /// `define_disk` for the persistent config.
+    pub async fn define_disk(&self, id: DiskId, edits: DiskEdits) -> Result<(), String> {
+        let mut guest = self.make_xmlobj_to_define().await?;
+        let root = guest.root();
+        let disk = virtinst_core::devices::disk::find_disk(
+            &guest.doc,
+            root,
+            id.target.as_deref(),
+            id.bus.as_deref(),
+        )
+        .ok_or("Could not find specified device in the inactive VM configuration")?;
+        let sync = match &edits.path {
+            Some(Some(path)) => {
+                let path = path.clone();
+                let is_local = self.is_local_conn();
+                Some(
+                    self.with_domain(move |conn, _| Ok(path_props(conn, &path, is_local)))
+                        .await?,
+                )
+            }
+            _ => Some(virtinst_core::devices::disk::PathProps {
+                dev_type: "file".into(),
+                format: None,
+            }),
+        };
+        edit_disk(
+            &mut guest.doc,
+            disk,
+            &edits,
+            sync.as_ref(),
+            self.disk_driver_name_qemu(),
+        );
+        self.redefine_xmlobj(guest).await
+    }
+
+    /// `define_disk(do_hotplug=True)`: the same edits on the live
+    /// device, pushed with `updateDeviceFlags`.
+    pub async fn hotplug_disk(&self, id: DiskId, edits: DiskEdits) -> Result<(), String> {
+        if !self.is_active() {
+            return Ok(());
+        }
+        let x = self.xmlobj().ok_or("No domain XML")?;
+        let mut doc = virtinst_xml::parse_libvirt_xml(&x.xml).map_err(|e| e.to_string())?;
+        let root = doc.root_element().ok_or("Empty domain XML")?;
+        let disk = virtinst_core::devices::disk::find_disk(
+            &doc,
+            root,
+            id.target.as_deref(),
+            id.bus.as_deref(),
+        )
+        .ok_or("Could not find the device in the running VM")?;
+        edit_disk(&mut doc, disk, &edits, None, false);
+        let devxml = virtinst_xml::element_to_string(doc, disk).map_err(|e| e.to_string())?;
+        glib::g_debug!("virt-manager", "update_device with xml=\n{devxml}");
+        self.with_domain(move |_, dom| {
+            dom.update_device_flags(&devxml, sys::VIR_DOMAIN_DEVICE_MODIFY_LIVE)
+                .map(|_| ())
+                .map_err(|e| e.message().to_string())
+        })
+        .await?;
+        self.ensure_latest_xml().await;
+        Ok(())
     }
 
     /// `define_overview`: `None` leaves a field alone, `Some(None)`

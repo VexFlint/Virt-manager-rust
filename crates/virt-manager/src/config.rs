@@ -95,6 +95,7 @@ pub struct Config {
     details: gio::Settings,
     confirm: gio::Settings,
     paths: gio::Settings,
+    urls: gio::Settings,
     source: gio::SettingsSchemaSource,
     backend: Option<gio::SettingsBackend>,
     /// Per-VM relocatable `.vm` schemas, keyed by UUID.
@@ -142,6 +143,7 @@ impl Config {
             details: open("org.virt-manager.virt-manager.details"),
             confirm: open("org.virt-manager.virt-manager.confirm"),
             paths: open("org.virt-manager.virt-manager.paths"),
+            urls: open("org.virt-manager.virt-manager.urls"),
             source: source.clone(),
             backend: backend.clone(),
             pervm: RefCell::default(),
@@ -472,6 +474,24 @@ impl Config {
     }
     pub fn set_confirm_delstorage(&self, val: bool) {
         let _ = self.confirm.set_boolean("delete-storage", val);
+    }
+
+    /// `_url_add_helper`: newest first, at most ten.
+    fn url_add_helper(&self, key: &str, url: &str) {
+        let mut urls = strv(&self.urls, key);
+        if !urls.iter().any(|u| u == url) && !url.trim().is_empty() {
+            urls.insert(0, url.to_string());
+            urls.truncate(10);
+            set_strv(&self.urls, key, &urls);
+        }
+    }
+
+    pub fn add_iso_path(&self, path: &str) {
+        self.url_add_helper("isos", path);
+    }
+
+    pub fn get_iso_paths(&self) -> Vec<String> {
+        strv(&self.urls, "isos")
     }
 }
 

@@ -63,6 +63,8 @@ enum Edit {
     Kernel,
     Init,
     OsName,
+    DiskPath,
+    Disk,
 }
 
 impl HwType {
@@ -136,6 +138,16 @@ fn attr(doc: &Document, el: Element, name: &str) -> Option<String> {
 
 fn child_attr(doc: &Document, el: Element, path: &[&str], name: &str) -> Option<String> {
     virtinst_xml::resolve_path(doc, el, path).and_then(|c| attr(doc, c, name))
+}
+
+/// storagepool.py's `_pretty_bytes`.
+fn pretty_bytes(val: u64) -> String {
+    let val = val as f64;
+    if val > 1024.0 * 1024.0 * 1024.0 {
+        format!("{:.2} GiB", val / (1024.0 * 1024.0 * 1024.0))
+    } else {
+        format!("{:.2} MiB", val / (1024.0 * 1024.0))
+    }
 }
 
 /// `vmmAddHardware.disk_pretty_bus`.
@@ -1093,6 +1105,206 @@ fn path_entry() -> (gtk::Box, gtk::Entry, gtk::Button) {
     (hbox, entry, browse)
 }
 
+/// `vmmAddStorage`'s `_EDIT_*`: which advanced disk options changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StorageEdit {
+    Cache,
+    Discard,
+    Readonly,
+    Shareable,
+    Removable,
+    Serial,
+}
+
+/// A "Hypervisor default" plus values drop-down (`build_simple_combo`
+/// with a `None` first row).
+struct ModeCombo {
+    widget: gtk::DropDown,
+    values: RefCell<Vec<Option<String>>>,
+}
+
+impl ModeCombo {
+    fn new(modes: &[&str]) -> ModeCombo {
+        let mut values = vec![None];
+        values.extend(modes.iter().map(|m| Some(m.to_string())));
+        let labels: Vec<&str> = std::iter::once("Hypervisor default")
+            .chain(modes.iter().copied())
+            .collect();
+        let widget = gtk::DropDown::from_strings(&labels);
+        widget.set_halign(gtk::Align::Start);
+        ModeCombo {
+            widget,
+            values: RefCell::new(values),
+        }
+    }
+
+    fn get(&self) -> Option<String> {
+        self.values
+            .borrow()
+            .get(self.widget.selected() as usize)
+            .cloned()
+            .flatten()
+    }
+
+    /// `set_list_selection`, adding a row for a value not listed.
+    fn set(&self, val: Option<&str>) {
+        let val = val.map(str::to_string);
+        let idx = self.values.borrow().iter().position(|v| *v == val);
+        let idx = idx.unwrap_or_else(|| {
+            let label = val.clone().unwrap_or_default();
+            if let Some(model) = self.widget.model().and_downcast::<gtk::StringList>() {
+                model.append(&label);
+            }
+            self.values.borrow_mut().push(val);
+            self.values.borrow().len() - 1
+        });
+        self.widget.set_selected(idx as u32);
+    }
+}
+
+/// The disk page (`disk-*`) with `vmmAddStorage`'s advanced options.
+struct DiskPage {
+    page: gtk::Box,
+    source_label: gtk::Label,
+    source_box: gtk::Box,
+    browse: gtk::Button,
+    mediacombo: Rc<crate::mediacombo::MediaCombo>,
+    target_type: gtk::Label,
+    bus_label: gtk::Label,
+    size: gtk::Label,
+    readonly: gtk::CheckButton,
+    shareable: gtk::CheckButton,
+    removable: gtk::CheckButton,
+    removable_label: gtk::Label,
+    serial: gtk::Entry,
+    cache: ModeCombo,
+    discard: ModeCombo,
+    storage_edits: RefCell<Vec<StorageEdit>>,
+}
+
+impl DiskPage {
+    fn new(conn: Option<crate::connection::VmmConnection>) -> DiskPage {
+        let right = |text: &str| {
+            let l = gtk::Label::with_mnemonic(text);
+            l.set_halign(gtk::Align::End);
+            l
+        };
+        let value = || {
+            let l = left_label("");
+            l.set_selectable(true);
+            l
+        };
+        let source_mnemonic = right("Source _path:");
+        let source_label = value();
+        source_label.set_ellipsize(gtk::pango::EllipsizeMode::Start);
+        source_label.update_property(&[gtk::accessible::Property::Label("disk-source-label")]);
+        let mediacombo = crate::mediacombo::MediaCombo::new(conn);
+        mediacombo.set_mnemonic_label(&source_mnemonic);
+        mediacombo.show_clear_icon();
+        let browse = gtk::Button::with_mnemonic("_Browse");
+        let source_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        source_box.set_hexpand(true);
+        source_box.append(&mediacombo.top_box);
+        source_box.append(&browse);
+        let source = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        source.set_hexpand(true);
+        source.append(&source_label);
+        source.append(&source_box);
+        let target_type = value();
+        let bus_label = left_label("");
+        let size = left_label("");
+
+        let grid = gtk::Grid::builder()
+            .row_spacing(4)
+            .column_spacing(8)
+            .build();
+        grid.attach(&source_mnemonic, 0, 0, 1, 1);
+        grid.attach(&source, 1, 0, 1, 1);
+        grid.attach(&right("Device type:"), 0, 1, 1, 1);
+        grid.attach(&target_type, 1, 1, 1, 1);
+        // The bus is only editable in the customize dialog.
+        grid.attach(&right("Disk bus:"), 0, 2, 1, 1);
+        grid.attach(&bus_label, 1, 2, 1, 1);
+        grid.attach(&right("Storage size:"), 0, 3, 1, 1);
+        grid.attach(&size, 1, 3, 1, 1);
+
+        let readonly = gtk::CheckButton::new();
+        let shareable = gtk::CheckButton::new();
+        let removable = gtk::CheckButton::new();
+        let serial = gtk::Entry::new();
+        let cache = ModeCombo::new(&virtinst_core::devices::disk::CACHE_MODES);
+        let discard = ModeCombo::new(&virtinst_core::devices::disk::DISCARD_MODES);
+        let adv = gtk::Grid::builder()
+            .row_spacing(6)
+            .column_spacing(6)
+            .margin_start(12)
+            .margin_top(6)
+            .build();
+        let mut row = 0;
+        let mut add = |text: &str, w: &gtk::Widget| {
+            let l = right(text);
+            l.set_mnemonic_widget(Some(w));
+            adv.attach(&l, 0, row, 1, 1);
+            adv.attach(w, 1, row, 1, 1);
+            row += 1;
+            l
+        };
+        add("R_eadonly:", readonly.upcast_ref());
+        add("Sharea_ble:", shareable.upcast_ref());
+        let removable_label = add("Removab_le:", removable.upcast_ref());
+        add("Seria_l:", serial.upcast_ref());
+        add("Cac_he mode:", cache.widget.upcast_ref());
+        add("Discard mod_e:", discard.widget.upcast_ref());
+        let advanced = gtk::Expander::with_mnemonic("Advanced _options");
+        advanced.set_child(Some(&adv));
+
+        let vbox = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        vbox.append(&grid);
+        vbox.append(&advanced);
+        let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        page.append(&frame("Virtual Disk", &vbox));
+        DiskPage {
+            page,
+            source_label,
+            source_box,
+            browse,
+            mediacombo,
+            target_type,
+            bus_label,
+            size,
+            readonly,
+            shareable,
+            removable,
+            removable_label,
+            serial,
+            cache,
+            discard,
+            storage_edits: RefCell::default(),
+        }
+    }
+
+    /// `vmmAddStorage.set_disk_bus`: removable only applies to USB.
+    fn set_disk_bus(&self, bus: Option<&str>) {
+        let show = bus == Some("usb");
+        self.removable.set_visible(show);
+        self.removable_label.set_visible(show);
+    }
+
+    /// `vmmAddStorage.get_values`.
+    fn get_values(&self, edits: &mut crate::domain::DiskEdits) {
+        for e in self.storage_edits.borrow().iter() {
+            match e {
+                StorageEdit::Cache => edits.cache = Some(self.cache.get()),
+                StorageEdit::Discard => edits.discard = Some(self.discard.get()),
+                StorageEdit::Readonly => edits.readonly = Some(self.readonly.is_active()),
+                StorageEdit::Shareable => edits.shareable = Some(self.shareable.is_active()),
+                StorageEdit::Removable => edits.removable = Some(self.removable.is_active()),
+                StorageEdit::Serial => edits.serial = Some(Some(self.serial.text().to_string())),
+            }
+        }
+    }
+}
+
 /// The OS information page (`details-os-*`).
 struct OsPage {
     page: gtk::Box,
@@ -1294,6 +1506,7 @@ struct Inner {
     memory: MemoryPage,
     boot: BootPage,
     os: OsPage,
+    disk: DiskPage,
     unported: gtk::Label,
     config_remove: gtk::Button,
     config_cancel: gtk::Button,
@@ -1335,6 +1548,7 @@ impl VmmDetails {
         let memory = MemoryPage::new();
         let boot = BootPage::new();
         let os = OsPage::new();
+        let disk = DiskPage::new(vm.conn());
         let unported = gtk::Label::new(Some("This page is not available yet in this version."));
         unported.set_valign(gtk::Align::Start);
         unported.set_xalign(0.0);
@@ -1344,6 +1558,7 @@ impl VmmDetails {
         hw_panel.add_named(&memory.page, Some("memory"));
         hw_panel.add_named(&boot.page, Some("boot"));
         hw_panel.add_named(&os.page, Some("os"));
+        hw_panel.add_named(&disk.page, Some("disk"));
         hw_panel.add_named(&unported, Some("unported"));
         let panel_scroll = gtk::ScrolledWindow::builder()
             .child(&hw_panel)
@@ -1385,6 +1600,7 @@ impl VmmDetails {
             memory,
             boot,
             os,
+            disk,
             unported,
             config_remove,
             config_cancel,
@@ -1477,6 +1693,32 @@ impl VmmDetails {
         }
         let cb = enable(Edit::OsName);
         i.os.os_list.connect_os_selected(move |_| cb());
+        let cb = enable(Edit::DiskPath);
+        i.disk.mediacombo.connect_changed(cb);
+        let cb = with(Self::disk_source_browse_clicked);
+        i.disk.browse.connect_clicked(move |_| cb());
+        let sweak = Rc::downgrade(&self.0);
+        let storage = |edit: StorageEdit| {
+            let weak = sweak.clone();
+            move || {
+                if let Some(inner) = weak.upgrade() {
+                    VmmDetails(inner).storage_changed(edit);
+                }
+            }
+        };
+        let d = &i.disk;
+        let cb = storage(StorageEdit::Cache);
+        d.cache.widget.connect_selected_notify(move |_| cb());
+        let cb = storage(StorageEdit::Discard);
+        d.discard.widget.connect_selected_notify(move |_| cb());
+        let cb = storage(StorageEdit::Readonly);
+        d.readonly.connect_toggled(move |_| cb());
+        let cb = storage(StorageEdit::Shareable);
+        d.shareable.connect_toggled(move |_| cb());
+        let cb = storage(StorageEdit::Removable);
+        d.removable.connect_toggled(move |_| cb());
+        let cb = storage(StorageEdit::Serial);
+        d.serial.connect_changed(move |_| cb());
         let cb = with(Self::boot_kernel_toggled);
         b.kernel_enable.connect_toggled(move |_| cb());
         let cb = with(Self::config_bootdev_selected);
@@ -1913,6 +2155,7 @@ impl VmmDetails {
             HwType::Memory => Ok(self.apply_memory().await),
             HwType::Boot => Ok(self.apply_boot_options().await),
             HwType::Os => Ok(self.apply_os().await),
+            HwType::Disk => Ok(self.apply_disk(&row).await),
             _ => Ok(true),
         };
         let success = match res {
@@ -2057,6 +2300,73 @@ impl VmmDetails {
         let vm = self.0.vm.clone();
         self.change_config(async move { vm.define_os(os_id).await }, None)
             .await
+    }
+
+    /// The row's device element in the live XML.
+    fn device_element(&self, row: &HwRow) -> Option<(Rc<DomainXml>, Element)> {
+        let (tag, idx) = row.device.clone()?;
+        let x = self.0.vm.xmlobj()?;
+        let devices = virtinst_xml::resolve_path(&x.doc, x.root(), &["devices"])?;
+        let el = *devices.find_all(&x.doc, &tag).get(idx)?;
+        Some((x, el))
+    }
+
+    /// `_apply_disk`.
+    async fn apply_disk(&self, row: &HwRow) -> bool {
+        let Some((x, el)) = self.device_element(row) else {
+            return false;
+        };
+        let id = crate::domain::DiskId {
+            target: child_attr(&x.doc, el, &["target"], "dev"),
+            bus: child_attr(&x.doc, el, &["target"], "bus"),
+        };
+        let d = &self.0.disk;
+        let parent = self.parent();
+        let mut edits = crate::domain::DiskEdits::default();
+        if self.edited(Edit::DiskPath) {
+            let path = d.mediacombo.get_path(true);
+            let names = if path.is_empty() {
+                vec![]
+            } else {
+                self.0
+                    .vm
+                    .path_in_use_by(path.clone())
+                    .await
+                    .unwrap_or_default()
+            };
+            if !names.is_empty() {
+                let names = names
+                    .iter()
+                    .map(|n| format!("'{n}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let msg = format!("Disk '{path}' is already in use by other guests [{names}]");
+                if !crate::error::yes_no(
+                    parent.as_ref(),
+                    &msg,
+                    Some("Do you really want to use the disk?"),
+                )
+                .await
+                {
+                    return false;
+                }
+            }
+            edits.path = Some(Some(path).filter(|p| !p.is_empty()));
+        }
+        if self.edited(Edit::Disk) {
+            d.get_values(&mut edits);
+        }
+
+        let vm = self.0.vm.clone();
+        let hotplug_vm = vm.clone();
+        let (hid, hedits) = (id.clone(), edits.clone());
+        self.change_config(
+            async move { vm.define_disk(id, edits).await },
+            Some(Box::pin(async move {
+                hotplug_vm.hotplug_disk(hid, hedits).await
+            })),
+        )
+        .await
     }
 
     /// `_apply_vcpus`.
@@ -2294,6 +2604,10 @@ impl VmmDetails {
                 self.refresh_os_page();
                 i.hw_panel.set_visible_child_name("os");
             }
+            HwType::Disk => {
+                self.refresh_disk_page(&row);
+                i.hw_panel.set_visible_child_name("disk");
+            }
             _ => i.hw_panel.set_visible_child(&i.unported),
         }
         i.refreshing.set(false);
@@ -2314,6 +2628,116 @@ impl VmmDetails {
             .os
             .os_list
             .select_os(&crate::oslist::lookup_os_by_full_id(os_id.as_deref()));
+    }
+
+    /// `vmmAddStorage`'s `_change_cb`.
+    fn storage_changed(&self, edit: StorageEdit) {
+        if self.0.refreshing.get() {
+            return;
+        }
+        let mut edits = self.0.disk.storage_edits.borrow_mut();
+        if !edits.contains(&edit) {
+            edits.push(edit);
+        }
+        drop(edits);
+        self.enable_apply(Edit::Disk);
+    }
+
+    /// `_disk_source_browse_clicked_cb`.
+    fn disk_source_browse_clicked(&self) {
+        let Some(row) = self.get_hw_row() else {
+            return;
+        };
+        let is_floppy = self
+            .device_element(&row)
+            .is_some_and(|(x, el)| attr(&x.doc, el, "device").as_deref() == Some("floppy"));
+        let title = if is_floppy {
+            "Locate floppy media"
+        } else {
+            "Locate ISO media"
+        };
+        let dialog = gtk::FileDialog::builder().title(title).modal(true).build();
+        let combo = self.0.disk.mediacombo.clone();
+        dialog.open(
+            self.parent().as_ref(),
+            gtk::gio::Cancellable::NONE,
+            move |res| {
+                if let Some(path) = res.ok().and_then(|f| f.path()) {
+                    combo.set_path(&path.to_string_lossy());
+                }
+            },
+        );
+    }
+
+    /// `_refresh_disk_page`.
+    fn refresh_disk_page(&self, row: &HwRow) {
+        let Some((x, el)) = self.device_element(row) else {
+            return;
+        };
+        let doc = &x.doc;
+        let d = &self.0.disk;
+        let path = virtinst_core::devices::disk::source_path(doc, el);
+        let volume = virtinst_core::devices::disk::source_volume(doc, el);
+        let devtype = attr(doc, el, "device").unwrap_or_else(|| "disk".into());
+        let bus = child_attr(doc, el, &["target"], "bus");
+
+        let has_storage = path.is_some() || volume.is_some();
+        d.size.set_text(if has_storage { "Unknown" } else { "-" });
+        d.target_type.set_text(&row.label);
+        d.bus_label.set_text(
+            &bus.as_deref()
+                .map(disk_pretty_bus)
+                .filter(|b| !b.is_empty())
+                .unwrap_or_else(|| "-".into()),
+        );
+
+        let is_cdrom = devtype == "cdrom";
+        let is_removable = is_cdrom || devtype == "floppy";
+        d.source_box.set_visible(is_removable);
+        d.source_label.set_visible(!is_removable);
+        d.source_label.set_text(path.as_deref().unwrap_or("-"));
+        if is_removable {
+            d.mediacombo.reset_state(devtype == "floppy");
+            d.mediacombo.set_path(path.as_deref().unwrap_or(""));
+        }
+
+        // vmmAddStorage.set_dev
+        d.set_disk_bus(bus.as_deref());
+        d.cache
+            .set(child_attr(doc, el, &["driver"], "cache").as_deref());
+        d.discard
+            .set(child_attr(doc, el, &["driver"], "discard").as_deref());
+        d.serial.set_text(
+            &virtinst_xml::resolve_path(doc, el, &["serial"])
+                .map(|e| e.text_content(doc))
+                .unwrap_or_default(),
+        );
+        d.readonly.set_active(el.find(doc, "readonly").is_some());
+        d.readonly.set_sensitive(!is_cdrom);
+        d.shareable.set_active(el.find(doc, "shareable").is_some());
+        d.removable
+            .set_active(child_attr(doc, el, &["target"], "removable").as_deref() == Some("on"));
+        d.storage_edits.borrow_mut().clear();
+
+        // conn.get_vol_by_path, off the main thread
+        if !has_storage {
+            return;
+        }
+        let this = self.clone();
+        let key = row.key();
+        glib::spawn_future_local(async move {
+            let info = this.0.vm.disk_volume_info(path.clone(), volume).await;
+            if this.get_hw_row().map(|r| r.key()) != Some(key) {
+                return;
+            }
+            let d = &this.0.disk;
+            if let Some((volpath, capacity)) = info {
+                d.size.set_text(&pretty_bytes(capacity));
+                if path.is_none() {
+                    d.source_label.set_text(&volpath);
+                }
+            }
+        });
     }
 
     /// `_refresh_overview_page`.

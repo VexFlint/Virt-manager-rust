@@ -30,6 +30,7 @@ mod libvirtenummap;
 mod libvirtglib;
 mod manager;
 mod manager_row;
+mod mediacombo;
 mod oslist;
 mod preferences;
 mod serialcon;
