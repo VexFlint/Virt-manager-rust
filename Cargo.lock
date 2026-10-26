@@ -1169,6 +1169,7 @@ dependencies = [
  "glib-sys",
  "gobject-sys",
  "pkg-config",
+ "shlex",
  "uuid",
  "virt",
  "virtinst-xml",
