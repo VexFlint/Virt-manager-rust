@@ -325,6 +325,25 @@ impl VmmConnection {
             .is_empty()
     }
 
+    /// The URI's driver: `qemu` for `qemu+ssh://...`.
+    fn driver(&self) -> String {
+        let uri = virtinst_core::connection::Uri::parse(&self.get_uri());
+        uri.scheme.split('+').next().unwrap_or_default().to_string()
+    }
+
+    pub fn is_qemu(&self) -> bool {
+        self.driver() == "qemu"
+    }
+
+    pub fn is_xen(&self) -> bool {
+        let d = self.driver();
+        d.starts_with("xen") || d.starts_with("libxl")
+    }
+
+    pub fn is_test(&self) -> bool {
+        self.driver() == "test"
+    }
+
     /// `is_qemu_unprivileged`: a `qemu:///session` style connection.
     pub fn is_qemu_unprivileged(&self) -> bool {
         let uri = virtinst_core::connection::Uri::parse(&self.get_uri());

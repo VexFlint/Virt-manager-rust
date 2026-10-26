@@ -1313,6 +1313,49 @@ impl VmmDomain {
         .flatten()
     }
 
+    /// `define_*(do_hotplug=False)` for the simple devices: `edit` runs
+    /// on the device `find_device` matches in the inactive config.
+    pub async fn define_device(
+        &self,
+        id: &virtinst_core::devices::DeviceId,
+        edit: impl Fn(&mut virtinst_xml::Document, virtinst_xml::Element),
+    ) -> Result<(), String> {
+        let mut guest = self.make_xmlobj_to_define().await?;
+        let root = guest.root();
+        let dev = virtinst_core::devices::find_device(&guest.doc, root, id)
+            .ok_or("Could not find specified device in the inactive VM configuration")?;
+        edit(&mut guest.doc, dev);
+        self.redefine_xmlobj(guest).await
+    }
+
+    /// `define_*(do_hotplug=True)`, then `hotplug(device=...)`: the
+    /// edited live device goes to `updateDeviceFlags`.
+    pub async fn hotplug_device(
+        &self,
+        id: &virtinst_core::devices::DeviceId,
+        edit: impl Fn(&mut virtinst_xml::Document, virtinst_xml::Element),
+    ) -> Result<(), String> {
+        if !self.is_active() {
+            return Ok(());
+        }
+        let x = self.xmlobj().ok_or("No domain XML")?;
+        let mut doc = virtinst_xml::parse_libvirt_xml(&x.xml).map_err(|e| e.to_string())?;
+        let root = doc.root_element().ok_or("Empty domain XML")?;
+        let dev = virtinst_core::devices::find_device(&doc, root, id)
+            .ok_or("Could not find the device in the running VM")?;
+        edit(&mut doc, dev);
+        let devxml = virtinst_xml::element_to_string(doc, dev).map_err(|e| e.to_string())?;
+        glib::g_debug!("virt-manager", "update_device with xml=\n{devxml}");
+        self.with_domain(move |_, dom| {
+            dom.update_device_flags(&devxml, sys::VIR_DOMAIN_DEVICE_MODIFY_LIVE)
+                .map(|_| ())
+                .map_err(|e| e.message().to_string())
+        })
+        .await?;
+        self.ensure_latest_xml().await;
+        Ok(())
+    }
+
     /// `define_network` for the persistent config.
     pub async fn define_network(&self, id: NicId, edits: NetworkEdits) -> Result<(), String> {
         let mut guest = self.make_xmlobj_to_define().await?;

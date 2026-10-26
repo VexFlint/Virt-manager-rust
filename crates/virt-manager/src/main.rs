@@ -19,6 +19,7 @@ mod connmanager;
 mod console;
 mod createconn;
 mod details;
+mod devpages;
 mod display;
 mod domain;
 mod engine;
