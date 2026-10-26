@@ -162,6 +162,13 @@ pub struct CapsGuest {
 }
 
 impl CapsGuest {
+    /// Upstream's `is_kvm_available`: any `<domain type='kvm'>`.
+    pub fn is_kvm_available(&self) -> bool {
+        self.domains
+            .iter()
+            .any(|d| d.hypervisor_type.as_deref() == Some("kvm"))
+    }
+
     fn from_element(doc: &Document, el: Element) -> CapsGuest {
         let arch_el = el.find(doc, "arch");
         CapsGuest {
@@ -238,6 +245,26 @@ pub struct CapsInfo {
     pub machines: Vec<String>,
 }
 
+impl CapsInfo {
+    /// `Guest.get_recommended_machine`: only the arch cases with a
+    /// clear preference over the default machine. `is_qemu_or_test` is
+    /// the connection's `is_qemu() or is_test()`.
+    pub fn recommended_machine(&self, is_qemu_or_test: bool) -> Option<&'static str> {
+        if !is_qemu_or_test {
+            return None;
+        }
+        let has = |m: &str| self.machines.iter().any(|x| x == m);
+        match self.arch.as_deref()? {
+            "ppc64" | "ppc64le" if has("pseries") => Some("pseries"),
+            "armv7l" | "aarch64" if has("virt") => Some("virt"),
+            "armv7l" | "aarch64" if has("vexpress-a15") => Some("vexpress-a15"),
+            "s390x" if has("s390-ccw-virtio") => Some("s390-ccw-virtio"),
+            "riscv64" | "riscv32" if has("virt") => Some("virt"),
+            _ => None,
+        }
+    }
+}
+
 /// `<capabilities>` — upstream's `Capabilities`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Capabilities {
@@ -280,6 +307,17 @@ impl Capabilities {
         }
         let xml = conn.as_connect().get_capabilities()?;
         Ok(Capabilities::parse(&xml)?)
+    }
+
+    /// Upstream's `has_install_options`: some guest has a domain type.
+    pub fn has_install_options(&self) -> bool {
+        self.guests.iter().any(|g| !g.domains.is_empty())
+    }
+
+    /// The `<guest>` a [`guest_lookup`](Capabilities::guest_lookup)
+    /// result came from (upstream keeps it as `capsinfo.guest`).
+    pub fn guest_for_info(&self, info: &CapsInfo) -> Option<&CapsGuest> {
+        self.guest_for_os_type(info.os_type.as_deref(), info.arch.as_deref())
     }
 
     /// Upstream's `_guestForOSType`: the first `<guest>` whose
@@ -717,5 +755,35 @@ mod tests {
         // listed first in the document.
         assert_eq!(info.hypervisor_type.as_deref(), Some("kvm"));
         assert!(info.machines.iter().any(|m| m == "q35"));
+    }
+
+    #[test]
+    fn recommended_machine_by_arch() {
+        let info = |arch: &str, machines: &[&str]| CapsInfo {
+            arch: Some(arch.into()),
+            machines: machines.iter().map(|m| m.to_string()).collect(),
+            ..CapsInfo::default()
+        };
+        assert_eq!(
+            info("aarch64", &["virt", "sbsa-ref"]).recommended_machine(true),
+            Some("virt")
+        );
+        assert_eq!(
+            info("ppc64le", &["pseries", "powernv"]).recommended_machine(true),
+            Some("pseries")
+        );
+        assert_eq!(
+            info("x86_64", &["pc", "q35"]).recommended_machine(true),
+            None
+        );
+        assert_eq!(info("aarch64", &["virt"]).recommended_machine(false), None);
+    }
+
+    #[test]
+    fn install_options_and_kvm() {
+        let caps = Capabilities::parse(TEST_DRIVER_CAPS).unwrap();
+        assert!(caps.has_install_options());
+        assert!(!caps.guests[0].is_kvm_available());
+        assert!(!Capabilities::default().has_install_options());
     }
 }
