@@ -854,7 +854,10 @@ impl VmmDomain {
         let uuid = self.get_uuid();
         let xml = gio::spawn_blocking(move || {
             let dom = Domain::lookup_by_uuid_string(handle.connect(), &uuid)?;
-            dom.get_xml_desc(0)
+            // `get_dom_flags`: the secure flag shows graphics passwords;
+            // read-only connections refuse it.
+            dom.get_xml_desc(sys::VIR_DOMAIN_XML_SECURE)
+                .or_else(|_| dom.get_xml_desc(0))
         })
         .await
         .map_err(|_| "Worker thread panicked".to_string())?
@@ -1318,13 +1321,13 @@ impl VmmDomain {
     pub async fn define_device(
         &self,
         id: &virtinst_core::devices::DeviceId,
-        edit: impl Fn(&mut virtinst_xml::Document, virtinst_xml::Element),
+        edit: impl Fn(&mut virtinst_xml::Document, virtinst_xml::Element) -> Result<(), String>,
     ) -> Result<(), String> {
         let mut guest = self.make_xmlobj_to_define().await?;
         let root = guest.root();
         let dev = virtinst_core::devices::find_device(&guest.doc, root, id)
             .ok_or("Could not find specified device in the inactive VM configuration")?;
-        edit(&mut guest.doc, dev);
+        edit(&mut guest.doc, dev)?;
         self.redefine_xmlobj(guest).await
     }
 
@@ -1333,7 +1336,7 @@ impl VmmDomain {
     pub async fn hotplug_device(
         &self,
         id: &virtinst_core::devices::DeviceId,
-        edit: impl Fn(&mut virtinst_xml::Document, virtinst_xml::Element),
+        edit: impl Fn(&mut virtinst_xml::Document, virtinst_xml::Element) -> Result<(), String>,
     ) -> Result<(), String> {
         if !self.is_active() {
             return Ok(());
@@ -1343,7 +1346,7 @@ impl VmmDomain {
         let root = doc.root_element().ok_or("Empty domain XML")?;
         let dev = virtinst_core::devices::find_device(&doc, root, id)
             .ok_or("Could not find the device in the running VM")?;
-        edit(&mut doc, dev);
+        edit(&mut doc, dev)?;
         let devxml = virtinst_xml::element_to_string(doc, dev).map_err(|e| e.to_string())?;
         glib::g_debug!("virt-manager", "update_device with xml=\n{devxml}");
         self.with_domain(move |_, dom| {

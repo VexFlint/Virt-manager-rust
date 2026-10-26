@@ -16,6 +16,7 @@ pub mod connection;
 pub mod devices;
 pub mod domain;
 pub mod install;
+pub mod nodedev;
 pub mod osinfo;
 
 pub mod guest;
