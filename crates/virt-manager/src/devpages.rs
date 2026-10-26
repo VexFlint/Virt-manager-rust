@@ -165,15 +165,20 @@ impl Grid {
     }
 
     pub(crate) fn page(self, title: &gtk::Label) -> gtk::Box {
-        title.set_xalign(0.0);
-        let frame = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        frame.append(title);
-        self.grid.set_margin_start(12);
-        frame.append(&self.grid);
-        let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        page.append(&frame);
-        page
+        frame_page(title, &self.grid)
     }
+}
+
+/// A details page: the bold frame title over the indented body.
+pub(crate) fn frame_page(title: &gtk::Label, body: &impl IsA<gtk::Widget>) -> gtk::Box {
+    title.set_xalign(0.0);
+    let frame = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    frame.append(title);
+    body.set_margin_start(12);
+    frame.append(body);
+    let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    page.append(&frame);
+    page
 }
 
 pub(crate) fn title(text: &str) -> gtk::Label {
@@ -768,6 +773,71 @@ impl ControllerPage {
             model = Some("usb3".into());
         }
         self.model.set(model.as_deref());
+    }
+}
+
+/// `hostdev-*`.
+pub struct HostdevPage {
+    pub page: gtk::Box,
+    title: gtk::Label,
+    source: gtk::Label,
+    pub rombar: gtk::CheckButton,
+    rombar_row: GridRow,
+    pub startup_policy: SimpleCombo,
+    startup_policy_row: GridRow,
+}
+
+impl HostdevPage {
+    /// `build_hostdev_usb_startup_policy_combo`.
+    pub fn new() -> HostdevPage {
+        use virtinst_core::devices::hostdev::STARTUP_POLICIES;
+        let source = value_label();
+        let rombar = gtk::CheckButton::new();
+        let mut rows = vec![(None, "Hypervisor default".to_string())];
+        rows.extend(
+            STARTUP_POLICIES
+                .iter()
+                .map(|p| (Some(p.to_string()), p.to_string())),
+        );
+        let startup_policy = SimpleCombo::new(rows, str::to_string);
+        let mut g = Grid::new();
+        g.row("Device:", &source);
+        let rombar_row = g.row("ROM _BAR:", &rombar);
+        let startup_policy_row = g.row("Startup Policy:", &startup_policy.widget);
+        let title = title("");
+        HostdevPage {
+            page: g.page(&title),
+            title,
+            source,
+            rombar,
+            rombar_row,
+            startup_policy,
+            startup_policy_row,
+        }
+    }
+
+    /// `_refresh_hostdev_page`; `pretty_name` is the matching node
+    /// device's, else `hostdev_pretty_name`.
+    pub fn refresh(&self, doc: &Document, el: Element, pretty_name: &str) {
+        let htype = attr(doc, el, &[], "type").unwrap_or_default();
+        // `rom_bar` is `is_onoff`, and unset means on
+        let rom_bar = attr(doc, el, &["rom"], "bar").map_or(true, |b| b == "on");
+        self.rombar_row.set_visible(htype == "pci");
+        self.startup_policy_row.set_visible(htype == "usb");
+        if htype == "usb" {
+            self.startup_policy
+                .set(attr(doc, el, &["source"], "startupPolicy").as_deref());
+        }
+        self.title.set_markup(&format!(
+            "<b>Physical {} Device</b>",
+            gtk::glib::markup_escape_text(&htype.to_uppercase())
+        ));
+        self.set_source(pretty_name);
+        self.rombar.set_active(rom_bar);
+    }
+
+    pub fn set_source(&self, pretty_name: &str) {
+        self.source.set_text(pretty_name);
     }
 }
 

@@ -76,6 +76,11 @@ enum Edit {
     WatchdogAction,
     Gfx,
     ControllerModel,
+    HostdevRombar,
+    HostdevStartupPolicy,
+    Tpm,
+    VsockAuto,
+    VsockCid,
 }
 
 impl HwType {
@@ -1610,6 +1615,10 @@ struct Inner {
     panic: crate::devpages::PanicPage,
     char_page: crate::devpages::CharPage,
     controller: crate::devpages::ControllerPage,
+    hostdev: crate::devpages::HostdevPage,
+    tpm: Rc<crate::tpmdetails::TpmDetails>,
+    tpm_models_loaded: Cell<bool>,
+    vsock: Rc<crate::vsockdetails::VsockDetails>,
     graphics_title: gtk::Label,
     gfxdetails: Rc<crate::gfxdetails::GraphicsDetails>,
     unported: gtk::Label,
@@ -1667,6 +1676,9 @@ impl VmmDetails {
         let panic = dp::PanicPage::new();
         let char_page = dp::CharPage::new();
         let controller = dp::ControllerPage::new();
+        let hostdev = dp::HostdevPage::new();
+        let tpm = crate::tpmdetails::TpmDetails::new();
+        let vsock = crate::vsockdetails::VsockDetails::new();
         let gfxdetails = crate::gfxdetails::GraphicsDetails::new(vm.conn());
         let graphics_title = dp::title("");
         let graphics_page = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -1696,6 +1708,15 @@ impl VmmDetails {
         hw_panel.add_named(&graphics_page, Some("graphics"));
         hw_panel.add_named(&char_page.page, Some("char"));
         hw_panel.add_named(&controller.page, Some("controller"));
+        hw_panel.add_named(&hostdev.page, Some("hostdev"));
+        hw_panel.add_named(
+            &dp::frame_page(&dp::title("TPM Device"), &tpm.top_box),
+            Some("tpm"),
+        );
+        hw_panel.add_named(
+            &dp::frame_page(&dp::title("Virtio VSOCK"), &vsock.top_box),
+            Some("vsock"),
+        );
         hw_panel.add_named(&unported, Some("unported"));
         let panel_scroll = gtk::ScrolledWindow::builder()
             .child(&hw_panel)
@@ -1749,6 +1770,10 @@ impl VmmDetails {
             panic,
             char_page,
             controller,
+            hostdev,
+            tpm,
+            tpm_models_loaded: Cell::new(false),
+            vsock,
             graphics_title,
             gfxdetails,
             unported,
@@ -1876,6 +1901,17 @@ impl VmmDetails {
             .connect_selected_notify(move |_| cb());
         let cb = enable(Edit::Gfx);
         i.gfxdetails.connect_changed(cb);
+        let cb = enable(Edit::HostdevRombar);
+        i.hostdev.rombar.connect_toggled(move |_| cb());
+        let cb = enable(Edit::HostdevStartupPolicy);
+        i.hostdev
+            .startup_policy
+            .widget
+            .connect_selected_notify(move |_| cb());
+        i.tpm.connect_changed(enable(Edit::Tpm));
+        i.vsock.connect_changed_auto_cid(enable(Edit::VsockAuto));
+        let cb = enable(Edit::VsockCid);
+        i.vsock.cid.connect_value_changed(move |_| cb());
         let cb = with(Self::video_model_changed);
         i.video.model.widget.connect_selected_notify(move |_| cb());
         let cb = with(Self::video_3d_toggled);
@@ -2359,6 +2395,9 @@ impl VmmDetails {
             HwType::Watchdog => Ok(self.apply_watchdog(&row).await),
             HwType::Graphics => Ok(self.apply_graphics(&row).await),
             HwType::Controller => Ok(self.apply_controller(&row).await),
+            HwType::Hostdev => Ok(self.apply_hostdev(&row).await),
+            HwType::Tpm => Ok(self.apply_tpm(&row).await),
+            HwType::Vsock => Ok(self.apply_vsock(&row).await),
             _ => Ok(true),
         };
         let success = match res {
@@ -2642,6 +2681,70 @@ impl VmmDetails {
         self.0.char_page.refresh(doc, el, tag, primary);
     }
 
+    /// `_refresh_hostdev_page`. The node device lookup is async, so
+    /// the page first shows `hostdev_pretty_name`.
+    fn refresh_hostdev_page(&self, row: &HwRow) {
+        let Some((x, el)) = self.device_element(row) else {
+            return;
+        };
+        self.0
+            .hostdev
+            .refresh(&x.doc, el, &hostdev_pretty_name(&x.doc, el));
+        let Some(conn) = self.0.vm.conn() else {
+            return;
+        };
+        let devtype = match attr(&x.doc, el, "type").as_deref() {
+            Some("usb") => "usb_device".to_string(),
+            other => other.unwrap_or_default().to_string(),
+        };
+        let this = self.clone();
+        let key = row.key();
+        glib::spawn_future_local(async move {
+            let all = conn.list_nodedevs().await;
+            if this.get_hw_row().map(|r| r.key()) != Some(key) {
+                return;
+            }
+            // the last match wins, as upstream's loop
+            let nodedev = all.iter().rfind(|d| {
+                d.device_type.as_deref() == Some(devtype.as_str())
+                    && d.compare_to_hostdev(&x.doc, el)
+            });
+            let pretty = nodedev
+                .map(|d| virtinst_core::nodedev::pretty_name(d, &all))
+                .filter(|p| !p.is_empty());
+            if let Some(pretty) = pretty {
+                this.0.hostdev.set_source(&pretty);
+            }
+        });
+    }
+
+    /// `_refresh_tpm_page`. The model list comes from domcaps, which is
+    /// fetched once.
+    fn refresh_tpm_page(&self, row: &HwRow) {
+        let i = &self.0;
+        let Some((x, el)) = self.device_element(row) else {
+            return;
+        };
+        i.tpm.set_dev(&x.doc, el);
+        if i.tpm_models_loaded.replace(true) {
+            return;
+        }
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let Some(caps) = this.0.vm.get_domain_capabilities().await else {
+                this.0.tpm_models_loaded.set(false);
+                return;
+            };
+            let tpm = &caps.devices.tpm;
+            let models = tpm.supported.is_some().then(|| {
+                tpm.get_enum("model")
+                    .map(|e| e.values.clone())
+                    .unwrap_or_default()
+            });
+            this.0.tpm.set_models(models);
+        });
+    }
+
     /// `_refresh_controller_page`.
     fn refresh_controller_page(&self, row: &HwRow) {
         let Some((x, el)) = self.device_element(row) else {
@@ -2812,6 +2915,60 @@ impl VmmDetails {
             }
             if let Some(accel3d) = accel3d {
                 video::set_accel3d(doc, el, accel3d);
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// `_apply_hostdev`.
+    async fn apply_hostdev(&self, row: &HwRow) -> bool {
+        let h = &self.0.hostdev;
+        let rom_bar = self
+            .edited(Edit::HostdevRombar)
+            .then(|| h.rombar.is_active());
+        let policy = self
+            .edited(Edit::HostdevStartupPolicy)
+            .then(|| h.startup_policy.get());
+        self.change_device_config(row, move |doc, el| {
+            use virtinst_core::devices::hostdev;
+            if let Some(rom_bar) = rom_bar {
+                hostdev::set_rom_bar(doc, el, rom_bar);
+            }
+            if let Some(policy) = &policy {
+                hostdev::set_startup_policy(doc, el, policy.as_deref());
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// `_apply_tpm`.
+    async fn apply_tpm(&self, row: &HwRow) -> bool {
+        let values = Rc::new(if self.edited(Edit::Tpm) {
+            self.0.tpm.get_values()
+        } else {
+            Default::default()
+        });
+        self.change_device_config(row, move |doc, el| {
+            values.apply(doc, el);
+            Ok(())
+        })
+        .await
+    }
+
+    /// `_apply_vsock`.
+    async fn apply_vsock(&self, row: &HwRow) -> bool {
+        let (auto_cid, cid) = self.0.vsock.get_values();
+        let auto_cid = self.edited(Edit::VsockAuto).then_some(auto_cid);
+        let cid = self.edited(Edit::VsockCid).then_some(cid);
+        self.change_device_config(row, move |doc, el| {
+            use virtinst_core::devices::vsock;
+            if let Some(auto_cid) = auto_cid {
+                vsock::set_auto_cid(doc, el, auto_cid);
+            }
+            if let Some(cid) = cid {
+                vsock::set_cid(doc, el, cid);
             }
             Ok(())
         })
@@ -3184,6 +3341,20 @@ impl VmmDetails {
             HwType::Controller => {
                 self.refresh_controller_page(&row);
                 i.hw_panel.set_visible_child_name("controller");
+            }
+            HwType::Hostdev => {
+                self.refresh_hostdev_page(&row);
+                i.hw_panel.set_visible_child_name("hostdev");
+            }
+            HwType::Tpm => {
+                self.refresh_tpm_page(&row);
+                i.hw_panel.set_visible_child_name("tpm");
+            }
+            HwType::Vsock => {
+                if let Some((x, el)) = self.device_element(&row) {
+                    i.vsock.set_dev(&x.doc, el, i.vm.is_active());
+                }
+                i.hw_panel.set_visible_child_name("vsock");
             }
             _ => i.hw_panel.set_visible_child(&i.unported),
         }

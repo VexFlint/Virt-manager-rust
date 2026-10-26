@@ -155,3 +155,50 @@ mod tests {
         assert_eq!(dev.mode.as_deref(), Some("capabilities"));
     }
 }
+
+// Editing an existing `<hostdev>` in place, for the details page.
+
+use virtinst_xml::{Document, Element};
+
+/// `DeviceHostdev.STARTUP_POLICIES`.
+pub const STARTUP_POLICIES: [&str; 3] = ["mandatory", "optional", "requisite"];
+
+/// `define_hostdev`'s `rom_bar` (`is_onoff`).
+pub fn set_rom_bar(doc: &mut Document, hostdev: Element, rom_bar: bool) {
+    super::edit::set_attr(
+        doc,
+        hostdev,
+        "rom",
+        "bar",
+        Some(if rom_bar { "on" } else { "off" }),
+    );
+}
+
+/// `define_hostdev`'s `startup_policy`.
+pub fn set_startup_policy(doc: &mut Document, hostdev: Element, policy: Option<&str>) {
+    super::edit::set_attr(doc, hostdev, "source", "startupPolicy", policy);
+}
+
+#[cfg(test)]
+mod edit_tests {
+    use super::*;
+
+    #[test]
+    fn rom_bar_and_policy() {
+        let xml = "<hostdev mode='subsystem' type='usb'><source>\
+            <vendor id='0x1234'/></source></hostdev>";
+        let mut doc = virtinst_xml::parse_libvirt_xml(xml).unwrap();
+        let dev = doc.root_element().unwrap();
+        set_rom_bar(&mut doc, dev, false);
+        set_startup_policy(&mut doc, dev, Some("optional"));
+        let out = doc.write_str().unwrap();
+        assert!(out.contains("<rom bar=\"off\""), "{out}");
+        assert!(out.contains("startupPolicy=\"optional\""), "{out}");
+        set_startup_policy(&mut doc, dev, None);
+        let out = doc.write_str().unwrap();
+        assert!(
+            !out.contains("startupPolicy") && out.contains("<vendor"),
+            "{out}"
+        );
+    }
+}
