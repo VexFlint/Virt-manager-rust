@@ -13,6 +13,7 @@ use virtinst_xml::{Document, Element};
 
 use crate::connection::VmmConnection;
 use crate::devpages::{Grid, GridRow, SimpleCombo};
+use crate::storagebrowse::{self, BrowseReason, StorageBrowser};
 
 /// `_EDIT_FS_*`.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -39,6 +40,8 @@ fn simple_rows(values: &[Option<&str>]) -> Vec<(Option<String>, String)> {
 
 pub struct FsDetails {
     pub top_box: gtk::Grid,
+    conn: Option<VmmConnection>,
+    storage_browser: RefCell<Option<StorageBrowser>>,
     is_qemu: bool,
     fstype: SimpleCombo,
     fstype_row: GridRow,
@@ -151,6 +154,8 @@ impl FsDetails {
             target,
             readonly,
             have_shared_mem: Cell::new(true),
+            conn: conn.cloned(),
+            storage_browser: RefCell::default(),
             active_edits: RefCell::default(),
             changed: RefCell::default(),
             quiet: Cell::new(false),
@@ -210,21 +215,29 @@ impl FsDetails {
         let cb = edit(FsEdit::Target);
         self.target.connect_changed(move |_| cb());
 
-        // `_browse_fs_source_cb`. The storage browser isn't ported
-        // yet, so this offers the local folder chooser.
-        let entry = self.source.clone();
+        // `_browse_fs_source_cb`
+        let weak = Rc::downgrade(self);
         self.source_browse.connect_clicked(move |b| {
-            let dialog = gtk::FileDialog::builder()
-                .title("Locate directory volume")
-                .modal(true)
-                .build();
-            let parent = b.root().and_downcast::<gtk::Window>();
-            let entry = entry.clone();
-            dialog.select_folder(parent.as_ref(), gtk::gio::Cancellable::NONE, move |res| {
-                if let Some(path) = res.ok().and_then(|f| f.path()) {
-                    entry.set_text(&path.to_string_lossy());
-                }
-            });
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            let (Some(conn), Some(parent)) =
+                (this.conn.as_ref(), b.root().and_downcast::<gtk::Window>())
+            else {
+                return;
+            };
+            let entry = this.source.clone();
+            storagebrowse::browse(
+                &this.storage_browser,
+                conn,
+                &parent,
+                BrowseReason::Fs,
+                move |path| {
+                    if !path.is_empty() {
+                        entry.set_text(path);
+                    }
+                },
+            );
         });
     }
 

@@ -17,6 +17,7 @@ use gtk::prelude::*;
 use virtinst_xml::{Document, Element};
 
 use crate::domain::{DomainXml, VmmDomain};
+use crate::storagebrowse::{self, BrowseReason, StorageBrowser};
 use virtinst_core::domain::cpu;
 
 /// `HW_LIST_TYPE_*`; the order is the order rows are listed in.
@@ -1533,6 +1534,7 @@ impl BootPage {
 struct Inner {
     vm: VmmDomain,
     is_customize_dialog: bool,
+    storage_browser: RefCell<Option<StorageBrowser>>,
     top_box: gtk::Box,
     hw_list: gtk::ListBox,
     rows: RefCell<Vec<HwRow>>,
@@ -1694,6 +1696,7 @@ impl VmmDetails {
         let this = VmmDetails(Rc::new(Inner {
             vm: vm.clone(),
             is_customize_dialog,
+            storage_browser: RefCell::default(),
             top_box,
             hw_list,
             rows: RefCell::default(),
@@ -1901,7 +1904,9 @@ impl VmmDetails {
             let entry = entry.clone();
             button.connect_clicked(move |_| {
                 if let Some(inner) = weak.upgrade() {
-                    VmmDetails(inner).browse_file(&entry);
+                    let entry = entry.clone();
+                    VmmDetails(inner)
+                        .browse_file(BrowseReason::Image, move |path| entry.set_text(path));
                 }
             });
         }
@@ -1932,23 +1937,12 @@ impl VmmDetails {
         });
     }
 
-    /// `_browse_file` into `entry`. The storage browser isn't ported
-    /// yet, so this offers the local file chooser.
-    fn browse_file(&self, entry: &gtk::Entry) {
-        let dialog = gtk::FileDialog::builder()
-            .title("Locate or create storage volume")
-            .modal(true)
-            .build();
-        let entry = entry.clone();
-        dialog.open(
-            self.parent().as_ref(),
-            gtk::gio::Cancellable::NONE,
-            move |res| {
-                if let Some(path) = res.ok().and_then(|f| f.path()) {
-                    entry.set_text(&path.to_string_lossy());
-                }
-            },
-        );
+    /// `_browse_file`: the storage browser calls `cb` with the path.
+    fn browse_file(&self, reason: BrowseReason, cb: impl Fn(&str) + 'static) {
+        let (Some(conn), Some(parent)) = (self.0.vm.conn(), self.parent()) else {
+            return;
+        };
+        storagebrowse::browse(&self.0.storage_browser, &conn, &parent, reason, cb);
     }
 
     /// `_boot_kernel_toggled_cb`.
@@ -3590,22 +3584,13 @@ impl VmmDetails {
         let is_floppy = self
             .device_element(&row)
             .is_some_and(|(x, el)| attr(&x.doc, el, "device").as_deref() == Some("floppy"));
-        let title = if is_floppy {
-            "Locate floppy media"
+        let reason = if is_floppy {
+            BrowseReason::FloppyMedia
         } else {
-            "Locate ISO media"
+            BrowseReason::IsoMedia
         };
-        let dialog = gtk::FileDialog::builder().title(title).modal(true).build();
         let combo = self.0.disk.mediacombo.clone();
-        dialog.open(
-            self.parent().as_ref(),
-            gtk::gio::Cancellable::NONE,
-            move |res| {
-                if let Some(path) = res.ok().and_then(|f| f.path()) {
-                    combo.set_path(&path.to_string_lossy());
-                }
-            },
-        );
+        self.browse_file(reason, move |path| combo.set_path(path));
     }
 
     /// `_set_network_ip_details`, fetched off the main thread.
