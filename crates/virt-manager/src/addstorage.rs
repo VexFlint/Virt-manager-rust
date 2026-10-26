@@ -400,6 +400,30 @@ pub(crate) struct DiskRequest {
     pub is_local: bool,
 }
 
+/// Blocking `get_default_path`: a free image name for `vmname` in the
+/// default pool, `None` without one.
+pub(crate) fn get_default_path(
+    conn: &virt::connect::Connect,
+    vmname: &str,
+    fmt: Option<&str>,
+    collide_paths: &[String],
+    is_session: bool,
+) -> Result<Option<String>, String> {
+    use virtinst_core::storage;
+    let Some(pool) = storage::lookup_default_pool(conn, is_session) else {
+        return Ok(None);
+    };
+    let suffix = storage::file_extension_for_format(fmt);
+    let suffix = if suffix.is_empty() {
+        ".img".into()
+    } else {
+        suffix
+    };
+    let name = storage::find_free_name(&pool, vmname, &suffix, collide_paths)?;
+    let target = pool.xml.target_path.clone().unwrap_or_default();
+    Ok(Some(format!("{}/{name}", target.trim_end_matches('/'))))
+}
+
 /// Blocking: `get_default_path`, `set_source_path` (`manage_path`) and,
 /// for storage that doesn't exist yet, `build_vol_install`.
 pub(crate) fn plan_disk(
@@ -408,22 +432,13 @@ pub(crate) fn plan_disk(
 ) -> Result<DiskPlan, String> {
     use virtinst_core::storage;
     let path = if req.is_default_storage {
-        // `get_default_path`
-        match storage::lookup_default_pool(conn, req.is_session) {
-            Some(pool) => {
-                let suffix = storage::file_extension_for_format(req.fmt.as_deref());
-                let suffix = if suffix.is_empty() {
-                    ".img".into()
-                } else {
-                    suffix
-                };
-                let name =
-                    storage::find_free_name(&pool, &req.vmname, &suffix, &req.collide_paths)?;
-                let target = pool.xml.target_path.clone().unwrap_or_default();
-                Some(format!("{}/{name}", target.trim_end_matches('/')))
-            }
-            None => None,
-        }
+        get_default_path(
+            conn,
+            &req.vmname,
+            req.fmt.as_deref(),
+            &req.collide_paths,
+            req.is_session,
+        )?
     } else {
         Some(req.entry_path.clone()).filter(|p| !p.is_empty())
     };
