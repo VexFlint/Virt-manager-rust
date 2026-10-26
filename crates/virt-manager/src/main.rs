@@ -16,6 +16,7 @@ mod about;
 mod asyncjob;
 mod config;
 mod connection;
+mod connevents;
 mod connmanager;
 mod console;
 mod createconn;

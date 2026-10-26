@@ -894,10 +894,9 @@ impl VmmDomain {
         self.imp().xmlobj.borrow().clone()
     }
 
-    /// Re-reads the domain XML on a worker (upstream refreshes it on
-    /// libvirt's XML-changed events; without libvirt-glib this happens
-    /// when the VM window shows or the state changes). Returns whether
-    /// it changed.
+    /// Re-reads the domain XML on a worker: on libvirt's domain events
+    /// (`recache_from_event_loop`), when the VM window shows, and when
+    /// the state changes. Returns whether it changed.
     pub async fn refresh_xml(&self) -> Result<bool, String> {
         let conn = self.conn().ok_or("Connection closed")?;
         let handle = conn.handle().ok_or("Not connected")?;
@@ -949,6 +948,28 @@ impl VmmDomain {
         Some(caps)
     }
 
+    /// `recache_from_event_loop`: the XML and status, re-read because
+    /// libvirt sent an event. `state-changed` is always emitted. A
+    /// failure usually means the domain went away, so the connection
+    /// ticks to find out.
+    pub async fn recache_from_event_loop(&self) {
+        let xml = self.refresh_xml().await;
+        let snap = self
+            .with_domain(|_, dom| DomainSnapshot::fetch(dom).map_err(|e| e.message().to_string()))
+            .await;
+        match (xml, snap) {
+            (Ok(_), Ok(snap)) => {
+                self.imp().snapshot.replace(snap);
+                self.emit_state_changed();
+            }
+            _ => {
+                if let Some(conn) = self.conn() {
+                    conn.tick();
+                }
+            }
+        }
+    }
+
     pub fn emit_state_changed(&self) {
         self.emit_by_name::<()>("state-changed", &[]);
     }
@@ -987,7 +1008,7 @@ impl VmmDomain {
     }
 
     /// `_redefine_xmlobj` / `_redefine_xml_internal`: define the edited
-    /// XML, then pick it up (there are no libvirt events to do it).
+    /// XML, then pick it up.
     pub async fn redefine_xmlobj(&self, mut xmlobj: XmlToDefine) -> Result<(), String> {
         let newxml = xmlobj.get_xml()?;
         if newxml == xmlobj.origxml {
