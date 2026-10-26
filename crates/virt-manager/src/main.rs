@@ -13,6 +13,7 @@
 //! dialog, and the VM window's first slice (ticket 10).
 
 mod about;
+mod addhardware;
 mod asyncjob;
 mod config;
 mod connection;

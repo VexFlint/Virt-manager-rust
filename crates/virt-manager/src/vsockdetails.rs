@@ -58,7 +58,7 @@ impl VsockDetails {
         self.changed_auto_cid.replace(Some(Box::new(cb)));
     }
 
-    fn reset_state(&self) {
+    pub fn reset_state(&self) {
         self.auto.set_active(true);
         self.cid.set_value(MIN_GUEST_CID as f64);
         self.cid.set_visible(false);

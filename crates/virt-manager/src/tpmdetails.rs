@@ -188,6 +188,25 @@ impl TpmDetails {
         self.version.set(None);
     }
 
+    /// `reset_state` for a new device, with `DeviceTpm.default_model`.
+    pub fn reset_state_with_model(&self, default_model: Option<&str>) {
+        self.reset_state();
+        self.model.set(default_model);
+        self.sync_ui();
+        self.active_edits.borrow_mut().clear();
+    }
+
+    /// `build_device`'s values: every field counts as edited.
+    pub fn build_values(&self) -> TpmValues {
+        self.active_edits.replace(vec![
+            TpmEdit::Type,
+            TpmEdit::DevicePath,
+            TpmEdit::Model,
+            TpmEdit::Version,
+        ]);
+        self.get_values()
+    }
+
     /// `set_dev`.
     pub fn set_dev(&self, doc: &Document, tpm: Element) {
         let attr = |path: &[&str], name: &str| {

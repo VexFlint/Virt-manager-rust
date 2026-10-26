@@ -264,7 +264,7 @@ impl FsDetails {
     }
 
     /// `reset_state`.
-    fn reset_state(&self) {
+    pub fn reset_state(&self) {
         self.fstype.widget.set_selected(0);
         self.driver.widget.set_selected(0);
         self.format.widget.set_selected(0);
@@ -334,6 +334,20 @@ impl FsDetails {
             driver: edited(FsEdit::Driver).then_some(driver),
             format: edited(FsEdit::Format).then_some(format),
         }
+    }
+
+    /// `build_device`'s values: every field counts as edited.
+    pub fn build_values(&self) -> FsEdits {
+        self.active_edits.replace(vec![
+            FsEdit::Type,
+            FsEdit::Driver,
+            FsEdit::Source,
+            FsEdit::RamSource,
+            FsEdit::Readonly,
+            FsEdit::Target,
+            FsEdit::Format,
+        ]);
+        self.get_values()
     }
 
     /// `_change_cb`.

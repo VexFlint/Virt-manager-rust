@@ -15,6 +15,17 @@ use virtinst_core::osinfo::{OsDb, OsVariant};
 
 thread_local! {
     static ALL_OS: OnceCell<Rc<Vec<OsVariant>>> = const { OnceCell::new() };
+    static OSDB: OnceCell<Option<Rc<OsDb>>> = const { OnceCell::new() };
+}
+
+/// The libosinfo entry for a full id (`Guest.osinfo`), the database
+/// loaded once.
+pub fn lookup_osinfo(full_id: &str) -> Option<virtinst_core::osinfo::OsInfo> {
+    OSDB.with(|c| {
+        c.get_or_init(|| OsDb::load_default().ok().map(Rc::new))
+            .as_ref()
+            .and_then(|db| db.os(full_id))
+    })
 }
 
 /// `OSDB.list_os(sortkey="label")`, generic entries last, loaded once.
