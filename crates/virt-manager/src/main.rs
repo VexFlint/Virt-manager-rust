@@ -22,6 +22,7 @@ mod connevents;
 mod connmanager;
 mod console;
 mod createconn;
+mod createvol;
 mod delete;
 mod details;
 mod devpages;

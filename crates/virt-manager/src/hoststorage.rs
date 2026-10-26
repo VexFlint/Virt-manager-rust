@@ -10,6 +10,7 @@ use gtk::{gio, glib};
 use virtinst_core::storage::{self, PoolXml, VolXml};
 
 use crate::connection::VmmConnection;
+use crate::createvol::CreateVolume;
 use crate::error;
 
 /// `EDIT_POOL_IDS`.
@@ -214,6 +215,12 @@ pub struct Inner {
     /// Bumped per volume fetch, so a stale one is dropped.
     vol_generation: Cell<u64>,
     vol_sensitive_cb: Option<VolSensitiveCallback>,
+    /// Name hint passed to the volume wizard: the storage browser
+    /// sets it for the create VM wizard, which isn't ported yet.
+    name_hint: RefCell<Option<String>>,
+    addvol: RefCell<Option<CreateVolume>>,
+    /// The volume to select once the list is filled.
+    pending_vol: RefCell<Option<String>>,
     browse_clicked: RefCell<Option<Callback>>,
     volume_chosen: RefCell<Option<VolCallback>>,
     cancel_clicked: RefCell<Option<Callback>>,
@@ -433,6 +440,9 @@ impl HostStorage {
             quiet: Cell::new(false),
             vol_generation: Cell::new(0),
             vol_sensitive_cb,
+            name_hint: RefCell::default(),
+            addvol: RefCell::default(),
+            pending_vol: RefCell::default(),
             browse_clicked: RefCell::default(),
             volume_chosen: RefCell::default(),
             cancel_clicked: RefCell::default(),
@@ -480,6 +490,8 @@ impl HostStorage {
         self.pool_refresh.connect_clicked(move |_| cb());
         let cb = self.with(|t| t.spawn(|t| async move { t.pool_apply().await }));
         self.pool_apply.connect_clicked(move |_| cb());
+        let cb = self.with(HostStorage::vol_add_clicked);
+        self.vol_add.connect_clicked(move |_| cb());
         let cb = self.with(|t| t.spawn(|t| async move { t.vol_delete_clicked().await }));
         self.vol_delete.connect_clicked(move |_| cb());
 
@@ -576,6 +588,9 @@ impl HostStorage {
     }
 
     pub fn close(&self) {
+        if let Some(a) = self.addvol.borrow().as_ref() {
+            a.close();
+        }
         self.vol_menu.popdown();
     }
 
@@ -603,8 +618,7 @@ impl HostStorage {
     /// `_refresh_conn_state`.
     fn refresh_conn_state(&self) {
         let conn_active = self.conn.is_active();
-        // The pool and volume wizards (`createpool.py`, `createvol.py`)
-        // aren't ported yet.
+        // The pool wizard (`createpool.py`) isn't ported yet.
         self.pool_add.set_sensitive(false);
         self.spawn(|t| async move { t.populate_pools().await });
         if !conn_active {
@@ -659,8 +673,7 @@ impl HostStorage {
         self.pool_stop.set_sensitive(active);
         self.pool_start.set_sensitive(!active);
         self.pool_refresh.set_sensitive(active);
-        // `createvol.py` isn't ported yet.
-        self.vol_add.set_sensitive(false);
+        self.vol_add.set_sensitive(active);
         self.vol_add.set_tooltip_text(Some("Create new volume"));
         self.vol_delete.set_sensitive(false);
 
@@ -768,6 +781,19 @@ impl HostStorage {
             })
             .collect();
         self.vol_store.splice(0, self.vol_store.n_items(), &objs);
+        if let Some(name) = self.pending_vol.borrow_mut().take() {
+            let model = self.vol_selection.model();
+            let pos = model.and_then(|m| {
+                (0..m.n_items()).find(|&p| {
+                    m.item(p)
+                        .and_downcast::<glib::BoxedAnyObject>()
+                        .is_some_and(|o| o.borrow::<VolRow>().xml.name == name)
+                })
+            });
+            if let Some(pos) = pos {
+                self.vol_selection.set_selected(pos);
+            }
+        }
         self.vol_selected();
     }
 
@@ -842,6 +868,47 @@ impl HostStorage {
     //////////////////////////////
     // Volume action listeners //
     //////////////////////////////
+
+    /// `_vol_add_cb`.
+    fn vol_add_clicked(&self) {
+        let Some(pool) = self.current_pool() else {
+            return;
+        };
+        eprintln!("Launching 'Add Volume' wizard for pool '{}'", pool.name());
+        let addvol = self.addvol.borrow().clone();
+        let addvol = match addvol {
+            Some(a) => {
+                a.set_parent_pool(pool.xml.clone());
+                a
+            }
+            None => {
+                let a = CreateVolume::new(&self.conn, pool.xml.clone());
+                let weak = self.weak();
+                a.connect_vol_created(move |pool, vol| {
+                    if let Some(inner) = weak.upgrade() {
+                        HostStorage(inner).vol_created(pool, vol);
+                    }
+                });
+                *self.addvol.borrow_mut() = Some(a.clone());
+                a
+            }
+        };
+        let Some(parent) = self.parent() else {
+            return;
+        };
+        addvol.set_modal(parent.is_modal());
+        addvol.set_name_hint(self.name_hint.borrow().as_deref());
+        addvol.show(&parent);
+    }
+
+    /// `_vol_created_cb`: refetch and select the new volume.
+    fn vol_created(&self, pool: &str, vol: &str) {
+        if self.current_pool().map(|p| p.xml.name).as_deref() != Some(pool) {
+            return;
+        }
+        *self.pending_vol.borrow_mut() = Some(vol.to_string());
+        self.spawn(|t| async move { t.populate_pools().await });
+    }
 
     /// `_vol_delete_cb`.
     async fn vol_delete_clicked(&self) {

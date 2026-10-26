@@ -36,6 +36,7 @@ struct BrowseReasonMetadata {
     local_title: Option<&'static str>,
     gsettings_key: Option<&'static str>,
     dialog_type: DialogType,
+    enable_create: bool,
     choose_label: Option<&'static str>,
 }
 
@@ -46,10 +47,12 @@ impl BrowseReasonMetadata {
             local_title: None,
             gsettings_key: None,
             dialog_type: DialogType::Open,
+            enable_create: false,
             choose_label: None,
         };
         match reason {
             Some(BrowseReason::Image) => {
+                data.enable_create = true;
                 data.local_title = Some("Locate existing storage");
                 data.storage_title = "Locate or create storage volume";
                 data.dialog_type = DialogType::Save;
@@ -71,8 +74,8 @@ impl BrowseReasonMetadata {
                 data.storage_title = "Locate directory volume";
                 data.dialog_type = DialogType::SelectFolder;
             }
-            // `vol-add` (`enable_create`) waits on the volume wizard
             None => {
+                data.enable_create = true;
                 data.storage_title = "Choose Storage Volume";
             }
         }
@@ -244,10 +247,15 @@ impl StorageBrowser {
         *self.0.finish_cb.borrow_mut() = Some(Box::new(cb));
     }
 
+    pub fn set_modal(&self, modal: bool) {
+        self.0.window.set_modal(modal);
+    }
+
     pub fn set_browse_reason(&self, reason: Option<BrowseReason>) {
         self.0.browse_reason.set(reason);
         let data = BrowseReasonMetadata::new(reason);
         self.0.window.set_title(Some(data.storage_title));
+        self.0.storagelist.vol_add.set_sensitive(data.enable_create);
     }
 
     /// `_browse_local`.

@@ -479,6 +479,8 @@ pub struct VolInstall {
     pub format: Option<String>,
     /// `file_type`: what the pool makes, `file` for a directory.
     pub file_type: String,
+    pub backing_store: Option<String>,
+    pub backing_format: Option<String>,
 }
 
 impl VolInstall {
@@ -507,6 +509,8 @@ impl VolInstall {
             allocation: if sparse { 0 } else { capacity },
             format: None,
             file_type,
+            backing_store: None,
+            backing_format: None,
         };
         if let Some(fmt) = fmt {
             if !vol.supports_format() {
@@ -538,13 +542,67 @@ impl VolInstall {
                 target += "<features><lazy_refcounts/></features>";
             }
         }
+        let mut backing = String::new();
+        if let Some(path) = &self.backing_store {
+            backing += &format!("<path>{}</path>", xml_escape(path));
+            if let Some(fmt) = &self.backing_format {
+                backing += &format!("<format type='{}'/>", xml_escape(fmt));
+            }
+            backing = format!("<backingStore>{backing}</backingStore>");
+        }
         format!(
             "<volume><name>{}</name><capacity>{}</capacity><allocation>{}</allocation>\
-             <target>{target}</target></volume>",
+             <target>{target}</target>{backing}</volume>",
             xml_escape(&self.name),
             self.capacity,
             self.allocation
         )
+    }
+
+    /// `StorageVolume.validate`'s checks: the name, and
+    /// `is_size_conflict` against the pool's free space. A capacity
+    /// that only fits sparse is a warning, logged.
+    pub fn validate(&self, conn: &Connect) -> Result<(), String> {
+        validate_generic_name("Storage object", &self.name)?;
+        let pool = StoragePool::lookup_by_name(conn, &self.pool_name).map_err(|e| e.to_string())?;
+        if StorageVol::lookup_by_name(&pool, &self.name).is_ok() {
+            return Err(format!(
+                "Name '{}' already in use by another volume.",
+                self.name
+            ));
+        }
+        let avail = pool.get_info().map(|i| i.available).unwrap_or(u64::MAX);
+        const MIB: u64 = 1024 * 1024;
+        if self.allocation > avail {
+            return Err(format!(
+                "There is not enough free space on the storage pool to create the volume. \
+                 ({} M requested allocation > {} M available)",
+                self.allocation / MIB,
+                avail / MIB
+            ));
+        }
+        if self.capacity > avail {
+            eprintln!(
+                "The requested volume capacity will exceed the available pool space when \
+                 the volume is fully allocated. ({} M requested capacity > {} M available)",
+                self.capacity / MIB,
+                avail / MIB
+            );
+        }
+        Ok(())
+    }
+
+    /// `_detect_backing_store_format`: the format of the volume at
+    /// `backing_store`, when it's a file volume.
+    fn detect_backing_store_format(&self, conn: &Connect) -> Option<String> {
+        let path = self.backing_store.as_deref()?;
+        let managed = manage_path(conn, path).ok()?;
+        let vol = managed.vol?;
+        let pool = managed.pool?;
+        if pool.xml.get_disk_type() != "file" {
+            return None;
+        }
+        vol_path_props(&vol).format
     }
 
     /// The disk's view of the volume once made.
@@ -558,15 +616,33 @@ impl VolInstall {
     /// `StorageVolume.install`: creates the volume, with qcow2 metadata
     /// preallocated.
     pub fn install(&self, conn: &Connect) -> Result<StorageVol, String> {
+        let mut vol = self.clone();
+        if vol.backing_store.is_some() && vol.backing_format.is_none() {
+            vol.backing_format = vol.detect_backing_store_format(conn);
+        }
         let pool = StoragePool::lookup_by_name(conn, &self.pool_name).map_err(|e| e.to_string())?;
-        let flags = if self.format.as_deref() == Some("qcow2") {
+        let flags = if vol.format.as_deref() == Some("qcow2") && vol.backing_store.is_none() {
             sys::VIR_STORAGE_VOL_CREATE_PREALLOC_METADATA
         } else {
             0
         };
-        StorageVol::create_xml(&pool, &self.to_xml(), flags)
+        StorageVol::create_xml(&pool, &vol.to_xml(), flags)
             .map_err(|e| format!("Couldn't create storage volume '{}': '{e}'", self.name))
     }
+}
+
+/// `XMLBuilder.validate_generic_name`: only `/` is forbidden,
+/// matching QEMU.
+pub fn validate_generic_name(name_label: &str, val: &str) -> Result<(), String> {
+    if val.is_empty() {
+        return Err(format!("A name must be specified for the {name_label}"));
+    }
+    if val.contains('/') {
+        return Err(format!(
+            "{name_label} name '{val}' can not contain '/' character."
+        ));
+    }
+    Ok(())
 }
 
 /// `DeviceDisk.get_volmap`: each volume, keyed by its backing store's
@@ -778,6 +854,15 @@ mod tests {
              <allocation>0</allocation><target><format type='qcow2'/>\
              <features><lazy_refcounts/></features></target></volume>"
         );
+        let mut backed = vol.clone();
+        backed.backing_store = Some("/i/base.qcow2".into());
+        backed.backing_format = Some("qcow2".into());
+        assert!(backed.to_xml().ends_with(
+            "</target><backingStore><path>/i/base.qcow2</path>\
+             <format type='qcow2'/></backingStore></volume>"
+        ));
+        assert!(validate_generic_name("Storage object", "a/b").is_err());
+        assert!(validate_generic_name("Storage object", "").is_err());
         let raw = VolInstall::new("vm.img", Some(&pool), 1.0, false, None).unwrap();
         assert_eq!(raw.format.as_deref(), Some("raw"));
         assert_eq!(raw.allocation, raw.capacity);
