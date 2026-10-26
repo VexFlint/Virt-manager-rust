@@ -74,6 +74,7 @@ enum Edit {
     Video3d,
     WatchdogModel,
     WatchdogAction,
+    Gfx,
 }
 
 impl HwType {
@@ -1606,6 +1607,8 @@ struct Inner {
     redir: crate::devpages::RedirPage,
     rng: crate::devpages::RngPage,
     panic: crate::devpages::PanicPage,
+    graphics_title: gtk::Label,
+    gfxdetails: Rc<crate::gfxdetails::GraphicsDetails>,
     unported: gtk::Label,
     config_remove: gtk::Button,
     config_cancel: gtk::Button,
@@ -1659,6 +1662,13 @@ impl VmmDetails {
         let redir = dp::RedirPage::new();
         let rng = dp::RngPage::new();
         let panic = dp::PanicPage::new();
+        let gfxdetails = crate::gfxdetails::GraphicsDetails::new(vm.conn());
+        let graphics_title = dp::title("");
+        let graphics_page = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        graphics_title.set_xalign(0.0);
+        graphics_page.append(&graphics_title);
+        gfxdetails.top_box.set_margin_start(12);
+        graphics_page.append(&gfxdetails.top_box);
         let unported = gtk::Label::new(Some("This page is not available yet in this version."));
         unported.set_valign(gtk::Align::Start);
         unported.set_xalign(0.0);
@@ -1678,6 +1688,7 @@ impl VmmDetails {
         hw_panel.add_named(&redir.page, Some("redir"));
         hw_panel.add_named(&rng.page, Some("rng"));
         hw_panel.add_named(&panic.page, Some("panic"));
+        hw_panel.add_named(&graphics_page, Some("graphics"));
         hw_panel.add_named(&unported, Some("unported"));
         let panel_scroll = gtk::ScrolledWindow::builder()
             .child(&hw_panel)
@@ -1729,6 +1740,8 @@ impl VmmDetails {
             redir,
             rng,
             panic,
+            graphics_title,
+            gfxdetails,
             unported,
             config_remove,
             config_cancel,
@@ -1847,6 +1860,8 @@ impl VmmDetails {
             .action
             .widget
             .connect_selected_notify(move |_| cb());
+        let cb = enable(Edit::Gfx);
+        i.gfxdetails.connect_changed(cb);
         let cb = with(Self::video_model_changed);
         i.video.model.widget.connect_selected_notify(move |_| cb());
         let cb = with(Self::video_3d_toggled);
@@ -2328,6 +2343,7 @@ impl VmmDetails {
             HwType::Smartcard => Ok(self.apply_smartcard(&row).await),
             HwType::Video => Ok(self.apply_video(&row).await),
             HwType::Watchdog => Ok(self.apply_watchdog(&row).await),
+            HwType::Graphics => Ok(self.apply_graphics(&row).await),
             _ => Ok(true),
         };
         let success = match res {
@@ -2561,7 +2577,7 @@ impl VmmDetails {
     async fn change_device_config(
         &self,
         row: &HwRow,
-        edit: impl Fn(&mut Document, Element) + Clone + 'static,
+        edit: impl Fn(&mut Document, Element) -> Result<(), String> + Clone + 'static,
     ) -> bool {
         let Some(id) = self.device_id(row) else {
             return false;
@@ -2578,6 +2594,40 @@ impl VmmDetails {
         .await
     }
 
+    /// `_refresh_graphics_page`.
+    fn refresh_graphics_page(&self, row: &HwRow) {
+        let Some((x, el)) = self.device_element(row) else {
+            return;
+        };
+        let doc = &x.doc;
+        let gtype = attr(doc, el, "type").unwrap_or_default();
+        let title = format!("{} Server", graphics_pretty_type_simple(&gtype));
+        self.0
+            .graphics_title
+            .set_markup(&format!("<b>{}</b>", glib::markup_escape_text(&title)));
+        let has_virtio_3d = virtinst_xml::resolve_path(doc, x.root(), &["devices"])
+            .map(|d| d.find_all(doc, "video"))
+            .unwrap_or_default()
+            .into_iter()
+            .any(|v| {
+                child_attr(doc, v, &["model"], "type").as_deref() == Some("virtio")
+                    && child_attr(doc, v, &["model", "acceleration"], "accel3d").as_deref()
+                        == Some("yes")
+            });
+        self.0.gfxdetails.set_dev(doc, el, has_virtio_3d);
+    }
+
+    /// `_apply_graphics`.
+    async fn apply_graphics(&self, row: &HwRow) -> bool {
+        let values = if self.edited(Edit::Gfx) {
+            self.0.gfxdetails.get_values()
+        } else {
+            Default::default()
+        };
+        self.change_device_config(row, move |doc, el| values.apply(doc, el))
+            .await
+    }
+
     /// `_apply_sound`.
     async fn apply_sound(&self, row: &HwRow) -> bool {
         let model = self
@@ -2588,6 +2638,7 @@ impl VmmDetails {
             if let Some(model) = &model {
                 virtinst_core::devices::sound::set_model(doc, el, model);
             }
+            Ok(())
         })
         .await
     }
@@ -2602,6 +2653,7 @@ impl VmmDetails {
             if let Some(mode) = &mode {
                 virtinst_core::devices::smartcard::set_mode(doc, el, mode);
             }
+            Ok(())
         })
         .await
     }
@@ -2622,6 +2674,7 @@ impl VmmDetails {
             if let Some(accel3d) = accel3d {
                 video::set_accel3d(doc, el, accel3d);
             }
+            Ok(())
         })
         .await
     }
@@ -2639,6 +2692,7 @@ impl VmmDetails {
             if let Some(action) = &action {
                 watchdog::set_action(doc, el, action.as_deref());
             }
+            Ok(())
         })
         .await
     }
@@ -2980,6 +3034,10 @@ impl VmmDetails {
             | HwType::Redirdev
             | HwType::Rng
             | HwType::Panic => self.refresh_simple_device_page(&row),
+            HwType::Graphics => {
+                self.refresh_graphics_page(&row);
+                i.hw_panel.set_visible_child_name("graphics");
+            }
             _ => i.hw_panel.set_visible_child(&i.unported),
         }
         i.refreshing.set(false);

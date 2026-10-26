@@ -18,6 +18,7 @@ pub struct SimpleCombo {
     /// What the drop-down shows: `base`, plus the unlisted value.
     values: RefCell<Vec<Option<String>>>,
     pretty: fn(&str) -> String,
+    sort: bool,
 }
 
 impl SimpleCombo {
@@ -30,13 +31,27 @@ impl SimpleCombo {
             base: RefCell::default(),
             values: RefCell::default(),
             pretty,
+            sort: true,
         };
         this.set_values(values);
         this
     }
 
+    /// Rows kept in the given order (a plain `ListStore`).
+    pub fn unsorted(
+        values: Vec<(Option<String>, String)>,
+        pretty: fn(&str) -> String,
+    ) -> SimpleCombo {
+        let mut this = SimpleCombo::new(vec![], pretty);
+        this.sort = false;
+        this.set_values(values);
+        this
+    }
+
     pub fn set_values(&self, mut values: Vec<(Option<String>, String)>) {
-        values.sort_by(|a, b| a.1.cmp(&b.1));
+        if self.sort {
+            values.sort_by(|a, b| a.1.cmp(&b.1));
+        }
         self.base.replace(values);
         self.show_rows(None);
     }
@@ -106,15 +121,24 @@ impl GridRow {
         self.label.set_visible(visible);
         self.widget.set_visible(visible);
     }
+
+    /// Points the row label's mnemonic at `widget` instead.
+    pub fn set_mnemonic(&self, widget: &impl IsA<gtk::Widget>) {
+        self.label.set_mnemonic_widget(Some(widget));
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.widget.is_visible()
+    }
 }
 
-struct Grid {
+pub(crate) struct Grid {
     grid: gtk::Grid,
     rows: i32,
 }
 
 impl Grid {
-    fn new() -> Grid {
+    pub(crate) fn new() -> Grid {
         let grid = gtk::Grid::builder()
             .row_spacing(6)
             .column_spacing(12)
@@ -122,7 +146,7 @@ impl Grid {
         Grid { grid, rows: 0 }
     }
 
-    fn row(&mut self, text: &str, widget: &impl IsA<gtk::Widget>) -> GridRow {
+    pub(crate) fn row(&mut self, text: &str, widget: &impl IsA<gtk::Widget>) -> GridRow {
         let label = gtk::Label::with_mnemonic(text);
         label.set_halign(gtk::Align::End);
         label.set_mnemonic_widget(Some(widget));
@@ -136,7 +160,11 @@ impl Grid {
     }
 
     /// The page: the bold frame title over the indented grid.
-    fn page(self, title: &gtk::Label) -> gtk::Box {
+    pub(crate) fn into_grid(self) -> gtk::Grid {
+        self.grid
+    }
+
+    pub(crate) fn page(self, title: &gtk::Label) -> gtk::Box {
         title.set_xalign(0.0);
         let frame = gtk::Box::new(gtk::Orientation::Vertical, 6);
         frame.append(title);
@@ -148,7 +176,7 @@ impl Grid {
     }
 }
 
-fn title(text: &str) -> gtk::Label {
+pub(crate) fn title(text: &str) -> gtk::Label {
     let l = gtk::Label::new(None);
     l.set_markup(&format!("<b>{text}</b>"));
     l

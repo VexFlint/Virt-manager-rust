@@ -395,6 +395,15 @@ impl Config {
             "system".to_string()
         }
     }
+    /// `get_graphics_type()`: "system" means the build default.
+    pub fn get_graphics_type(&self) -> String {
+        let ret = self.get_graphics_type_raw();
+        if ret == "system" {
+            DEFAULT_GRAPHICS_FROM_CONFIG.to_string()
+        } else {
+            ret
+        }
+    }
     pub fn set_graphics_type(&self, val: &str) {
         let _ = self.new_vm.set_string("graphics-type", &val.to_lowercase());
     }

@@ -24,6 +24,7 @@ mod display;
 mod domain;
 mod engine;
 mod error;
+mod gfxdetails;
 mod graphwidgets;
 mod gvnc;
 mod keymap;

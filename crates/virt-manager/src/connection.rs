@@ -319,6 +319,26 @@ impl VmmConnection {
         .unwrap_or_default()
     }
 
+    /// The host's node devices, for the graphics rendernode list and
+    /// hostdev names (`filter_nodedevs`/`list_nodedevs`).
+    pub async fn list_nodedevs(&self) -> Vec<virtinst_core::nodedev::NodeDevice> {
+        let Some(handle) = self.handle() else {
+            return vec![];
+        };
+        gio::spawn_blocking(move || {
+            let devs = handle
+                .connect()
+                .list_all_node_devices(0)
+                .unwrap_or_default();
+            devs.iter()
+                .filter_map(|d| d.get_xml_desc(0).ok())
+                .filter_map(|xml| virtinst_core::nodedev::NodeDevice::parse(&xml))
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
+    }
+
     pub fn is_remote(&self) -> bool {
         !virtinst_core::connection::Uri::parse(&self.get_uri())
             .hostname
