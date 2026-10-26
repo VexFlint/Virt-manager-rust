@@ -22,6 +22,7 @@ use crate::about;
 use crate::config::StatsColumn;
 use crate::connection::VmmConnection;
 use crate::createconn;
+use crate::createvm;
 use crate::domain::VmmDomain;
 use crate::engine;
 use crate::error;
@@ -523,7 +524,7 @@ impl VmmManager {
                 ("add-connection", |m| {
                     createconn::VmmCreateConn::show_instance(&m.window())
                 }),
-                ("new-vm", |_| {}),
+                ("new-vm", VmmManager::new_vm),
                 ("host-details", |_| {}),
                 ("vm-details", |m| {
                     if let Some(vm) = m.current_vm() {
@@ -538,7 +539,7 @@ impl VmmManager {
             }
 
             let conn_actions = gio::SimpleActionGroup::new();
-            simple_action(&conn_actions, "create", weak, |_| {});
+            simple_action(&conn_actions, "create", weak, VmmManager::new_vm);
             simple_action(&conn_actions, "connect", weak, VmmManager::open_conn);
             simple_action(&conn_actions, "disconnect", weak, VmmManager::close_conn);
             simple_action(&conn_actions, "delete", weak, VmmManager::do_delete);
@@ -698,10 +699,7 @@ impl VmmManager {
     /// Windows not ported yet: their entry points stay visible (same
     /// menus as upstream) but insensitive.
     fn set_unported_actions(&self) {
-        for name in ["new-vm", "host-details"] {
-            set_enabled(&self.0.win_actions, name, false);
-        }
-        set_enabled(&self.0.conn_actions, "create", false);
+        set_enabled(&self.0.win_actions, "host-details", false);
         set_enabled(&self.0.conn_actions, "details", false);
     }
 
@@ -794,6 +792,7 @@ impl VmmManager {
                 set_enabled(ca, "disconnect", !(disconn || conning));
                 set_enabled(ca, "connect", disconn);
                 set_enabled(ca, "delete", disconn);
+                set_enabled(ca, "create", !disconn);
                 build_conn_menu()
             }
         };
@@ -854,6 +853,12 @@ impl VmmManager {
 
     pub fn current_vm(&self) -> Option<VmmDomain> {
         self.current_row().and_then(|r| r.vm())
+    }
+
+    /// `new_vm`: the wizard, on the selected connection.
+    fn new_vm(&self) {
+        let uri = self.current_conn().map(|c| c.get_uri());
+        createvm::VmmCreateVM::show_instance(&self.window(), uri);
     }
 
     pub fn current_conn(&self) -> Option<VmmConnection> {

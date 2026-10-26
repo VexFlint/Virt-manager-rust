@@ -236,8 +236,9 @@ impl GridRow {
         self.label.set_mnemonic_widget(Some(widget));
     }
 
+    /// The row's own visible flag, whether or not it's on screen.
     pub fn is_visible(&self) -> bool {
-        self.widget.is_visible()
+        self.widget.get_visible()
     }
 }
 

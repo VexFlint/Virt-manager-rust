@@ -23,6 +23,7 @@ mod connmanager;
 mod console;
 mod createconn;
 mod createpool;
+mod createvm;
 mod createvol;
 mod delete;
 mod details;

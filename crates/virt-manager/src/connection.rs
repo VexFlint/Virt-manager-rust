@@ -437,6 +437,53 @@ impl VmmConnection {
         virtinst_core::connection::Uri::parse(&self.get_uri()).is_container_only()
     }
 
+    pub fn is_vz(&self) -> bool {
+        virtinst_core::connection::Uri::parse(&self.get_uri()).is_vz()
+    }
+
+    /// `invalidate_caps()` then `caps`: the host capabilities, fetched
+    /// fresh on a worker.
+    pub async fn fetch_caps(&self) -> Result<Capabilities, String> {
+        let handle = self.handle().ok_or("Not connected")?;
+        gio::spawn_blocking(move || {
+            let xml = handle
+                .connect()
+                .get_capabilities()
+                .map_err(|e| e.to_string())?;
+            Capabilities::parse(&xml).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|_| "Worker thread panicked".to_string())?
+    }
+
+    /// `DomainCapabilities.build_from_params`: `None` when libvirt
+    /// can't answer, like upstream's stub object.
+    pub async fn fetch_domcaps(
+        &self,
+        emulator: Option<String>,
+        arch: Option<String>,
+        machine: Option<String>,
+        virttype: Option<String>,
+    ) -> Option<virtinst_core::capabilities::DomainCapabilities> {
+        let handle = self.handle()?;
+        gio::spawn_blocking(move || {
+            let xml = handle
+                .connect()
+                .get_domain_capabilities(
+                    emulator.as_deref(),
+                    arch.as_deref(),
+                    machine.as_deref(),
+                    virttype.as_deref(),
+                    0,
+                )
+                .ok()?;
+            virtinst_core::capabilities::DomainCapabilities::parse(&xml).ok()
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
     /// `is_qemu_unprivileged`: a `qemu:///session` style connection.
     pub fn is_qemu_unprivileged(&self) -> bool {
         let uri = virtinst_core::connection::Uri::parse(&self.get_uri());
