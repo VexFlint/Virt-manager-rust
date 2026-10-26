@@ -13,11 +13,13 @@
 //! dialog, and the VM window's first slice (ticket 10).
 
 mod about;
+mod asyncjob;
 mod config;
 mod connection;
 mod connmanager;
 mod console;
 mod createconn;
+mod delete;
 mod details;
 mod devpages;
 mod display;

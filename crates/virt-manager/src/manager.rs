@@ -901,7 +901,7 @@ impl VmmManager {
             return;
         };
         if self.current_vm().is_some() {
-            // VMActionUI.delete: the Delete dialog isn't ported yet.
+            // VMActionUI.delete
             self.0.vm_actions.activate_action("delete", None);
             return;
         }
@@ -1158,9 +1158,7 @@ impl VmmManager {
             "Pause the virtual machine"
         }));
 
-        // Edit > Delete: VM deletion waits on the Delete dialog port;
-        // a connection can be removed now.
-        set_enabled(&i.win_actions, "delete", st.can_delete && vm.is_none());
+        set_enabled(&i.win_actions, "delete", st.can_delete);
         set_enabled(&i.win_actions, "vm-details", st.show_details);
     }
 }

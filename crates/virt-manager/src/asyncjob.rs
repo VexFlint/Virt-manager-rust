@@ -1,0 +1,294 @@
+//! `vmmAsyncJob` (`asyncjob.py`): runs a job on a worker thread behind
+//! a progress window, pulsing until the job's meter reports a size.
+
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use gtk::glib;
+use gtk::prelude::*;
+
+/// What the worker sends to the window.
+enum Msg {
+    Pulse {
+        progress: String,
+        stage: Option<String>,
+    },
+    Fraction {
+        frac: f64,
+        progress: String,
+        stage: Option<String>,
+    },
+    Done,
+}
+
+/// `virtinst.progress.Meter.format_number`: metric-like sizes with
+/// 1024 steps, `"512 "` or `"1.2 M"`.
+pub fn format_number(number: u64) -> String {
+    const SYMBOLS: [&str; 9] = ["", "k", "M", "G", "T", "P", "E", "Z", "Y"];
+    if number <= 999 {
+        return format!("{number} ");
+    }
+    let mut number = number as f64;
+    let mut depth = 0;
+    while number > 999.0 && depth < SYMBOLS.len() - 1 {
+        depth += 1;
+        number /= 1024.0;
+    }
+    if number < 9.95 {
+        format!("{number:.1} {}", SYMBOLS[depth])
+    } else {
+        format!("{number:.0} {}", SYMBOLS[depth])
+    }
+}
+
+/// `virtinst.progress.Meter.format_time(seconds, use_hours=True)`.
+pub fn format_time(seconds: Option<f64>) -> String {
+    match seconds {
+        Some(s) if s >= 0.0 && s.is_finite() => {
+            let s = s as u64;
+            format!("{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+        }
+        Some(s) if s.is_infinite() => "Infinite".into(),
+        _ => "--:--:--".into(),
+    }
+}
+
+/// `_vmmMeter`: progress reports from the worker thread.
+pub struct Meter {
+    tx: mpsc::Sender<Msg>,
+    text: String,
+    size: Option<u64>,
+    total_read: u64,
+    start: Option<Instant>,
+}
+
+impl Meter {
+    /// `start`: `size` is `None` for work of unknown length, which
+    /// pulses the bar.
+    pub fn start(&mut self, text: &str, size: Option<u64>) {
+        self.text = text.to_string();
+        self.size = size;
+        self.total_read = 0;
+        self.start = Some(Instant::now());
+        self.write();
+    }
+
+    pub fn end(&mut self) {
+        let _ = self.tx.send(Msg::Done);
+    }
+
+    fn write(&self) {
+        let stage = Some(self.text.clone());
+        let Some(size) = self.size else {
+            let _ = self.tx.send(Msg::Pulse {
+                progress: String::new(),
+                stage,
+            });
+            return;
+        };
+        let frac = if size == 0 {
+            0.0
+        } else {
+            self.total_read as f64 / size as f64
+        };
+        // the average rate so far gives the time left
+        let elapsed = self.start.map_or(0.0, |s| s.elapsed().as_secs_f64());
+        let remaining = (self.total_read > 0).then(|| {
+            elapsed / self.total_read as f64 * size.saturating_sub(self.total_read) as f64
+        });
+        let progress = format!(
+            "{:3}% {:>5}B {} ETA",
+            (frac * 100.0) as u32,
+            format_number(self.total_read),
+            format_time(remaining)
+        );
+        let _ = self.tx.send(Msg::Fraction {
+            frac,
+            progress,
+            stage,
+        });
+    }
+}
+
+/// The worker's side of the job.
+pub struct JobHandle {
+    tx: mpsc::Sender<Msg>,
+}
+
+impl JobHandle {
+    /// `get_meter`.
+    pub fn meter(&self) -> Meter {
+        Meter {
+            tx: self.tx.clone(),
+            text: String::new(),
+            size: None,
+            total_read: 0,
+            start: None,
+        }
+    }
+}
+
+/// `(error, details)`, as `set_error` takes them.
+pub type JobError = (String, String);
+
+struct Window {
+    win: gtk::Window,
+    stage: gtk::Label,
+    pbar: gtk::ProgressBar,
+}
+
+impl Window {
+    fn new(parent: Option<&gtk::Window>, title: &str, text: &str) -> Window {
+        let win = gtk::Window::builder()
+            .title(title)
+            .resizable(false)
+            .deletable(false)
+            .default_width(300)
+            .build();
+        win.set_transient_for(parent);
+
+        let image = gtk::Image::from_icon_name("dialog-information");
+        image.set_pixel_size(48);
+        image.set_valign(gtk::Align::Start);
+        image.set_margin_start(3);
+        image.set_margin_end(3);
+        image.set_margin_top(10);
+        image.set_margin_bottom(10);
+        let pbar_text = gtk::Label::new(Some(text));
+        pbar_text.set_halign(gtk::Align::Start);
+        pbar_text.set_valign(gtk::Align::Start);
+        pbar_text.set_wrap(true);
+        pbar_text.set_max_width_chars(50);
+        pbar_text.set_xalign(0.0);
+        pbar_text.set_hexpand(true);
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        header.append(&image);
+        header.append(&pbar_text);
+
+        let stage = gtk::Label::new(Some("Processing..."));
+        stage.set_halign(gtk::Align::Start);
+        stage.set_margin_start(3);
+        stage.set_margin_end(3);
+        stage.set_margin_top(3);
+        stage.set_margin_bottom(3);
+        let pbar = gtk::ProgressBar::new();
+        pbar.set_pulse_step(0.1);
+        pbar.set_show_text(true);
+
+        let vbox = gtk::Box::new(gtk::Orientation::Vertical, 5);
+        vbox.set_margin_start(12);
+        vbox.set_margin_end(12);
+        vbox.set_margin_top(12);
+        vbox.set_margin_bottom(12);
+        vbox.append(&header);
+        vbox.append(&stage);
+        vbox.append(&pbar);
+        win.set_child(Some(&vbox));
+        Window { win, stage, pbar }
+    }
+}
+
+/// `vmmAsyncJob(callback, ...).run()`: `work` runs on a worker thread;
+/// the result is its error, if any. With `show_progress` false nothing
+/// is shown (`simple_async_noshow`).
+pub async fn run(
+    parent: Option<&gtk::Window>,
+    title: &str,
+    text: &str,
+    show_progress: bool,
+    work: impl FnOnce(JobHandle) -> Result<(), JobError> + Send + 'static,
+) -> Option<JobError> {
+    let (tx, rx) = mpsc::channel();
+    let window = show_progress.then(|| Window::new(parent, title, text));
+    if let Some(w) = &window {
+        w.win.present();
+        w.win.set_cursor_from_name(Some("progress"));
+    }
+    let handle = JobHandle { tx };
+    let job = gtk::gio::spawn_blocking(move || work(handle));
+
+    // `_exit_if_necessary`'s 100ms timer: pulse, and apply the meter's
+    // reports, until the worker is done.
+    let mut pulsing = true;
+    let mut job = std::pin::pin!(job);
+    let res = loop {
+        let tick = glib::timeout_future(Duration::from_millis(100));
+        match select_tick(&mut job, tick).await {
+            Some(res) => break res,
+            None => {
+                while let Ok(msg) = rx.try_recv() {
+                    let Some(w) = &window else {
+                        continue;
+                    };
+                    match msg {
+                        Msg::Pulse { progress, stage } => {
+                            pulsing = true;
+                            w.pbar.set_text(Some(&progress));
+                            w.stage
+                                .set_text(stage.as_deref().unwrap_or("Processing..."));
+                        }
+                        Msg::Fraction {
+                            frac,
+                            progress,
+                            stage,
+                        } => {
+                            pulsing = false;
+                            w.stage
+                                .set_text(stage.as_deref().unwrap_or("Processing..."));
+                            w.pbar.set_text(Some(&progress));
+                            w.pbar.set_fraction(frac.clamp(0.0, 1.0));
+                        }
+                        Msg::Done => pulsing = false,
+                    }
+                }
+                if pulsing {
+                    if let Some(w) = &window {
+                        w.pbar.pulse();
+                    }
+                }
+            }
+        }
+    };
+    if let Some(w) = window {
+        w.win.destroy();
+    }
+    match res {
+        Ok(Ok(())) => None,
+        Ok(Err(e)) => Some(e),
+        Err(_) => Some(("Worker thread panicked".into(), String::new())),
+    }
+}
+
+/// Waits for whichever finishes first: `job` (`Some`) or `tick`
+/// (`None`).
+async fn select_tick<T>(
+    job: &mut (impl std::future::Future<Output = T> + Unpin),
+    tick: impl std::future::Future<Output = ()>,
+) -> Option<T> {
+    let mut tick = std::pin::pin!(tick);
+    std::future::poll_fn(|cx| {
+        use std::task::Poll;
+        if let Poll::Ready(v) = std::pin::Pin::new(&mut *job).poll(cx) {
+            return Poll::Ready(Some(v));
+        }
+        if tick.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(None);
+        }
+        Poll::Pending
+    })
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats() {
+        assert_eq!(format_number(512), "512 ");
+        assert_eq!(format_number(1536), "1.5 k");
+        assert_eq!(format_number(20 * 1024 * 1024), "20 M");
+        assert_eq!(format_time(Some(3725.0)), "01:02:05");
+        assert_eq!(format_time(None), "--:--:--");
+    }
+}

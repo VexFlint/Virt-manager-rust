@@ -22,7 +22,7 @@ use crate::error;
 pub const GROUP: &str = "vm";
 
 /// Not-yet-ported windows: their actions exist but never enable.
-const UNPORTED: &[&str] = &["clone", "migrate", "delete"];
+const UNPORTED: &[&str] = &["clone", "migrate"];
 
 /// `VMShutdownMenu`.
 pub fn shutdown_menu() -> gio::Menu {
@@ -102,6 +102,11 @@ pub fn create_actions(
                     "destroy" => destroy(&parent, &vm).await,
                     "save" => save(&parent, &vm).await,
                     "show" => crate::vmwindow::VmmVMWindow::show_instance(&vm),
+                    "delete" => crate::delete::DeleteDialog::show(
+                        Some(&parent),
+                        &vm,
+                        crate::delete::DeleteKind::Vm,
+                    ),
                     _ => {}
                 }
             });
@@ -125,6 +130,7 @@ pub fn update_widget_states(group: &gio::SimpleActionGroup, vm: Option<&VmmDomai
         ("destroy", st(VmmDomain::is_destroyable)),
         ("save", st(VmmDomain::is_destroyable)),
         ("show", vm.is_some()),
+        ("delete", vm.is_some()),
     ];
     for (name, enabled) in statemap {
         set_enabled(group, name, enabled);
