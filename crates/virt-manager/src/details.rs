@@ -81,6 +81,7 @@ enum Edit {
     Tpm,
     VsockAuto,
     VsockCid,
+    Fs,
 }
 
 impl HwType {
@@ -1619,6 +1620,8 @@ struct Inner {
     tpm: Rc<crate::tpmdetails::TpmDetails>,
     tpm_models_loaded: Cell<bool>,
     vsock: Rc<crate::vsockdetails::VsockDetails>,
+    fs: Rc<crate::fsdetails::FsDetails>,
+    fs_drivers_loaded: Cell<bool>,
     graphics_title: gtk::Label,
     gfxdetails: Rc<crate::gfxdetails::GraphicsDetails>,
     unported: gtk::Label,
@@ -1679,6 +1682,7 @@ impl VmmDetails {
         let hostdev = dp::HostdevPage::new();
         let tpm = crate::tpmdetails::TpmDetails::new();
         let vsock = crate::vsockdetails::VsockDetails::new();
+        let fs = crate::fsdetails::FsDetails::new(vm.conn().as_ref());
         let gfxdetails = crate::gfxdetails::GraphicsDetails::new(vm.conn());
         let graphics_title = dp::title("");
         let graphics_page = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -1716,6 +1720,10 @@ impl VmmDetails {
         hw_panel.add_named(
             &dp::frame_page(&dp::title("Virtio VSOCK"), &vsock.top_box),
             Some("vsock"),
+        );
+        hw_panel.add_named(
+            &dp::frame_page(&dp::title("Filesystem"), &fs.top_box),
+            Some("filesystem"),
         );
         hw_panel.add_named(&unported, Some("unported"));
         let panel_scroll = gtk::ScrolledWindow::builder()
@@ -1774,6 +1782,8 @@ impl VmmDetails {
             tpm,
             tpm_models_loaded: Cell::new(false),
             vsock,
+            fs,
+            fs_drivers_loaded: Cell::new(false),
             graphics_title,
             gfxdetails,
             unported,
@@ -1912,6 +1922,7 @@ impl VmmDetails {
         i.vsock.connect_changed_auto_cid(enable(Edit::VsockAuto));
         let cb = enable(Edit::VsockCid);
         i.vsock.cid.connect_value_changed(move |_| cb());
+        i.fs.connect_changed(enable(Edit::Fs));
         let cb = with(Self::video_model_changed);
         i.video.model.widget.connect_selected_notify(move |_| cb());
         let cb = with(Self::video_3d_toggled);
@@ -2398,6 +2409,7 @@ impl VmmDetails {
             HwType::Hostdev => Ok(self.apply_hostdev(&row).await),
             HwType::Tpm => Ok(self.apply_tpm(&row).await),
             HwType::Vsock => Ok(self.apply_vsock(&row).await),
+            HwType::Filesystem => Ok(self.apply_filesystem(&row).await),
             _ => Ok(true),
         };
         let success = match res {
@@ -2745,6 +2757,32 @@ impl VmmDetails {
         });
     }
 
+    /// `_refresh_filesystem_page`. The virtiofs driver row and the
+    /// shared memory warning wait on domcaps.
+    fn refresh_filesystem_page(&self, row: &HwRow) {
+        let i = &self.0;
+        let Some((x, el)) = self.device_element(row) else {
+            return;
+        };
+        i.fs.set_dev(&x.doc, el);
+        let container = i.vm.conn().is_some_and(|c| c.is_container_only());
+        let load_drivers = !container && !i.fs_drivers_loaded.replace(true);
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            if load_drivers {
+                match this.0.vm.get_domain_capabilities().await {
+                    Some(caps) => this
+                        .0
+                        .fs
+                        .set_virtiofs_supported(caps.supports_filesystem_virtiofs()),
+                    None => this.0.fs_drivers_loaded.set(false),
+                }
+            }
+            let (have_shared_mem, _) = this.0.vm.has_shared_mem().await;
+            this.0.fs.set_have_shared_mem(have_shared_mem);
+        });
+    }
+
     /// `_refresh_controller_page`.
     fn refresh_controller_page(&self, row: &HwRow) {
         let Some((x, el)) = self.device_element(row) else {
@@ -2970,6 +3008,20 @@ impl VmmDetails {
             if let Some(cid) = cid {
                 vsock::set_cid(doc, el, cid);
             }
+            Ok(())
+        })
+        .await
+    }
+
+    /// `_apply_filesystem`.
+    async fn apply_filesystem(&self, row: &HwRow) -> bool {
+        let edits = Rc::new(if self.edited(Edit::Fs) {
+            self.0.fs.get_values()
+        } else {
+            Default::default()
+        });
+        self.change_device_config(row, move |doc, el| {
+            edits.apply(doc, el);
             Ok(())
         })
         .await
@@ -3355,6 +3407,10 @@ impl VmmDetails {
                     i.vsock.set_dev(&x.doc, el, i.vm.is_active());
                 }
                 i.hw_panel.set_visible_child_name("vsock");
+            }
+            HwType::Filesystem => {
+                self.refresh_filesystem_page(&row);
+                i.hw_panel.set_visible_child_name("filesystem");
             }
             _ => i.hw_panel.set_visible_child(&i.unported),
         }

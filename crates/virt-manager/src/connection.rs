@@ -364,6 +364,14 @@ impl VmmConnection {
         self.driver() == "test"
     }
 
+    pub fn is_lxc(&self) -> bool {
+        virtinst_core::connection::Uri::parse(&self.get_uri()).is_lxc()
+    }
+
+    pub fn is_container_only(&self) -> bool {
+        virtinst_core::connection::Uri::parse(&self.get_uri()).is_container_only()
+    }
+
     /// `is_qemu_unprivileged`: a `qemu:///session` style connection.
     pub fn is_qemu_unprivileged(&self) -> bool {
         let uri = virtinst_core::connection::Uri::parse(&self.get_uri());
