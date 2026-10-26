@@ -745,7 +745,10 @@ mod tests {
              <target><path>/var/lib/libvirt/images</path></target></pool>",
         )
         .unwrap();
-        assert_eq!((pool.capacity, pool.allocation, pool.available), (100, 40, 60));
+        assert_eq!(
+            (pool.capacity, pool.allocation, pool.available),
+            (100, 40, 60)
+        );
         let vol = VolXml::parse(
             "<volume type='file'><name>a.qcow2</name><key>/i/a.qcow2</key>\
              <capacity unit='bytes'>1024</capacity><target><path>/i/a.qcow2</path>\
