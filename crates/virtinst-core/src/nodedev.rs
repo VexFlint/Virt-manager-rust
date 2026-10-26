@@ -27,6 +27,10 @@ pub struct NodeDevice {
     pub devnodes: Vec<String>,
     /// `./capability/uuid`, for `mdev` devices.
     pub uuid: Option<String>,
+    /// `./capability/type/@id`, for `mdev` devices.
+    pub type_id: Option<String>,
+    /// `_capability_type`: `./capability/capability/@type`.
+    pub capability_type: Option<String>,
 }
 
 fn text(doc: &Document, el: Element, path: &[&str]) -> Option<String> {
@@ -67,7 +71,24 @@ impl NodeDevice {
                 .map(|d| d.text_content(&doc))
                 .collect(),
             uuid: cap_text("uuid"),
+            type_id: cap_attr("type", "id"),
+            capability_type: cap
+                .and_then(|c| c.find(&doc, "capability"))
+                .and_then(|c| c.attribute(&doc, "type"))
+                .map(str::to_string),
         })
+    }
+
+    pub fn is_pci_bridge(&self) -> bool {
+        self.capability_type.as_deref() == Some("pci-bridge")
+    }
+
+    pub fn is_usb_linux_root_hub(&self) -> bool {
+        self.vendor_id.as_deref() == Some("0x1d6b")
+            && matches!(
+                self.product_id.as_deref(),
+                Some("0x0001" | "0x0002" | "0x0003")
+            )
     }
 
     pub fn is_drm_render(&self) -> bool {
@@ -273,6 +294,20 @@ mod tests {
         assert_eq!(pretty_name(&drm, &[]), "pci_0000_00_02_0 (render)");
         let usb = NodeDevice::parse(USB).unwrap();
         assert_eq!(pretty_name(&usb, &[]), "001:002 Linux Foundation 0x0001");
+        assert!(usb.is_usb_linux_root_hub() && !pci.is_pci_bridge());
+        let bridge = NodeDevice::parse(
+            "<device><name>pci_0000_00_1c_0</name><capability type='pci'>\
+             <capability type='pci-bridge'/></capability></device>",
+        )
+        .unwrap();
+        assert!(bridge.is_pci_bridge());
+        let mdev = NodeDevice::parse(
+            "<device><name>mdev_x</name><capability type='mdev'>\
+             <type id='nvidia-63'/><uuid>4b20d080-1b54-4048-85b3-a6a62d165c01</uuid>\
+             </capability></device>",
+        )
+        .unwrap();
+        assert_eq!(mdev.type_id.as_deref(), Some("nvidia-63"));
     }
 
     fn hostdev(xml: &str) -> (Document, Element) {

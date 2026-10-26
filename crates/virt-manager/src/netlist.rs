@@ -1,5 +1,5 @@
 //! `device/netlist.py`: the NIC source picker, shared by the details
-//! page and (later) Add Hardware and the create wizard. Lists the
+//! page, Add Hardware and (later) the create wizard. Lists the
 //! connection's virtual networks plus manual bridge, macvtap and vDPA
 //! entries, with the portgroup and device name fields they need.
 
@@ -180,6 +180,30 @@ fn find_row_for_dev(
         },
     );
     (0, None)
+}
+
+/// `DeviceInterface.check_mac_in_use`, over the connection's VMs.
+pub fn check_mac_in_use(conn: &VmmConnection, searchmac: &str) -> Result<(), String> {
+    if searchmac.is_empty() {
+        return Ok(());
+    }
+    let in_use = conn.list_vms().iter().any(|vm| {
+        vm.xmlobj().is_some_and(|x| {
+            let doc = &x.doc;
+            virtinst_xml::resolve_path(doc, x.root(), &["devices"])
+                .map(|d| d.find_all(doc, "interface"))
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|nic| nic.find(doc, "mac")?.attribute(doc, "address"))
+                .any(|mac| mac.eq_ignore_ascii_case(searchmac))
+        })
+    });
+    if in_use {
+        return Err(format!(
+            "The MAC address '{searchmac}' is in use by another virtual machine."
+        ));
+    }
+    Ok(())
 }
 
 type ChangedCb = Box<dyn Fn()>;
@@ -400,19 +424,110 @@ impl NetList {
         });
     }
 
-    fn show_dev(&self, nets: Vec<NetInfo>, dev: &NetDev) {
+    /// `reset_state`: refetch the networks, keeping the picked row
+    /// when it's still there, else the default one.
+    pub fn reset_state(self: &Rc<Self>) {
+        let gen = self.generation.get() + 1;
+        self.generation.set(gen);
+        let current = self.selected_row().map(|r| r.label);
+        self.quietly(|| {
+            self.default_warn.set_visible(false);
+            self.manual_source.set_text("");
+        });
+        let weak = Rc::downgrade(self);
+        let conn = self.conn.clone();
+        glib::spawn_future_local(async move {
+            let nets = match &conn {
+                Some(c) => c.list_nets().await,
+                None => vec![],
+            };
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            if this.generation.get() != gen {
+                return;
+            }
+            this.quietly(|| {
+                let (rows, default_idx) = this.populate(nets);
+                let idx = current
+                    .and_then(|l| rows.iter().position(|r| r.label == l))
+                    .unwrap_or(default_idx);
+                this.set_rows(rows);
+                this.source.set_selected(idx as u32);
+                this.on_net_source_changed();
+            });
+            this.emit_changed();
+        });
+    }
+
+    /// `_populate_network_model`'s side effects: the default bridge in
+    /// the manual entry and the warning; returns the rows and the
+    /// default index.
+    fn populate(&self, nets: Vec<NetInfo>) -> (Vec<NetRow>, usize) {
         let (unprivileged, remote) = self
             .conn
             .as_ref()
             .map(|c| (c.is_qemu_unprivileged(), c.is_remote()))
             .unwrap_or((false, true));
         let default_bridge = if remote { None } else { host_default_bridge() };
-        let (mut rows, _default_idx, warn) =
-            build_rows(&nets, unprivileged, default_bridge.as_deref());
+        let (rows, default_idx, warn) = build_rows(&nets, unprivileged, default_bridge.as_deref());
         if let Some(br) = default_bridge.filter(|_| !unprivileged) {
             self.manual_source.set_text(&br);
         }
         self.default_warn.set_visible(warn);
+        self.nets.replace(nets);
+        (rows, default_idx)
+    }
+
+    /// `validate_device`: offers to start an inactive virtual network,
+    /// then `check_mac_in_use`.
+    pub async fn validate_device(
+        &self,
+        parent: &gtk::Window,
+        nettype: &str,
+        source: Option<&str>,
+        mac: &str,
+    ) -> Result<(), String> {
+        // `_check_network_is_running`
+        let inactive = nettype == "network"
+            && self
+                .nets
+                .borrow()
+                .iter()
+                .any(|n| Some(n.name.as_str()) == source && !n.active);
+        if let (true, Some(devname), Some(conn)) = (inactive, source, &self.conn) {
+            let res = crate::error::yes_no(
+                Some(parent),
+                "Virtual Network is not active.",
+                Some(&format!(
+                    "Virtual Network '{devname}' is not active. \
+                     Would you like to start the network now?"
+                )),
+            )
+            .await;
+            if res {
+                match conn.start_net(devname).await {
+                    Ok(()) => glib::g_debug!("virt-manager", "Started network '{devname}'"),
+                    Err(e) => {
+                        crate::error::show_err(
+                            Some(parent),
+                            &format!("Could not start virtual network '{devname}': {e}"),
+                            None,
+                            "",
+                        )
+                        .await
+                    }
+                }
+            }
+        }
+        if let Some(conn) = &self.conn {
+            check_mac_in_use(conn, mac)?;
+        }
+        Ok(())
+    }
+
+    fn show_dev(&self, nets: Vec<NetInfo>, dev: &NetDev) {
+        let (mut rows, _default_idx) = self.populate(nets);
         let (idx, manual) = find_row_for_dev(
             &mut rows,
             &dev.nettype,
@@ -422,7 +537,6 @@ impl NetList {
         if let Some(manual) = manual {
             self.manual_source.set_text(&manual);
         }
-        self.nets.replace(nets);
         self.set_rows(rows);
         self.source.set_selected(idx as u32);
         self.on_net_source_changed();

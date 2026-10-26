@@ -8,6 +8,7 @@ use virtinst_xml::{Document, Element};
 
 use super::edit::set_attr;
 use crate::capabilities::domcaps::DomainCapabilities;
+use crate::nodedev::NodeDevice;
 
 /// `DeviceChannel.CHANNEL_NAMES`.
 pub const CHANNEL_NAME_SPICE: &str = "com.redhat.spice.0";
@@ -34,6 +35,10 @@ pub struct GuestInfo {
     pub is_uefi: bool,
     /// `guest.osinfo.supports_virtiogpu()`.
     pub os_virtiogpu: bool,
+    /// `guest.osinfo.supports_virtionet()`.
+    pub os_virtionet: bool,
+    /// `guest.osinfo.supported_netmodels()`.
+    pub os_netmodels: Vec<String>,
 }
 
 impl GuestInfo {
@@ -86,6 +91,22 @@ impl GuestInfo {
         } else {
             "ich6"
         }
+    }
+
+    /// `DeviceInterface.default_model`. `is_qemu` is the connection's.
+    pub fn default_nic_model(&self, is_qemu: bool) -> Option<&'static str> {
+        crate::install::default_nic_model(
+            crate::install::GuestCapsDefaults {
+                domain_type: self.domain_type.as_deref().unwrap_or_default(),
+                os_type: self.os_type.as_deref().unwrap_or_default(),
+                arch: self.arch(),
+                machine: self.machine.as_deref(),
+                emulator: None,
+                is_qemu,
+            },
+            self.os_virtionet,
+            &self.os_netmodels,
+        )
     }
 
     /// `DeviceVideo.default_model`. `is_qemu` is the connection's.
@@ -408,6 +429,157 @@ pub fn filesystem_defaults(
     Ok(())
 }
 
+/// `vmmNetworkList.build_device`: what the network page picked. `mac`
+/// is always set; the page generates one when the box is unchecked, as
+/// `set_defaults` would.
+#[derive(Clone, Debug, Default)]
+pub struct NewInterface {
+    pub nettype: String,
+    pub source: Option<String>,
+    pub source_mode: Option<String>,
+    pub portgroup: Option<String>,
+    pub mac: String,
+    pub model: Option<String>,
+}
+
+/// `_build_network`, with `set_defaults`' model: `default_model` is
+/// [`GuestInfo::default_nic_model`], for "Hypervisor default".
+pub fn interface(doc: &mut Document, n: &NewInterface, default_model: Option<&str>) -> Element {
+    let el = new(doc, "interface");
+    super::network::set_source(
+        doc,
+        el,
+        &n.nettype,
+        n.source.as_deref(),
+        n.source_mode.as_deref(),
+        n.portgroup.as_deref(),
+    );
+    set_attr(doc, el, "mac", "address", Some(&n.mac));
+    set(
+        doc,
+        el,
+        "model",
+        "type",
+        n.model.as_deref().or(default_model),
+    );
+    el
+}
+
+/// `re.match("^nvidia-[0-9]{2}", ..) or re.match("^i915-GVTg_V[0-9]_[0-9]", ..)`.
+fn is_vfio_pci_mdev(type_id: &str) -> bool {
+    let digit = |c: Option<char>| c.is_some_and(|c| c.is_ascii_digit());
+    if let Some(rest) = type_id.strip_prefix("nvidia-") {
+        let mut c = rest.chars();
+        return digit(c.next()) && digit(c.next());
+    }
+    if let Some(rest) = type_id.strip_prefix("i915-GVTg_V") {
+        let mut c = rest.chars();
+        return digit(c.next()) && c.next() == Some('_') && digit(c.next());
+    }
+    false
+}
+
+/// `_build_hostdev`: `DeviceHostdev.set_from_nodedev` plus
+/// `set_defaults`. `all` is the host's node devices: a USB device that
+/// shares its vendor and product with another is picked by its bus
+/// address too, and a `net` device passes its parent through.
+pub fn hostdev(
+    doc: &mut Document,
+    dev: &NodeDevice,
+    all: &[NodeDevice],
+    is_xen: bool,
+    startup_policy: Option<&str>,
+) -> Result<Element, String> {
+    let el = new(doc, "hostdev");
+    el.set_attribute(doc, "mode", "subsystem");
+    fill_hostdev(doc, el, dev, all)?;
+    if el.attribute(doc, "managed").is_none() {
+        el.set_attribute(doc, "managed", if is_xen { "no" } else { "yes" });
+    }
+    if el.attribute(doc, "type") == Some("usb") {
+        set(doc, el, "source", "startupPolicy", startup_policy);
+    }
+    Ok(el)
+}
+
+fn fill_hostdev(
+    doc: &mut Document,
+    el: Element,
+    dev: &NodeDevice,
+    all: &[NodeDevice],
+) -> Result<(), String> {
+    let addr = |doc: &mut Document, name: &str, val: &Option<String>| {
+        set(doc, el, "source/address", name, val.as_deref());
+    };
+    match dev.device_type.as_deref() {
+        Some("pci") => {
+            el.set_attribute(doc, "type", "pci");
+            addr(doc, "domain", &dev.domain);
+            addr(doc, "bus", &dev.bus);
+            addr(doc, "slot", &dev.slot);
+            addr(doc, "function", &dev.function);
+        }
+        Some("usb_device") => {
+            el.set_attribute(doc, "type", "usb");
+            set(doc, el, "source/vendor", "id", dev.vendor_id.as_deref());
+            set(doc, el, "source/product", "id", dev.product_id.as_deref());
+            let count = all
+                .iter()
+                .filter(|d| {
+                    d.device_type.as_deref() == Some("usb_device")
+                        && d.vendor_id == dev.vendor_id
+                        && d.product_id == dev.product_id
+                })
+                .count();
+            if count > 1 {
+                addr(doc, "bus", &dev.bus);
+                addr(doc, "device", &dev.device);
+            }
+        }
+        Some("net") => {
+            let parent = all
+                .iter()
+                .find(|d| Some(&d.name) == dev.parent.as_ref())
+                .ok_or("Unsupported node device type 'None'")?;
+            return fill_hostdev(doc, el, parent, all);
+        }
+        Some("mdev") => {
+            el.set_attribute(doc, "type", "mdev");
+            let type_id = dev.type_id.as_deref().unwrap_or_default();
+            let (model, managed) = match type_id {
+                "vfio_ccw-io" => ("vfio-ccw", "no"),
+                "vfio_ap-passthrough" => ("vfio-ap", "no"),
+                t if is_vfio_pci_mdev(t) => {
+                    el.set_attribute(doc, "display", "off");
+                    el.set_attribute(doc, "ramfb", "off");
+                    ("vfio-pci", "yes")
+                }
+                _ => {
+                    return Err(format!(
+                        "Don't know how to generate nodedev for mdev type id '{type_id}'"
+                    ))
+                }
+            };
+            el.set_attribute(doc, "model", model);
+            el.set_attribute(doc, "managed", managed);
+            set_attr(
+                doc,
+                el,
+                "source/address",
+                "uuid",
+                Some(&dev.get_mdev_uuid()),
+            );
+        }
+        other => {
+            return Err(format!(
+                "Unsupported node device type '{}'",
+                other.unwrap_or("None")
+            ))
+        }
+    }
+    Ok(())
+}
+
 /// `get_xml()` of a built device: the element on its own.
 pub fn to_xml(build: impl FnOnce(&mut Document) -> Element) -> String {
     let mut doc = Document::new();
@@ -504,6 +676,150 @@ mod tests {
                 "controller@type=usb"
             ]
         );
+    }
+
+    #[test]
+    fn interfaces() {
+        let mut n = NewInterface {
+            nettype: "network".into(),
+            source: Some("default".into()),
+            portgroup: Some("eng".into()),
+            mac: "52:54:00:aa:bb:cc".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            shape(|d| interface(d, &n, Some("virtio"))),
+            [
+                "interface",
+                "interface@type=network",
+                "interface/source",
+                "interface/source@network=default",
+                "interface/source@portgroup=eng",
+                "interface/mac",
+                "interface/mac@address=52:54:00:aa:bb:cc",
+                "interface/model",
+                "interface/model@type=virtio"
+            ]
+        );
+        n.nettype = "direct".into();
+        n.source = Some("eth0".into());
+        n.source_mode = Some("bridge".into());
+        n.portgroup = None;
+        n.model = Some("e1000e".into());
+        assert_eq!(
+            shape(|d| interface(d, &n, None)),
+            [
+                "interface",
+                "interface@type=direct",
+                "interface/source",
+                "interface/source@dev=eth0",
+                "interface/source@mode=bridge",
+                "interface/mac",
+                "interface/mac@address=52:54:00:aa:bb:cc",
+                "interface/model",
+                "interface/model@type=e1000e"
+            ]
+        );
+        let mut g = q35();
+        g.domain_type = Some("kvm".into());
+        assert_eq!(g.default_nic_model(true), Some("e1000e"));
+        g.os_virtionet = true;
+        assert_eq!(g.default_nic_model(true), Some("virtio"));
+    }
+
+    #[test]
+    fn hostdevs() {
+        let parse = |xml: &str| NodeDevice::parse(xml).unwrap();
+        let pci = parse(
+            "<device><name>pci_0000_00_02_0</name><capability type='pci'>\
+             <domain>0</domain><bus>0</bus><slot>2</slot><function>0</function>\
+             </capability></device>",
+        );
+        let net = parse(
+            "<device><name>net_eth0</name><parent>pci_0000_00_02_0</parent>\
+             <capability type='net'><interface>eth0</interface></capability></device>",
+        );
+        let usb = |dev: &str| {
+            parse(&format!(
+                "<device><name>usb_1_{dev}</name><capability type='usb_device'>\
+                 <bus>1</bus><device>{dev}</device><product id='0xc52b'/>\
+                 <vendor id='0x046d'/></capability></device>"
+            ))
+        };
+        let all = vec![pci.clone(), net.clone(), usb("2")];
+        let pci_shape = [
+            "hostdev",
+            "hostdev@managed=yes",
+            "hostdev@mode=subsystem",
+            "hostdev@type=pci",
+            "hostdev/source",
+            "hostdev/source/address",
+            "hostdev/source/address@bus=0",
+            "hostdev/source/address@domain=0",
+            "hostdev/source/address@function=0",
+            "hostdev/source/address@slot=2",
+        ];
+        assert_eq!(
+            shape(|d| hostdev(d, &pci, &all, false, Some("optional")).unwrap()),
+            pci_shape
+        );
+        assert_eq!(
+            shape(|d| hostdev(d, &net, &all, false, None).unwrap()),
+            pci_shape
+        );
+        assert_eq!(
+            shape(|d| hostdev(d, &usb("2"), &all, true, Some("optional")).unwrap()),
+            [
+                "hostdev",
+                "hostdev@managed=no",
+                "hostdev@mode=subsystem",
+                "hostdev@type=usb",
+                "hostdev/source",
+                "hostdev/source@startupPolicy=optional",
+                "hostdev/source/vendor",
+                "hostdev/source/vendor@id=0x046d",
+                "hostdev/source/product",
+                "hostdev/source/product@id=0xc52b",
+            ]
+        );
+        // Two of the same model: the bus address tells them apart.
+        let all = vec![usb("2"), usb("3")];
+        let s = shape(|d| hostdev(d, &usb("3"), &all, false, None).unwrap());
+        assert!(
+            s.contains(&"hostdev/source/address@device=3".to_string()),
+            "{s:?}"
+        );
+
+        let mdev = parse(
+            "<device><name>mdev_4b20d080_1b54_4048_85b3_a6a62d165c01</name>\
+             <capability type='mdev'><type id='nvidia-63'/></capability></device>",
+        );
+        assert_eq!(
+            shape(|d| hostdev(d, &mdev, &[], false, None).unwrap()),
+            [
+                "hostdev",
+                "hostdev@display=off",
+                "hostdev@managed=yes",
+                "hostdev@mode=subsystem",
+                "hostdev@model=vfio-pci",
+                "hostdev@ramfb=off",
+                "hostdev@type=mdev",
+                "hostdev/source",
+                "hostdev/source/address",
+                "hostdev/source/address@uuid=4b20d080-1b54-4048-85b3-a6a62d165c01",
+            ]
+        );
+        assert!(is_vfio_pci_mdev("i915-GVTg_V5_4"));
+        assert!(!is_vfio_pci_mdev("nvidia-6"));
+        let mut d = Document::new();
+        assert!(hostdev(
+            &mut d,
+            &parse("<device><name>x</name><capability type='scsi'/></device>"),
+            &[],
+            false,
+            None
+        )
+        .is_err());
     }
 
     #[test]

@@ -325,6 +325,18 @@ impl VmmConnection {
     /// The host's node devices, for the graphics rendernode list and
     /// hostdev names (`filter_nodedevs`/`list_nodedevs`).
     pub async fn list_nodedevs(&self) -> Vec<virtinst_core::nodedev::NodeDevice> {
+        self.list_nodedevs_with_state()
+            .await
+            .into_iter()
+            .map(|(d, _)| d)
+            .collect()
+    }
+
+    /// [`Self::list_nodedevs`] with each device's `is_active()`: a
+    /// libvirt without `virNodeDeviceIsActive` counts all as active.
+    pub async fn list_nodedevs_with_state(
+        &self,
+    ) -> Vec<(virtinst_core::nodedev::NodeDevice, bool)> {
         let Some(handle) = self.handle() else {
             return vec![];
         };
@@ -334,12 +346,30 @@ impl VmmConnection {
                 .list_all_node_devices(0)
                 .unwrap_or_default();
             devs.iter()
-                .filter_map(|d| d.get_xml_desc(0).ok())
-                .filter_map(|xml| virtinst_core::nodedev::NodeDevice::parse(&xml))
+                .filter_map(|d| {
+                    let xml = d.get_xml_desc(0).ok()?;
+                    let dev = virtinst_core::nodedev::NodeDevice::parse(&xml)?;
+                    // SAFETY: `d` is a live node device handle.
+                    let active = unsafe { virt::sys::virNodeDeviceIsActive(d.as_ptr()) } != 0;
+                    Some((dev, active))
+                })
                 .collect()
         })
         .await
         .unwrap_or_default()
+    }
+
+    /// `vmmNetwork.start`, by name.
+    pub async fn start_net(&self, name: &str) -> Result<(), String> {
+        let handle = self.handle().ok_or("Not connected")?;
+        let name = name.to_string();
+        gio::spawn_blocking(move || {
+            let net = virt::network::Network::lookup_by_name(handle.connect(), &name)
+                .map_err(|e| e.to_string())?;
+            net.create().map(|_| ()).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|_| "Worker thread panicked".to_string())?
     }
 
     pub fn is_remote(&self) -> bool {
