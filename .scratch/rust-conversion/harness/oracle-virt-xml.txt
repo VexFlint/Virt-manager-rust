@@ -268,3 +268,40 @@
 --connect @SUITE@ test-for-virtxml --remove-device --redirdev all --print-diff
 --connect @SUITE@ test-for-virtxml --edit --redirdev=?
 --connect @SUITE@ --build-xml --redirdev usb,type=tcp,server=:4000
+#
+# --shmem / --memdev / --iommu / --pstore (ParserShMem, ParserMemdev,
+# ParserIommu, ParserPstore)
+--connect @SUITE@ test-for-virtxml --edit --shmem size=8,size.unit=M,role=master --print-xml
+--connect @SUITE@ test-for-virtxml --edit name=shmem0 --shmem model.type=ivshmem-plain --print-diff
+--connect @SUITE@ test-for-virtxml --edit --shmem msi.vectors=abc --print-xml
+--connect @SUITE@ test-for-virtxml --add-device --shmem shmem0,role=master,model.type=ivshmem-plain,size=8,size.unit=M --print-xml
+--connect @SUITE@ test-for-virtxml --add-device --shmem name=shmem_server,model.type=ivshmem-doorbell,size=2,size.unit=M,server.path=/tmp/socket-shmemm,msi.vectors=32,msi.ioeventfd=on,address.type=pci,alias.name=ua-shm --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --shmem all --print-xml
+--connect @SUITE@ test-for-virtxml --remove-device --shmem name=shmem0 --print-diff
+--connect @SUITE@ --build-xml --shmem name=my_shmem0,role=peer,model.type=ivshmem-plain,size=4,size.unit=M
+--connect @SUITE@ --shmem=?
+--connect @SUITE@ test-for-virtxml --edit --iommu driver.intremap=on,driver.aw_bits=48 --print-xml
+--connect @SUITE@ test-for-virtxml --edit model=intel --iommu driver.eim=on,driver.caching_mode=off --print-diff
+--connect @SUITE@ test-for-virtxml --edit --iommu driver.aw_bits=big --print-xml
+--connect @SUITE@ test-for-virtxml --remove-device --iommu all --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --iommu model=intel,driver.aw_bits=48,driver.caching_mode=on,driver.eim=off,driver.intremap=off,driver.iotlb=off --print-diff
+--connect @SUITE@ --build-xml --iommu intel,driver.iotlb=on
+--connect @SUITE@ --build-xml --iommu intel,alias.name=foo
+--connect @SUITE@ --iommu help
+--connect @SUITE@ test-for-virtxml --add-device --pstore backend=acpi-erst,path=/tmp/guest_acpi_esrt,size=8 --print-diff
+--connect @SUITE@ --build-xml --pstore backend=acpi-erst,size=8
+--connect @SUITE@ --build-xml --pstore acpi-erst
+--connect @SUITE@ --build-xml --pstore size=eight
+--connect @SUITE@ test-for-virtxml --edit --pstore size=8 --print-xml
+--connect @SUITE@ --pstore=?
+--connect @SUITE@ --build-xml --memdev nvdimm,source.path=/path/to/nvdimm,target.size=2,target.node=0,target.label_size=1,alias.name=mymemdev3,uuid=11111111-2222-aaaa-bbbb-ccccddddeeee
+--connect @SUITE@ --build-xml --memdev dimm,access=private,target_size=256,target_node=0,source_pagesize=4,source_nodemask=1-2,discard=on
+--connect @SUITE@ --build-xml --memdev nvdimm,source_path=/path/to/nvdimm,target_size=512,target_node=0,target_label_size=128,alias.name=mymemdev3,target.block=2048,target.requested=1048576,target.current=524288,address.type=dimm,address.base=0x100000000,address.slot=1,source.pmem=on,source.alignsize=2048,target.readonly=on
+--connect @SUITE@ --build-xml --memdev virtio-mem,target_node=0,target.block=524288,target.dynamicMemslots=yes,target_size=512,target.requested=524288,target.address_base=0x180000000
+--connect @SUITE@ --build-xml --memdev virtio-pmem,source.path=/tmp/virtio_pmem,target_size=512,target.address_base=0x1a0000000
+--connect @SUITE@ --build-xml --memdev dimm,target.size=1G
+--connect @SUITE@ --build-xml --memdev dimm,target.size=
+--connect @SUITE@ --build-xml --memdev dimm,source.nodemask=1,3-4,target.node=0
+--connect @SUITE@ test-for-virtxml --add-device --memdev dimm,target.size=512,target.node=0 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --memdev target.size=512 --print-xml
+--connect @SUITE@ --memdev help

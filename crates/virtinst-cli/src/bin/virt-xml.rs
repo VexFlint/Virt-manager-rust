@@ -183,9 +183,30 @@ struct Args {
     #[arg(long, help_heading = "XML options")]
     panic: Vec<String>,
 
+    /// Configure a guest shared memory device. Ex:
+    /// --shmem name=shmem0
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    shmem: Vec<String>,
+
+    /// Configure a guest memory device. Ex:
+    /// --memdev dimm,target.size=1024
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    memdev: Vec<String>,
+
     /// Configure guest vsock sockets.
     #[arg(long, help_heading = "XML options")]
     vsock: Vec<String>,
+
+    /// Configure an IOMMU device. Ex:
+    /// --iommu model=intel,driver.aw_bits=48
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    iommu: Vec<String>,
+
+    /// Configure a nvram storage device.
+    /// It's for guest kernel to record oops/panic logs. Ex:
+    /// --pstore backend=acpi-erst,size=8
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    pstore: Vec<String>,
 
     /// Suppress non-error output
     #[arg(short, long, help_heading = "Miscellaneous Options")]
@@ -241,7 +262,11 @@ fn xml_options(args: &Args) -> Vec<(Change, &Vec<String>)> {
         engine("tpm", &args.tpm),
         engine("rng", &args.rng),
         engine("panic", &args.panic),
+        engine("shmem", &args.shmem),
+        engine("memdev", &args.memdev),
         legacy("vsock", &args.vsock),
+        engine("iommu", &args.iommu),
+        engine("pstore", &args.pstore),
     ]
 }
 
