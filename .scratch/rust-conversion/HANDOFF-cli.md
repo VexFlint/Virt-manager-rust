@@ -28,9 +28,14 @@ Estado para quem continuar o trabalho de CLI. Leia o CLAUDE.md antes.
 ## Portados no motor
 watchdog, memballoon, panic, controller, input, sound, audio, video, network, graphics, filesystem, vsock,
 shmem, memdev, iommu, pstore,
+memory, memtune, blkiotune, memorybacking, numatune, iothreads (opções de guest),
 smartcard, tpm, rng, serial, parallel, channel, console, hostdev, redirdev.
 `parsers/charsrc.rs` tem `add_char_source_args` e `add_device_seclabel_args`.
 O propstore segue o `_nonxml_fset` do upstream: setar de novo move a chave para o fim.
+Opções de guest: sem `guest_propname` o objeto é o próprio guest (`parse_guest_edit`);
+um `guest_propname` que é propriedade int (`--iothreads`) imita o upstream, que falha
+no edit (`parse_scalar_edit`). `--build-xml --iothreads` precisa do `Guest.set_defaults`
+completo (vem com o virt-install) e por enquanto dá erro.
 `ParseCtx.post_edit` roda efeitos no guest depois de um edit (ex.: `change_graphics`).
 `boot.order` (`add_boot_order_arg`) aplica o `reorder_boot_order` do guest;
 `disk` já está em `DOMAIN_DEVICES` só com os filhos comuns
@@ -40,7 +45,7 @@ quando a opção é usada). No oráculo, `@FULL@` é o testdriver.xml.
 
 ## Falta (prioridade)
 1. Parser: disk (o último no código legado de `lib.rs`).
-2. Opções de guest (memory, vcpus, cpu, boot, features, clock, xml, metadata...)
+2. Opções de guest (vcpus, cpu, boot, features, clock, xml, metadata...)
    e o resto do virt-install (`--os-variant` etc.).
 3. Só depois: GUI (ver CLAUDE.md seção 7).
 

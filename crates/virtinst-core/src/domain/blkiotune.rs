@@ -57,3 +57,32 @@ pub struct DomainBlkiotune {
     #[xml(list)]
     pub devices: Vec<BlkiotuneDevice>,
 }
+
+/// `_BlkiotuneDevice`, for the CLI parsers.
+pub static BLKIOTUNE_DEVICE: crate::xmlbuilder::XmlClass = {
+    use crate::xmlbuilder::{prop, Kind, XmlClass};
+    XmlClass {
+        xml_name: "device",
+        props: &[
+            prop("path", "./path", Kind::Str),
+            prop("weight", "./weight", Kind::Str),
+            prop("read_bytes_sec", "./read_bytes_sec", Kind::Int),
+            prop("write_bytes_sec", "./write_bytes_sec", Kind::Int),
+            prop("read_iops_sec", "./read_iops_sec", Kind::Int),
+            prop("write_iops_sec", "./write_iops_sec", Kind::Int),
+        ],
+        children: &[],
+        prop_order: &["path", "weight"],
+    }
+};
+
+/// `DomainBlkiotune`, for the CLI parsers.
+pub static DOMAIN_BLKIOTUNE: crate::xmlbuilder::XmlClass = {
+    use crate::xmlbuilder::{child, prop, Kind, XmlClass};
+    XmlClass {
+        xml_name: "blkiotune",
+        props: &[prop("weight", "./weight", Kind::Int)],
+        children: &[child("devices", &BLKIOTUNE_DEVICE, ".", false)],
+        prop_order: &["weight"],
+    }
+};

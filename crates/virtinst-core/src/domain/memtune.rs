@@ -28,3 +28,24 @@ pub struct DomainMemtune {
     #[xml(path = "min_guarantee", text)]
     pub min_guarantee: Option<u32>,
 }
+
+/// `DomainMemtune`, for the CLI parsers.
+pub static DOMAIN_MEMTUNE: crate::xmlbuilder::XmlClass = {
+    use crate::xmlbuilder::{prop, Kind, XmlClass};
+    XmlClass {
+        xml_name: "memtune",
+        props: &[
+            prop("hard_limit", "./hard_limit", Kind::Int),
+            prop("soft_limit", "./soft_limit", Kind::Int),
+            prop("swap_hard_limit", "./swap_hard_limit", Kind::Int),
+            prop("min_guarantee", "./min_guarantee", Kind::Int),
+        ],
+        children: &[],
+        prop_order: &[
+            "hard_limit",
+            "soft_limit",
+            "swap_hard_limit",
+            "min_guarantee",
+        ],
+    }
+};

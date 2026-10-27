@@ -567,20 +567,112 @@ pub static DOMAIN_FEATURES: XmlClass = XmlClass {
     prop_order: &[],
 };
 
-/// `Guest`.
+/// `_IOThreadID`.
+pub static IOTHREAD_ID: XmlClass = XmlClass {
+    xml_name: "iothread",
+    props: &[
+        prop("id", "./@id", Kind::Int),
+        prop("thread_pool_min", "./@thread_pool_min", Kind::Int),
+        prop("thread_pool_max", "./@thread_pool_max", Kind::Int),
+        prop("max", "./poll/@max", Kind::Int),
+        prop("grow", "./poll/@grow", Kind::Int),
+        prop("shrink", "./poll/@shrink", Kind::Int),
+    ],
+    children: &[],
+    prop_order: &["id", "thread_pool_min", "thread_pool_max"],
+};
+
+/// `_DefaultIOThread`.
+pub static DEFAULT_IOTHREAD: XmlClass = XmlClass {
+    xml_name: "defaultiothread",
+    props: &[
+        prop("thread_pool_min", "./@thread_pool_min", Kind::Int),
+        prop("thread_pool_max", "./@thread_pool_max", Kind::Int),
+    ],
+    children: &[],
+    prop_order: &[],
+};
+
+/// `Guest`. `currentMemory` is a Python property: set it with
+/// [`set_current_memory`].
 pub static GUEST: XmlClass = XmlClass {
     xml_name: "domain",
     props: &[
         prop("type", "./@type", Kind::Str),
         prop("name", "./name", Kind::Str),
         prop("uuid", "./uuid", Kind::Str),
+        prop("iothreads", "./iothreads", Kind::Int),
+        prop("_currentMemory", "./currentMemory", Kind::Int),
+        prop("memory", "./memory", Kind::Int),
+        prop("maxMemory", "./maxMemory", Kind::Int),
+        prop("maxMemorySlots", "./maxMemory/@slots", Kind::Int),
     ],
     children: &[
+        child("iothreadids", &IOTHREAD_ID, "./iothreadids", false),
+        child("defaultiothread", &DEFAULT_IOTHREAD, ".", true),
+        child(
+            "blkiotune",
+            &crate::domain::blkiotune::DOMAIN_BLKIOTUNE,
+            ".",
+            true,
+        ),
+        child(
+            "memtune",
+            &crate::domain::memtune::DOMAIN_MEMTUNE,
+            ".",
+            true,
+        ),
+        child(
+            "memoryBacking",
+            &crate::domain::memorybacking::DOMAIN_MEMORY_BACKING,
+            ".",
+            true,
+        ),
+        child(
+            "numatune",
+            &crate::domain::numatune::DOMAIN_NUMATUNE,
+            ".",
+            true,
+        ),
         child("features", &DOMAIN_FEATURES, ".", true),
         child("devices", &DOMAIN_DEVICES, ".", true),
     ],
-    prop_order: &["type", "name", "uuid", "features", "devices"],
+    prop_order: &[
+        "type",
+        "name",
+        "uuid",
+        "iothreads",
+        "iothreadids",
+        "defaultiothread",
+        "maxMemory",
+        "maxMemorySlots",
+        "memory",
+        "_currentMemory",
+        "blkiotune",
+        "memtune",
+        "memoryBacking",
+        "numatune",
+        "features",
+        "devices",
+    ],
 };
+
+/// `Guest.currentMemory`'s setter: `memory` grows to fit.
+pub fn set_current_memory(
+    guest: &mut crate::xmlbuilder::XmlObject,
+    val: Option<i64>,
+) -> Result<(), String> {
+    if let Some(v) = val {
+        let memory = match guest.get("memory") {
+            Some(crate::xmlbuilder::Value::Int(m)) => Some(m),
+            _ => None,
+        };
+        if !matches!(memory, Some(m) if m >= v) {
+            guest.set("memory", Some(crate::xmlbuilder::Value::Int(v)))?;
+        }
+    }
+    guest.set("_currentMemory", val.map(crate::xmlbuilder::Value::Int))
+}
 
 #[cfg(test)]
 mod boot_tests {

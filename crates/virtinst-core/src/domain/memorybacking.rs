@@ -67,3 +67,38 @@ pub struct DomainMemoryBacking {
     #[xml(path = "hugepages", list)]
     pub pages: Vec<HugepagesPage>,
 }
+
+/// `_HugepagesPage`, for the CLI parsers.
+pub static HUGEPAGES_PAGE: crate::xmlbuilder::XmlClass = {
+    use crate::xmlbuilder::{prop, Kind, XmlClass};
+    XmlClass {
+        xml_name: "page",
+        props: &[
+            prop("size", "./@size", Kind::Str),
+            prop("unit", "./@unit", Kind::Str),
+            prop("nodeset", "./@nodeset", Kind::Str),
+        ],
+        children: &[],
+        prop_order: &[],
+    }
+};
+
+/// `DomainMemoryBacking`, for the CLI parsers.
+pub static DOMAIN_MEMORY_BACKING: crate::xmlbuilder::XmlClass = {
+    use crate::xmlbuilder::{child, prop, Kind, XmlClass};
+    XmlClass {
+        xml_name: "memoryBacking",
+        props: &[
+            prop("hugepages", "./hugepages", Kind::Bool),
+            prop("nosharepages", "./nosharepages", Kind::Bool),
+            prop("locked", "./locked", Kind::Bool),
+            prop("discard", "./discard", Kind::Bool),
+            prop("access_mode", "./access/@mode", Kind::Str),
+            prop("source_type", "./source/@type", Kind::Str),
+            prop("allocation_mode", "./allocation/@mode", Kind::Str),
+            prop("allocation_threads", "./allocation/@threads", Kind::Int),
+        ],
+        children: &[child("pages", &HUGEPAGES_PAGE, "./hugepages", false)],
+        prop_order: &["hugepages", "nosharepages", "locked", "pages"],
+    }
+};
