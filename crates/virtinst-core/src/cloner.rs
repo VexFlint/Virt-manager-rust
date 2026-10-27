@@ -699,7 +699,9 @@ pub fn check_mac_in_use(conn: &Connection, searchmac: &str) -> Result<(), String
     Ok(())
 }
 
-/// `conn.fetch_all_domains()`: every domain's name and inactive XML.
+/// `conn.fetch_all_domains()`: every domain's name and XML, as
+/// upstream's `XMLDesc(0)` reads it — the live XML of a running VM, so
+/// a hotplugged NIC or disk counts too.
 pub fn all_domain_xmls(conn: &Connection) -> Vec<(String, String)> {
     conn.as_connect()
         .list_all_domains(0)
@@ -707,7 +709,7 @@ pub fn all_domain_xmls(conn: &Connection) -> Vec<(String, String)> {
         .into_iter()
         .filter_map(|d| {
             let name = d.get_name().ok()?;
-            let xml = d.get_xml_desc(virt::sys::VIR_DOMAIN_XML_INACTIVE).ok()?;
+            let xml = d.get_xml_desc(0).ok()?;
             Some((name, xml))
         })
         .collect()
@@ -1357,6 +1359,36 @@ mod tests {
             .expect("test:/// driver always opens");
         let _ = std::fs::remove_file(&path);
         conn
+    }
+
+    /// A MAC only in a running VM's live XML (not in its persistent
+    /// config any more) is still "in use", like upstream's
+    /// `check_mac_in_use` over `XMLDesc(0)`.
+    #[test]
+    fn mac_in_use_sees_a_running_vms_live_xml() {
+        let conn = private_test_conn("live-mac");
+        let xml = |devices: &str| {
+            format!(
+                "<domain type='test'><name>live</name>\
+                 <uuid>12345678-1234-1234-1234-123456789abc</uuid><memory>8192</memory>\
+                 <os><type>hvm</type></os><devices>{devices}</devices></domain>"
+            )
+        };
+        let dom = VirtDomain::define_xml(
+            conn.as_connect(),
+            &xml("<interface type='user'><mac address='52:54:00:aa:bb:cc'/></interface>"),
+        )
+        .unwrap();
+        dom.create().unwrap();
+        // Drop the NIC from the persistent config only: the running VM
+        // still has it.
+        VirtDomain::define_xml(conn.as_connect(), &xml("")).unwrap();
+        let err = check_mac_in_use(&conn, "52:54:00:AA:BB:CC").unwrap_err();
+        assert_eq!(
+            err,
+            "The MAC address '52:54:00:AA:BB:CC' is in use by another virtual machine."
+        );
+        assert!(check_mac_in_use(&conn, "52:54:00:aa:bb:cd").is_ok());
     }
 
     /// `_init_new_guest` plus `prepare` on `--original-xml` input:
