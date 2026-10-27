@@ -68,6 +68,43 @@ impl Connection {
         })
     }
 
+    /// `open(authcb, cbdata)`: `virConnectOpenAuth` with the credential
+    /// types of libvirt's `virConnectCredTypeDefault`, answered by
+    /// `authcb`. `None` opens libvirt's default URI, and the URI
+    /// reported is then the one libvirt picked.
+    pub fn open_auth(
+        uri: Option<&str>,
+        authcb: virt::connect::ConnectAuthCallback,
+    ) -> Result<Connection, Error> {
+        let mut auth = virt::connect::ConnectAuth::new(
+            vec![
+                virt::sys::VIR_CRED_AUTHNAME,
+                virt::sys::VIR_CRED_ECHOPROMPT,
+                virt::sys::VIR_CRED_REALM,
+                virt::sys::VIR_CRED_PASSPHRASE,
+                virt::sys::VIR_CRED_NOECHOPROMPT,
+                virt::sys::VIR_CRED_EXTERNAL,
+            ],
+            authcb,
+        );
+        let inner = Connect::open_auth(uri, &mut auth, 0)?;
+        let opened = match uri {
+            Some(uri) => uri.to_string(),
+            None => inner.get_uri()?,
+        };
+        let reported_uri = std::env::var("VIRTINST_TEST_FAKE_URI").unwrap_or(opened);
+        Ok(Connection {
+            inner,
+            uri: Uri::parse(&reported_uri),
+        })
+    }
+
+    /// The URI libvirt reports for the open connection (`getURI`),
+    /// never faked.
+    pub fn real_uri(&self) -> Result<String, Error> {
+        self.inner.get_uri()
+    }
+
     /// The URI this connection was opened with, already parsed —
     /// upstream's `uri` property plus the `URI` object it wraps
     /// ([`Uri`]'s driver-detection predicates, e.g. `is_qemu()`, are
@@ -96,7 +133,7 @@ impl Connection {
     /// cheaply `Clone` via ref-counting, so `Domain` borrows this
     /// rather than holding its own clone (each clone needs its own
     /// `close()`, a lifecycle this crate doesn't need to manage yet).
-    pub(crate) fn as_connect(&self) -> &Connect {
+    pub fn as_connect(&self) -> &Connect {
         &self.inner
     }
 }

@@ -75,8 +75,8 @@ if [[ ! -f "$TESTSUITE_XML" ]]; then
     exit 2
 fi
 
-echo "Building virt-xml..."
-cargo build -q --manifest-path "$REPO_ROOT/Cargo.toml" -p virtinst-cli --bin virt-xml
+echo "Building virt-xml and virt-clone..."
+cargo build -q --manifest-path "$REPO_ROOT/Cargo.toml" -p virtinst-cli --bin virt-xml --bin virt-clone
 
 pass=0
 fail=0
@@ -416,6 +416,170 @@ check_xpath "$xml" "string(//filesystem/@type)" "mount" "type untouched"
 check_xpath "$xml" "string(//filesystem/@accessmode)" "mapped" "accessmode changed via mode alias"
 check_xpath "$xml" "string(//filesystem/source/@dir)" "/1/2/3" "source dir changed"
 check_xpath "$xml" "string(//filesystem/target/@dir)" "/4/5/6" "target dir changed"
+
+# ---------------------------------------------------------------------
+# virt-clone: upstream's whole "virt-clone tests" block in
+# tests/test_cli.py. Compare cases check the full printed XML against
+# tests/data/cli/compare/virt-clone-*.xml (structurally, xmlcmp.py:
+# attribute order isn't kept by our DOM yet); invalid cases grep the
+# error the same way upstream's add_invalid does. Like upstream's
+# harness, compare cases get --print-xml --__test-nodry appended, so the
+# clone really runs against the test driver too. URI-KVM-X86 is
+# testdriver.xml here: virt-clone reads nothing from its fake caps.
+# The "remote" category needs MagicURI's fake remote URI: not covered.
+# ---------------------------------------------------------------------
+
+CLONE_BIN="$REPO_ROOT/target/debug/virt-clone"
+XMLCMP="$REPO_ROOT/.scratch/rust-conversion/harness/xmlcmp.py"
+CLONEXMLDIR="$UPSTREAM_REF/tests/data/cli/virtclone"
+COMPAREDIR="$UPSTREAM_REF/tests/data/cli/compare"
+URI_FULL="test://$UPSTREAM_REF/tests/data/testdriver/testdriver.xml"
+URI_SUITE="test://$TESTSUITE_XML"
+CLONE_UNMANAGED="--original-xml $CLONEXMLDIR/clone-disk.xml"
+CLONE_MANAGED="--original-xml $CLONEXMLDIR/clone-disk-managed.xml"
+CLONE_NOEXIST="--original-xml $CLONEXMLDIR/clone-disk-noexist.xml"
+CLONE_NVRAM="--original-xml $CLONEXMLDIR/clone-nvram-auto.xml"
+CLONE_NVRAM_NEWPOOL="--original-xml $CLONEXMLDIR/clone-nvram-newpool.xml"
+CLONE_NVRAM_MISSING="--original-xml $CLONEXMLDIR/clone-nvram-missing.xml"
+CLONE_EMPTY="--original-xml $CLONEXMLDIR/clone-empty.xml"
+CLONE_NET_RBD="--original-xml $CLONEXMLDIR/clone-net-rbd.xml"
+CLONE_NET_HTTP="--original-xml $CLONEXMLDIR/clone-net-http.xml"
+CLONE_SERIAL="--original-xml $CLONEXMLDIR/clone-serial.xml"
+# test_cli.py's EXIST_FILES / NEW_FILES.
+EXISTIMG1=/pool-dir/testvol1.img
+EXISTIMG3=/tmp/__virtinst_cli_exist3.img
+EXISTIMG4=/tmp/__virtinst_cli_exist4.img
+NEWCLONEIMG1=/tmp/__virtinst_cli_new1.img
+NEWCLONEIMG2=/tmp/__virtinst_cli_new2.img
+NEWCLONEIMG3=/tmp/__virtinst_cli_new3.img
+NEWIMG1=/pool-dir/new1.img
+CLONE_TMPFILES=(/tmp/__virtinst_cli_exist1.img /tmp/__virtinst_cli_exist2.img "$EXISTIMG3" "$EXISTIMG4")
+
+clone_cleanup() {
+    rm -f /tmp/__virtinst_cli_new*.img /tmp/__virtinst_cli_exist*-clone.img
+}
+
+# Run from the upstream checkout: one case passes the relative path
+# `virt-install`, an existing file there.
+run_clone() {
+    (cd "$UPSTREAM_REF" && VIRTINST_TEST_PREDICTABLE=1 VIRTINST_TEST_SUITE=1 "$CLONE_BIN" "$@")
+}
+
+# clone_compare NAME ARGS... — upstream's add_compare.
+clone_compare() {
+    local name="$1"
+    shift
+    local args=("$@")
+    if [[ " ${args[*]} " != *" --print-xml "* ]]; then
+        args+=(--print-xml --__test-nodry)
+    fi
+    clone_cleanup
+    local actual expected out
+    actual="$(mktemp)"
+    expected="$(mktemp)"
+    # Only the XML: --__test-nodry's run prints after it.
+    run_clone "${args[@]}" 2>/dev/null | sed '/^$/,$d' >"$actual" || true
+    sed "s|TESTSUITE_SCRUBBED|$UPSTREAM_REF|g" "$COMPAREDIR/virt-clone-$name.xml" >"$expected"
+    if out="$(python3 "$XMLCMP" "$actual" "$expected" 2>&1)"; then
+        echo "  PASS: compare $name"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL: compare $name"
+        echo "        $out"
+        fail=$((fail + 1))
+    fi
+    rm -f "$actual" "$expected"
+}
+
+# clone_valid ARGS... — upstream's add_valid.
+clone_valid() {
+    clone_cleanup
+    local out
+    if out="$(run_clone "$@" 2>&1)"; then
+        echo "  PASS: valid $*"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL: valid $*"
+        echo "        $out"
+        fail=$((fail + 1))
+    fi
+}
+
+# clone_invalid GREP ARGS... — upstream's add_invalid.
+clone_invalid() {
+    local grep="$1"
+    shift
+    clone_cleanup
+    local out
+    if out="$(run_clone "$@" 2>&1)"; then
+        echo "  FAIL: invalid (succeeded) $*"
+        fail=$((fail + 1))
+    elif [[ "$out" == *"$grep"* ]]; then
+        echo "  PASS: invalid [$grep]"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL: invalid [$grep]"
+        echo "        $out"
+        fail=$((fail + 1))
+    fi
+}
+
+touch "${CLONE_TMPFILES[@]}"
+
+echo
+echo "=== virt-clone: misc ==="
+clone_compare clone-auto1 --connect "$URI_FULL" -o test-clone --auto-clone
+clone_compare clone-auto2 --connect "$URI_FULL" -o test-clone-simple --name newvm --auto-clone --reflink
+clone_compare clone-nvram --connect "$URI_FULL" $CLONE_NVRAM --auto-clone
+clone_compare clone-nvram-path --connect "$URI_FULL" $CLONE_NVRAM --auto-clone --nvram /nvram/my-custom-path
+clone_compare nvram-newpool --connect "$URI_FULL" $CLONE_NVRAM_NEWPOOL --auto-clone
+clone_compare nvram-missing --connect "$URI_FULL" $CLONE_NVRAM_MISSING --auto-clone
+clone_compare nvram-missing-preserve --connect "$URI_FULL" $CLONE_NVRAM_MISSING --auto-clone --preserve
+clone_compare clone-manual --connect "$URI_FULL" -o test-clone -n test-newclone --mac 12:34:56:1A:B2:C3 --mac 12:34:56:1A:B7:C3 --uuid 12345678-12F4-1234-1234-123456789AFA --file /dev/pool-logical/newclone1.img --file /pool-dir/newclone2.img --skip-copy=hdb --force-copy=sdb --file /pool-dir/newclone3.img
+clone_compare empty --connect "$URI_SUITE" $CLONE_EMPTY --auto-clone --print-xml
+clone_compare pool-test-cross-pool --connect "$URI_FULL" -o test-clone-simple --auto -f /foo.img --print-xml
+clone_compare auto-managed --connect "$URI_SUITE" $CLONE_MANAGED --auto-clone
+clone_compare auto-unmanaged --connect "$URI_SUITE" $CLONE_UNMANAGED --auto-clone
+clone_compare serial --connect "$URI_SUITE" $CLONE_SERIAL --auto-clone
+clone_valid --connect "$URI_FULL" -o test-clone --auto-clone --nonsparse
+clone_valid --connect "$URI_FULL" -o test-clone-simple -n newvm --preserve-data --file "$EXISTIMG1"
+clone_valid --connect "$URI_SUITE" -n clonetest $CLONE_UNMANAGED --file "$EXISTIMG3" --file "$EXISTIMG4" --check path_exists=off
+clone_valid --connect "$URI_SUITE" -n clonetest $CLONE_UNMANAGED --auto-clone --mac 22:11:11:11:11:11 --check all=off
+clone_invalid "--check mac_in_use=off" --connect "$URI_SUITE" -n clonetest $CLONE_UNMANAGED --auto-clone --mac 22:11:11:11:11:11
+clone_invalid "An original machine name is required" --connect "$URI_SUITE" --auto-clone
+clone_invalid "use '--name NEW_VM_NAME'" --connect "$URI_SUITE" $CLONE_EMPTY --file foo
+clone_invalid "Invalid name for new guest" --connect "$URI_SUITE" $CLONE_EMPTY --auto-clone -n test
+clone_invalid "shutoff" --connect "$URI_SUITE" -o test --auto-clone
+clone_invalid "Clone onto existing storage volume is not currently supported" --connect "$URI_FULL" -o test-clone-simple -n newvm --file "$EXISTIMG1"
+clone_invalid "not enough free space" --connect "$URI_FULL" -o test-clone-full --auto-clone
+clone_invalid "'http' is not cloneable" --connect "$URI_SUITE" $CLONE_NET_HTTP --auto-clone
+clone_invalid "Cloning rbd volumes is not yet supported" --connect "$URI_FULL" $CLONE_NET_RBD --auto-clone
+
+echo
+echo "=== virt-clone: general ==="
+G=(--connect "$URI_SUITE" -n clonetest)
+clone_valid "${G[@]}" $CLONE_EMPTY --auto-clone --replace
+clone_valid "${G[@]}" $CLONE_EMPTY --file "$NEWCLONEIMG1" --file "$NEWCLONEIMG2"
+clone_valid "${G[@]}" $CLONE_EMPTY --file "$NEWCLONEIMG1" --file "$NEWCLONEIMG2" --prompt
+clone_valid "${G[@]}" $CLONE_UNMANAGED --file "$NEWCLONEIMG1" --file "$NEWCLONEIMG2"
+clone_valid "${G[@]}" $CLONE_UNMANAGED --file "$NEWCLONEIMG1" --skip-copy=hda
+clone_compare unmanaged-preserve "${G[@]}" $CLONE_UNMANAGED --file virt-install --file "$EXISTIMG1" --preserve
+clone_valid "${G[@]}" $CLONE_UNMANAGED --file "$NEWCLONEIMG1" --file "$NEWCLONEIMG2" --file "$NEWCLONEIMG3" --force-copy=hdc
+clone_valid "${G[@]}" $CLONE_UNMANAGED --file "$NEWCLONEIMG1" --file "$NEWCLONEIMG2" --force-copy=fda
+clone_valid "${G[@]}" $CLONE_MANAGED --file "$NEWIMG1"
+clone_valid "${G[@]}" $CLONE_MANAGED --file "$NEWIMG1" --reflink
+clone_compare replace --connect "$URI_FULL" -n clonetest -o test-clone -n test --auto-clone --replace
+clone_valid "${G[@]}" $CLONE_MANAGED --auto-clone --force-copy fda
+clone_invalid "Domain 'idontexist' was not found" "${G[@]}" -o idontexist --auto-clone
+clone_invalid "Either --auto-clone or --file" "${G[@]}" $CLONE_UNMANAGED
+clone_invalid "overwrite the existing path" "${G[@]}" $CLONE_UNMANAGED --file virt-install
+clone_invalid "matching name 'default-vol'" "${G[@]}" $CLONE_MANAGED --file /tmp/clonevol
+clone_valid "${G[@]}" $CLONE_NOEXIST --file "$EXISTIMG1" --preserve
+# Upstream's next case ("StoragePool.install testsuite mocked failure")
+# needs MagicURI's mocked pool failure: not covered.
+
+clone_cleanup
+rm -f "${CLONE_TMPFILES[@]}"
 
 echo
 echo "$pass passed, $fail failed"

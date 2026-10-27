@@ -1,42 +1,16 @@
-//! VM cloning — upstream's `cloner.py` (622 LOC), wrapped by `virt-clone`
-//! (ticket 16). This slice is `--preserve-data` only: rewrite the
-//! source domain's XML into a new, distinct domain (new name, new UUID,
-//! fresh MACs, disk sources pointed at caller-given paths) and define
-//! it — no actual disk-content duplication (`cloner.py`'s
-//! `start_duplicate`, real byte-level copying, real progress reporting).
-//! `--preserve-data` is upstream's own supported mode for exactly this:
-//! "don't touch storage, the paths I'm giving you already have the
-//! right content" — not a crippled clone, a real one of upstream's own
-//! shapes.
+//! VM cloning — upstream's `cloner.py`, wrapped by `virt-clone`
+//! (ticket 16).
 //!
-//! Operates directly on the `edit_xml` `Document`/`Element` DOM, the
-//! same surgical-mutation pattern `virtinst-cli`'s `--edit --watchdog`
-//! uses — deliberately *not* "parse into a `Guest` struct, mutate
-//! fields, call `write_to`". `Guest::devices` and everything under it
-//! (`disks`/`interfaces`/`graphics`) are `#[xml(list)]`/`#[xml(nested)]`
-//! fields, which `write_to` never serializes at all (ticket 06's
-//! preservation design: no "absent" state distinguishable from
-//! "present but empty", so list/nested fields are read-only). A typed
-//! round trip literally cannot touch a `<mac>` or `<source file=...>`
-//! — only direct DOM element mutation can.
+//! [`Cloner`] is the full port: source VM by name or XML, auto clone
+//! name and disk paths, the clone/share/preserve choice per disk
+//! (`_CloneDiskInfo`), `--force-copy`/`--skip-copy`, nvram, serial file
+//! paths, MAC/UUID collision checks, `--replace`, and the real storage
+//! duplication (`createXMLFrom` for managed volumes, a sparse local copy
+//! otherwise — see `diskbackend.rs`). It edits the new VM's XML on the
+//! `edit_xml` DOM, so everything it doesn't touch survives as-is.
 //!
-//! Ports `Cloner.__init__`'s `_init_new_guest` — the *unconditional*
-//! changes upstream always makes — plus `_process_disks`' path
-//! rewriting in `--preserve-data` mode. **Not ported, flagged rather
-//! than built:**
-//! - NVRAM handling (`_prepare_nvram`) — no `<os><nvram>` rewriting.
-//! - The guest-agent channel source-path rewrite (`channel.source.path`
-//!   cleared when it embeds the old domain name) — needs
-//!   `DeviceChannel::TYPE_UNIX`-style matching this module doesn't have
-//!   a reason to duplicate for a first slice.
-//! - UUID/MAC **collision checking** against the connection's existing
-//!   domains. Upstream retries up to 256 times against
-//!   `conn.lookupByUUID`/`fetch_all_domains`; this generates once,
-//!   unchecked. `Connection` doesn't have a domain-listing method yet
-//!   either (see its own doc comment).
-//! - `--auto-clone` (name/path auto-generation) — this slice requires
-//!   an explicit `--name` and one `--file` per non-shareable disk, same
-//!   as upstream requires when `--auto-clone` isn't passed.
+//! [`build_clone_document`] is the older `--preserve-data`-only slice,
+//! kept for its existing callers and tests.
 
 use uuid::Uuid;
 use virtinst_xml::{parse_libvirt_xml, Document, EditXMLError, Element};
@@ -288,9 +262,1180 @@ fn set_text(doc: &mut Document, root: Element, tag: &str, value: &str) {
     }
 }
 
+// ---------------------------------------------------------------------
+// `Cloner`: the full port of `cloner.py`, what `virt-clone` drives.
+// `build_clone_document` above stays as the minimal `--preserve-data`
+// slice it always was.
+// ---------------------------------------------------------------------
+
+use virt::domain::Domain as VirtDomain;
+
+use crate::connection::Connection;
+use crate::diskbackend::{CloneStorageCreator, CloneVolInstall, StorageBackend};
+use crate::progress::Meter;
+
+/// `generatename.generate_name`: `base`, then numbered tries
+/// (`base{sep}{n}{suffix}`), until `collides` says no.
+pub fn generate_name(
+    base: &str,
+    collides: impl Fn(&str) -> bool,
+    suffix: &str,
+    start_num: u32,
+    sep: &str,
+    force_num: bool,
+) -> String {
+    let nums = (start_num..start_num + 100_000).map(Some);
+    let tries: Box<dyn Iterator<Item = Option<u32>>> = if force_num {
+        Box::new(nums)
+    } else {
+        Box::new(std::iter::once(None).chain(nums))
+    };
+    for i in tries {
+        let tryname = match i {
+            Some(i) => format!("{base}{sep}{i}{suffix}"),
+            None => format!("{base}{suffix}"),
+        };
+        if !collides(&tryname) {
+            return tryname;
+        }
+    }
+    format!("{base}{suffix}")
+}
+
+/// `_generate_clone_name`: `foo` → `foo-clone`, and `foo-clone` →
+/// `foo-clone1` rather than `foo-clone-clone`.
+pub fn generate_clone_name(basename: &str, collides: impl Fn(&str) -> bool) -> String {
+    let mut basename = basename.to_string();
+    let mut start_num = 1;
+    let mut force_num = false;
+    // regex = r"-clone[1-9]*$"
+    let digits = basename
+        .trim_end_matches(|c: char| ('1'..='9').contains(&c))
+        .len();
+    if basename[..digits].ends_with("-clone") {
+        let nums = &basename[digits..];
+        force_num = true;
+        if !nums.is_empty() {
+            start_num = nums.parse::<u32>().unwrap_or(0) + 1;
+        }
+        basename.truncate(digits - "-clone".len());
+    }
+    generate_name(
+        &format!("{basename}-clone"),
+        collides,
+        "",
+        start_num,
+        "",
+        force_num,
+    )
+}
+
+/// `_generate_clone_path`: `foo.img` → `foo-clone.img`, or the new
+/// VM's name when the file is named after the old one.
+pub fn generate_clone_path(
+    origname: Option<&str>,
+    newname: &str,
+    origpath: Option<&str>,
+    cb_exists: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let origpath = origpath?;
+    let mut path = origpath.to_string();
+    let mut suffix = String::new();
+    // Try to split the suffix off the existing disk name. Ex.
+    // foobar.img -> foobar-clone.img
+    //
+    // If the suffix is greater than 7 characters, assume it isn't
+    // a file extension and is part of the disk name, at which point
+    // just stick '-clone' on the end.
+    if let Some((p, s)) = origpath.rsplit_once('.') {
+        if s.len() <= 7 {
+            path = p.to_string();
+            suffix = format!(".{s}");
+        }
+    }
+    let (dirname, basename) = match path.rfind('/') {
+        Some(i) => (path[..i].to_string(), path[i + 1..].to_string()),
+        None => (String::new(), path.clone()),
+    };
+    let mut clonebase = format!("{basename}-clone");
+    if origname.is_some_and(|o| !o.is_empty() && o == basename) {
+        clonebase = newname.to_string();
+    }
+    // os.path.join
+    let clonebase = if dirname.is_empty() && !path.starts_with('/') {
+        clonebase
+    } else if path.starts_with('/') && dirname.is_empty() {
+        format!("/{clonebase}")
+    } else {
+        format!("{dirname}/{clonebase}")
+    };
+    Some(generate_name(&clonebase, cb_exists, &suffix, 1, "-", false))
+}
+
+/// `_CloneDiskInfo`'s three ways to handle a source disk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Action {
+    /// Copy contents from src to dst. If dst path doesn't exist we
+    /// attempt to create it. If it exists we overwrite it.
+    Clone,
+    /// Original disk XML is used unchanged for the new disk.
+    Share,
+    /// Destination path is an existing, and no copying is performed.
+    Preserve,
+}
+
+/// How a clone disk's storage gets made, if it does.
+pub enum NewStorage {
+    /// Existing storage, nothing to create.
+    Existing(StorageBackend),
+    /// `createXMLFrom` through libvirt.
+    Managed(CloneVolInstall),
+    /// Plain file copy.
+    Local(CloneStorageCreator),
+}
+
+/// `_build_clone_disk`'s result: the new disk.
+pub struct NewDisk {
+    path: Option<String>,
+    pub dev_type: String,
+    pub device: String,
+    pub storage: NewStorage,
+}
+
+impl NewDisk {
+    pub fn get_source_path(&self) -> Option<&str> {
+        self.path.as_deref()
+    }
+
+    /// `is_size_conflict`: `(fatal, message)`.
+    pub fn is_size_conflict(&self) -> (bool, Option<String>) {
+        match &self.storage {
+            NewStorage::Existing(_) => (false, None),
+            NewStorage::Managed(v) => v.is_size_conflict(),
+            NewStorage::Local(c) => c.is_size_conflict(),
+        }
+    }
+
+    pub fn vol_install_mut(&mut self) -> Option<&mut CloneVolInstall> {
+        match &mut self.storage {
+            NewStorage::Managed(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// `build_storage`.
+    fn build_storage(&self, meter: &mut dyn Meter, really_test: bool) -> Result<(), String> {
+        match &self.storage {
+            NewStorage::Existing(_) => Ok(()),
+            NewStorage::Managed(v) => v.install(meter, really_test).map(|_| ()),
+            NewStorage::Local(c) => c.create(meter),
+        }
+    }
+}
+
+/// `_build_clone_disk`.
+fn build_clone_disk(
+    conn: &Connection,
+    orig: &CloneDiskInfo,
+    clonepath: Option<&str>,
+    allow_create: bool,
+    sparse: bool,
+) -> Result<NewDisk, String> {
+    let remote = conn.uri().is_remote();
+    let device = if clonepath.is_some() { "disk" } else { "cdrom" };
+    let backend = StorageBackend::for_path(conn.as_connect(), clonepath, remote)?;
+    let path = backend.get_path();
+
+    let validate_existing = |backend: StorageBackend| -> Result<NewDisk, String> {
+        // `DeviceDisk.validate`: a cdrom can be empty; anything else
+        // needs storage that exists, since nothing will create it.
+        if path.is_some() && !backend.exists() {
+            return Err(format!(
+                "Must specify storage creation parameters for non-existent path '{}'.",
+                path.as_deref().unwrap_or_default()
+            ));
+        }
+        Ok(NewDisk {
+            path: path.clone(),
+            dev_type: backend.get_dev_type(),
+            device: device.into(),
+            storage: NewStorage::Existing(backend),
+        })
+    };
+
+    if !allow_create {
+        return validate_existing(backend);
+    }
+
+    if backend.vol.is_some() {
+        // Special case: non remote cloning of a guest using
+        // managed block devices: fall back to local cloning if
+        // we have permissions to do so. This validation check
+        // caused a few bug reports in a short period of time,
+        // so must be a common case.
+        let writable = |p: &str| access(p, libc::W_OK);
+        let readable = |p: &str| access(p, libc::R_OK);
+        let orig_path = orig.get_source_path();
+        if remote
+            || backend.get_dev_type() != "block"
+            || orig_path.is_none_or_empty()
+            || !readable(orig_path.as_deref().unwrap_or_default())
+            || path.is_none()
+            || !writable(path.as_deref().unwrap_or_default())
+        {
+            return Err(format!(
+                "Clone onto existing storage volume is not currently supported: '{}'",
+                path.as_deref().unwrap_or_default()
+            ));
+        }
+    }
+
+    let wants_storage_creation = !backend.exists();
+    if let (Some(input_vol), true) = (orig.backend.vol.clone(), wants_storage_creation) {
+        let name = crate::storage::basename(path.as_deref().unwrap_or_default()).to_string();
+        let Some(pool) = backend.pool else {
+            return Err(format!(
+                "Don't know how to create storage for path '{name}'. Use libvirt APIs to \
+                 manage the parent directory as a pool first."
+            ));
+        };
+        let mut vol = CloneVolInstall::new(&name, pool, input_vol)?;
+        if !sparse {
+            vol.allocation = vol.capacity;
+        }
+        vol.validate()?;
+        let path = Some(vol.get_path());
+        return Ok(NewDisk {
+            path,
+            dev_type: vol.get_dev_type(remote),
+            device: device.into(),
+            storage: NewStorage::Managed(vol),
+        });
+    }
+    if let Some(orig_path) = orig.get_source_path() {
+        let creator = CloneStorageCreator::new(
+            path.as_deref().unwrap_or_default(),
+            &orig_path,
+            orig.backend.get_size(),
+            sparse,
+            remote,
+        );
+        creator.validate()?;
+        return Ok(NewDisk {
+            path: path.clone(),
+            dev_type: creator.get_dev_type(),
+            device: device.into(),
+            storage: NewStorage::Local(creator),
+        });
+    }
+    validate_existing(backend)
+}
+
+trait EmptyOpt {
+    fn is_none_or_empty(&self) -> bool;
+}
+
+impl EmptyOpt for Option<String> {
+    fn is_none_or_empty(&self) -> bool {
+        self.as_deref().map_or(true, str::is_empty)
+    }
+}
+
+/// `os.access`.
+fn access(path: &str, mode: libc::c_int) -> bool {
+    let Ok(c) = std::ffi::CString::new(path) else {
+        return false;
+    };
+    // SAFETY: a NUL-terminated path.
+    unsafe { libc::access(c.as_ptr(), mode) == 0 }
+}
+
+/// `_CloneDiskInfo`: one source disk, and what to do with it.
+pub struct CloneDiskInfo {
+    /// `<target dev>`.
+    pub target: Option<String>,
+    disk_type: String,
+    read_only: bool,
+    shareable: bool,
+    protocol: Option<String>,
+    backend: StorageBackend,
+    backend_err: Option<String>,
+    share_msg: Option<String>,
+    newpath_msg: Option<String>,
+    action: Action,
+    pub new_disk: Option<NewDisk>,
+}
+
+impl CloneDiskInfo {
+    fn from_element(conn: &Connection, doc: &Document, disk: Element) -> CloneDiskInfo {
+        let remote = conn.uri().is_remote();
+        let attr = |path: &[&str], name: &str| {
+            virtinst_xml::resolve_path(doc, disk, path)
+                .and_then(|e| e.attribute(doc, name))
+                .map(str::to_string)
+        };
+        let marker = |name: &str| disk.find(doc, name).is_some();
+        let source_volume = crate::devices::disk::source_volume(doc, disk);
+        let protocol = attr(&["source"], "protocol");
+        // `_get_default_type`, when the XML has no type.
+        let disk_type = disk
+            .attribute(doc, "type")
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                if source_volume.is_some() {
+                    "volume".into()
+                } else if protocol.is_some() {
+                    "network".into()
+                } else {
+                    "file".into()
+                }
+            });
+
+        // `set_backend_for_existing_path`: failure here means the
+        // source path may not exist. Sometimes that's fatal, sometimes
+        // it's not (like with `--preserve`), but we don't know for sure
+        // until later.
+        let mut backend_err = None;
+        let backend = if disk_type == "volume" {
+            let (pool, vol) = source_volume.unwrap_or_default();
+            let found = virt::storage_pool::StoragePool::lookup_by_name(conn.as_connect(), &pool)
+                .and_then(|p| {
+                    let v = virt::storage_vol::StorageVol::lookup_by_name(&p, &vol)?;
+                    Ok((p, v))
+                });
+            match found {
+                Ok((p, v)) => {
+                    StorageBackend::new(None, Some(v), crate::diskbackend::pool_of(&p), remote)
+                }
+                Err(e) => {
+                    log::debug!("Error fetching source pool={pool} vol={vol}: {e}");
+                    StorageBackend::new(None, None, None, remote)
+                }
+            }
+        } else {
+            let path = crate::devices::disk::source_path(doc, disk);
+            match StorageBackend::for_path(conn.as_connect(), path.as_deref(), remote) {
+                Ok(b) => b,
+                Err(e) => {
+                    backend_err = Some(e);
+                    StorageBackend::new(path, None, None, remote)
+                }
+            }
+        };
+
+        let mut info = CloneDiskInfo {
+            target: attr(&["target"], "dev"),
+            disk_type,
+            read_only: marker("readonly"),
+            shareable: marker("shareable"),
+            protocol,
+            backend,
+            backend_err,
+            share_msg: None,
+            newpath_msg: None,
+            action: Action::Clone,
+            new_disk: None,
+        };
+        // `_get_shareable_msg`
+        let transient_share_backing = virtinst_xml::resolve_path(doc, disk, &["transient"])
+            .and_then(|t| t.attribute(doc, "shareBacking"))
+            .is_some_and(|v| v == "yes");
+        info.share_msg = if info.is_empty() {
+            Some("No storage to clone.".into())
+        } else if info.read_only {
+            Some("Read Only".into())
+        } else if info.shareable || transient_share_backing {
+            Some("Marked as shareable".into())
+        } else {
+            None
+        };
+        if info.share_msg.is_some() {
+            info.action = Action::Share;
+        }
+        info
+    }
+
+    /// A disk for an nvram path (`old_nvram.set_source_path`).
+    fn for_nvram(conn: &Connection, path: &str) -> CloneDiskInfo {
+        let mut doc = Document::new();
+        let disk = Element::new(&mut doc, "disk");
+        let source = Element::new(&mut doc, "source");
+        source.set_attribute(&mut doc, "file", path);
+        disk.push_child(&mut doc, source)
+            .expect("a fresh element always attaches");
+        CloneDiskInfo::from_element(conn, &doc, disk)
+    }
+
+    pub fn get_source_path(&self) -> Option<String> {
+        self.backend.get_path()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.get_source_path().is_none_or_empty()
+    }
+
+    pub fn is_clone_requested(&self) -> bool {
+        self.action == Action::Clone
+    }
+
+    pub fn is_share_requested(&self) -> bool {
+        self.action == Action::Share
+    }
+
+    pub fn is_preserve_requested(&self) -> bool {
+        self.action == Action::Preserve
+    }
+
+    pub fn set_clone_requested(&mut self) {
+        self.action = Action::Clone;
+    }
+
+    pub fn set_share_requested(&mut self) {
+        self.action = Action::Share;
+    }
+
+    pub fn set_preserve_requested(&mut self) {
+        self.action = Action::Preserve;
+    }
+
+    pub fn get_share_msg(&self) -> Option<&str> {
+        self.share_msg.as_deref()
+    }
+
+    /// `_get_cloneable_msg`: why the disk's storage can't be cloned.
+    pub fn get_cloneable_msg(&self) -> Option<String> {
+        if let Some(e) = &self.backend_err {
+            return Some(e.clone());
+        }
+        if !self.backend.exists() {
+            return Some(format!(
+                "Disk path '{}' does not exist.",
+                self.get_source_path().unwrap_or_default()
+            ));
+        }
+        if self.disk_type == "network" {
+            let proto = self.protocol.clone().unwrap_or_default();
+            if proto == "rbd" {
+                // This case, rbd with managed storage, is implementable. It
+                // requires open coding a bunch of work in cloner, or reworking
+                // other disk code to add unique URIs for rbd volumes and pools
+                return Some(
+                    "Cloning rbd volumes is not yet supported. \
+                     https://github.com/virt-manager/virt-manager/issues/177"
+                        .into(),
+                );
+            }
+            return Some(format!("Disk network type '{proto}' is not cloneable."));
+        }
+        None
+    }
+
+    pub fn get_newpath_msg(&self) -> Option<&str> {
+        self.newpath_msg.as_deref()
+    }
+
+    /// `set_new_path`.
+    pub fn set_new_path(&mut self, conn: &Connection, path: Option<&str>, sparse: bool) {
+        let allow_create = !self.is_preserve_requested();
+        if allow_create && self.get_cloneable_msg().is_some() {
+            return;
+        }
+        match build_clone_disk(conn, self, path, allow_create, sparse) {
+            Ok(d) => self.new_disk = Some(d),
+            Err(e) => {
+                log::debug!("Error setting clone path: {e}");
+                self.newpath_msg = Some(format!(
+                    "Could not use path '{}' for cloning: {e}",
+                    path.unwrap_or("None")
+                ));
+            }
+        }
+    }
+
+    /// `raise_error`.
+    pub fn raise_error(&self) -> Result<(), String> {
+        if self.is_clone_requested() {
+            if let Some(msg) = self.get_cloneable_msg() {
+                return Err(format!(
+                    "Could not determine original disk information: {msg}"
+                ));
+            }
+        }
+        if self.is_share_requested() {
+            return Ok(());
+        }
+        match self.get_newpath_msg() {
+            Some(msg) => Err(msg.to_string()),
+            None => Ok(()),
+        }
+    }
+}
+
+/// A libvirt error as Python's `str(e)` shows it: just the message.
+fn lverr(e: virt::error::Error) -> String {
+    e.message().to_string()
+}
+
+/// `_lookup_vm`.
+fn lookup_vm(conn: &Connection, name: &str) -> Result<VirtDomain, String> {
+    VirtDomain::lookup_by_name(conn.as_connect(), name)
+        .map_err(|_| format!("Domain '{name}' was not found."))
+}
+
+/// `_replace_vm`: remove the existing VM with the same name.
+fn replace_vm(conn: &Connection, name: &str) -> Result<(), String> {
+    let Ok(vm) = VirtDomain::lookup_by_name(conn.as_connect(), name) else {
+        return Ok(());
+    };
+    log::debug!("Explicitly replacing guest '{name}'");
+    let res = (|| {
+        if vm.get_id().is_some() {
+            log::debug!("Destroying guest '{name}'");
+            vm.destroy()?;
+        }
+        log::debug!("Undefining guest '{name}'");
+        vm.undefine()
+    })();
+    res.map_err(|e| format!("Could not remove old vm '{name}': {}", lverr(e)))
+}
+
+/// `check_mac_in_use`: an error when a defined VM has `searchmac`.
+pub fn check_mac_in_use(conn: &Connection, searchmac: &str) -> Result<(), String> {
+    if searchmac.is_empty() {
+        return Ok(());
+    }
+    for (_, xml) in all_domain_xmls(conn) {
+        let Ok(doc) = parse_libvirt_xml(&xml) else {
+            continue;
+        };
+        let Some(devices) = doc.root_element().and_then(|r| r.find(&doc, "devices")) else {
+            continue;
+        };
+        for nic in devices.find_all(&doc, "interface") {
+            let mac = nic
+                .find(&doc, "mac")
+                .and_then(|m| m.attribute(&doc, "address"))
+                .unwrap_or_default();
+            if mac.eq_ignore_ascii_case(searchmac) {
+                return Err(format!(
+                    "The MAC address '{searchmac}' is in use by another virtual machine."
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `conn.fetch_all_domains()`: every domain's name and inactive XML.
+pub fn all_domain_xmls(conn: &Connection) -> Vec<(String, String)> {
+    conn.as_connect()
+        .list_all_domains(0)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|d| {
+            let name = d.get_name().ok()?;
+            let xml = d.get_xml_desc(virt::sys::VIR_DOMAIN_XML_INACTIVE).ok()?;
+            Some((name, xml))
+        })
+        .collect()
+}
+
+/// `DeviceInterface.generate_mac`: a random MAC no defined VM has.
+pub fn generate_unused_mac(conn: &Connection) -> String {
+    if test_predictable() {
+        return testsuite_mac();
+    }
+    let is_qemu = conn.uri().is_qemu();
+    for _ in 0..256 {
+        let mac = generate_mac(is_qemu);
+        if check_mac_in_use(conn, &mac).is_ok() {
+            return mac;
+        }
+    }
+    log::debug!("Failed to generate non-conflicting MAC");
+    generate_mac(is_qemu)
+}
+
+/// `Guest.generate_uuid`: a random UUID no defined VM has.
+pub fn generate_unused_uuid(conn: &Connection) -> String {
+    let mut uuid = generate_uuid();
+    for _ in 0..256 {
+        if VirtDomain::lookup_by_uuid_string(conn.as_connect(), &uuid).is_err() {
+            return uuid;
+        }
+        uuid = generate_uuid();
+    }
+    log::error!("Failed to generate non-conflicting UUID");
+    uuid
+}
+
+/// Removes `name` from `el`, and `el` itself when that leaves it with
+/// no attributes or children — how upstream's XML properties clear.
+fn clear_attr(doc: &mut Document, el: Element, name: &str) {
+    el.mut_attributes(doc).remove(name);
+    if el.attributes(doc).is_empty() && !el.has_children_ignore_whitespace(doc) {
+        let _ = el.detach(doc);
+    }
+}
+
+/// The `Cloner` class: a new VM from a shut off source VM's XML.
+pub struct Cloner<'a> {
+    conn: &'a Connection,
+    src_doc: Document,
+    new_doc: Document,
+    src_name: String,
+    diskinfos: Vec<CloneDiskInfo>,
+    nvram_diskinfo: Option<CloneDiskInfo>,
+    new_nvram_path: Option<String>,
+    sparse: bool,
+    replace: bool,
+    reflink: bool,
+}
+
+impl<'a> Cloner<'a> {
+    /// `__init__`/`_init_src`: the source VM by name (it must be shut
+    /// off) or from its full XML.
+    pub fn new(
+        conn: &'a Connection,
+        src_name: Option<&str>,
+        src_xml: Option<&str>,
+    ) -> Result<Cloner<'a>, String> {
+        let src_xml = match src_xml {
+            Some(xml) => xml.to_string(),
+            None => {
+                let name = src_name.unwrap_or_default();
+                let dom = lookup_vm(conn, name)?;
+                let state = dom.get_state().map_err(lverr)?.0;
+                if state != virt::sys::VIR_DOMAIN_SHUTOFF {
+                    return Err("Domain to clone must be shutoff.".into());
+                }
+                dom.get_xml_desc(virt::sys::VIR_DOMAIN_XML_SECURE)
+                    .map_err(lverr)?
+            }
+        };
+        log::debug!("Original XML:\n{src_xml}");
+
+        let src_doc = parse_libvirt_xml(&src_xml).map_err(|e| e.to_string())?;
+        let new_doc = parse_libvirt_xml(&src_xml).map_err(|e| e.to_string())?;
+        let root = src_doc
+            .root_element()
+            .ok_or("Domain XML has no root element")?;
+        let src_name = root
+            .find(&src_doc, "name")
+            .map(|n| n.text_content(&src_doc))
+            .unwrap_or_default();
+
+        let mut cloner = Cloner {
+            conn,
+            src_doc,
+            new_doc,
+            src_name,
+            diskinfos: vec![],
+            nvram_diskinfo: None,
+            new_nvram_path: None,
+            sparse: true,
+            replace: false,
+            reflink: false,
+        };
+        cloner.init_new_guest();
+
+        // Collect disk info for every disk to determine if we will
+        // default to cloning or not
+        for disk in cloner.disk_elements(false) {
+            let info = CloneDiskInfo::from_element(conn, &cloner.src_doc, disk);
+            if info.is_clone_requested() {
+                log::debug!(
+                    "Wants cloning: size={} path={:?}",
+                    info.backend.get_size(),
+                    info.get_source_path()
+                );
+            }
+            cloner.diskinfos.push(info);
+        }
+        if let Some(nvram) = cloner.os_text(false, "nvram") {
+            cloner.nvram_diskinfo = Some(CloneDiskInfo::for_nvram(conn, &nvram));
+        }
+        Ok(cloner)
+    }
+
+    fn doc(&self, new: bool) -> &Document {
+        if new {
+            &self.new_doc
+        } else {
+            &self.src_doc
+        }
+    }
+
+    fn root(&self, new: bool) -> Element {
+        self.doc(new)
+            .root_element()
+            .expect("a parsed domain always has a root element")
+    }
+
+    fn devices(&self, new: bool) -> Option<Element> {
+        self.root(new).find(self.doc(new), "devices")
+    }
+
+    fn device_elements(&self, new: bool, tag: &str) -> Vec<Element> {
+        self.devices(new)
+            .map(|d| d.find_all(self.doc(new), tag))
+            .unwrap_or_default()
+    }
+
+    fn disk_elements(&self, new: bool) -> Vec<Element> {
+        self.device_elements(new, "disk")
+    }
+
+    fn os_text(&self, new: bool, tag: &str) -> Option<String> {
+        let doc = self.doc(new);
+        virtinst_xml::resolve_path(doc, self.root(new), &["os", tag])
+            .map(|e| e.text_content(doc))
+            .filter(|t| !t.is_empty())
+    }
+
+    fn set_root_text(&mut self, tag: &str, value: &str) {
+        let root = self.root(true);
+        set_text(&mut self.new_doc, root, tag, value);
+    }
+
+    /// `_init_new_guest`: the changes every clone gets.
+    fn init_new_guest(&mut self) {
+        let root = self.root(true);
+        root.mut_attributes(&mut self.new_doc).remove("id");
+        if let Some(title) = root.find(&self.new_doc, "title") {
+            let _ = title.detach(&mut self.new_doc);
+        }
+        let uuid = generate_unused_uuid(self.conn);
+        self.set_clone_uuid(&uuid);
+
+        for dev in self.device_elements(true, "graphics") {
+            let port = dev
+                .attribute(&self.new_doc, "port")
+                .and_then(|p| p.parse::<i64>().ok());
+            if port.is_some_and(|p| p != 0 && p != -1) {
+                log::warn!(
+                    "Setting the graphics device port to autoport, in order to avoid conflicting."
+                );
+                // `_set_port`: autoport follows `_get_default_autoport`,
+                // only ever set for spice.
+                let doc = &mut self.new_doc;
+                let tls_port = dev.attribute(doc, "tlsPort").map(str::to_string);
+                let spice = dev.attribute(doc, "type") == Some("spice");
+                if spice && tls_port.as_deref() == Some("-1") {
+                    dev.set_attribute(doc, "autoport", "yes");
+                } else {
+                    dev.mut_attributes(doc).remove("autoport");
+                }
+                dev.set_attribute(doc, "port", "-1");
+            }
+        }
+
+        for iface in self.device_elements(true, "interface") {
+            if let Some(target) = iface.find(&self.new_doc, "target") {
+                clear_attr(&mut self.new_doc, target, "dev");
+            }
+            let mac = generate_unused_mac(self.conn);
+            self.set_iface_mac(iface, &mac);
+        }
+
+        // For guest agent channel, remove a path to generate a new one with
+        // new guest name
+        for channel in self.device_elements(true, "channel") {
+            let doc = &self.new_doc;
+            if channel.attribute(doc, "type") != Some("unix") {
+                continue;
+            }
+            let target_name = channel
+                .find(doc, "target")
+                .and_then(|t| t.attribute(doc, "name"))
+                .map(str::to_string);
+            let source = channel.find(doc, "source");
+            let path = source
+                .and_then(|s| s.attribute(doc, "path"))
+                .map(str::to_string);
+            if let (Some(name), Some(path), Some(source)) = (target_name, path, source) {
+                if !name.is_empty() && path.contains(&name) {
+                    clear_attr(&mut self.new_doc, source, "path");
+                }
+            }
+        }
+
+        let new_name = generate_clone_name(&self.src_name, |n| {
+            VirtDomain::lookup_by_name(self.conn.as_connect(), n).is_ok()
+        });
+        log::debug!("Auto-generated clone name '{new_name}'");
+        self.set_clone_name(&new_name);
+    }
+
+    fn set_iface_mac(&mut self, iface: Element, mac: &str) {
+        let mac_el = match iface.find(&self.new_doc, "mac") {
+            Some(m) => m,
+            None => {
+                let m = Element::new(&mut self.new_doc, "mac");
+                iface
+                    .push_child(&mut self.new_doc, m)
+                    .expect("a fresh element always attaches");
+                m
+            }
+        };
+        mac_el.set_attribute(&mut self.new_doc, "address", mac);
+    }
+
+    /// The name of the original VM we are cloning.
+    pub fn src_name(&self) -> &str {
+        &self.src_name
+    }
+
+    pub fn new_name(&self) -> String {
+        self.root(true)
+            .find(&self.new_doc, "name")
+            .map(|n| n.text_content(&self.new_doc))
+            .unwrap_or_default()
+    }
+
+    pub fn set_clone_name(&mut self, name: &str) {
+        self.set_root_text("name", name);
+    }
+
+    /// Override the new VM's generated UUID, in `<sysinfo>` too.
+    pub fn set_clone_uuid(&mut self, uuid: &str) {
+        self.set_root_text("uuid", uuid);
+        let root = self.root(true);
+        for sysinfo in root.find_all(&self.new_doc, "sysinfo") {
+            let entries = sysinfo
+                .find(&self.new_doc, "system")
+                .map(|s| s.find_all(&self.new_doc, "entry"))
+                .unwrap_or_default();
+            for entry in entries {
+                if entry.attribute(&self.new_doc, "name") == Some("uuid") {
+                    entry.set_text_content(&mut self.new_doc, uuid);
+                }
+            }
+        }
+    }
+
+    /// If true, don't check for clone name collision, simply undefine
+    /// any conflicting guest.
+    pub fn set_replace(&mut self, val: bool) {
+        self.replace = val;
+    }
+
+    /// If true, use COW lightweight copy.
+    pub fn set_reflink(&mut self, val: bool) {
+        self.reflink = val;
+    }
+
+    /// If true, attempt sparse allocation during cloning.
+    pub fn set_sparse(&mut self, val: bool) {
+        self.sparse = val;
+    }
+
+    /// The destination for the VM's nvram content.
+    pub fn set_nvram_path(&mut self, val: &str) {
+        self.new_nvram_path = Some(val.into());
+    }
+
+    pub fn nvram_diskinfo_mut(&mut self) -> Option<&mut CloneDiskInfo> {
+        self.nvram_diskinfo.as_mut()
+    }
+
+    pub fn diskinfos(&self) -> &[CloneDiskInfo] {
+        &self.diskinfos
+    }
+
+    pub fn diskinfos_mut(&mut self) -> &mut [CloneDiskInfo] {
+        &mut self.diskinfos
+    }
+
+    /// Indexes of the disks not tagged for sharing
+    /// (`get_nonshare_diskinfos`).
+    pub fn nonshare_indexes(&self) -> Vec<usize> {
+        (0..self.diskinfos.len())
+            .filter(|i| !self.diskinfos[*i].is_share_requested())
+            .collect()
+    }
+
+    /// `set_new_path` on disk `idx`.
+    pub fn set_disk_new_path(&mut self, idx: usize, path: Option<&str>, sparse: bool) {
+        let conn = self.conn;
+        self.diskinfos[idx].set_new_path(conn, path, sparse);
+    }
+
+    /// The new XML's interfaces count, for `--mac`.
+    pub fn interface_count(&self) -> usize {
+        self.device_elements(true, "interface").len()
+    }
+
+    pub fn set_interface_mac(&mut self, idx: usize, mac: &str) {
+        let iface = self.device_elements(true, "interface")[idx];
+        self.set_iface_mac(iface, mac);
+    }
+
+    pub fn conn(&self) -> &Connection {
+        self.conn
+    }
+
+    /// `_prepare_serial_files`.
+    fn prepare_serial_files(&mut self) {
+        let mut devs = self.device_elements(true, "console");
+        devs.extend(self.device_elements(true, "serial"));
+        let new_name = self.new_name();
+        for dev in devs {
+            if dev.attribute(&self.new_doc, "type") != Some("file") {
+                continue;
+            }
+            let Some(source) = dev.find(&self.new_doc, "source") else {
+                continue;
+            };
+            let path = source.attribute(&self.new_doc, "path").map(str::to_string);
+            // Ignore the check for now
+            let newpath =
+                generate_clone_path(Some(&self.src_name), &new_name, path.as_deref(), |_| false);
+            match newpath {
+                Some(p) => source.set_attribute(&mut self.new_doc, "path", p),
+                None => clear_attr(&mut self.new_doc, source, "path"),
+            }
+        }
+    }
+
+    /// `_prepare_nvram`.
+    fn prepare_nvram(&mut self) -> Result<(), String> {
+        let Some(mut diskinfo) = self.nvram_diskinfo.take() else {
+            return Ok(());
+        };
+        let old_nvram_path = diskinfo.get_source_path().unwrap_or_default();
+        let new_nvram_path = match &self.new_nvram_path {
+            Some(p) => p.clone(),
+            None => {
+                let base = crate::storage::basename(&old_nvram_path);
+                let ext = match base.rfind('.') {
+                    Some(i) if i > 0 => &base[i..],
+                    _ => "",
+                };
+                let ext = if ext.is_empty() { ".fd" } else { ext };
+                let dir = crate::storage::dirname(&old_nvram_path);
+                let name = self.new_name();
+                let name = crate::storage::basename(&name);
+                if dir.is_empty() {
+                    format!("{name}_VARS{ext}")
+                } else {
+                    format!("{}/{name}_VARS{ext}", dir.trim_end_matches('/'))
+                }
+            }
+        };
+        let remote = self.conn.uri().is_remote();
+        let new_nvram =
+            StorageBackend::for_path(self.conn.as_connect(), Some(&new_nvram_path), remote)?;
+
+        if diskinfo.is_clone_requested() && !new_nvram.exists() && diskinfo.backend.vol.is_some() {
+            // We only run validation if there's some existing nvram we
+            // can copy. It's valid for nvram to not exist at VM define
+            // time, libvirt will create it for us
+            diskinfo.set_new_path(self.conn, Some(&new_nvram_path), self.sparse);
+            diskinfo.raise_error()?;
+            if let Some(v) = diskinfo
+                .new_disk
+                .as_mut()
+                .and_then(NewDisk::vol_install_mut)
+            {
+                v.reflink = self.reflink;
+            }
+            self.nvram_diskinfo = Some(diskinfo);
+        }
+        // else: there's no action to perform for this case, so drop it
+
+        let path = new_nvram.get_path().unwrap_or_default();
+        let root = self.root(true);
+        let os = virtinst_xml::resolve_or_create_path(&mut self.new_doc, root, &["os"]);
+        set_text(&mut self.new_doc, os, "nvram", &path);
+        Ok(())
+    }
+
+    /// `prepare`: validate and set up everything the new VM needs.
+    pub fn prepare(&mut self) -> Result<(), String> {
+        let new_name = self.new_name();
+        let collides =
+            !self.replace && VirtDomain::lookup_by_name(self.conn.as_connect(), &new_name).is_ok();
+        if collides {
+            return Err(format!(
+                "Invalid name for new guest: Guest name '{new_name}' is already in use."
+            ));
+        }
+
+        for idx in self.nonshare_indexes() {
+            if self.diskinfos[idx].new_disk.is_none() {
+                // User didn't set a path, generate one
+                let conn = self.conn.as_connect();
+                let remote = self.conn.uri().is_remote();
+                let newpath = generate_clone_path(
+                    Some(&self.src_name),
+                    &new_name,
+                    self.diskinfos[idx].get_source_path().as_deref(),
+                    |p| crate::storage::path_definitely_exists(conn, p, remote),
+                );
+                let sparse = self.sparse;
+                self.set_disk_new_path(idx, newpath.as_deref(), sparse);
+                if self.diskinfos[idx].new_disk.is_none() {
+                    // We hit an error, clients will raise it later
+                    continue;
+                }
+            }
+
+            let reflink = self.reflink;
+            let info = &mut self.diskinfos[idx];
+            let new_disk = info.new_disk.as_mut().expect("checked above");
+            log::debug!(
+                "Cloning srcpath={:?} dstpath={:?}",
+                info.backend.get_path(),
+                new_disk.get_source_path()
+            );
+            if reflink {
+                if let Some(v) = new_disk.vol_install_mut() {
+                    v.reflink = reflink;
+                }
+            }
+
+            let target = info.target.clone();
+            let Some(xmldisk) = self.disk_elements(true).into_iter().rfind(|d| {
+                virtinst_xml::resolve_path(&self.new_doc, *d, &["target"])
+                    .and_then(|t| t.attribute(&self.new_doc, "dev"))
+                    .map(str::to_string)
+                    == target
+            }) else {
+                continue;
+            };
+            let info = &self.diskinfos[idx];
+            let new_disk = info.new_disk.as_ref().expect("checked above");
+            let (dev_type, path) = (new_disk.dev_type.clone(), new_disk.path.clone());
+
+            // Change the XML
+            let doc = &mut self.new_doc;
+            if let Some(source) = xmldisk.find(doc, "source") {
+                for name in ["file", "dev", "dir", "volume", "pool", "name", "protocol"] {
+                    source.mut_attributes(doc).remove(name);
+                }
+                for host in source.find_all(doc, "host") {
+                    let _ = host.detach(doc);
+                }
+            }
+            xmldisk.set_attribute(doc, "type", &dev_type);
+            let prop = match dev_type.as_str() {
+                "block" => Some("dev"),
+                "dir" => Some("dir"),
+                "file" => Some("file"),
+                _ => None,
+            };
+            match (prop, path) {
+                (Some(prop), Some(path)) => {
+                    let source = virtinst_xml::resolve_or_create_path(doc, xmldisk, &["source"]);
+                    source.set_attribute(doc, prop, path);
+                }
+                _ => {
+                    if let Some(source) = xmldisk.find(doc, "source") {
+                        if source.attributes(doc).is_empty()
+                            && !source.has_children_ignore_whitespace(doc)
+                        {
+                            let _ = source.detach(doc);
+                        }
+                    }
+                }
+            }
+        }
+
+        self.prepare_nvram()?;
+        self.prepare_serial_files();
+        Ok(())
+    }
+
+    /// The new VM's XML.
+    pub fn new_xml(&self) -> String {
+        self.new_doc
+            .write_str_with_opts(virtinst_xml::WriteOptions {
+                write_decl: false,
+                ..Default::default()
+            })
+            .unwrap_or_default()
+    }
+
+    /// `start_duplicate`: define the new VM, then clone its disks.
+    pub fn start_duplicate(&self, meter: &mut dyn Meter) -> Result<(), String> {
+        log::debug!("Starting duplicate.");
+        let really_test = self
+            .conn
+            .as_connect()
+            .get_uri()
+            .is_ok_and(|u| u.starts_with("test"));
+        let mut dom: Option<VirtDomain> = None;
+        let res = (|| {
+            // Replace orig VM if required
+            if self.replace {
+                replace_vm(self.conn, &self.new_name())?;
+            }
+            // Define domain early to catch any xml errors before duping storage
+            dom = Some(
+                VirtDomain::define_xml(self.conn.as_connect(), &self.new_xml()).map_err(lverr)?,
+            );
+            let infos = self.diskinfos.iter().chain(self.nvram_diskinfo.iter());
+            for info in infos {
+                if !info.is_clone_requested() {
+                    continue;
+                }
+                if let Some(new_disk) = &info.new_disk {
+                    new_disk.build_storage(meter, really_test)?;
+                }
+            }
+            Ok(())
+        })();
+        if let Err(e) = &res {
+            log::debug!("Duplicate failed: {e}");
+            if let Some(dom) = dom {
+                let _ = dom.undefine();
+            }
+        } else {
+            log::debug!("Duplicating finished.");
+        }
+        res
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clone_name_follows_upstream_numbering() {
+        let none = |_: &str| false;
+        assert_eq!(generate_clone_name("foo", none), "foo-clone");
+        assert_eq!(generate_clone_name("foo-clone", none), "foo-clone1");
+        assert_eq!(generate_clone_name("foo-clone3", none), "foo-clone4");
+        let taken = ["empty-clone", "empty-clone1", "empty-clone2"];
+        assert_eq!(
+            generate_clone_name("empty", |n| taken.contains(&n)),
+            "empty-clone3"
+        );
+    }
+
+    #[test]
+    fn clone_path_keeps_the_extension_and_uses_the_new_name() {
+        let none = |_: &str| false;
+        let path = |orig: &str| generate_clone_path(Some("vm"), "new", Some(orig), none);
+        assert_eq!(path("/p/disk.img").as_deref(), Some("/p/disk-clone.img"));
+        assert_eq!(path("/p/vm.qcow2").as_deref(), Some("/p/new.qcow2"));
+        assert_eq!(path("/p/disk").as_deref(), Some("/p/disk-clone"));
+        // More than 7 characters isn't an extension.
+        assert_eq!(
+            path("/p/a.longsuffix").as_deref(),
+            Some("/p/a.longsuffix-clone")
+        );
+        assert_eq!(path("/x.img").as_deref(), Some("/x-clone.img"));
+        let taken = ["/p/disk-clone.img"];
+        assert_eq!(
+            generate_clone_path(None, "new", Some("/p/disk.img"), |p| taken.contains(&p))
+                .as_deref(),
+            Some("/p/disk-clone-1.img")
+        );
+        assert_eq!(generate_clone_path(None, "new", None, none), None);
+    }
 
     /// One disk, one interface (with an existing target/mac to
     /// overwrite), a graphics device with a fixed port, a title, and a

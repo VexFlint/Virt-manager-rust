@@ -39,6 +39,8 @@
 //! anything built so far; revisit if a real use needs multiple devices
 //! of the same type added in one call.
 
+pub mod cli;
+
 use virtinst_core::devices::{
     DeviceController, DeviceDisk, DeviceFilesystem, DeviceMemballoon, DeviceRedirdev,
     DeviceSmartcard, DeviceSound, DeviceTpm, DeviceVideo, DeviceVsock, DeviceWatchdog,
