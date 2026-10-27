@@ -45,6 +45,33 @@ pub fn set_cid(doc: &mut Document, vsock: Element, cid: u32) {
     super::edit::set_attr(doc, vsock, "cid", "address", Some(&cid.to_string()));
 }
 
+// The `XMLBuilder` port of `DeviceVsock`, for the CLI parsers.
+
+use crate::xmlbuilder::{prop, Kind, Value, XmlClass, XmlObject};
+
+/// `DeviceVsock`.
+pub static DEVICE_VSOCK: XmlClass = XmlClass {
+    xml_name: "vsock",
+    props: &[
+        prop("model", "./@model", Kind::Str),
+        prop("auto_cid", "./cid/@auto", Kind::YesNo),
+        prop("cid", "./cid/@address", Kind::Int),
+    ],
+    children: crate::device_children!(),
+    prop_order: crate::device_prop_order!(),
+};
+
+/// `DeviceVsock.set_defaults`.
+pub fn set_defaults(dev: &mut XmlObject) -> Result<(), String> {
+    if dev.get_str("model").map_or(true, |m| m.is_empty()) {
+        dev.set("model", Some("virtio".into()))?;
+    }
+    if dev.get("auto_cid").is_none() && dev.get("cid").is_none() {
+        dev.set("auto_cid", Some(Value::Bool(true)))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod edit_tests {
     use super::*;

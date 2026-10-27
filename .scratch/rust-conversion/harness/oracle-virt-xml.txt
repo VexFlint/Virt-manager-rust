@@ -399,3 +399,48 @@
 --connect @SUITE@ test-for-virtxml --add-device --memdev dimm,target.size=512,target.node=0 --print-diff
 --connect @SUITE@ test-for-virtxml --edit --memdev target.size=512 --print-xml
 --connect @SUITE@ --memdev help
+#
+# --filesystem / --vsock (ParserFilesystem, ParserVsock)
+--connect @SUITE@ --build-xml --filesystem /source,/target,alias.name=testfsalias,driver.ats=on,driver.iommu=off,driver.packed=on,driver.page_per_vq=off
+--connect @SUITE@ --build-xml --filesystem template_name,/,type=template,mode=passthrough
+--connect @SUITE@ --build-xml --filesystem type=file,source=/tmp/somefile.img,target=/mount/point,accessmode=squash,driver.format=qcow2,driver.type=path,driver.wrpolicy=immediate
+--connect @SUITE@ --build-xml --filesystem type-mount,source.dir=/,target=/
+--connect @SUITE@ --build-xml --filesystem type=template,source.name=foo,target=/
+--connect @SUITE@ --build-xml --filesystem type=file,source.file=foo.img,target=/
+--connect @SUITE@ --build-xml --filesystem type=volume,model=virtio,multidevs=remap,readonly=on,space_hard_limit=1234,space_soft_limit=500,source.pool=pool1,source.volume=vol,driver.name=virtiofs,driver.queue=3,binary.path=/foo/virtiofsd,binary.xattr=off,binary.cache.mode=always,binary.lock.posix=off,binary.lock.flock=on,target.dir=/foo,binary.sandbox.mode=chroot,source.socket=/tmp/foo.sock
+--connect @SUITE@ --build-xml --filesystem type=block,source.dev=/dev/foo,target.dir=/
+--connect @SUITE@ --build-xml --filesystem type=ram,source.usage=1024,source.units=MiB,target=/
+--connect @SUITE@ --build-xml --filesystem /foo/source,/bar/target,fmode=0123,dmode=0345
+--connect @SUITE@ --build-xml --filesystem /foo1,/bar1,driver.type=virtiofs
+--connect @SUITE@ --build-xml --filesystem /,not/abs
+--connect @SUITE@ --build-xml --filesystem /source,/,readonly=off
+--connect @SUITE@ --build-xml --filesystem source=/a,type=file
+--connect test:///default --build-xml --filesystem /source,/target
+--connect @SUITE@ test-for-virtxml --edit --filesystem /1/2/3,/4/5/6,mode=mapped --print-diff
+--connect @SUITE@ test-for-virtxml --edit --filesystem type=file --print-diff
+--connect @SUITE@ test-for-virtxml --edit --filesystem readonly=on,driver.type=virtiofs --print-diff
+--connect @SUITE@ test-for-virtxml --edit /foo/bar --filesystem target=/x --print-diff
+--connect @SUITE@ test-for-virtxml --edit target=/bar/baz --filesystem mode=squash --print-diff
+--connect @SUITE@ test-for-virtxml --edit --filesystem clearxml=yes,source=/s,target=/t --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --filesystem /new,/newt --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --filesystem /new,/newt,driver.type=virtiofs --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --filesystem all --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --filesystem /foo/bar --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --filesystem target=/nope --print-diff
+--connect @SUITE@ --filesystem help
+--connect @SUITE@ --filesystem=?
+--connect @SUITE@ --build-xml --vsock cid=17
+--connect @SUITE@ --build-xml --vsock default
+--connect @SUITE@ --build-xml --vsock auto_cid=on
+--connect @SUITE@ --build-xml --vsock model=virtio,cid.address=5,cid.auto=no,address.type=pci
+--connect @SUITE@ --build-xml --vsock cid=abc
+--connect @SUITE@ --build-xml --vsock cid.auto=maybe
+--connect @SUITE@ --build-xml --vsock none
+--connect @SUITE@ test-for-virtxml --edit --vsock model=virtio,cid.address=,cid.auto=on --print-diff
+--connect @SUITE@ test-for-virtxml --edit --vsock cid.address=9 --print-diff
+--connect @SUITE@ test-for-virtxml --edit virtio --vsock driver.iommu=on --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --vsock virtio --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --vsock all --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --vsock cid.address=5 --print-diff
+--connect @SUITE@ --vsock help
+--connect @SUITE@ --vsock=?

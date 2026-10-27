@@ -521,6 +521,13 @@ pub static DOMAIN_DEVICES: XmlClass = XmlClass {
         child("memory", &crate::devices::memory::DEVICE_MEMORY, ".", false),
         child("iommu", &crate::devices::iommu::DEVICE_IOMMU, ".", false),
         child("pstore", &crate::devices::pstore::DEVICE_PSTORE, ".", false),
+        child(
+            "filesystem",
+            &crate::devices::filesystem::DEVICE_FILESYSTEM,
+            ".",
+            false,
+        ),
+        child("vsock", &crate::devices::vsock::DEVICE_VSOCK, ".", false),
     ],
     prop_order: &[
         "disk",

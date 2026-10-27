@@ -875,7 +875,7 @@ pub fn parse_new(
         boot_order = ctx.boot_order;
     }
     if let Some(order) = boot_order {
-        reorder_boot_order(guest, BootTarget::New(&mut obj), order);
+        reorder_boot_order(guest, BootTarget::New, order);
     }
     let (parent, _, _) = guest_list(guest, propname);
     parent.add_child(obj);
@@ -950,8 +950,8 @@ const BOOTABLE_DEVICES: [&str; 4] = ["disk", "interface", "hostdev", "redirdev"]
 
 /// The device `reorder_boot_order` gives the boot index: a new one not
 /// in the guest yet, or the `idx`th of a guest device list.
-enum BootTarget<'o> {
-    New(&'o mut XmlObject),
+enum BootTarget {
+    New,
     Existing(&'static str, usize),
 }
 
@@ -987,10 +987,9 @@ fn reorder_boot_order(guest: &mut XmlObject, target: BootTarget, boot_index: i64
         let _ = devices.children_mut(name)[i].set_path("boot.order", Some(Value::Int(n)));
     };
     let skip = match target {
-        BootTarget::New(dev) => {
-            let _ = dev.set_path("boot.order", Some(Value::Int(boot_index)));
-            None
-        }
+        // A new device got its order from `set_boot_order_cb` already:
+        // setting it again would move it after the attributes set since.
+        BootTarget::New => None,
         BootTarget::Existing(list, idx) => {
             set(devices, list, idx, boot_index);
             Some((list, idx))
