@@ -6,7 +6,7 @@
 //! single-value option (the last one wins). `--prompt`/`--force` are the
 //! same hidden back-compat flags upstream keeps.
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use virtinst_cli::cli::{self, fail, print_stdout, DiskCheck};
 use virtinst_core::cloner::Cloner;
 
@@ -194,6 +194,7 @@ fn validate_disks(cloner: &Cloner) {
 }
 
 fn main() {
+    cli::autocomplete(Args::command(), &[("--check", &cli::CHECK_OPTIONS)]);
     cli::handle_version_flag();
     let mut args = Args::parse();
 

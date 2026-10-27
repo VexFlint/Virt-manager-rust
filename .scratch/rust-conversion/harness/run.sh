@@ -584,6 +584,26 @@ clone_invalid "ERROR    [Errno 2] No such file or directory: '/idontexist.xml'" 
 clone_cleanup
 rm -f "${CLONE_TMPFILES[@]}"
 
+# Upstream's _add_argcomplete_cmd for virt-clone: bash completion through
+# argcomplete's protocol (env vars in, completions out).
+echo
+echo "=== virt-clone: argcomplete ==="
+clone_argcomplete() {
+    local line="$1" grep="$2" out
+    out="$(VIRTINST_TEST_SUITE=1 _ARGCOMPLETE=1 COMP_TYPE=9 COMP_LINE="$line" \
+        COMP_POINT="${#line}" _ARGCOMPLETE_COMP_WORDBREAKS="\"'><;|&(:" "$CLONE_BIN" 2>&1)"
+    if [[ "$out" == *"$grep"* ]]; then
+        echo "  PASS: argcomplete [$line] -> $grep"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL: argcomplete [$line] -> $grep"
+        echo "        $out"
+        fail=$((fail + 1))
+    fi
+}
+clone_argcomplete "virt-clone --preserve" "--preserve-data"
+clone_argcomplete "virt-clone --check d" "disk_size"
+
 # --version: argparse's version action prints BuildConfig.version alone
 # (meson.build's project version) and exits, whatever else is given.
 echo
