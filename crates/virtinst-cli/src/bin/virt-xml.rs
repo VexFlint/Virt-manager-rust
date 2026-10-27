@@ -106,6 +106,15 @@ struct Args {
     #[arg(long, help_heading = "XML options")]
     disk: Vec<String>,
 
+    /// Configure a guest network interface. Ex:
+    /// --network bridge=mybr0
+    /// --network network=my_libvirt_virtual_net
+    /// --network network=mynet,model=virtio,mac=00:11...
+    /// --network none
+    /// --network help
+    #[arg(short = 'w', long, help_heading = "XML options", verbatim_doc_comment)]
+    network: Vec<String>,
+
     /// Configure a guest controller device. Ex:
     /// --controller type=usb,model=qemu-xhci
     /// --controller type=scsi,model=virtio-scsi
@@ -223,6 +232,7 @@ fn xml_options(args: &Args) -> Vec<(Change, &Vec<String>)> {
     };
     vec![
         legacy("disk", &args.disk),
+        engine("network", &args.network),
         engine("controller", &args.controller),
         engine("input", &args.input),
         engine("serial", &args.serial),
@@ -664,7 +674,7 @@ fn main() {
 
     let conn = cli::get_connection(args.connect.as_deref());
     virtinst_cli::parser::set_conn_support(cli::conn_support(&conn));
-    if !args.hostdev.is_empty() {
+    if !args.hostdev.is_empty() || !args.network.is_empty() {
         virtinst_cli::parser::set_nodedevs(cli::fetch_all_nodedevs(&conn));
     }
     let action = parse_action(&args);

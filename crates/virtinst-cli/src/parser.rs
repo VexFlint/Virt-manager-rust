@@ -115,6 +115,9 @@ pub struct ArgDef {
     /// `lookup_cb=None` given explicitly: no lookup, not an error.
     pub no_lookup: bool,
     pub find_inst: Option<FindInst>,
+    /// A second `find_inst_cb` level inside the first one's object
+    /// (`portForward[0-9]*.range[0-9]*`).
+    pub find_inst_nested: Option<FindInst>,
     pub aliases: Vec<&'static str>,
 }
 
@@ -131,6 +134,7 @@ impl ArgDef {
             lookup_cb: None,
             no_lookup: false,
             find_inst: None,
+            find_inst_nested: None,
             aliases: vec![],
         }
     }
@@ -183,6 +187,21 @@ impl ArgDef {
         self
     }
 
+    /// A `find_inst_cb` that first finds the outer object, then the
+    /// inner list's object in it.
+    pub fn find_inst_in(
+        mut self,
+        outer: (&'static str, &'static str),
+        inner: (&'static str, &'static str),
+    ) -> ArgDef {
+        self = self.find_inst(outer.0, outer.1);
+        self.find_inst_nested = Some(FindInst {
+            cliarg: inner.0,
+            list_propname: inner.1,
+        });
+        self
+    }
+
     /// `match_name`: the cliname or an alias, where `[0-9]*` matches any
     /// run of digits.
     pub fn match_name(&self, userstr: &str) -> bool {
@@ -225,6 +244,12 @@ pub struct ConnSupport {
     pub usb3_ports: bool,
     /// `conn.is_xen()`.
     pub is_xen: bool,
+    /// `conn.is_test()`.
+    pub is_test: bool,
+    /// `conn.is_qemu_unprivileged()`.
+    pub is_qemu_unprivileged: bool,
+    /// `conn.is_remote()`.
+    pub is_remote: bool,
 }
 
 thread_local! {
@@ -234,6 +259,9 @@ thread_local! {
                 qemu_xhci: false,
                 usb3_ports: true,
                 is_xen: false,
+                is_test: false,
+                is_qemu_unprivileged: false,
+                is_remote: false,
             })
         };
 }
@@ -583,6 +611,38 @@ fn find_inst_num(fi: &FindInst, key: &str) -> usize {
     digits.parse().unwrap_or(0)
 }
 
+/// `_make_find_inst_cb(...)(can_edit=True)`: the Nth object of the
+/// list, created as needed.
+fn find_inst_edit<'o>(inst: &'o mut XmlObject, fi: &FindInst, key: &str) -> &'o mut XmlObject {
+    let num = find_inst_num(fi, key);
+    let (parent, list) = child_list_parent(inst, fi.list_propname);
+    while parent.children(&list).len() < num + 1 {
+        let class = parent
+            .class
+            .child(&list)
+            .expect("find_inst list is a child property")
+            .class;
+        parent.add_child(XmlObject::new(class));
+    }
+    &mut child_list(inst, fi.list_propname)[num]
+}
+
+/// `_make_find_inst_cb(...)(can_edit=False)`: the Nth object of the
+/// list, if there is one.
+fn find_inst_lookup<'o>(inst: &'o XmlObject, fi: &FindInst, key: &str) -> Option<&'o XmlObject> {
+    let num = find_inst_num(fi, key);
+    let mut obj = inst;
+    let mut parts = fi.list_propname.split('.').peekable();
+    while let Some(p) = parts.next() {
+        if parts.peek().is_some() {
+            obj = obj.child(p);
+        } else {
+            return obj.children(p).get(num);
+        }
+    }
+    None
+}
+
 impl<'a> ParseCtx<'a> {
     /// `_optdict_to_param_list`: argument order is registration order,
     /// each with every key it matches.
@@ -627,17 +687,10 @@ impl<'a> ParseCtx<'a> {
                 inst.xml_actions[num].set(prop, arg.val.as_ref().map(|v| v.to_xml_string()));
                 return Ok(());
             }
-            let num = find_inst_num(&fi, &arg.key);
-            let (parent, list) = child_list_parent(inst, fi.list_propname);
-            while parent.children(&list).len() < num + 1 {
-                let class = parent
-                    .class
-                    .child(&list)
-                    .expect("find_inst list is a child property")
-                    .class;
-                parent.add_child(XmlObject::new(class));
+            let mut target = find_inst_edit(inst, &fi, &arg.key);
+            if let Some(nested) = arg.def.find_inst_nested {
+                target = find_inst_edit(target, &nested, &arg.key);
             }
-            let target = &mut child_list(inst, fi.list_propname)[num];
             return self.set_on(target, arg);
         }
         self.set_on(inst, arg)
@@ -663,19 +716,11 @@ impl<'a> ParseCtx<'a> {
             ));
         }
         let mut inst = inst;
-        if let Some(fi) = arg.def.find_inst {
-            let num = find_inst_num(&fi, &arg.key);
-            let mut obj = inst;
-            let mut parts = fi.list_propname.split('.').peekable();
-            let mut found = None;
-            while let Some(p) = parts.next() {
-                if parts.peek().is_some() {
-                    obj = obj.child(p);
-                } else {
-                    found = obj.children(p).get(num);
-                }
-            }
-            match found {
+        for fi in [arg.def.find_inst, arg.def.find_inst_nested]
+            .into_iter()
+            .flatten()
+        {
+            match find_inst_lookup(inst, &fi, &arg.key) {
                 Some(o) => inst = o,
                 None => return Ok(false),
             }
@@ -954,7 +999,7 @@ fn reorder_boot_order(guest: &mut XmlObject, target: BootTarget, boot_index: i64
 /// the guest.
 fn set_boot_order_cb(
     ctx: &mut ParseCtx,
-    _inst: &mut XmlObject,
+    inst: &mut XmlObject,
     val: Option<Value>,
     _arg: &ArgInst,
 ) -> Result<(), Error> {
@@ -964,6 +1009,11 @@ fn set_boot_order_cb(
         .parse::<i64>()
         .map_err(|_| format!("invalid literal for int() with base 10: '{val}'"))?;
     ctx.boot_order = Some(n);
+    if !ctx.editing {
+        // Upstream sets `dev.boot.order` right here, so a new device's
+        // `order` comes before the attributes set after it.
+        inst.set_path("boot.order", Some(Value::Int(n)))?;
+    }
     Ok(())
 }
 
