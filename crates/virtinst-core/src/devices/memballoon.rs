@@ -32,3 +32,28 @@ pub struct DeviceMemballoon {
     #[xml(attribute = "freePageReporting")]
     pub free_page_reporting: Option<OnOff>,
 }
+
+// `DeviceMemballoon` as an `XMLBuilder` class, for the CLI parsers.
+
+use crate::xmlbuilder::{prop, Kind, XmlClass, XmlObject};
+
+/// `DeviceMemballoon`.
+pub static DEVICE_MEMBALLOON: XmlClass = XmlClass {
+    xml_name: "memballoon",
+    props: &[
+        prop("model", "./@model", Kind::Str),
+        prop("autodeflate", "./@autodeflate", Kind::OnOff),
+        prop("stats_period", "./stats/@period", Kind::Int),
+        prop("freePageReporting", "./@freePageReporting", Kind::OnOff),
+    ],
+    children: crate::device_children!(),
+    prop_order: crate::device_prop_order!(),
+};
+
+/// `DeviceMemballoon.set_defaults`.
+pub fn set_defaults(dev: &mut XmlObject) -> Result<(), String> {
+    if dev.get_str("model").map_or(true, |m| m.is_empty()) {
+        dev.set("model", Some("virtio".into()))?;
+    }
+    Ok(())
+}

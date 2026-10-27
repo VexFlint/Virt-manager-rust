@@ -45,7 +45,7 @@ Dependências de sistema (Ubuntu 24.04, as mesmas de `.github/workflows/ci.yml`)
 sudo apt-get update
 sudo apt-get install -y libvirt-dev libosinfo-1.0-dev libclang-dev pkg-config \
   libxml2-utils libgtk-4-dev libgvnc-1.0-dev libspice-client-glib-2.0-dev \
-  libvte-2.91-gtk4-dev
+  libvte-2.91-gtk4-dev python3-libvirt python3-libxml2 python3-requests
 ```
 
 Se adicionar uma dependência de sistema nova, adicione também no `ci.yml` e
@@ -67,9 +67,13 @@ git clone --depth 1 --branch v5.1.0 https://github.com/virt-manager/virt-manager
 UPSTREAM_REF=/tmp/virt-manager-upstream bash .scratch/rust-conversion/harness/run.sh
 ```
 
-Oráculo útil: o `virt-install` do próprio upstream roda a partir do clone
-(`python3 ./virt-install ... --print-xml`), precisa de `libvirt-python` e
-`python3-libxml2`. Use para comparar o XML que o port gera.
+Oráculo: o harness roda o `virt-xml` do próprio upstream (a partir do clone)
+com os mesmos argumentos do nosso e compara stdout, stderr e código de saída
+byte a byte. Os casos ficam em `.scratch/rust-conversion/harness/oracle-virt-xml.txt`;
+todo parser novo deve ganhar casos lá. Precisa de `python3-libvirt`,
+`python3-libxml2` e `python3-requests` (se o `python3` padrão não as enxergar,
+o harness tenta `python3.12`). O `virt-install` do upstream também roda
+(`python3 ./virt-install ... --print-xml`).
 
 ## 4. Testar a GUI e tirar prints
 

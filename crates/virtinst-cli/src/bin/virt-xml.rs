@@ -172,6 +172,11 @@ struct Args {
     #[arg(long)]
     redirdev: Option<String>,
 
+    /// Configure a guest panic device. Ex:
+    /// --panic default
+    #[arg(long)]
+    panic: Option<String>,
+
     /// Filesystem device options for --build-xml/--edit/--add-device
     /// (e.g. "/host/share,/mnt/share,mode=mapped"), or the selector
     /// for --remove-device (e.g. "1", "all").
@@ -182,6 +187,24 @@ struct Args {
 fn main() {
     virtinst_cli::cli::handle_version_flag();
     let args = Args::parse();
+    virtinst_cli::cli::setup_logging("virt-xml", false, false);
+
+    // `check_option_introspection`: `--disk=?`/`--disk help`.
+    let mut introspected = false;
+    for (name, val) in [
+        ("watchdog", &args.watchdog),
+        ("memballoon", &args.memballoon),
+        ("panic", &args.panic),
+    ] {
+        if matches!(val.as_deref(), Some("?" | "help")) {
+            let def = virtinst_cli::parsers::by_name(name).expect("ported parser");
+            print!("{}", def.introspection());
+            introspected = true;
+        }
+    }
+    if introspected {
+        return;
+    }
 
     if args.build_xml {
         run_build_xml(&args);
@@ -245,6 +268,9 @@ fn device_optstr<'a>(args: &'a Args, action: &str) -> (&'static str, &'a str) {
     if let Some(optstr) = &args.filesystem {
         return ("filesystem", optstr);
     }
+    if let Some(optstr) = &args.panic {
+        return ("panic", optstr);
+    }
     eprintln!(
         "virt-xml {action}: no device option given (--watchdog/--vsock/--disk/--memballoon/--sound/--video/--controller/--tpm/--smartcard/--redirdev/--filesystem implemented so far)"
     );
@@ -275,6 +301,10 @@ fn connect_and_lookup(args: &Args) -> (Connection, Domain, String) {
 
 fn run_build_xml(args: &Args) {
     let (device, optstr) = device_optstr(args, "--build-xml");
+    if let Some(def) = virtinst_cli::parsers::by_name(device) {
+        engine::build_xml(def, optstr);
+        return;
+    }
 
     let xml = match device {
         "watchdog" => {
@@ -336,6 +366,10 @@ fn exit_on_err<T>(e: String) -> T {
 
 fn run_edit(args: &Args, selector: &str) {
     let (device, optstr) = device_optstr(args, "--edit");
+    if let Some(def) = virtinst_cli::parsers::by_name(device) {
+        engine::run(args, def, engine::Action::Edit(selector), optstr);
+        return;
+    }
 
     if args.print_xml {
         run_print_xml_edit(args, device, optstr, selector);
@@ -498,6 +532,10 @@ fn apply_edit(
 
 fn run_add_device(args: &Args) {
     let (device, optstr) = device_optstr(args, "--add-device");
+    if let Some(def) = virtinst_cli::parsers::by_name(device) {
+        engine::run(args, def, engine::Action::AddDevice, optstr);
+        return;
+    }
 
     if args.print_xml {
         run_print_xml_add_device(args, device, optstr);
@@ -551,6 +589,10 @@ fn run_add_device(args: &Args) {
 
 fn run_remove_device(args: &Args) {
     let (device, selector) = device_optstr(args, "--remove-device");
+    if let Some(def) = virtinst_cli::parsers::by_name(device) {
+        engine::run(args, def, engine::Action::RemoveDevice, selector);
+        return;
+    }
 
     if args.print_xml {
         run_print_xml_remove_device(args, device, selector);
@@ -572,6 +614,85 @@ fn report<E: std::fmt::Display>(domain_name: &str, result: Result<(), E>) {
         Err(e) => {
             eprintln!("virt-xml: {e}");
             std::process::exit(1);
+        }
+    }
+}
+
+/// The devices already ported to the `VirtCLIParser` engine
+/// (`virtinst_cli::parser`): upstream's `virtxml.py` actions over a
+/// `Guest` parsed from the domain's XML.
+mod engine {
+    use super::{connect_and_lookup, Args};
+    use virtinst_cli::cli::fail;
+    use virtinst_cli::parser::{
+        find_objects_to_edit, lookup_prop, parse_edit, parse_new, ParserDef,
+    };
+    use virtinst_cli::parsers::misc::set_defaults;
+    use virtinst_core::connection::Domain;
+    use virtinst_core::guest::GUEST;
+    use virtinst_core::xmlbuilder::XmlObject;
+
+    pub enum Action<'a> {
+        Edit(&'a str),
+        AddDevice,
+        RemoveDevice,
+    }
+
+    /// `action_build_xml`: the new device, defaults set, on its own.
+    pub fn build_xml(def: &ParserDef, optstr: &str) {
+        let mut guest = XmlObject::new(&GUEST);
+        let idxs = parse_new(def, &mut guest, optstr).unwrap_or_else(|e| fail(e));
+        for idx in idxs {
+            let dev = &mut lookup_prop(&mut guest, def)[idx];
+            set_defaults(def.cli_arg_name, dev).unwrap_or_else(|e| fail(e));
+            println!("{}", dev.get_xml());
+        }
+    }
+
+    /// `action_edit`/`action_add_device`/`action_remove_device` on the
+    /// domain's inactive XML, then print it (`--print-xml`) or define it.
+    pub fn run(args: &Args, def: &ParserDef, action: Action, optstr: &str) {
+        let (conn, domain, domain_name) = connect_and_lookup(args);
+        let xml = domain
+            .inactive_xml()
+            .unwrap_or_else(|e| fail(format!("failed to fetch the domain's XML: {e}")));
+        let mut guest = XmlObject::parse(&GUEST, &xml).unwrap_or_else(|e| fail(e));
+        match action {
+            Action::Edit(selector) => {
+                let idxs = find_objects_to_edit(def, &mut guest, "edit", Some(selector))
+                    .unwrap_or_else(|e| fail(e));
+                for idx in idxs {
+                    parse_edit(def, &mut guest, idx, optstr).unwrap_or_else(|e| fail(e));
+                }
+            }
+            Action::AddDevice => {
+                let idxs = parse_new(def, &mut guest, optstr).unwrap_or_else(|e| fail(e));
+                for idx in idxs {
+                    let dev = &mut lookup_prop(&mut guest, def)[idx];
+                    set_defaults(def.cli_arg_name, dev).unwrap_or_else(|e| fail(e));
+                }
+            }
+            Action::RemoveDevice => {
+                let mut idxs = find_objects_to_edit(def, &mut guest, "remove-device", Some(optstr))
+                    .unwrap_or_else(|e| fail(e));
+                idxs.sort_unstable();
+                for idx in idxs.into_iter().rev() {
+                    let name = def
+                        .guest_propname
+                        .and_then(|p| p.rsplit('.').next())
+                        .expect("guest backed parser");
+                    guest.child_mut("devices").remove_child(name, idx);
+                }
+            }
+        }
+        let newxml = guest.get_document_xml();
+        if args.print_xml {
+            println!("{newxml}");
+            return;
+        }
+        match Domain::define_new(&conn, &newxml) {
+            Ok(_) => println!("Domain '{domain_name}' defined successfully."),
+            Err(e) => fail(e.message()),
         }
     }
 }

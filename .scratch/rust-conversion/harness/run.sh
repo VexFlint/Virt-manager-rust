@@ -620,6 +620,58 @@ for tool in virt-install virt-clone virt-xml; do
     fi
 done
 
+# ---------------------------------------------------------------------
+# Oracle: upstream's own virt-xml, run from $UPSTREAM_REF with the
+# system libvirt/libxml2 Python bindings, against ours with the same
+# arguments (oracle-virt-xml.txt). stdout, stderr and the exit code
+# must match byte for byte. CI installs the bindings (ci.yml); locally,
+# without them, this section is skipped with a note.
+# ---------------------------------------------------------------------
+
+ORACLE_PY=""
+for py in python3 python3.12; do
+    if command -v "$py" >/dev/null && "$py" -c "import libvirt, libxml2, requests" 2>/dev/null; then
+        ORACLE_PY="$py"
+        break
+    fi
+done
+
+echo
+echo "=== oracle: upstream virt-xml, byte for byte ==="
+if [[ -z "$ORACLE_PY" ]]; then
+    if [[ -n "${CI:-}" ]]; then
+        echo "  FAIL: no Python with libvirt/libxml2/requests bindings for the oracle"
+        fail=$((fail + 1))
+    else
+        echo "  SKIP: no Python with libvirt/libxml2/requests bindings (apt install python3-libvirt python3-libxml2 python3-requests)"
+    fi
+else
+    ORACLE_TMP="$(mktemp -d)"
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        line="${line//@SUITE@/test://$TESTSUITE_XML}"
+        read -ra oargs <<<"$line"
+        up_rc=0
+        (cd "$UPSTREAM_REF" && "$ORACLE_PY" ./virt-xml "${oargs[@]}") \
+            >"$ORACLE_TMP/up.out" 2>"$ORACLE_TMP/up.err" </dev/null || up_rc=$?
+        me_rc=0
+        VIRTINST_TEST_SUITE=1 "$REPO_ROOT/target/debug/virt-xml" "${oargs[@]}" \
+            >"$ORACLE_TMP/me.out" 2>"$ORACLE_TMP/me.err" </dev/null || me_rc=$?
+        if [[ "$up_rc" == "$me_rc" ]] && cmp -s "$ORACLE_TMP/up.out" "$ORACLE_TMP/me.out" \
+            && cmp -s "$ORACLE_TMP/up.err" "$ORACLE_TMP/me.err"; then
+            echo "  PASS: virt-xml $line"
+            pass=$((pass + 1))
+        else
+            echo "  FAIL: virt-xml $line"
+            echo "        exit code: upstream $up_rc, ours $me_rc"
+            diff "$ORACLE_TMP/up.out" "$ORACLE_TMP/me.out" | head -10 | sed 's/^/        stdout /' || true
+            diff "$ORACLE_TMP/up.err" "$ORACLE_TMP/me.err" | head -10 | sed 's/^/        stderr /' || true
+            fail=$((fail + 1))
+        fi
+    done <"$REPO_ROOT/.scratch/rust-conversion/harness/oracle-virt-xml.txt"
+    rm -rf "$ORACLE_TMP"
+fi
+
 echo
 echo "$pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]

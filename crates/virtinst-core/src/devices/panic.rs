@@ -29,3 +29,33 @@ pub struct DevicePanic {
     #[xml(attribute = "model")]
     pub model: Option<String>,
 }
+
+// `DevicePanic` as an `XMLBuilder` class, for the CLI parsers.
+
+use crate::xmlbuilder::{prop, Kind, Value, XmlClass, XmlObject};
+
+/// `DevicePanic`.
+pub static DEVICE_PANIC: XmlClass = XmlClass {
+    xml_name: "panic",
+    props: &[
+        prop("model", "./@model", Kind::Str),
+        prop("set_stub", ".", Kind::Bool),
+    ],
+    children: crate::device_children!(),
+    prop_order: crate::device_prop_order!(),
+};
+
+/// `DevicePanic.set_defaults`.
+pub fn set_defaults(dev: &mut XmlObject) -> Result<(), String> {
+    let empty = |v: Option<String>| v.map_or(true, |s| s.is_empty());
+    if empty(dev.get_path("address.type").map(|v| v.to_xml_string()))
+        && !empty(dev.get_path("address.iobase").map(|v| v.to_xml_string()))
+    {
+        dev.set_path("address.type", Some("isa".into()))?;
+    }
+    if empty(dev.get_str("model")) {
+        // This asks libvirt to fill in a default
+        dev.set("set_stub", Some(Value::Bool(true)))?;
+    }
+    Ok(())
+}

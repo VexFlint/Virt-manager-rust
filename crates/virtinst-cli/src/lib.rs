@@ -40,6 +40,8 @@
 //! of the same type added in one call.
 
 pub mod cli;
+pub mod parser;
+pub mod parsers;
 
 use virtinst_core::devices::{
     DeviceController, DeviceDisk, DeviceFilesystem, DeviceMemballoon, DeviceRedirdev,
