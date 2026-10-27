@@ -27,12 +27,13 @@ Estado para quem continuar o trabalho de CLI. Leia o CLAUDE.md antes.
 
 ## Portados no motor
 watchdog, memballoon, panic, controller, input, sound, audio, video,
-smartcard, tpm, rng. `parsers/charsrc.rs` tem `add_char_source_args` e
-`add_device_seclabel_args` (prontos para serial/console/channel/parallel).
+smartcard, tpm, rng, serial, parallel, channel, console. `parsers/charsrc.rs` tem
+`add_char_source_args` e
+`add_device_seclabel_args`.
 
 ## Falta (prioridade)
-1. Parsers: disk, network, graphics, serial/parallel/channel/console, hostdev,
-   filesystem, smartcard, redirdev, tpm, rng, shmem, memdev, vsock, iommu,
+1. Parsers: disk, network, graphics, hostdev,
+   filesystem, redirdev, shmem, memdev, vsock, iommu,
    pstore. Depois apagar o código legado de `lib.rs`.
 2. Opções de guest (memory, vcpus, cpu, boot, features, clock, xml, metadata...)
    e o resto do virt-install (`--os-variant` etc.).

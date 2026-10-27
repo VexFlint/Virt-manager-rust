@@ -118,6 +118,22 @@ struct Args {
     #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     input: Vec<String>,
 
+    /// Configure a guest serial device
+    #[arg(long, help_heading = "XML options")]
+    serial: Vec<String>,
+
+    /// Configure a guest parallel device
+    #[arg(long, help_heading = "XML options")]
+    parallel: Vec<String>,
+
+    /// Configure a guest communication channel
+    #[arg(long, help_heading = "XML options")]
+    channel: Vec<String>,
+
+    /// Configure a text console connection between the guest and host
+    #[arg(long, help_heading = "XML options")]
+    console: Vec<String>,
+
     /// Configure a guest filesystem device.
     #[arg(long, help_heading = "XML options")]
     filesystem: Vec<String>,
@@ -205,6 +221,10 @@ fn xml_options(args: &Args) -> Vec<(Change, &Vec<String>)> {
         legacy("disk", &args.disk),
         engine("controller", &args.controller),
         engine("input", &args.input),
+        engine("serial", &args.serial),
+        engine("parallel", &args.parallel),
+        engine("channel", &args.channel),
+        engine("console", &args.console),
         legacy("filesystem", &args.filesystem),
         engine("sound", &args.sound),
         engine("audio", &args.audio),
@@ -407,7 +427,15 @@ fn perform_engine(
                 .and_then(|p| p.rsplit('.').next())
                 .expect("guest backed parser");
             for idx in idxs.into_iter().rev() {
-                guest.child_mut("devices").remove_child(list, idx);
+                // `guest.remove_device`: and `_remove_duplicate_console`.
+                let devices = guest.child_mut("devices");
+                let removed = devices.remove_child(list, idx);
+                if virtinst_core::devices::char::console_duplicate(
+                    &removed,
+                    devices.children("console"),
+                ) {
+                    devices.remove_child("console", 0);
+                }
             }
             devs
         }

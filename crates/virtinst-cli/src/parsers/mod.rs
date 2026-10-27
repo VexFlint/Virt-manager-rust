@@ -14,6 +14,7 @@ use virtinst_xml::XmlBound;
 
 use crate::parser::{lookup_prop, ParserDef};
 
+pub mod chardev;
 pub mod charsrc;
 pub mod devices;
 pub mod misc;
@@ -24,6 +25,10 @@ pub fn all() -> Vec<&'static ParserDef> {
     vec![
         devices::controller(),
         devices::input(),
+        chardev::serial(),
+        chardev::parallel(),
+        chardev::channel(),
+        chardev::console(),
         devices::sound(),
         devices::audio(),
         misc::watchdog(),
@@ -143,6 +148,9 @@ pub fn set_defaults(
             video::set_defaults(&mut lookup_prop(guest, def)[idx], model, info.has_gl)
         }
         "input" => virtinst_core::devices::input::set_defaults(&mut lookup_prop(guest, def)[idx]),
+        "serial" | "parallel" | "channel" | "console" => {
+            virtinst_core::devices::char::set_defaults(&mut lookup_prop(guest, def)[idx])
+        }
         "rng" => virtinst_core::devices::rng::set_defaults(&mut lookup_prop(guest, def)[idx]),
         "smartcard" => {
             virtinst_core::devices::smartcard::set_defaults(&mut lookup_prop(guest, def)[idx])

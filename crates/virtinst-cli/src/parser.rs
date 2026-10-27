@@ -278,20 +278,25 @@ impl ParserDef {
         def.args
             .push(ArgDef::cb_only("clearxml", clearxml_cb).onoff().no_lookup());
         if guest_propname.is_some() {
-            for (cli, prop) in [
-                ("xpath[0-9]*.delete", "xpath_delete"),
-                ("xpath[0-9]*.set", "xpath_set"),
-                ("xpath[0-9]*.create", "xpath_create"),
-                ("xpath[0-9]*.value", "xpath_value"),
-            ] {
-                def.args.push(ArgDef {
-                    can_comma: true,
-                    no_lookup: true,
-                    ..ArgDef::new(cli, prop).find_inst("xpath", "xml_actions")
-                });
-            }
+            def.add_xpath_args();
         }
         def
+    }
+
+    /// `_add_xpath_args`: the `xpath[0-9]*.*` arguments.
+    fn add_xpath_args(&mut self) {
+        for (cli, prop) in [
+            ("xpath[0-9]*.delete", "xpath_delete"),
+            ("xpath[0-9]*.set", "xpath_set"),
+            ("xpath[0-9]*.create", "xpath_create"),
+            ("xpath[0-9]*.value", "xpath_value"),
+        ] {
+            self.args.push(ArgDef {
+                can_comma: true,
+                no_lookup: true,
+                ..ArgDef::new(cli, prop).find_inst("xpath", "xml_actions")
+            });
+        }
     }
 
     /// `add_arg`.
