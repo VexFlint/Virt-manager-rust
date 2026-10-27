@@ -484,7 +484,7 @@ pub fn interface(doc: &mut Document, n: &NewInterface, default_model: Option<&st
 }
 
 /// `re.match("^nvidia-[0-9]{2}", ..) or re.match("^i915-GVTg_V[0-9]_[0-9]", ..)`.
-fn is_vfio_pci_mdev(type_id: &str) -> bool {
+pub(crate) fn is_vfio_pci_mdev(type_id: &str) -> bool {
     let digit = |c: Option<char>| c.is_some_and(|c| c.is_ascii_digit());
     if let Some(rest) = type_id.strip_prefix("nvidia-") {
         let mut c = rest.chars();

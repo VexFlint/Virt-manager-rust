@@ -650,6 +650,7 @@ else
     while IFS= read -r line; do
         [[ -z "$line" || "$line" == \#* ]] && continue
         line="${line//@SUITE@/test://$TESTSUITE_XML}"
+        line="${line//@FULL@/test://$UPSTREAM_REF/tests/data/testdriver/testdriver.xml}"
         read -ra oargs <<<"$line"
         up_rc=0
         (cd "$UPSTREAM_REF" && "$ORACLE_PY" ./virt-xml "${oargs[@]}") \

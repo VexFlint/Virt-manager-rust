@@ -5,7 +5,7 @@
 //! or only print the result (`--print-diff`, `--print-xml`).
 //!
 //! Options backed by a ported `VirtCLIParser` (`virtinst_cli::parsers`)
-//! go through it. The devices not ported yet (`--disk`, `--filesystem`, ...)
+//! go through it. The devices not ported yet (`--disk`, `--filesystem` and `--vsock`)
 //! still use the older hand-written optstring code in `virtinst_cli`,
 //! bridged in [`legacy`] onto the same guest document, until their
 //! parser group is ported.
@@ -134,6 +134,10 @@ struct Args {
     #[arg(long, help_heading = "XML options")]
     console: Vec<String>,
 
+    /// Configure physical USB/PCI/etc host devices to be shared with the guest
+    #[arg(long, alias = "host-device", help_heading = "XML options")]
+    hostdev: Vec<String>,
+
     /// Configure a guest filesystem device.
     #[arg(long, help_heading = "XML options")]
     filesystem: Vec<String>,
@@ -225,13 +229,14 @@ fn xml_options(args: &Args) -> Vec<(Change, &Vec<String>)> {
         engine("parallel", &args.parallel),
         engine("channel", &args.channel),
         engine("console", &args.console),
+        engine("hostdev", &args.hostdev),
         legacy("filesystem", &args.filesystem),
         engine("sound", &args.sound),
         engine("audio", &args.audio),
         engine("watchdog", &args.watchdog),
         engine("video", &args.video),
         engine("smartcard", &args.smartcard),
-        legacy("redirdev", &args.redirdev),
+        engine("redirdev", &args.redirdev),
         engine("memballoon", &args.memballoon),
         engine("tpm", &args.tpm),
         engine("rng", &args.rng),
@@ -659,6 +664,9 @@ fn main() {
 
     let conn = cli::get_connection(args.connect.as_deref());
     virtinst_cli::parser::set_conn_support(cli::conn_support(&conn));
+    if !args.hostdev.is_empty() {
+        virtinst_cli::parser::set_nodedevs(cli::fetch_all_nodedevs(&conn));
+    }
     let action = parse_action(&args);
 
     let (domain, inactive, active) = match &args.domain {

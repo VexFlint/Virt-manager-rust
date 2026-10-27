@@ -409,7 +409,20 @@ pub fn conn_support(conn: &Connection) -> crate::parser::ConnSupport {
     crate::parser::ConnSupport {
         usb3_ports: libvirt >= 1_003_005,
         qemu_xhci: conn.uri().is_qemu() && libvirt >= 3_003_000 && hv >= 2_009_000,
+        is_xen: conn.uri().is_xen(),
     }
+}
+
+/// `conn.fetch_all_nodedevs()`.
+pub fn fetch_all_nodedevs(conn: &Connection) -> Vec<virtinst_core::nodedev::NodeDevice> {
+    let devs = conn
+        .as_connect()
+        .list_all_node_devices(0)
+        .unwrap_or_default();
+    devs.iter()
+        .filter_map(|d| d.get_xml_desc(0).ok())
+        .filter_map(|xml| virtinst_core::nodedev::NodeDevice::parse(&xml))
+        .collect()
 }
 
 /// `validate_mac`: a MAC in use by another VM fails unless

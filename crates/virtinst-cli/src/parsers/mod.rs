@@ -17,6 +17,7 @@ use crate::parser::{lookup_prop, ParserDef};
 pub mod chardev;
 pub mod charsrc;
 pub mod devices;
+pub mod hostdev;
 pub mod misc;
 
 /// Every ported parser, in upstream's registration order (the order
@@ -29,11 +30,13 @@ pub fn all() -> Vec<&'static ParserDef> {
         chardev::parallel(),
         chardev::channel(),
         chardev::console(),
+        hostdev::hostdev(),
         devices::sound(),
         devices::audio(),
         misc::watchdog(),
         devices::video(),
         devices::smartcard(),
+        hostdev::redirdev(),
         misc::memballoon(),
         devices::tpm(),
         devices::rng(),
@@ -150,6 +153,13 @@ pub fn set_defaults(
         "input" => virtinst_core::devices::input::set_defaults(&mut lookup_prop(guest, def)[idx]),
         "serial" | "parallel" | "channel" | "console" => {
             virtinst_core::devices::char::set_defaults(&mut lookup_prop(guest, def)[idx])
+        }
+        "hostdev" => virtinst_core::devices::hostdev::set_defaults(
+            &mut lookup_prop(guest, def)[idx],
+            crate::parser::conn_support().is_xen,
+        ),
+        "redirdev" => {
+            virtinst_core::devices::redirdev::set_defaults(&mut lookup_prop(guest, def)[idx])
         }
         "rng" => virtinst_core::devices::rng::set_defaults(&mut lookup_prop(guest, def)[idx]),
         "smartcard" => {

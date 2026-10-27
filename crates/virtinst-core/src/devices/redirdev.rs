@@ -32,3 +32,29 @@ pub struct DeviceRedirdev {
     #[xml(path = "source", attribute = "service")]
     pub source_service: Option<u32>,
 }
+
+// `DeviceRedirdev` as an `XMLBuilder` class, for the CLI parsers.
+
+use crate::xmlbuilder::{child, prop, Kind, XmlClass, XmlObject};
+
+/// `DeviceRedirdev`.
+pub static DEVICE_REDIRDEV: XmlClass = XmlClass {
+    xml_name: "redirdev",
+    props: &[
+        prop("bus", "./@bus", Kind::Str),
+        prop("type", "./@type", Kind::Str),
+    ],
+    children: crate::device_children!(child("source", &super::char::CHAR_SOURCE, ".", true)),
+    prop_order: crate::device_prop_order!("bus", "type", "source"),
+};
+
+/// `DeviceRedirdev.set_defaults`.
+pub fn set_defaults(dev: &mut XmlObject) -> Result<(), String> {
+    if dev.get_str("bus").map_or(true, |b| b.is_empty()) {
+        dev.set("bus", Some("usb".into()))?;
+    }
+    if dev.get_str("type").map_or(true, |t| t.is_empty()) {
+        dev.set("type", Some("spicevmc".into()))?;
+    }
+    Ok(())
+}

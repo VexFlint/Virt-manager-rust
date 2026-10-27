@@ -432,16 +432,35 @@ pub fn initargs_string(os: &DomainOs) -> String {
 // ---------------------------------------------------------------------
 // `Guest` and `_DomainDevices` as `XMLBuilder` classes, for the CLI
 // parsers (`virtinst-cli`'s port of `VirtCLIParser`). Device classes
-// join `DOMAIN_DEVICES` as their parsers get ported.
+// join `DOMAIN_DEVICES` as their parsers get ported. `disk` and
+// `interface` only have the common device children for now (enough for
+// `reorder_boot_order`); their properties come with their parsers.
 // ---------------------------------------------------------------------
 
 use crate::xmlbuilder::{child, prop, Kind, XmlClass};
+
+/// `DeviceDisk`, for now only its device children.
+pub static DEVICE_DISK: XmlClass = XmlClass {
+    xml_name: "disk",
+    props: &[],
+    children: crate::device_children!(),
+    prop_order: crate::device_prop_order!(),
+};
+
+/// `DeviceInterface`, for now only its device children.
+pub static DEVICE_INTERFACE: XmlClass = XmlClass {
+    xml_name: "interface",
+    props: &[],
+    children: crate::device_children!(),
+    prop_order: crate::device_prop_order!(),
+};
 
 /// `_DomainDevices`.
 pub static DOMAIN_DEVICES: XmlClass = XmlClass {
     xml_name: "devices",
     props: &[],
     children: &[
+        child("disk", &DEVICE_DISK, ".", false),
         child(
             "controller",
             &crate::devices::controller::DEVICE_CONTROLLER,
@@ -461,6 +480,19 @@ pub static DOMAIN_DEVICES: XmlClass = XmlClass {
         child("sound", &crate::devices::sound::DEVICE_SOUND, ".", false),
         child("audio", &crate::devices::audio::DEVICE_AUDIO, ".", false),
         child("video", &crate::devices::video::DEVICE_VIDEO, ".", false),
+        child("interface", &DEVICE_INTERFACE, ".", false),
+        child(
+            "hostdev",
+            &crate::devices::hostdev::DEVICE_HOSTDEV,
+            ".",
+            false,
+        ),
+        child(
+            "redirdev",
+            &crate::devices::redirdev::DEVICE_REDIRDEV,
+            ".",
+            false,
+        ),
         child(
             "smartcard",
             &crate::devices::smartcard::DEVICE_SMARTCARD,
