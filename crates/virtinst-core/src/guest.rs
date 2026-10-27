@@ -429,6 +429,75 @@ pub fn initargs_string(os: &DomainOs) -> String {
         .join(" ")
 }
 
+// ---------------------------------------------------------------------
+// `Guest` and `_DomainDevices` as `XMLBuilder` classes, for the CLI
+// parsers (`virtinst-cli`'s port of `VirtCLIParser`). Device classes
+// join `DOMAIN_DEVICES` as their parsers get ported.
+// ---------------------------------------------------------------------
+
+use crate::xmlbuilder::{child, prop, Kind, XmlClass};
+
+/// `_DomainDevices`.
+pub static DOMAIN_DEVICES: XmlClass = XmlClass {
+    xml_name: "devices",
+    props: &[],
+    children: &[
+        child(
+            "watchdog",
+            &crate::devices::watchdog::DEVICE_WATCHDOG,
+            ".",
+            false,
+        ),
+        child(
+            "memballoon",
+            &crate::devices::memballoon::DEVICE_MEMBALLOON,
+            ".",
+            false,
+        ),
+        child("panic", &crate::devices::panic::DEVICE_PANIC, ".", false),
+    ],
+    prop_order: &[
+        "disk",
+        "controller",
+        "filesystem",
+        "interface",
+        "smartcard",
+        "serial",
+        "parallel",
+        "console",
+        "channel",
+        "input",
+        "tpm",
+        "graphics",
+        "sound",
+        "audio",
+        "video",
+        "hostdev",
+        "redirdev",
+        "watchdog",
+        "memballoon",
+        "rng",
+        "panic",
+        "shmem",
+        "memory",
+        "vsock",
+        "iommu",
+        "pstore",
+    ],
+};
+
+/// `Guest`.
+pub static GUEST: XmlClass = XmlClass {
+    xml_name: "domain",
+    props: &[
+        prop("type", "./@type", Kind::Str),
+        prop("name", "./name", Kind::Str),
+        prop("uuid", "./uuid", Kind::Str),
+    ],
+    children: &[child("devices", &DOMAIN_DEVICES, ".", true)],
+    prop_order: &["type", "name", "uuid"],
+};
+
 #[cfg(test)]
 mod boot_tests {
     #[test]

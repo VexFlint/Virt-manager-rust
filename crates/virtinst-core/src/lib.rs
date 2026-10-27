@@ -21,6 +21,7 @@ pub mod nodedev;
 pub mod osinfo;
 pub mod progress;
 pub mod storage;
+pub mod xmlbuilder;
 
 pub mod guest;
 pub use guest::Guest;

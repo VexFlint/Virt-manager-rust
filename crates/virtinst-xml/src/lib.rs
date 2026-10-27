@@ -9,8 +9,19 @@ pub use virtinst_xml_derive::XmlBound;
 /// — libvirt's own `virDomainGetXMLDesc`-style output never has one, so
 /// requiring it (`edit_xml`'s default) would reject every real document
 /// this crate is actually meant to read.
+///
+/// Text is kept as is (libxml2 does too: a `<description>` ending in a
+/// newline stays that way); only whitespace-only text, the document's
+/// own indentation, is dropped, since the writer re-indents.
 pub fn parse_libvirt_xml(xml: &str) -> Result<Document> {
-    Document::parse_str_with_opts(xml, ReadOptions::relaxed())
+    Document::parse_str_with_opts(
+        xml,
+        ReadOptions {
+            trim_text: false,
+            ignore_whitespace_only: true,
+            ..ReadOptions::relaxed()
+        },
+    )
 }
 
 /// Serializes a fresh `T` to a standalone XML fragment — upstream's

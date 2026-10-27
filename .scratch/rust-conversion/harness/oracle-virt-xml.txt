@@ -1,0 +1,40 @@
+# One virt-xml invocation per line, run against upstream's own virt-xml
+# (the oracle) and ours with the same arguments: stdout, stderr and the
+# exit code must match byte for byte. Lines are word-split by bash;
+# @SUITE@ is test:// on upstream's tests/data/testdriver/testsuite.xml.
+#
+# --watchdog / --memballoon / --panic (ParserWatchdog, ParserMemballoon,
+# ParserPanic)
+--connect @SUITE@ test-for-virtxml --edit --watchdog action=reset --print-xml
+--connect @SUITE@ test-for-virtxml --edit --watchdog action=reset,model=diag288,address.type=isa,address.iobase=0x10 --print-xml
+--connect @SUITE@ test-for-virtxml --edit model=ib700 --watchdog action=dump --print-xml
+--connect @SUITE@ test-for-virtxml --edit 1 --watchdog xpath.set=./@action=dump --print-xml
+--connect @SUITE@ test-for-virtxml --edit --watchdog xpath1.delete=./@action,xpath2.create=./foo --print-xml
+--connect @SUITE@ test-for-virtxml --edit --watchdog clearxml=yes,model=i6300esb --print-xml
+--connect @SUITE@ test-for-virtxml --edit 5 --watchdog action=reset --print-xml
+--connect @SUITE@ test-for-virtxml --edit 0 --watchdog action=reset --print-xml
+--connect @SUITE@ test-for-virtxml --edit model=i6300esb --watchdog action=reset --print-xml
+--connect @SUITE@ test-for-virtxml --edit --watchdog bogus=1,other=2 --print-xml
+--connect @SUITE@ test-for-virtxml --edit --watchdog ib700,action --print-xml
+--connect @SUITE@ test-for-virtxml --add-device --watchdog default --print-xml
+--connect @SUITE@ test-for-virtxml --add-device --watchdog i6300esb,action=none,address.type=pci,address.bus=0x01,address.slot=3 --print-xml
+--connect @SUITE@ test-for-virtxml --remove-device --watchdog model=ib700 --print-xml
+--connect @SUITE@ test-for-virtxml --remove-device --watchdog all --print-xml
+--connect @SUITE@ test-for-virtxml --edit --memballoon model=none --print-xml
+--connect @SUITE@ test-for-virtxml --edit --memballoon none --print-xml
+--connect @SUITE@ test-for-virtxml --edit --memballoon driver.iommu=on,driver.ats=off,alias.name=ua-bal,stats.period=0x1f --print-xml
+--connect @SUITE@ test-for-virtxml --edit --memballoon autodeflate=maybe --print-xml
+--connect @SUITE@ test-for-virtxml --edit --memballoon stats.period=ten --print-xml
+--connect @SUITE@ test-for-virtxml --add-device --memballoon virtio,autodeflate=on,stats.period=10,freePageReporting=on --print-xml
+--connect @SUITE@ test-for-virtxml --remove-device --memballoon all --print-xml
+--connect @SUITE@ test-for-virtxml --add-device --panic 0x505 --print-xml
+--connect @SUITE@ test-for-virtxml --add-device --panic iobase=507,,address.type=isa,address.iobase=0x500,address.irq=5 --print-xml
+--connect @SUITE@ test-for-virtxml --add-device --panic default --print-xml
+--connect @SUITE@ test-for-virtxml --edit --panic model=hyperv --print-xml
+--connect @SUITE@ --build-xml --watchdog default
+--connect @SUITE@ --build-xml --memballoon virtio,stats.period=5
+--connect @SUITE@ --build-xml --panic default
+--connect @SUITE@ --build-xml --panic 0x505
+--connect @SUITE@ --watchdog=?
+--connect @SUITE@ --memballoon help
+--connect @SUITE@ --panic help
