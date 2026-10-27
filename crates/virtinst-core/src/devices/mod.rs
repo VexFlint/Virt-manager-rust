@@ -71,6 +71,7 @@ pub use smartcard::{Certificate, DeviceSmartcard};
 pub mod redirdev;
 pub use redirdev::DeviceRedirdev;
 
+pub mod audio;
 pub mod video;
 pub use video::DeviceVideo;
 

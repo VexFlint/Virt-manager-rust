@@ -36,3 +36,32 @@ pub struct DeviceInput {
     #[xml(path = "source", attribute = "grab")]
     pub source_grab: Option<String>,
 }
+
+// `DeviceInput` as an `XMLBuilder` class, for the CLI parsers.
+
+use crate::xmlbuilder::{prop, Kind, XmlClass, XmlObject};
+
+/// `DeviceInput`.
+pub static DEVICE_INPUT: XmlClass = XmlClass {
+    xml_name: "input",
+    props: &[
+        prop("type", "./@type", Kind::Str),
+        prop("bus", "./@bus", Kind::Str),
+        prop("model", "./@model", Kind::Str),
+        prop("source_evdev", "./source/@evdev", Kind::Str),
+        prop("source_dev", "./source/@dev", Kind::Str),
+        prop("source_repeat", "./source/@repeat", Kind::OnOff),
+        prop("source_grab", "./source/@grab", Kind::Str),
+        prop("source_grabToggle", "./source/@grabToggle", Kind::Str),
+    ],
+    children: crate::device_children!(),
+    prop_order: crate::device_prop_order!(),
+};
+
+/// `DeviceInput.set_defaults`.
+pub fn set_defaults(dev: &mut XmlObject) -> Result<(), String> {
+    if dev.get_str("type").map_or(true, |t| t.is_empty()) {
+        dev.set("type", Some("mouse".into()))?;
+    }
+    Ok(())
+}

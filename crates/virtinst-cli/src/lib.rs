@@ -42,6 +42,7 @@
 pub mod cli;
 pub mod parser;
 pub mod parsers;
+pub mod xmlutil;
 
 use virtinst_core::devices::{
     DeviceController, DeviceDisk, DeviceFilesystem, DeviceMemballoon, DeviceRedirdev,

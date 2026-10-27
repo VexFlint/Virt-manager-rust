@@ -38,3 +38,101 @@
 --connect @SUITE@ --watchdog=?
 --connect @SUITE@ --memballoon help
 --connect @SUITE@ --panic help
+#
+# virtxml.py's main flow: --print-diff/--define (upstream's own fixture
+# format), defaults, --start, --update, --no-define, --quiet, lookups,
+# action/option collisions.
+--connect @SUITE@ test-for-virtxml --edit --watchdog action=reset --print-diff --define
+--connect @SUITE@ test-for-virtxml --edit --watchdog action=reset
+--connect @SUITE@ test-state-shutoff --edit --watchdog action=reset --print-diff --define
+--connect @SUITE@ test-state-shutoff --edit --watchdog action=reset --print-diff --start
+--connect @SUITE@ test-for-virtxml --edit --watchdog action=poweroff --print-diff --define
+--connect @SUITE@ test-for-virtxml --edit --watchdog action=poweroff
+--connect @SUITE@ test-for-virtxml --edit
+--connect @SUITE@ test-for-virtxml --watchdog action=reset
+--connect @SUITE@ test-for-virtxml --edit --add-device --watchdog action=reset
+--connect @SUITE@ test-for-virtxml --edit --watchdog action=reset --memballoon none
+--connect @SUITE@ idontexist --edit --watchdog action=reset
+--connect @SUITE@ --edit --watchdog action=reset
+--connect @SUITE@ 12345678-1234-1234-1234-123456789012 --edit --watchdog action=reset --print-diff
+--connect @SUITE@ test-for-virtxml --edit --watchdog action=reset --update
+--connect @SUITE@ test-for-virtxml --edit --watchdog action=reset --update --no-define
+--connect @SUITE@ test-state-shutoff --edit --watchdog action=reset --update
+--connect @SUITE@ test-for-virtxml --edit --watchdog action=reset --update --start
+--connect @SUITE@ test-state-shutoff --edit --watchdog action=reset --no-define --start
+--connect @SUITE@ test-for-virtxml --edit --watchdog action=reset --quiet
+--connect @SUITE@ test-for-virtxml --add-device --panic default --print-diff --define
+--connect @SUITE@ test-for-virtxml --remove-device --watchdog all --print-diff --define
+--connect @SUITE@ test-for-virtxml --edit --memballoon model=none --print-diff --define
+--connect @SUITE@ test-for-virtxml --edit --memballoon none --print-diff --define
+--connect @SUITE@ test-for-virtxml --remove-device --memballoon all --print-diff --define
+# Devices not ported to the parser engine yet, through the same flow.
+--connect @SUITE@ test-for-virtxml --edit --sound pcspk --print-diff --define
+--connect @SUITE@ test-for-virtxml --edit --video cirrus --print-diff --define
+
+# --controller / --input / --sound / --audio / --video (ParserController,
+# ParserInput, ParserSound, ParserAudio, ParserVideo)
+--connect @SUITE@ test-for-virtxml --edit --controller index=15,model=lsilogic --print-diff
+--connect @SUITE@ test-for-virtxml --edit type=usb --controller model=qemu-xhci,ports=4 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --controller usb,model=ich9-ehci1,address=0:0:4.7,index=0 --print-xml
+--connect @SUITE@ test-for-virtxml --add-device --controller usb,model=ich9-uhci1,address=0:0:4.0,index=0,master=0,address.multifunction=on --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --controller usb,model=ich9-uhci2,address=0:4.1,index=0,master.startport=2 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --controller scsi,,model=virtio-scsi,driver_queues=4,driver.queues=4,driver.iothread=2,vectors=15 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --controller xenbus,maxGrantFrames=64 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --controller pci,index=0,model=pcie-root-port,target.chassis=1,target.port=1,target.hotplug=off --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --controller pci,index=2,model=pci-bridge,target.chassisNr=1,target.memReserve=8196 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --controller pci,index=3,model=pci-expander-bus,target.busNr=252,target.node=1,target.index=1 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --controller usb3 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --controller usb2 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --controller num_pcie_root_ports=2 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --controller num_pcie_root_ports=x --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --controller address=foobar --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --controller scsi,index=zz --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --controller type=usb --print-diff
+--connect @SUITE@ test-for-virtxml --build-xml --controller usb2
+--connect @SUITE@ --build-xml --controller scsi,model=virtio-scsi,driver.ats=on
+--connect @SUITE@ test-for-virtxml --edit --input type=keyboard,bus=usb --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --input tablet --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --input default --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --input none --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --input mouse,bus=virtio,model=virtio-non-transitional --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --input evdev,source.dev=/dev/input/event1234,source.repeat=on,source.grab=all,source.grabToggle=ctrl-ctrl --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --input passthrough,source.evdev=/dev/input/event1,bus=virtio --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --input mouse,model=FOOBAR,xpath0.set=./@bus=usb,xpath2.set=./address/@type=usb,xpath6.set=./willbeoverwritten=foo,xpath6.create=./randomelement,xpath7.create=./deleteme,xpath8.delete=./deleteme,xpath9.set=./@model=,xpath10.set=./@type,xpath10.value=keyboard --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --input evdev,source.repeat=maybe --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --input bus=ps2 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --sound pcspk --print-diff
+--connect @SUITE@ test-for-virtxml --edit 3 --sound pcspk --print-diff
+--connect @SUITE@ test-for-virtxml --edit ich6 --sound pcspk --print-diff
+--connect @SUITE@ test-for-virtxml --edit all --sound audio.id=1 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --sound pcspk --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --sound default --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --sound none --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --sound codec0.type=micro,codec1.type=duplex,codec2.type=output --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --sound model=usb,multichannel=yes,streams=4 --print-diff
+--connect @SUITE@ test-for-virtxml --edit codec0.type=micro --sound pcspk --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --sound model=ich6 --print-diff
+--build-xml --sound hda,audio.id=2
+--connect @SUITE@ test-for-virtxml --add-device --audio id=1,type=spice --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --audio id=2,type=pulseaudio --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --audio none --print-diff
+--connect @SUITE@ test-for-virtxml --edit --audio id=3 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --video cirrus --print-diff
+--connect @SUITE@ test-for-virtxml --edit --video clearxml=yes,model=virtio,accel3d=yes --print-diff
+--connect @SUITE@ test-for-virtxml --edit 2 --video model=qxl,vgamem=1,ram=2,vram=3,heads=4,accel3d=yes,vram64=65 --print-diff
+--connect @SUITE@ test-for-virtxml --edit 2 --video model=qxl,model.vgamem=1,model.ram=2,model.vram=3,model.heads=4,model.acceleration.accel3d=yes,model.vram64=65 --print-diff
+--connect @SUITE@ test-for-virtxml --edit 2 --video vgamem=1,ram=2,vram64=65 --print-diff
+--connect @SUITE@ test-for-virtxml --edit model=cirrus --video vga --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --video model=virtio,model.blob=on --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --video default --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --video accel3d=maybe --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --video model=vmvga --print-diff
+--connect @SUITE@ test-for-virtxml --print-diff --define --remove-device --sound model=ich6 --video model=vmvga
+--connect @SUITE@ test-for-virtxml --print-diff --define --edit --sound model=ac97 --video model=virtio
+--connect @SUITE@ test --print-diff --define --add-device --sound model=ac97 --video model=virtio
+--connect @SUITE@ test-for-virtxml --edit --controller=?
+--connect @SUITE@ test-for-virtxml --edit --input help
+--connect @SUITE@ test-for-virtxml --edit --sound=?
+--connect @SUITE@ test-for-virtxml --edit --audio=?
+--connect @SUITE@ test-for-virtxml --edit --video=?
+--connect @SUITE@ test-for-virtxml --edit --video model=qxl --sound pcspk

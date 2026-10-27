@@ -91,6 +91,57 @@ pub fn recommended_models(is_xen: bool, is_qemu: bool) -> &'static [&'static str
     }
 }
 
+// `DeviceVideo` as an `XMLBuilder` class, for the CLI parsers.
+
+use crate::xmlbuilder::{prop, Kind, Value, XmlClass, XmlObject};
+
+/// `DeviceVideo`.
+pub static DEVICE_VIDEO: XmlClass = XmlClass {
+    xml_name: "video",
+    props: &[
+        prop("vram", "./model/@vram", Kind::Int),
+        prop("vram64", "./model/@vram64", Kind::Int),
+        prop("ram", "./model/@ram", Kind::Int),
+        prop("heads", "./model/@heads", Kind::Int),
+        prop("vgamem", "./model/@vgamem", Kind::Int),
+        prop("accel3d", "./model/acceleration/@accel3d", Kind::YesNo),
+        prop("blob", "./model/@blob", Kind::OnOff),
+        prop("primary", "./model/@primary", Kind::YesNo),
+        prop("_model", "./model/@type", Kind::Str),
+    ],
+    children: crate::device_children!(),
+    prop_order: crate::device_prop_order!("_model", "vram", "heads", "vgamem"),
+};
+
+/// `DeviceVideo.model`'s setter: anything but qxl drops the qxl only
+/// sizes.
+pub fn set_model_prop(dev: &mut XmlObject, val: Option<Value>) -> Result<(), String> {
+    let is_qxl = val.as_ref().and_then(|v| v.as_str()) == Some("qxl");
+    dev.set("_model", val)?;
+    if !is_qxl {
+        dev.set("ram", None)?;
+        dev.set("vgamem", None)?;
+        dev.set("vram64", None)?;
+    }
+    Ok(())
+}
+
+/// `DeviceVideo.set_defaults`. `default_model` is
+/// `DeviceVideo.default_model(guest)`, `has_gl` the guest's.
+pub fn set_defaults(
+    dev: &mut XmlObject,
+    default_model: Option<&str>,
+    has_gl: bool,
+) -> Result<(), String> {
+    if dev.get_str("_model").map_or(true, |m| m.is_empty()) {
+        set_model_prop(dev, default_model.map(Value::from))?;
+    }
+    if dev.get_str("_model").as_deref() == Some("virtio") && has_gl {
+        dev.set("accel3d", Some(Value::Bool(true)))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod edit_tests {
     use super::*;

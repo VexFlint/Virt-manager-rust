@@ -43,3 +43,37 @@ pub fn set_model(doc: &mut Document, sound: Element, model: &str) {
     }
     sound.set_attribute(doc, "model", model);
 }
+
+// `DeviceSound` as an `XMLBuilder` class, for the CLI parsers.
+
+use crate::xmlbuilder::{child, prop, Kind, XmlClass, XmlObject};
+
+/// `_Codec`.
+pub static SOUND_CODEC: XmlClass = XmlClass {
+    xml_name: "codec",
+    props: &[prop("type", "./@type", Kind::Str)],
+    children: &[],
+    prop_order: &[],
+};
+
+/// `DeviceSound`.
+pub static DEVICE_SOUND: XmlClass = XmlClass {
+    xml_name: "sound",
+    props: &[
+        prop("model", "./@model", Kind::Str),
+        prop("audio_id", "./audio/@id", Kind::Str),
+        prop("multichannel", "./@multichannel", Kind::YesNo),
+        prop("streams", "./@streams", Kind::Str),
+    ],
+    children: crate::device_children!(child("codecs", &SOUND_CODEC, ".", false)),
+    prop_order: crate::device_prop_order!(),
+};
+
+/// `DeviceSound.set_defaults`. `defaults_to_pcie` is the guest's.
+pub fn set_defaults(dev: &mut XmlObject, defaults_to_pcie: bool) -> Result<(), String> {
+    if dev.get_str("model").map_or(true, |m| m.is_empty()) {
+        let model = if defaults_to_pcie { "ich9" } else { "ich6" };
+        dev.set("model", Some(model.into()))?;
+    }
+    Ok(())
+}

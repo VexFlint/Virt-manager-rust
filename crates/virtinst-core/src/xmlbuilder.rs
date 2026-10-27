@@ -433,7 +433,7 @@ fn write_opts() -> WriteOptions {
 
 /// Serializes one element on its own, ending in a newline like
 /// upstream's `get_xml`.
-fn element_xml(doc: &Document, el: Element) -> String {
+pub fn element_xml(doc: &Document, el: Element) -> String {
     let mut out = Document::new();
     let copy = copy_element(doc, el, &mut out);
     out.push_root_node(copy).expect("a single root attaches");
@@ -914,6 +914,17 @@ impl XmlObject {
             .unwrap_or_default();
         ret.push('\n');
         ret
+    }
+
+    /// Runs `f` on the backing document and this object's element (for
+    /// code still editing the DOM directly). Pending sets are written
+    /// first.
+    pub fn with_doc<R>(&self, f: impl FnOnce(&mut Document, Element) -> R) -> R {
+        self.sync();
+        let mut doc = self.doc.borrow_mut();
+        let el = find(&doc, self.anchor, &XPath::parse(&self.rel))
+            .expect("with_doc on an object whose element exists");
+        f(&mut doc, el)
     }
 
     /// The element backing this object, when it exists.

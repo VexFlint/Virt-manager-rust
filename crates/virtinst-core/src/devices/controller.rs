@@ -129,6 +129,77 @@ pub fn model_rows(ctype: &str) -> Vec<(Option<&'static str>, &'static str)> {
     rows
 }
 
+// `DeviceController` as an `XMLBuilder` class, for the CLI parsers.
+
+use crate::xmlbuilder::{prop, Kind, XmlClass, XmlObject};
+
+/// `DeviceController`.
+pub static DEVICE_CONTROLLER: XmlClass = XmlClass {
+    xml_name: "controller",
+    props: &[
+        prop("type", "./@type", Kind::Str),
+        prop("model", "./@model", Kind::Str),
+        prop("vectors", "./@vectors", Kind::Int),
+        prop("ports", "./@ports", Kind::Int),
+        prop("maxGrantFrames", "./@maxGrantFrames", Kind::Int),
+        prop("index", "./@index", Kind::Int),
+        prop("driver_iothread", "./driver/@iothread", Kind::Int),
+        prop("driver_queues", "./driver/@queues", Kind::Int),
+        prop("master_startport", "./master/@startport", Kind::Int),
+        prop("target_chassisNr", "./target/@chassisNr", Kind::Int),
+        prop("target_chassis", "./target/@chassis", Kind::Int),
+        prop("target_port", "./target/@port", Kind::Int),
+        prop("target_hotplug", "./target/@hotplug", Kind::OnOff),
+        prop("target_busNr", "./target/@busNr", Kind::Int),
+        prop("target_index", "./target/@index", Kind::Int),
+        prop("target_node", "./target/node", Kind::Int),
+        prop("target_memReserve", "./target/@memReserve", Kind::Int),
+    ],
+    children: crate::device_children!(),
+    prop_order: crate::device_prop_order!(
+        "type",
+        "index",
+        "model",
+        "master_startport",
+        "driver_queues",
+        "maxGrantFrames",
+    ),
+};
+
+/// `DeviceController.get_usb2_controllers`.
+pub fn get_usb2_controllers() -> Vec<XmlObject> {
+    USB2_CONTROLLERS
+        .iter()
+        .map(|(model, startport)| {
+            let mut ctrl = XmlObject::new(&DEVICE_CONTROLLER);
+            let _ = ctrl.set("type", Some("usb".into()));
+            let _ = ctrl.set("model", Some((*model).into()));
+            if let Some(port) = startport {
+                let _ = ctrl.set("master_startport", Some((*port).into()));
+            }
+            ctrl
+        })
+        .collect()
+}
+
+/// `DeviceController.get_usb3_controller`. `qemu_xhci` and
+/// `usb3_ports` are `conn.support.conn_qemu_xhci()` and
+/// `conn_usb3_ports()`.
+pub fn get_usb3_controller(qemu_xhci: bool, usb3_ports: bool) -> XmlObject {
+    let mut ctrl = XmlObject::new(&DEVICE_CONTROLLER);
+    let _ = ctrl.set("type", Some("usb".into()));
+    let _ = ctrl.set("model", Some("nec-xhci".into()));
+    if qemu_xhci {
+        let _ = ctrl.set("model", Some("qemu-xhci".into()));
+    }
+    if usb3_ports {
+        // 15 is the max ports qemu supports, might as well
+        // Add as many as possible
+        let _ = ctrl.set("ports", Some("15".into()));
+    }
+    ctrl
+}
+
 #[cfg(test)]
 mod edit_tests {
     use super::*;

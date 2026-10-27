@@ -443,6 +443,16 @@ pub static DOMAIN_DEVICES: XmlClass = XmlClass {
     props: &[],
     children: &[
         child(
+            "controller",
+            &crate::devices::controller::DEVICE_CONTROLLER,
+            ".",
+            false,
+        ),
+        child("input", &crate::devices::input::DEVICE_INPUT, ".", false),
+        child("sound", &crate::devices::sound::DEVICE_SOUND, ".", false),
+        child("audio", &crate::devices::audio::DEVICE_AUDIO, ".", false),
+        child("video", &crate::devices::video::DEVICE_VIDEO, ".", false),
+        child(
             "watchdog",
             &crate::devices::watchdog::DEVICE_WATCHDOG,
             ".",

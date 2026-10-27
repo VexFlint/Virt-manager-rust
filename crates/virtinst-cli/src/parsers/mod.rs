@@ -2,17 +2,138 @@
 //! [`ParserDef`]s, grouped by device family. Each `parser_*` function
 //! builds its parser once and hands out a shared reference.
 
-use crate::parser::ParserDef;
+use virtinst_core::capabilities::caps::Capabilities;
+use virtinst_core::capabilities::domcaps::DomainCapabilities;
+use virtinst_core::connection::Connection;
+use virtinst_core::devices::build::GuestInfo;
+use virtinst_core::devices::{sound, video};
+use virtinst_core::guest::Guest;
+use virtinst_core::osinfo::OsDb;
+use virtinst_core::xmlbuilder::XmlObject;
+use virtinst_xml::XmlBound;
 
+use crate::parser::{lookup_prop, ParserDef};
+
+pub mod devices;
 pub mod misc;
 
 /// Every ported parser, in upstream's registration order (the order
 /// `VIRT_PARSERS` runs them in).
 pub fn all() -> Vec<&'static ParserDef> {
-    vec![misc::watchdog(), misc::memballoon(), misc::panic()]
+    vec![
+        devices::controller(),
+        devices::input(),
+        devices::sound(),
+        devices::audio(),
+        misc::watchdog(),
+        devices::video(),
+        misc::memballoon(),
+        misc::panic(),
+    ]
 }
 
 /// The parser for `--name` (the `cli_arg_name`), if ported.
 pub fn by_name(cli_arg_name: &str) -> Option<&'static ParserDef> {
     all().into_iter().find(|p| p.cli_arg_name == cli_arg_name)
+}
+
+/// The guest facts device defaults read (`guest.os`, its graphics,
+/// `guest.osinfo`), from the guest's XML.
+pub fn guest_info(guest: &XmlObject) -> GuestInfo {
+    if guest.element().is_none() {
+        return GuestInfo::default();
+    }
+    guest.with_doc(|doc, root| {
+        let g = Guest::from_element(doc, root);
+        let graphics = root
+            .find(doc, "devices")
+            .map(|d| d.find_all(doc, "graphics"))
+            .unwrap_or_default();
+        let has_spice = graphics
+            .iter()
+            .any(|g| g.attribute(doc, "type") == Some("spice"));
+        let has_gl = graphics
+            .iter()
+            .any(|g| g.find(doc, "gl").and_then(|gl| gl.attribute(doc, "enable")) == Some("yes"));
+        let os = &g.os;
+        let is_uefi = (os.loader.is_some() && os.loader_type.as_deref() == Some("pflash"))
+            || os.firmware.as_deref() == Some("efi");
+        let osinfo = g
+            .metadata
+            .libosinfo
+            .os_id
+            .as_deref()
+            .and_then(|id| OsDb::load_default().ok().and_then(|db| db.os(id)));
+        GuestInfo {
+            os_type: os.os_type.clone(),
+            arch: os.arch.clone(),
+            machine: os.machine.clone(),
+            domain_type: g.domain_type.clone(),
+            has_spice,
+            has_gl,
+            is_uefi,
+            os_virtiogpu: osinfo.as_ref().is_some_and(|o| o.supports_virtiogpu()),
+            os_virtionet: osinfo.as_ref().is_some_and(|o| o.supports_virtionet()),
+            os_virtioscsi: osinfo.as_ref().is_some_and(|o| o.supports_virtioscsi()),
+            os_netmodels: osinfo
+                .as_ref()
+                .map(|o| o.supported_netmodels())
+                .unwrap_or_default(),
+            spice_fallback: false,
+        }
+    })
+}
+
+/// `DeviceVideo.default_model(guest)`: `guest.lookup_domcaps()` is
+/// fetched only when the answer needs it, a stub if that fails.
+fn default_video_model(info: &mut GuestInfo, conn: Option<&Connection>) -> Option<&'static str> {
+    let is_qemu = conn.is_some_and(|c| c.uri().is_qemu());
+    let domcaps = conn.and_then(|c| {
+        DomainCapabilities::fetch(
+            c,
+            None,
+            info.arch.as_deref(),
+            info.machine.as_deref(),
+            info.domain_type.as_deref(),
+        )
+        .map_err(|e| log::debug!("Error fetching domcapabilities XML: {e}"))
+        .ok()
+    });
+    let domcaps = domcaps.or_else(|| DomainCapabilities::parse("<domainCapabilities/>").ok());
+    // `supports_graphics_spice`'s fallback for domcaps without graphics.
+    info.spice_fallback = conn.is_some_and(|c| {
+        (c.uri().is_qemu() || c.uri().is_test())
+            && Capabilities::fetch(c)
+                .is_ok_and(|caps| matches!(caps.host.cpu.arch.as_deref(), Some("i686" | "x86_64")))
+    });
+    info.default_video_model(domcaps.as_ref(), is_qemu)
+}
+
+/// `dev.set_defaults(guest)` for the `idx`th device a parser made.
+pub fn set_defaults(
+    def: &ParserDef,
+    guest: &mut XmlObject,
+    idx: usize,
+    conn: Option<&Connection>,
+) -> Result<(), String> {
+    match def.cli_arg_name {
+        "sound" => {
+            let pcie = guest_info(guest).defaults_to_pcie();
+            sound::set_defaults(&mut lookup_prop(guest, def)[idx], pcie)
+        }
+        "video" => {
+            let unset = lookup_prop(guest, def)[idx]
+                .get_str("_model")
+                .map_or(true, |m| m.is_empty());
+            let mut info = guest_info(guest);
+            let model = if unset {
+                default_video_model(&mut info, conn)
+            } else {
+                None
+            };
+            video::set_defaults(&mut lookup_prop(guest, def)[idx], model, info.has_gl)
+        }
+        "input" => virtinst_core::devices::input::set_defaults(&mut lookup_prop(guest, def)[idx]),
+        name => misc::set_defaults(name, &mut lookup_prop(guest, def)[idx]),
+    }
 }
