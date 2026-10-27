@@ -543,7 +543,7 @@ pub struct XmlObject {
     /// `_relative_object_xpath`, relative to `anchor`.
     rel: String,
     is_build: bool,
-    /// `_propstore`: set values, in the order they were first set.
+    /// `_propstore`: set values, in the order they were (last) set.
     propstore: Vec<(&'static str, Option<Value>)>,
     /// Child objects per child property, in class order.
     children: Vec<(&'static str, Vec<XmlObject>)>,
@@ -734,11 +734,9 @@ impl XmlObject {
             .prop(name)
             .unwrap_or_else(|| panic!("{} has no property {name}", self.class.xml_name));
         let val = convert_set(p.kind, val)?;
-        // A dict upstream: a key set again keeps its place.
-        match self.propstore.iter_mut().find(|(k, _)| *k == p.name) {
-            Some(entry) => entry.1 = val,
-            None => self.propstore.push((p.name, val)),
-        }
+        // `_nonxml_fset`: a key set again moves to the end.
+        self.propstore.retain(|(k, _)| *k != p.name);
+        self.propstore.push((p.name, val));
         Ok(())
     }
 

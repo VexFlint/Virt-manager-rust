@@ -269,7 +269,7 @@ fn xml_options(args: &Args) -> Vec<(Change, &Vec<String>)> {
         engine("channel", &args.channel),
         engine("console", &args.console),
         engine("hostdev", &args.hostdev),
-        legacy("filesystem", &args.filesystem),
+        engine("filesystem", &args.filesystem),
         engine("sound", &args.sound),
         engine("audio", &args.audio),
         engine("watchdog", &args.watchdog),
@@ -282,7 +282,7 @@ fn xml_options(args: &Args) -> Vec<(Change, &Vec<String>)> {
         engine("panic", &args.panic),
         engine("shmem", &args.shmem),
         engine("memdev", &args.memdev),
-        legacy("vsock", &args.vsock),
+        engine("vsock", &args.vsock),
         engine("iommu", &args.iommu),
         engine("pstore", &args.pstore),
     ]
@@ -830,9 +830,7 @@ mod legacy {
 
     fn apply(doc: &mut Document, el: Element, name: &str, optstr: &str) -> Result<(), String> {
         match name {
-            "vsock" => apply_vsock_optstr(doc, el, optstr),
             "disk" => apply_disk_optstr(doc, el, optstr),
-            "filesystem" => apply_filesystem_optstr(doc, el, optstr),
             _ => unreachable!("not a legacy device: {name}"),
         }
     }
@@ -840,9 +838,7 @@ mod legacy {
     fn add(doc: &mut Document, root: Element, name: &str, optstr: &str) -> Result<Element, String> {
         let d = &["devices"];
         Ok(match name {
-            "vsock" => list_add(doc, root, d, &vsock_from_optstr(optstr)?),
             "disk" => list_add(doc, root, d, &disk_from_optstr(optstr)?),
-            "filesystem" => list_add(doc, root, d, &filesystem_from_optstr(optstr)?),
             _ => unreachable!("not a legacy device: {name}"),
         })
     }
@@ -901,9 +897,7 @@ mod legacy {
             .iter()
             .map(|optstr| {
                 let xml = match name {
-                    "vsock" => to_xml_string(&vsock_from_optstr(optstr)?),
                     "disk" => to_xml_string(&disk_from_optstr(optstr)?),
-                    "filesystem" => to_xml_string(&filesystem_from_optstr(optstr)?),
                     _ => unreachable!("not a legacy device: {name}"),
                 };
                 xml.map(|x| format!("{x}\n")).map_err(|e| e.to_string())

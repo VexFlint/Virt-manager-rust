@@ -17,6 +17,7 @@ use crate::parser::{lookup_prop, ParserDef};
 pub mod chardev;
 pub mod charsrc;
 pub mod devices;
+pub mod filesystem;
 pub mod graphics;
 pub mod hostdev;
 pub mod misc;
@@ -35,6 +36,7 @@ pub fn all() -> Vec<&'static ParserDef> {
         chardev::channel(),
         chardev::console(),
         hostdev::hostdev(),
+        filesystem::filesystem(),
         devices::sound(),
         devices::audio(),
         misc::watchdog(),
@@ -47,6 +49,7 @@ pub fn all() -> Vec<&'static ParserDef> {
         misc::panic(),
         misc::shmem(),
         misc::memdev(),
+        filesystem::vsock(),
         misc::iommu(),
         misc::pstore(),
     ]
@@ -240,6 +243,14 @@ pub fn set_defaults(
             };
             virtinst_core::devices::network::set_defaults(&mut lookup_prop(guest, def)[idx], &d)
         }
+        "filesystem" => {
+            let ok = conn.is_some_and(|c| {
+                let u = c.uri();
+                u.is_qemu() || u.is_lxc() || u.is_test()
+            });
+            virtinst_core::devices::filesystem::set_defaults(&mut lookup_prop(guest, def)[idx], ok)
+        }
+        "vsock" => virtinst_core::devices::vsock::set_defaults(&mut lookup_prop(guest, def)[idx]),
         "graphics" => {
             let info = guest_info(guest);
             let is_remote = conn.is_some_and(|c| c.uri().is_remote());

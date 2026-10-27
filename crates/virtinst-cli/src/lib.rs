@@ -6,16 +6,15 @@
 //!
 //! The real port of upstream's `VirtCLIParser` lives in [`parser`] and
 //! [`parsers`]. What is left in this file is the older hand-written
-//! optstring code for the devices not on that engine yet (`--disk`,
-//! `--filesystem` and `--vsock`); it goes away as their parsers get
-//! ported.
+//! optstring code for `--disk`, the one device not on that engine
+//! yet; it goes away once its parser is ported.
 
 pub mod cli;
 pub mod parser;
 pub mod parsers;
 pub mod xmlutil;
 
-use virtinst_core::devices::{DeviceDisk, DeviceFilesystem, DeviceVsock};
+use virtinst_core::devices::DeviceDisk;
 use virtinst_xml::{list_remove, resolve_or_create_path, resolve_path, Document, Element};
 
 /// Upstream's `parse_optstr_tuples`: split `"model=itco,action=none"`
@@ -202,9 +201,6 @@ enum FieldLoc {
 fn field_loc(device: &str, cliname: &str) -> Option<FieldLoc> {
     use FieldLoc::{Nested, SelfAttr};
     match (device, cliname) {
-        ("vsock", "model") => Some(SelfAttr("model")),
-        ("vsock", "cid.auto") => Some(Nested(&["cid"], "auto")),
-        ("vsock", "cid.address") => Some(Nested(&["cid"], "address")),
         ("disk", "path") => Some(Nested(&["source"], "file")),
         ("disk", "device") => Some(SelfAttr("device")),
         ("disk", "type") => Some(SelfAttr("type")),
@@ -212,10 +208,6 @@ fn field_loc(device: &str, cliname: &str) -> Option<FieldLoc> {
         ("disk", "target" | "target.dev") => Some(Nested(&["target"], "dev")),
         ("disk", "driver.name") => Some(Nested(&["driver"], "name")),
         ("disk", "driver.type") => Some(Nested(&["driver"], "type")),
-        ("filesystem", "type") => Some(SelfAttr("type")),
-        ("filesystem", "accessmode" | "mode") => Some(SelfAttr("accessmode")),
-        ("filesystem", "source" | "source.dir") => Some(Nested(&["source"], "dir")),
-        ("filesystem", "target" | "target.dir") => Some(Nested(&["target"], "dir")),
         _ => None,
     }
 }
@@ -258,9 +250,7 @@ fn field_value(doc: &Document, el: Element, loc: &FieldLoc) -> Option<String> {
 /// degrade gracefully from.
 fn device_remove_first(device: &str) -> &'static [&'static str] {
     match device {
-        "vsock" => &["model"],
         "disk" => &["path"],
-        "filesystem" => &["source", "target"],
         _ => panic!("device_remove_first: no remove_first entry for device '{device}'"),
     }
 }
@@ -370,53 +360,6 @@ fn parse_onoff(key: &str, val: &str) -> Result<bool, String> {
     }
 }
 
-/// Upstream's `XMLProperty`'s `is_int=True` setter path
-/// (`_convert_value_for_setter`'s `int(val, **intkwargs)`) — raises on
-/// unparsable input rather than silently dropping the value, which a
-/// bare `.parse().ok()` would do (the same class of bug `parse_onoff`
-/// fixed for `cid.auto`, found on `cid.address` while checking the
-/// fix's sibling field against upstream). **Known gap**: upstream also
-/// accepts `0x`-prefixed hex (`intkwargs["base"] = 16`); this is
-/// decimal-only. Not hit by anything built so far — `--vsock cid.address`
-/// is the only `is_int` consumer yet; revisit if a real device needs hex.
-fn parse_int(key: &str, val: &str) -> Result<u32, String> {
-    val.parse().map_err(|_| format!("{key} must be an integer"))
-}
-
-/// `--vsock` — upstream's real `ParserVsock` (`/usr/share/virt-manager`,
-/// reinstalled after the machine wipe noted in the prior commit, so this
-/// is grounded in the actual class again, not inferred). `remove_first =
-/// "model"` — same positional shorthand as `--watchdog`, `--vsock
-/// default` means `model=default`. `cid.auto`/`cid.address` are dotted
-/// aliases (`aliases = {"cid.auto": "auto_cid", "cid.address": "cid"}`)
-/// landing on the nested `<cid>` element, not self-attributes. `cid.auto`
-/// is `is_onoff=True` — [`parse_onoff`], not a new convention.
-pub fn vsock_from_optstr(optstr: &str) -> Result<DeviceVsock, String> {
-    let mut tuples = parse_optstr_tuples(optstr);
-    splice_remove_first(&mut tuples, device_remove_first("vsock"));
-
-    let mut dev = DeviceVsock::default();
-    for (cliname, val) in tuples {
-        match cliname.as_str() {
-            "model" => dev.model = required_value(&cliname, val)?,
-            "cid.auto" => {
-                dev.auto_cid = match required_value(&cliname, val)? {
-                    Some(v) => Some(parse_onoff("cid.auto", &v)?),
-                    None => None,
-                };
-            }
-            "cid.address" => {
-                dev.cid = match required_value(&cliname, val)? {
-                    Some(v) => Some(parse_int("cid.address", &v)?),
-                    None => None,
-                };
-            }
-            _ => {}
-        }
-    }
-    Ok(dev)
-}
-
 /// Sets or removes one attribute on a *nested* child element (`el`'s
 /// `path` chain, e.g. `<cid>`/`<source>`/`<target>`/`<driver>`, or a
 /// two-level chain like `<model><acceleration>`) — the dotted-key case
@@ -480,58 +423,6 @@ fn apply_present_bool(doc: &mut Document, el: Element, tag: &str, present: bool)
         }
         _ => {}
     }
-}
-
-/// the old `apply_watchdog_optstr`'s vsock counterpart — same "mutate only the
-/// named attributes on the existing element" approach (including the
-/// shared `key=` → remove-the-attribute rule, via [`required_value`]),
-/// extended to reach through to the nested `<cid>` child for `cid.*`
-/// keys (via [`apply_nested_attr`]) and to [`vsock_from_optstr`]'s
-/// positional shorthand and `cid.auto` failure mode. Pins
-/// `edit-simple-vsock` against the restored upstream fixture —
-/// `cid.address=,cid.auto=on` on a domain with an existing `<cid
-/// auto="no" address="5"/>` must produce `<cid auto="yes"/>`, `address`
-/// gone entirely.
-pub fn apply_vsock_optstr(doc: &mut Document, el: Element, optstr: &str) -> Result<(), String> {
-    let mut tuples = parse_optstr_tuples(optstr);
-    splice_remove_first(&mut tuples, device_remove_first("vsock"));
-
-    for (cliname, val) in tuples {
-        match cliname.as_str() {
-            "model" => match required_value(&cliname, val)? {
-                Some(v) => el.set_attribute(doc, "model", v),
-                None => {
-                    el.mut_attributes(doc).remove("model");
-                }
-            },
-            "cid.auto" => {
-                let normalized = match required_value(&cliname, val)? {
-                    Some(v) => Some(
-                        if parse_onoff("cid.auto", &v)? {
-                            "yes"
-                        } else {
-                            "no"
-                        }
-                        .to_string(),
-                    ),
-                    None => None,
-                };
-                apply_nested_attr(doc, el, &["cid"], "auto", normalized);
-            }
-            "cid.address" => {
-                let checked = match required_value(&cliname, val)? {
-                    Some(v) => {
-                        parse_int("cid.address", &v)?;
-                        Some(v)
-                    }
-                    None => None,
-                };
-                apply_nested_attr(doc, el, &["cid"], "address", checked);
-            }
-            _ => {}
-        }
-    }
-    Ok(())
 }
 
 /// `--disk` — upstream's real `ParserDisk`
@@ -703,90 +594,6 @@ pub fn apply_disk_optstr(doc: &mut Document, el: Element, optstr: &str) -> Resul
     Ok(())
 }
 
-/// `--filesystem` — upstream's real `ParserFilesystem`. The first
-/// device with a **two-slot** `remove_first` (`["source", "target"]`)
-/// — `--filesystem /1/2/3,/4/5/6` means `source=/1/2/3,target=/4/5/6`,
-/// both positional. `source`/`target` are themselves Python properties
-/// on the real device object, not raw `XMLProperty` attributes:
-/// `target` always forwards to `target_dir`, but `source` is
-/// *type*-dependent (`_type_to_source_prop`: `source_name` for
-/// `template`, `source_file` for `file`, `source_dev` for `block`,
-/// `source_usage` for `ram`, `source_dir` otherwise). `DeviceFilesystem`
-/// only models `source_dir`/`target_dir` here, so `source`/`source.dir`
-/// both hardcode the `source_dir` mapping unconditionally — correct for
-/// `edit-simple-filesystem`'s own domain (`type="mount"`, which falls
-/// into the "otherwise" branch), wrong for `type=template`/`file`/
-/// `block`/`ram`, flagged rather than silently guessed at. `accessmode`
-/// has an alias, `mode` (upstream's `aliases = {"accessmode": "mode"}`
-/// — the same "one virtarg answers to two names" shape `--tpm`'s
-/// `type`/`backend.type` already established). `readonly` is
-/// `is_onoff` CLI vocab over an `is_bool` (existence) XML shape — same
-/// pattern `--disk`'s `readonly`/`shareable`/`transient` already
-/// proved, [`onoff_or_false`]/[`apply_present_bool`] reused directly,
-/// not reinvented. **Not modeled**: `model`, `multidevs`, `fmode`/
-/// `dmode`, `space_hard_limit`/`space_soft_limit`, every `driver.*`/
-/// `binary.*` field, and every `source.*` variant besides `dir` — all
-/// flagged, same partial-slice discipline as `--disk`.
-pub fn filesystem_from_optstr(optstr: &str) -> Result<DeviceFilesystem, String> {
-    let mut tuples = parse_optstr_tuples(optstr);
-    splice_remove_first(&mut tuples, device_remove_first("filesystem"));
-
-    let mut dev = DeviceFilesystem::default();
-    for (cliname, val) in tuples {
-        match cliname.as_str() {
-            "type" => dev.filesystem_type = required_value(&cliname, val)?,
-            "accessmode" | "mode" => dev.accessmode = required_value(&cliname, val)?,
-            "source" | "source.dir" => dev.source_dir = required_value(&cliname, val)?,
-            "target" | "target.dir" => dev.target_dir = required_value(&cliname, val)?,
-            "readonly" => dev.readonly = onoff_or_false("readonly", val)?,
-            _ => {}
-        }
-    }
-    Ok(dev)
-}
-
-/// the old `apply_watchdog_optstr`'s filesystem counterpart. Pins
-/// `edit-simple-filesystem` against the restored upstream fixture:
-/// `--filesystem /1/2/3,/4/5/6,mode=mapped` on `<filesystem type="mount"
-/// accessmode="passthrough"><source dir="/foo/bar"/><target
-/// dir="/bar/baz"/></filesystem>` must produce `accessmode="mapped"`,
-/// `source/@dir="/1/2/3"`, `target/@dir="/4/5/6"` — `type` untouched.
-pub fn apply_filesystem_optstr(
-    doc: &mut Document,
-    el: Element,
-    optstr: &str,
-) -> Result<(), String> {
-    let mut tuples = parse_optstr_tuples(optstr);
-    splice_remove_first(&mut tuples, device_remove_first("filesystem"));
-
-    for (cliname, val) in tuples {
-        match cliname.as_str() {
-            "type" | "accessmode" | "mode" => {
-                let attr = if cliname == "mode" {
-                    "accessmode"
-                } else {
-                    &cliname
-                };
-                match required_value(&cliname, val)? {
-                    Some(v) => el.set_attribute(doc, attr.to_string(), v),
-                    None => {
-                        el.mut_attributes(doc).remove(attr);
-                    }
-                }
-            }
-            "source" | "source.dir" => {
-                apply_nested_attr(doc, el, &["source"], "dir", required_value(&cliname, val)?)
-            }
-            "target" | "target.dir" => {
-                apply_nested_attr(doc, el, &["target"], "dir", required_value(&cliname, val)?)
-            }
-            "readonly" => apply_present_bool(doc, el, "readonly", onoff_or_false("readonly", val)?),
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
 /// `--remove-device`'s path, for any device `tag` — upstream's
 /// `action_remove_device`: the exact same [`select_elements`] `--edit`
 /// uses (upstream reuses `_find_objects_to_edit` for both), then one
@@ -900,314 +707,6 @@ mod tests {
 
     fn parse_fixture(xml: &str) -> Document {
         virtinst_xml::parse_libvirt_xml(xml).expect("fixture parses")
-    }
-
-    #[test]
-    fn vsock_from_optstr_maps_model_and_dotted_cid_keys() {
-        let dev = vsock_from_optstr("model=virtio,cid.auto=no,cid.address=3").unwrap();
-        assert_eq!(dev.model.as_deref(), Some("virtio"));
-        assert_eq!(dev.auto_cid, Some(false));
-        assert_eq!(dev.cid, Some(3));
-    }
-
-    /// `remove_first = "model"` on the real `ParserVsock` — same
-    /// positional shorthand `--watchdog` has, confirmed against upstream
-    /// after the machine-wipe caveat on the original wip commit.
-    #[test]
-    fn vsock_from_optstr_handles_the_positional_form() {
-        let dev = vsock_from_optstr("virtio,cid.address=3").unwrap();
-        assert_eq!(dev.model.as_deref(), Some("virtio"));
-        assert_eq!(dev.cid, Some(3));
-    }
-
-    /// `is_onoff=True`'s wider vocabulary, not just the literal
-    /// `"yes"`/`"no"` an XML attribute round-trips through.
-    #[test]
-    fn vsock_from_optstr_cid_auto_accepts_the_full_onoff_vocabulary() {
-        for (input, expected) in [
-            ("yes", true),
-            ("y", true),
-            ("1", true),
-            ("true", true),
-            ("t", true),
-            ("on", true),
-            ("no", false),
-            ("n", false),
-            ("0", false),
-            ("false", false),
-            ("f", false),
-            ("off", false),
-            ("YES", true),
-            ("OFF", false),
-        ] {
-            let dev = vsock_from_optstr(&format!("cid.auto={input}")).unwrap();
-            assert_eq!(dev.auto_cid, Some(expected), "input was {input:?}");
-        }
-    }
-
-    /// Matches `_on_off_convert`'s own `fail()` — garbage input is
-    /// rejected, not silently coerced to `false` the way an XML
-    /// attribute's `Option<bool>` impl would.
-    #[test]
-    fn vsock_from_optstr_cid_auto_rejects_garbage() {
-        assert!(vsock_from_optstr("cid.auto=maybe").is_err());
-    }
-
-    /// Matches `XMLProperty`'s `is_int=True` setter (`int(val)` raises
-    /// on unparsable input) — a bare `.parse().ok()` would have silently
-    /// dropped `cid.address` to `None` instead, the same class of bug
-    /// `cid.auto`'s garbage-rejection test above pins for its own field.
-    #[test]
-    fn vsock_from_optstr_cid_address_rejects_garbage() {
-        assert!(vsock_from_optstr("cid.address=not-a-number").is_err());
-    }
-
-    /// Same rejection on the edit path. `cid.address` comes first in
-    /// this optstring deliberately (same convention as
-    /// `apply_vsock_optstr_rejects_garbage_cid_auto_without_mutating_
-    /// anything`): this isn't transactional, an earlier key that
-    /// succeeded before a later one fails would stay applied, so the
-    /// failing key has to be first to honestly assert "nothing changed".
-    #[test]
-    fn apply_vsock_optstr_cid_address_rejects_garbage_without_mutating_anything() {
-        let mut doc = parse_fixture(
-            r#"<domain>
-  <devices>
-    <vsock model="virtio"><cid auto="no" address="5"/></vsock>
-  </devices>
-</domain>"#,
-        );
-        let root = doc.root_element().unwrap();
-        let el = select_elements(&doc, root, "vsock", "1").unwrap()[0];
-
-        assert!(apply_vsock_optstr(&mut doc, el, "cid.address=nope,cid.auto=yes").is_err());
-
-        let cid = el.find(&doc, "cid").unwrap();
-        assert_eq!(cid.attribute(&doc, "auto"), Some("no"));
-        assert_eq!(cid.attribute(&doc, "address"), Some("5"));
-    }
-
-    #[test]
-    fn vsock_build_xml_output_matches_expected_shape() {
-        let dev = vsock_from_optstr("model=virtio,cid.auto=no,cid.address=3").unwrap();
-        let xml = virtinst_xml::to_xml_string(&dev).unwrap();
-        assert!(xml.starts_with("<vsock "));
-        assert!(xml.contains(r#"model="virtio""#));
-        assert!(xml.contains("<cid "));
-        assert!(xml.contains(r#"auto="no""#));
-        assert!(xml.contains(r#"address="3""#));
-    }
-
-    /// The risk surface specific to vsock: `cid.*` keys target a nested
-    /// element the top-level `<vsock>` tag may not have yet at all — the
-    /// reason `apply_vsock_optstr` reaches for
-    /// [`resolve_or_create_path`] instead of [`Element::set_attribute`]
-    /// directly like the old `apply_watchdog_optstr` can.
-    #[test]
-    fn apply_vsock_optstr_creates_the_nested_cid_element_when_absent() {
-        let mut doc = parse_fixture(
-            r#"<domain>
-  <devices>
-    <vsock model="virtio"/>
-  </devices>
-</domain>"#,
-        );
-        let root = doc.root_element().unwrap();
-        let el = select_elements(&doc, root, "vsock", "1").unwrap()[0];
-
-        apply_vsock_optstr(&mut doc, el, "cid.auto=no,cid.address=3").unwrap();
-
-        let cid = el.find(&doc, "cid").expect("cid element was created");
-        assert_eq!(cid.attribute(&doc, "auto"), Some("no"));
-        assert_eq!(cid.attribute(&doc, "address"), Some("3"));
-        // The untouched attribute on the parent element is still there.
-        assert_eq!(el.attribute(&doc, "model"), Some("virtio"));
-    }
-
-    /// Pins [`apply_nested_attr`]'s clear-doesn't-create fix: clearing
-    /// `cid.address` on a vsock with no `<cid>` at all yet must not
-    /// spuriously create an empty one.
-    #[test]
-    fn apply_vsock_optstr_clearing_an_absent_nested_attr_creates_nothing() {
-        let mut doc = parse_fixture(
-            r#"<domain>
-  <devices>
-    <vsock model="virtio"/>
-  </devices>
-</domain>"#,
-        );
-        let root = doc.root_element().unwrap();
-        let el = select_elements(&doc, root, "vsock", "1").unwrap()[0];
-
-        apply_vsock_optstr(&mut doc, el, "cid.address=").unwrap();
-
-        assert!(el.find(&doc, "cid").is_none(), "no <cid> should exist");
-    }
-
-    /// Pins the fix for a real divergence ultrareview caught, now under
-    /// `is_onoff`'s real (wider) vocabulary: [`vsock_from_optstr`] and
-    /// [`apply_vsock_optstr`] must agree on non-canonical-but-valid
-    /// `cid.auto` input (`"true"` is truthy in this vocabulary, not
-    /// rejected and not silently coerced to `false` the way an XML
-    /// attribute's `Option<bool>` impl would read it).
-    #[test]
-    fn apply_vsock_optstr_normalizes_cid_auto_the_same_way_vsock_from_optstr_does() {
-        let mut doc = parse_fixture(
-            r#"<domain>
-  <devices>
-    <vsock model="virtio"/>
-  </devices>
-</domain>"#,
-        );
-        let root = doc.root_element().unwrap();
-        let el = select_elements(&doc, root, "vsock", "1").unwrap()[0];
-
-        apply_vsock_optstr(&mut doc, el, "cid.auto=true").unwrap();
-
-        let cid = el.find(&doc, "cid").expect("cid element was created");
-        assert_eq!(cid.attribute(&doc, "auto"), Some("yes"));
-        assert_eq!(
-            vsock_from_optstr("cid.auto=true").unwrap().auto_cid,
-            Some(true)
-        );
-    }
-
-    /// Matches `_on_off_convert`'s `fail()` on the edit path too, and
-    /// (like `remove_by_field_match_selector_is_rejected_not_silently_
-    /// ignored` for watchdog) confirms rejection doesn't leave a
-    /// half-applied mutation behind.
-    #[test]
-    fn apply_vsock_optstr_rejects_garbage_cid_auto_without_mutating_anything() {
-        let mut doc = parse_fixture(
-            r#"<domain>
-  <devices>
-    <vsock model="virtio"><cid auto="yes" address="7"/></vsock>
-  </devices>
-</domain>"#,
-        );
-        let root = doc.root_element().unwrap();
-        let el = select_elements(&doc, root, "vsock", "1").unwrap()[0];
-
-        assert!(apply_vsock_optstr(&mut doc, el, "cid.auto=maybe,cid.address=9").is_err());
-
-        // Nothing changed — including the address that came earlier in
-        // the same optstring, since cid.auto is what fails.
-        let cid = el.find(&doc, "cid").unwrap();
-        assert_eq!(cid.attribute(&doc, "auto"), Some("yes"));
-        assert_eq!(cid.attribute(&doc, "address"), Some("7"));
-    }
-
-    #[test]
-    fn apply_vsock_optstr_mutates_only_the_named_cid_attribute() {
-        let mut doc = parse_fixture(
-            r#"<domain>
-  <devices>
-    <vsock model="virtio"><cid auto="yes" address="7"/></vsock>
-  </devices>
-</domain>"#,
-        );
-        let root = doc.root_element().unwrap();
-        let el = select_elements(&doc, root, "vsock", "1").unwrap()[0];
-
-        apply_vsock_optstr(&mut doc, el, "cid.address=3").unwrap();
-
-        let cid = el.find(&doc, "cid").unwrap();
-        assert_eq!(cid.attribute(&doc, "address"), Some("3"));
-        assert_eq!(cid.attribute(&doc, "auto"), Some("yes"));
-    }
-
-    /// Same rule as watchdog's (must be a *recognized* cliname —
-    /// `cid.auto`, not an unrecognized one, for the same reason spelled
-    /// out on `watchdog_from_optstr_rejects_a_second_bare_key`), proven
-    /// on the sibling device too since `required_value` is shared,
-    /// device-agnostic logic.
-    #[test]
-    fn vsock_from_optstr_rejects_a_second_bare_key() {
-        assert!(vsock_from_optstr("virtio,cid.auto").is_err());
-    }
-
-    /// `key=` (empty value) clears the field on a fresh struct too — a
-    /// no-op in practice (nothing was set yet) but proves
-    /// `required_value`'s `Ok(None)` path reaches `dev.cid`, not just
-    /// the mutate-existing-element path `apply_vsock_optstr` covers.
-    #[test]
-    fn vsock_from_optstr_empty_value_clears_the_field() {
-        let dev = vsock_from_optstr("cid.address=3,cid.address=").unwrap();
-        assert_eq!(dev.cid, None);
-    }
-
-    /// Golden fixture, pinned directly from upstream's own
-    /// `tests/data/cli/compare/virt-xml-edit-simple-vsock.xml`
-    /// (`~/DEV/virt-manager-upstream-reference`, restored this session):
-    /// `virt-xml --edit --vsock model=virtio,cid.address=,cid.auto=on`
-    /// against a domain with `<cid auto="no" address="5"/>` must produce
-    /// `<cid auto="yes"/>` — `address` gone entirely, not `address=""`.
-    /// This is the fixture that first surfaced the empty-value-means-
-    /// clear rule `required_value` exists for.
-    #[test]
-    fn golden_edit_simple_vsock() {
-        let mut doc = parse_fixture(
-            r#"<domain>
-  <devices>
-    <vsock model="virtio"><cid auto="no" address="5"/></vsock>
-  </devices>
-</domain>"#,
-        );
-        let root = doc.root_element().unwrap();
-        let el = select_elements(&doc, root, "vsock", "1").unwrap()[0];
-
-        apply_vsock_optstr(&mut doc, el, "model=virtio,cid.address=,cid.auto=on").unwrap();
-
-        let cid = el.find(&doc, "cid").unwrap();
-        assert_eq!(cid.attribute(&doc, "auto"), Some("yes"));
-        assert_eq!(
-            cid.attribute(&doc, "address"),
-            None,
-            "address must be removed, not \"\""
-        );
-    }
-
-    /// Real end-to-end proof mirroring `add_then_remove_device_against_a_
-    /// real_domain`, for the nested-element device instead of the
-    /// flat-attribute one — the case ticket 06's order-preserving DOM
-    /// actually has to construct a new child element for, not just set
-    /// an attribute on an existing one.
-    #[test]
-    fn add_then_remove_vsock_against_a_real_domain() {
-        use virtinst_core::connection::{Connection, Domain};
-
-        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
-        let domain = Domain::lookup_by_name(&conn, "test").expect("the default test domain");
-
-        let dev = vsock_from_optstr("model=virtio,cid.auto=no,cid.address=3").unwrap();
-        domain
-            .add_device(&conn, &dev)
-            .expect("add-device's exact call chain succeeds");
-
-        let after_add = domain.inactive_xml().expect("fetch inactive XML");
-        let doc = virtinst_xml::parse_libvirt_xml(&after_add).expect("re-parses");
-        let root = doc.root_element().unwrap();
-        assert_eq!(
-            select_elements(&doc, root, "vsock", "all").unwrap().len(),
-            1,
-            "the vsock actually landed in the persistent config"
-        );
-
-        domain
-            .edit_inactive_xml(&conn, |doc, root| {
-                remove_elements(doc, root, "vsock", "1")?;
-                Ok(())
-            })
-            .expect("remove-device's exact call chain succeeds");
-
-        let after_remove = domain.inactive_xml().expect("fetch inactive XML");
-        let doc = virtinst_xml::parse_libvirt_xml(&after_remove).expect("re-parses");
-        let root = doc.root_element().unwrap();
-        assert!(
-            select_elements(&doc, root, "vsock", "all").is_err(),
-            "the vsock is actually gone from the persistent config"
-        );
     }
 
     #[test]
@@ -1521,35 +1020,20 @@ mod tests {
     /// this list alongside any new plain arm.
     #[test]
     fn field_loc_covers_every_plain_attribute_cliname_each_apply_optstr_handles() {
-        let known: &[(&str, &[&str])] = &[
-            ("vsock", &["model", "cid.auto", "cid.address"]),
-            (
-                "disk",
-                &[
-                    "path",
-                    "device",
-                    "type",
-                    "bus",
-                    "target.bus",
-                    "target",
-                    "target.dev",
-                    "driver.name",
-                    "driver.type",
-                ],
-            ),
-            (
-                "filesystem",
-                &[
-                    "type",
-                    "accessmode",
-                    "mode",
-                    "source",
-                    "source.dir",
-                    "target",
-                    "target.dir",
-                ],
-            ),
-        ];
+        let known: &[(&str, &[&str])] = &[(
+            "disk",
+            &[
+                "path",
+                "device",
+                "type",
+                "bus",
+                "target.bus",
+                "target",
+                "target.dev",
+                "driver.name",
+                "driver.type",
+            ],
+        )];
         for (device, clinames) in known {
             for cliname in *clinames {
                 assert!(
@@ -1559,137 +1043,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// `remove_first = ["source", "target"]` — the first device with a
-    /// *two-slot* positional shorthand: `--filesystem /1/2/3,/4/5/6`
-    /// splices both bare values in order.
-    #[test]
-    fn filesystem_from_optstr_handles_the_two_slot_positional_form() {
-        let dev = filesystem_from_optstr("/1/2/3,/4/5/6").unwrap();
-        assert_eq!(dev.source_dir.as_deref(), Some("/1/2/3"));
-        assert_eq!(dev.target_dir.as_deref(), Some("/4/5/6"));
-    }
-
-    /// `mode` is an alias for `accessmode` (upstream's `aliases =
-    /// {"accessmode": "mode"}` — one virtarg answering to two names,
-    /// same shape `--tpm`'s `type`/`backend.type` already established).
-    #[test]
-    fn filesystem_from_optstr_mode_is_an_alias_for_accessmode() {
-        let dev = filesystem_from_optstr("mode=mapped").unwrap();
-        assert_eq!(dev.accessmode.as_deref(), Some("mapped"));
-    }
-
-    #[test]
-    fn filesystem_from_optstr_readonly_is_onoff_over_present_bool() {
-        let dev = filesystem_from_optstr("/a,/b,readonly=on").unwrap();
-        assert!(dev.readonly);
-        let dev = filesystem_from_optstr("/a,/b,readonly=off").unwrap();
-        assert!(!dev.readonly);
-    }
-
-    /// The one arm in `apply_filesystem_optstr` where an alias remaps
-    /// the attribute name (`mode` -> `accessmode`) — the clear path
-    /// (`key=`, [`required_value`]'s `Ok(None)` case) has to remove the
-    /// *remapped* name, not an attribute literally called `mode` (which
-    /// never existed). Nothing else exercised this: every filesystem
-    /// test/fixture so far only sets `mode=mapped`, never clears it.
-    #[test]
-    fn apply_filesystem_optstr_mode_alias_clears_the_remapped_accessmode_attribute() {
-        let mut doc = parse_fixture(
-            r#"<domain>
-  <devices>
-    <filesystem type="mount" accessmode="passthrough">
-      <source dir="/foo/bar"/>
-      <target dir="/bar/baz"/>
-    </filesystem>
-  </devices>
-</domain>"#,
-        );
-        let root = doc.root_element().unwrap();
-        let el = select_elements(&doc, root, "filesystem", "1").unwrap()[0];
-
-        apply_filesystem_optstr(&mut doc, el, "mode=").unwrap();
-
-        assert_eq!(
-            el.attribute(&doc, "accessmode"),
-            None,
-            "accessmode removed, not an attribute literally named \"mode\""
-        );
-        assert_eq!(el.attribute(&doc, "type"), Some("mount"), "untouched");
-    }
-
-    /// Golden fixture, pinned against upstream's own
-    /// `tests/data/cli/compare/virt-xml-edit-simple-filesystem.xml`:
-    /// `virt-xml --edit --filesystem /1/2/3,/4/5/6,mode=mapped` against
-    /// `<filesystem type="mount" accessmode="passthrough"><source
-    /// dir="/foo/bar"/><target dir="/bar/baz"/></filesystem>` must
-    /// produce `accessmode="mapped"`, `source/@dir="/1/2/3"`,
-    /// `target/@dir="/4/5/6"` — `type` untouched.
-    #[test]
-    fn golden_edit_simple_filesystem() {
-        let mut doc = parse_fixture(
-            r#"<domain>
-  <devices>
-    <filesystem type="mount" accessmode="passthrough">
-      <source dir="/foo/bar"/>
-      <target dir="/bar/baz"/>
-    </filesystem>
-  </devices>
-</domain>"#,
-        );
-        let root = doc.root_element().unwrap();
-        let el = select_elements(&doc, root, "filesystem", "1").unwrap()[0];
-
-        apply_filesystem_optstr(&mut doc, el, "/1/2/3,/4/5/6,mode=mapped").unwrap();
-
-        assert_eq!(el.attribute(&doc, "type"), Some("mount"), "untouched");
-        assert_eq!(el.attribute(&doc, "accessmode"), Some("mapped"));
-        assert_eq!(
-            el.find(&doc, "source").unwrap().attribute(&doc, "dir"),
-            Some("/1/2/3")
-        );
-        assert_eq!(
-            el.find(&doc, "target").unwrap().attribute(&doc, "dir"),
-            Some("/4/5/6")
-        );
-    }
-
-    /// Real end-to-end proof mirroring `add_then_remove_vsock_against_a_
-    /// real_domain`.
-    #[test]
-    fn add_then_remove_filesystem_against_a_real_domain() {
-        use virtinst_core::connection::{Connection, Domain};
-
-        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let conn = Connection::open("test:///default").expect("test:/// driver always opens");
-        let domain = Domain::lookup_by_name(&conn, "test").expect("the default test domain");
-
-        let dev = filesystem_from_optstr("/host/share,/mnt/share").unwrap();
-        domain
-            .add_device(&conn, &dev)
-            .expect("add-device's exact call chain succeeds");
-
-        let after_add = domain.inactive_xml().expect("fetch inactive XML");
-        let doc = virtinst_xml::parse_libvirt_xml(&after_add).expect("re-parses");
-        let root = doc.root_element().unwrap();
-        assert_eq!(
-            select_elements(&doc, root, "filesystem", "all")
-                .unwrap()
-                .len(),
-            1
-        );
-
-        domain
-            .edit_inactive_xml(&conn, |doc, root| {
-                remove_elements(doc, root, "filesystem", "all")?;
-                Ok(())
-            })
-            .expect("remove-device's exact call chain succeeds");
-
-        let after_remove = domain.inactive_xml().expect("fetch inactive XML");
-        let doc = virtinst_xml::parse_libvirt_xml(&after_remove).expect("re-parses");
-        let root = doc.root_element().unwrap();
-        assert!(select_elements(&doc, root, "filesystem", "all").is_err());
     }
 }
