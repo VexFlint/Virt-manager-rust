@@ -38,3 +38,34 @@
 --connect @SUITE@ --watchdog=?
 --connect @SUITE@ --memballoon help
 --connect @SUITE@ --panic help
+#
+# virtxml.py's main flow: --print-diff/--define (upstream's own fixture
+# format), defaults, --start, --update, --no-define, --quiet, lookups,
+# action/option collisions.
+--connect @SUITE@ test-for-virtxml --edit --watchdog action=reset --print-diff --define
+--connect @SUITE@ test-for-virtxml --edit --watchdog action=reset
+--connect @SUITE@ test-state-shutoff --edit --watchdog action=reset --print-diff --define
+--connect @SUITE@ test-state-shutoff --edit --watchdog action=reset --print-diff --start
+--connect @SUITE@ test-for-virtxml --edit --watchdog action=poweroff --print-diff --define
+--connect @SUITE@ test-for-virtxml --edit --watchdog action=poweroff
+--connect @SUITE@ test-for-virtxml --edit
+--connect @SUITE@ test-for-virtxml --watchdog action=reset
+--connect @SUITE@ test-for-virtxml --edit --add-device --watchdog action=reset
+--connect @SUITE@ test-for-virtxml --edit --watchdog action=reset --memballoon none
+--connect @SUITE@ idontexist --edit --watchdog action=reset
+--connect @SUITE@ --edit --watchdog action=reset
+--connect @SUITE@ 12345678-1234-1234-1234-123456789012 --edit --watchdog action=reset --print-diff
+--connect @SUITE@ test-for-virtxml --edit --watchdog action=reset --update
+--connect @SUITE@ test-for-virtxml --edit --watchdog action=reset --update --no-define
+--connect @SUITE@ test-state-shutoff --edit --watchdog action=reset --update
+--connect @SUITE@ test-for-virtxml --edit --watchdog action=reset --update --start
+--connect @SUITE@ test-state-shutoff --edit --watchdog action=reset --no-define --start
+--connect @SUITE@ test-for-virtxml --edit --watchdog action=reset --quiet
+--connect @SUITE@ test-for-virtxml --add-device --panic default --print-diff --define
+--connect @SUITE@ test-for-virtxml --remove-device --watchdog all --print-diff --define
+--connect @SUITE@ test-for-virtxml --edit --memballoon model=none --print-diff --define
+--connect @SUITE@ test-for-virtxml --edit --memballoon none --print-diff --define
+--connect @SUITE@ test-for-virtxml --remove-device --memballoon all --print-diff --define
+# Devices not ported to the parser engine yet, through the same flow.
+--connect @SUITE@ test-for-virtxml --edit --sound pcspk --print-diff --define
+--connect @SUITE@ test-for-virtxml --edit --video cirrus --print-diff --define

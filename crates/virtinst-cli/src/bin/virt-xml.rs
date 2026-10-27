@@ -1,698 +1,793 @@
-//! `virt-xml` — `--edit`/`--add-device`/`--remove-device`/`--build-xml`
-//! (the last works standalone, no connection needed). `--edit` is the
-//! first real end-to-end consumer of ticket 06's order-preserving DOM —
-//! the exact scenario it was built for: locate an existing element and
-//! mutate only the attributes named on the command line, proven (see
-//! `virtinst_cli`'s test suite) to leave both the untouched attributes
-//! on that same element *and* a completely foreign `<qemu:commandline>`
-//! block elsewhere in the document intact. That's ticket 03's bar,
-//! attribute order included: edit-xml is vendored with an ordered
-//! attribute map (vendor/edit-xml/VENDORED.md), so untouched attributes
-//! are written back in their original order.
+//! `virt-xml` — upstream's `virtxml.py`: one XML action (`--edit`,
+//! `--add-device`, `--remove-device`, `--build-xml`) with one XML option
+//! (`--watchdog ...`) against a domain, its XML on stdin, or nothing
+//! (`--build-xml`), then define it, hotplug it (`--update`), start it,
+//! or only print the result (`--print-diff`, `--print-xml`).
 //!
-//! This slice covers `--build-xml`/`--edit`/`--add-device`/
-//! `--remove-device`, for `--watchdog`/`--vsock`/`--disk`/
-//! `--memballoon`/`--sound`/`--video`/`--controller`/`--tpm`/
-//! `--smartcard`/`--redirdev`/`--filesystem` — see `virtinst_cli`'s doc
-//! comment for why those devices specifically (`--disk` is upstream's
-//! largest and most irregular parser; only a partial slice of it is
-//! ported — see `disk_from_optstr`'s own doc comment for exactly which
-//! fields), and why their optstring mapping is still hand-written
-//! rather than shared. Only the flags this slice actually implements
-//! are declared; an unimplemented flag that parses is worse than an
-//! absent one. `--memballoon` also can't be exercised through
-//! `--add-device` against a domain that already has one — the real
-//! driver rejects a second `<memballoon>` outright (see
-//! `virtinst_cli`'s `remove_then_restore_memballoon_against_a_real_
-//! domain` test); that's a real hardware constraint, not a gap here.
-//! `--edit`/`--remove-device` also support upstream's field-match
-//! selector form (`select_elements_by_selector`/
-//! `remove_elements_by_selector`), not just index/`all`.
-//!
-//! `--add-device`/`--edit`'s output contract is also deliberately
-//! narrower than upstream for now: absent `--print-xml`, this always
-//! defines the change (upstream's default when a domain is given and
-//! no `--print-xml`/`--no-define` is passed), with no `--update` (live
-//! hotplug alongside the persistent define) support yet — upstream
-//! itself only hotplugs when `--update` is explicitly passed, so a
-//! running domain being edited/added-to here still behaves like
-//! upstream's own default, just without the opt-in extra.
-//!
-//! `--print-xml`, on all three of `--edit`/`--add-device`/
-//! `--remove-device` — upstream's `virtxml.py`'s own doc comment on the
-//! function backing it says it best: "Perform requested XML edits
-//! locally, but don't submit them to libvirt." One `inactive_xml()`
-//! read, the same mutation each defining path already applies
-//! ([`apply_edit`]/[`list_add`]/[`remove_elements_by_selector`]) run against that
-//! parsed copy instead, printed — the real redefine call never happens.
-//! Real, not incidental: this is the only way to inspect an action's
-//! effect against libvirt's `test://` driver from outside the process
-//! that made it — each `test://` connection is its own throwaway
-//! in-memory copy of its seed XML, a second `virsh`/process never sees
-//! what a first one defined (checked directly, not assumed; this is
-//! also upstream's own actual testing architecture, not a workaround —
-//! `tests/test_cli.py`'s compare mechanism checks captured stdout via
-//! `--print-diff`/`--print-xml`, never a live re-query of the
-//! connection, even for its own `--add-device`/`--remove-device`
-//! fixtures). `--print-diff` isn't built — needs a real diff algorithm
-//! this crate doesn't have a use for yet beyond this one flag.
+//! Options backed by a ported `VirtCLIParser` (`virtinst_cli::parsers`)
+//! go through it. The devices not ported yet (`--disk`, `--sound`, ...)
+//! still use the older hand-written optstring code in `virtinst_cli`,
+//! bridged in [`legacy`] onto the same guest document, until their
+//! parser group is ported.
+
+use std::io::{BufRead, IsTerminal, Write};
 
 use clap::Parser;
-use virtinst_cli::{
-    apply_controller_optstr, apply_disk_optstr, apply_filesystem_optstr, apply_memballoon_optstr,
-    apply_redirdev_optstr, apply_smartcard_optstr, apply_sound_optstr, apply_tpm_optstr,
-    apply_video_optstr, apply_vsock_optstr, apply_watchdog_optstr, controller_from_optstr,
-    disk_from_optstr, filesystem_from_optstr, memballoon_from_optstr, redirdev_from_optstr,
-    remove_elements_by_selector, select_elements_by_selector, smartcard_from_optstr,
-    sound_from_optstr, tpm_from_optstr, video_from_optstr, vsock_from_optstr, watchdog_from_optstr,
-};
-use virtinst_core::connection::{Connection, Domain};
-use virtinst_xml::{list_add, parse_libvirt_xml, to_xml_string, Document, Element};
+use virt::domain::Domain;
+use virtinst_cli::cli::{self, fail, print_stdout};
+use virtinst_cli::parser::{find_objects_to_edit, lookup_prop, parse_edit, parse_new, ParserDef};
+use virtinst_cli::parsers;
+use virtinst_cli::xmlutil;
+use virtinst_core::connection::Connection;
+use virtinst_core::guest::GUEST;
+use virtinst_core::xmlbuilder::XmlObject;
 
 #[derive(Parser)]
-#[command(name = "virt-xml", disable_version_flag = true)]
+#[command(
+    name = "virt-xml",
+    disable_version_flag = true,
+    override_usage = "virt-xml [options]",
+    about = "Edit libvirt XML using command line options.",
+    after_help = "Use '--option=?' or '--option help' to see available suboptions\n\
+                  See man page for examples and full option syntax.",
+    infer_long_args = true,
+    args_override_self = true
+)]
 struct Args {
     /// show program's version number and exit
     #[arg(long = "version")]
     _version: bool,
 
-    /// Domain name — required for --edit/--add-device/--remove-device,
-    /// unused (and not required) for --build-xml.
+    /// Connect to hypervisor with libvirt URI
+    #[arg(short = 'c', long, value_name = "URI")]
+    connect: Option<String>,
+
+    /// Domain name, id, or uuid
     domain: Option<String>,
 
-    /// Connect to a non-default hypervisor.
-    #[arg(short, long, default_value = "qemu:///system")]
-    connect: String,
+    /// Edit VM XML. Examples:
+    /// --edit --disk ...     (edit first disk device)
+    /// --edit 2 --disk ...   (edit second disk device)
+    /// --edit all --disk ... (edit all disk devices)
+    /// --edit target=hda --disk ... (edit disk 'hda')
+    #[arg(long, num_args = 0..=1, help_heading = "XML actions", verbatim_doc_comment)]
+    edit: Option<Option<String>>,
 
-    /// Just build the requested XML block and print it. No domain
-    /// connection required.
-    #[arg(long)]
-    build_xml: bool,
-
-    /// Edit the specified XML block. Bare `--edit` means the first
-    /// object (upstream's index-1 default); `--edit N`/`--edit -N`
-    /// selects by position; `--edit all` selects every object.
-    #[arg(long, num_args = 0..=1, default_missing_value = "1")]
-    edit: Option<String>,
-
-    /// Print the resulting XML instead of defining it — the action is
-    /// applied to a local, throwaway copy; libvirt never sees it. Works
-    /// with --edit/--add-device/--remove-device.
-    #[arg(long)]
-    print_xml: bool,
-
-    /// Add the device described by --watchdog/--vsock/--disk.
-    #[arg(long)]
-    add_device: bool,
-
-    /// Remove the device(s) --watchdog/--vsock/--disk selects (index/`-N`/`all`,
-    /// same selector syntax as --edit).
-    #[arg(long)]
+    /// Remove specified device. Examples:
+    /// --remove-device --disk 1 (remove first disk)
+    /// --remove-device --disk all (remove all disks)
+    /// --remove-device --disk /some/path
+    #[arg(long, help_heading = "XML actions", verbatim_doc_comment)]
     remove_device: bool,
 
-    /// Watchdog device options for --build-xml/--edit/--add-device
-    /// (e.g. "model=itco,action=none"), or the selector for
-    /// --remove-device (e.g. "1", "all").
-    #[arg(long)]
-    watchdog: Option<String>,
+    /// Add specified device. Example:
+    /// --add-device --disk ...
+    #[arg(long, help_heading = "XML actions", verbatim_doc_comment)]
+    add_device: bool,
 
-    /// Vsock device options for --build-xml/--edit/--add-device (e.g.
-    /// "cid.auto=no,cid.address=3"), or the selector for
-    /// --remove-device (e.g. "1", "all").
-    #[arg(long)]
-    vsock: Option<String>,
+    /// Output built device XML. Domain is optional but recommended to ensure optimal defaults.
+    #[arg(long, help_heading = "XML actions")]
+    build_xml: bool,
 
-    /// Disk device options for --build-xml/--edit/--add-device (e.g.
-    /// "/path/to/img,bus=virtio,readonly=on"), or the selector for
-    /// --remove-device (e.g. "1", "all"). Partial slice of upstream's
-    /// real --disk — see disk_from_optstr's doc comment for exactly
-    /// which fields.
-    #[arg(long)]
-    disk: Option<String>,
+    /// Apply changes to the running VM.
+    /// With --add-device, this is a hotplug operation.
+    /// With --remove-device, this is a hotunplug operation.
+    /// With --edit, this is an update device operation.
+    #[arg(long, help_heading = "Output options", verbatim_doc_comment)]
+    update: bool,
 
-    /// Memballoon device options for --build-xml/--edit/--add-device
-    /// (e.g. "model=none" or bare "none"), or the selector for
-    /// --remove-device (e.g. "1", "all").
-    #[arg(long)]
-    memballoon: Option<String>,
+    /// Force defining the domain. Only required if a --print option was specified.
+    #[arg(long, help_heading = "Output options", conflicts_with = "no_define")]
+    define: bool,
 
-    /// Sound device options for --build-xml/--edit/--add-device (e.g.
-    /// "pcspk" or "model=ich9"), or the selector for --remove-device
-    /// (e.g. "1", "all").
-    #[arg(long)]
-    sound: Option<String>,
+    /// Force not defining the domain.
+    #[arg(long, help_heading = "Output options")]
+    no_define: bool,
 
-    /// Video device options for --build-xml/--edit/--add-device (e.g.
-    /// "cirrus" or "model.type=virtio,model.heads=2"), or the selector
-    /// for --remove-device (e.g. "1", "all").
-    #[arg(long)]
-    video: Option<String>,
+    /// Start the domain.
+    #[arg(long, help_heading = "Output options")]
+    start: bool,
 
-    /// Controller device options for --build-xml/--edit/--add-device
-    /// (e.g. "index=15,model=lsilogic"), or the selector for
-    /// --remove-device (e.g. "1", "all").
-    #[arg(long)]
-    controller: Option<String>,
+    /// Only print the requested change, in diff format
+    #[arg(long, help_heading = "Output options")]
+    print_diff: bool,
 
-    /// TPM device options for --build-xml/--edit/--add-device (e.g.
-    /// "backend.type=emulator,backend.version=2.0"), or the selector
-    /// for --remove-device (e.g. "1", "all").
-    #[arg(long)]
-    tpm: Option<String>,
+    /// Only print the requested change, in full XML format
+    #[arg(long, help_heading = "Output options")]
+    print_xml: bool,
 
-    /// Smartcard device options for --build-xml/--edit/--add-device
-    /// (e.g. "type=spicevmc" or bare "host"), or the selector for
-    /// --remove-device (e.g. "1", "all").
-    #[arg(long)]
-    smartcard: Option<String>,
+    /// Require confirmation before saving any results.
+    #[arg(long, help_heading = "Output options")]
+    confirm: bool,
 
-    /// Redirdev device options for --build-xml/--edit/--add-device
-    /// (e.g. "type=spicevmc,server=example.com:12345"), or the
-    /// selector for --remove-device (e.g. "1", "all").
-    #[arg(long)]
-    redirdev: Option<String>,
+    /// Configure a guest disk device.
+    #[arg(long, help_heading = "XML options")]
+    disk: Vec<String>,
 
-    /// Configure a guest panic device. Ex:
-    /// --panic default
-    #[arg(long)]
-    panic: Option<String>,
+    /// Configure a guest controller device.
+    #[arg(long, help_heading = "XML options")]
+    controller: Vec<String>,
 
-    /// Filesystem device options for --build-xml/--edit/--add-device
-    /// (e.g. "/host/share,/mnt/share,mode=mapped"), or the selector
-    /// for --remove-device (e.g. "1", "all").
-    #[arg(long)]
-    filesystem: Option<String>,
+    /// Configure a guest filesystem device.
+    #[arg(long, help_heading = "XML options")]
+    filesystem: Vec<String>,
+
+    /// Configure a guest smartcard device.
+    #[arg(long, help_heading = "XML options")]
+    smartcard: Vec<String>,
+
+    /// Configure a guest TPM device.
+    #[arg(long, help_heading = "XML options")]
+    tpm: Vec<String>,
+
+    /// Configure guest sound device emulation.
+    #[arg(long, help_heading = "XML options")]
+    sound: Vec<String>,
+
+    /// Configure guest video hardware.
+    #[arg(long, help_heading = "XML options")]
+    video: Vec<String>,
+
+    /// Configure a guest redirection device.
+    #[arg(long, help_heading = "XML options")]
+    redirdev: Vec<String>,
+
+    /// Configure a guest watchdog device.
+    #[arg(long, help_heading = "XML options")]
+    watchdog: Vec<String>,
+
+    /// Configure a guest memballoon device.
+    #[arg(long, help_heading = "XML options")]
+    memballoon: Vec<String>,
+
+    /// Configure a guest panic device.
+    #[arg(long, help_heading = "XML options")]
+    panic: Vec<String>,
+
+    /// Configure guest vsock sockets.
+    #[arg(long, help_heading = "XML options")]
+    vsock: Vec<String>,
+
+    /// Suppress non-error output
+    #[arg(short, long, help_heading = "Miscellaneous Options")]
+    quiet: bool,
+
+    /// Print debugging information
+    #[arg(short, long, help_heading = "Miscellaneous Options")]
+    debug: bool,
+}
+
+/// The XML option given: a ported parser or a legacy device.
+#[derive(Clone, Copy)]
+enum Change {
+    Engine(&'static ParserDef),
+    Legacy(&'static str),
+}
+
+impl Change {
+    fn cli_flag_name(&self) -> String {
+        match self {
+            Change::Engine(def) => def.cli_flag_name(),
+            Change::Legacy(name) => format!("--{name}"),
+        }
+    }
+}
+
+/// Upstream's `VIRT_PARSERS` order for the options this binary has.
+fn xml_options(args: &Args) -> Vec<(Change, &Vec<String>)> {
+    let legacy = |name: &'static str, v| (Change::Legacy(name), v);
+    let engine = |name: &str, v| {
+        (
+            Change::Engine(parsers::by_name(name).expect("ported parser")),
+            v,
+        )
+    };
+    vec![
+        legacy("disk", &args.disk),
+        legacy("controller", &args.controller),
+        legacy("filesystem", &args.filesystem),
+        legacy("smartcard", &args.smartcard),
+        legacy("tpm", &args.tpm),
+        legacy("sound", &args.sound),
+        legacy("video", &args.video),
+        legacy("redirdev", &args.redirdev),
+        engine("watchdog", &args.watchdog),
+        engine("memballoon", &args.memballoon),
+        engine("panic", &args.panic),
+        legacy("vsock", &args.vsock),
+    ]
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActionName {
+    Edit,
+    AddDevice,
+    RemoveDevice,
+    BuildXml,
+}
+
+impl ActionName {
+    fn as_str(&self) -> &'static str {
+        match self {
+            ActionName::Edit => "edit",
+            ActionName::AddDevice => "add-device",
+            ActionName::RemoveDevice => "remove-device",
+            ActionName::BuildXml => "build-xml",
+        }
+    }
+}
+
+/// `Action`: one XML action with one XML option.
+struct Action {
+    name: ActionName,
+    selector: Option<String>,
+    change: Change,
+    values: Vec<String>,
+}
+
+/// `check_xmlopt_collision`.
+fn check_xmlopt_collision(args: &Args) -> (Change, Vec<String>) {
+    let collisions: Vec<(Change, &Vec<String>)> = xml_options(args)
+        .into_iter()
+        .filter(|(_, v)| !v.is_empty())
+        .collect();
+    if collisions.is_empty() {
+        fail("No change specified.");
+    }
+    if collisions.len() != 1 {
+        let names: Vec<String> = collisions
+            .iter()
+            .map(|(c, _)| format!("'{}'", c.cli_flag_name()))
+            .collect();
+        fail(format!(
+            "Only one change operation may be specified (conflicting options [{}])",
+            names.join(", ")
+        ));
+    }
+    let (change, values) = collisions.into_iter().next().unwrap();
+    (change, values.clone())
+}
+
+/// `check_action_collision`.
+fn check_action_collision(args: &Args) -> (ActionName, Option<String>) {
+    let mut collisions = vec![];
+    if let Some(sel) = &args.edit {
+        collisions.push((ActionName::Edit, sel.clone()));
+    }
+    if args.add_device {
+        collisions.push((ActionName::AddDevice, None));
+    }
+    if args.remove_device {
+        collisions.push((ActionName::RemoveDevice, None));
+    }
+    if args.build_xml {
+        collisions.push((ActionName::BuildXml, None));
+    }
+    if collisions.is_empty() {
+        fail("One of --edit, --add-device, --remove-device, --build-xml must be specified.");
+    }
+    if collisions.len() > 1 {
+        let names: Vec<String> = collisions
+            .iter()
+            .map(|(a, _)| format!("--{}", a.as_str()))
+            .collect();
+        fail(format!("Conflicting options {}", names.join(", ")));
+    }
+    collisions.into_iter().next().unwrap()
+}
+
+/// `validate_action`.
+fn validate_action(action: &Action, args: &Args) {
+    let Change::Engine(def) = action.change else {
+        return;
+    };
+    if def.guest_propname.is_none() && action.name == ActionName::BuildXml {
+        fail(format!(
+            "--build-xml not supported for {}",
+            def.cli_flag_name()
+        ));
+    }
+    if args.update && def.guest_propname.is_none() {
+        fail(format!(
+            "Don't know how to --update for {}",
+            def.cli_flag_name()
+        ));
+    }
+}
+
+/// `parse_action`.
+fn parse_action(args: &Args) -> Action {
+    let (change, values) = check_xmlopt_collision(args);
+    let (name, selector) = check_action_collision(args);
+    let action = Action {
+        name,
+        selector,
+        change,
+        values,
+    };
+    validate_action(&action, args);
+    action
+}
+
+/// One device an action touched: its XML, for `--update` and
+/// `--confirm`.
+struct TouchedDev {
+    xml: String,
+}
+
+/// `_find_objects_to_edit` + `run_parser` for each, and the other
+/// actions, on `guest`.
+fn perform_action(action: &Action, guest: &mut XmlObject) -> Vec<TouchedDev> {
+    match action.change {
+        Change::Engine(def) => perform_engine(action, def, guest),
+        Change::Legacy(name) => legacy::perform(action, name, guest),
+    }
+}
+
+fn perform_engine(action: &Action, def: &ParserDef, guest: &mut XmlObject) -> Vec<TouchedDev> {
+    let dev_xml = |guest: &mut XmlObject, idx: usize| TouchedDev {
+        xml: lookup_prop(guest, def)[idx].get_xml(),
+    };
+    match action.name {
+        ActionName::Edit => {
+            let idxs = find_objects_to_edit(def, guest, "edit", action.selector.as_deref())
+                .unwrap_or_else(|e| fail(e));
+            let mut devs = vec![];
+            for idx in idxs {
+                for optstr in &action.values {
+                    parse_edit(def, guest, idx, optstr).unwrap_or_else(|e| fail(e));
+                }
+                devs.push(dev_xml(guest, idx));
+            }
+            devs
+        }
+        ActionName::AddDevice | ActionName::BuildXml => {
+            let mut devs = vec![];
+            for optstr in &action.values {
+                for idx in parse_new(def, guest, optstr).unwrap_or_else(|e| fail(e)) {
+                    let dev = &mut lookup_prop(guest, def)[idx];
+                    parsers::misc::set_defaults(def.cli_arg_name, dev).unwrap_or_else(|e| fail(e));
+                    devs.push(dev_xml(guest, idx));
+                }
+            }
+            devs
+        }
+        ActionName::RemoveDevice => {
+            let selector = action.values.last().expect("one value at least");
+            let mut idxs = find_objects_to_edit(def, guest, "remove-device", Some(selector))
+                .unwrap_or_else(|e| fail(e));
+            let devs = idxs.iter().map(|i| dev_xml(guest, *i)).collect();
+            idxs.sort_unstable();
+            let list = def
+                .guest_propname
+                .and_then(|p| p.rsplit('.').next())
+                .expect("guest backed parser");
+            for idx in idxs.into_iter().rev() {
+                guest.child_mut("devices").remove_child(list, idx);
+            }
+            devs
+        }
+    }
+}
+
+/// `prompt_yes_or_no`.
+fn prompt_yes_or_no(msg: &str) -> bool {
+    let stdin = std::io::stdin();
+    loop {
+        print!("{msg} (y/n): ");
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        if stdin.lock().read_line(&mut line).unwrap_or(0) == 0 {
+            return false;
+        }
+        match line.trim().to_lowercase().as_str() {
+            "y" | "yes" => return true,
+            "n" | "no" => return false,
+            _ => print_stdout("Please enter 'yes' or 'no'.", false),
+        }
+    }
+}
+
+/// The guest's `<name>`.
+fn guest_name(guest: &XmlObject) -> String {
+    guest.get_str("name").unwrap_or_default()
+}
+
+/// `prepare_changes`: the action on a copy of `orig`, the diff or XML
+/// printed if asked for.
+fn prepare_changes(orig: &XmlObject, args: &Args, action: &Action) -> (Vec<TouchedDev>, XmlObject) {
+    let origxml = orig.get_document_xml();
+    let mut xmlobj = XmlObject::parse(&GUEST, &origxml).unwrap_or_else(|e| fail(e));
+    let devs = perform_action(action, &mut xmlobj);
+    let newxml = xmlobj.get_document_xml();
+    let diff = xmlutil::diff(&origxml, &newxml, "Original XML", "Altered XML");
+    if diff.is_empty() {
+        log::debug!("No XML diff, didn't generate any change.");
+        log::warn!("No XML diff was generated. The requested changes will have no effect.");
+    } else {
+        log::debug!("XML diff:\n{diff}");
+    }
+    if args.print_diff {
+        if !diff.is_empty() {
+            print_stdout(&diff, false);
+        }
+    } else if args.print_xml {
+        print_stdout(&newxml, false);
+    }
+    (devs, xmlobj)
+}
+
+/// `update_changes`: hotplug, hotunplug or update each device.
+fn update_changes(domain: &Domain, devs: &[TouchedDev], action: &Action, confirm: bool) {
+    let (confirm_msg, success, failure) = match action.name {
+        ActionName::AddDevice => (
+            "Hotplug this device to the guest",
+            "Device hotplug successful.",
+            "Error attempting device hotplug",
+        ),
+        ActionName::RemoveDevice => (
+            "Hotunplug this device from the guest",
+            "Device hotunplug successful.",
+            "Error attempting device hotunplug",
+        ),
+        ActionName::Edit => (
+            "Update this device for the guest",
+            "Device update successful.",
+            "Error attempting device update",
+        ),
+        ActionName::BuildXml => unreachable!("--build-xml returns before"),
+    };
+    let name = domain.get_name().unwrap_or_default();
+    for dev in devs {
+        if confirm && !prompt_yes_or_no(&format!("{}\n\n{confirm_msg} '{name}'?", dev.xml)) {
+            continue;
+        }
+        let flags = virt::sys::VIR_DOMAIN_AFFECT_LIVE;
+        let res = match action.name {
+            ActionName::AddDevice => domain.attach_device_flags(&dev.xml, flags),
+            ActionName::RemoveDevice => domain.detach_device_flags(&dev.xml, flags),
+            _ => domain.update_device_flags(&dev.xml, flags),
+        };
+        if let Err(e) = res {
+            if std::env::var_os("VIRTXML_TESTSUITE_UPDATE_IGNORE_FAIL").is_none() {
+                fail(format!("{failure}: {}", e.message()));
+            }
+        }
+        print_stdout(success, false);
+        if confirm {
+            print_stdout("", false);
+        }
+    }
+}
+
+/// `get_xmldesc`.
+fn get_xmldesc(domain: &Domain, inactive: bool) -> String {
+    let mut flags = virt::sys::VIR_DOMAIN_XML_SECURE;
+    if inactive {
+        flags |= virt::sys::VIR_DOMAIN_XML_INACTIVE;
+    }
+    domain
+        .get_xml_desc(flags)
+        .unwrap_or_else(|e| fail(e.message()))
+}
+
+/// `get_domain_and_guest`: by name, else by ID or UUID.
+fn get_domain_and_guest(conn: &Connection, domstr: &str) -> (Domain, XmlObject, Option<XmlObject>) {
+    let isint = domstr.parse::<u32>().is_ok();
+    let isuuid = {
+        let parts: Vec<&str> = domstr.split('-').collect();
+        let lens = [8, 4, 4, 4, 12];
+        parts.len() == 5
+            && parts
+                .iter()
+                .zip(lens)
+                .all(|(p, l)| p.len() == l && p.chars().all(|c| c.is_ascii_hexdigit()))
+    };
+    let lookup = Domain::lookup_by_name(conn.as_connect(), domstr).or_else(|e| {
+        if isint {
+            Domain::lookup_by_id(conn.as_connect(), domstr.parse().unwrap())
+        } else if isuuid {
+            Domain::lookup_by_uuid_string(conn.as_connect(), domstr)
+        } else {
+            Err(e)
+        }
+    });
+    let domain = lookup
+        .unwrap_or_else(|e| fail(format!("Could not find domain '{domstr}': {}", e.message())));
+    let state = domain.get_state().unwrap_or_else(|e| fail(e.message())).0;
+    let parse = |xml: &str| XmlObject::parse(&GUEST, xml).unwrap_or_else(|e| fail(e));
+    let mut inactive = parse(&get_xmldesc(&domain, false));
+    let mut active = None;
+    if state != virt::sys::VIR_DOMAIN_SHUTOFF {
+        active = Some(inactive);
+        inactive = parse(&get_xmldesc(&domain, true));
+    }
+    (domain, inactive, active)
+}
+
+/// `defined_xml_is_unchanged`.
+fn defined_xml_is_unchanged(domain: &Domain, original_xml: &str) -> bool {
+    let rawxml = get_xmldesc(domain, true);
+    match XmlObject::parse(&GUEST, &rawxml) {
+        Ok(g) => g.get_document_xml() == original_xml,
+        Err(_) => false,
+    }
 }
 
 fn main() {
-    virtinst_cli::cli::handle_version_flag();
-    let args = Args::parse();
-    virtinst_cli::cli::setup_logging("virt-xml", false, false);
+    cli::handle_version_flag();
+    let mut args = Args::parse();
+
+    let quiet =
+        args.quiet && !(args.confirm || args.print_xml || args.print_diff || args.build_xml);
+    cli::setup_logging("virt-xml", args.debug, quiet);
 
     // `check_option_introspection`: `--disk=?`/`--disk help`.
     let mut introspected = false;
-    for (name, val) in [
-        ("watchdog", &args.watchdog),
-        ("memballoon", &args.memballoon),
-        ("panic", &args.panic),
-    ] {
-        if matches!(val.as_deref(), Some("?" | "help")) {
-            let def = virtinst_cli::parsers::by_name(name).expect("ported parser");
-            print!("{}", def.introspection());
-            introspected = true;
+    for (change, values) in xml_options(&args) {
+        if let Change::Engine(def) = change {
+            if values.iter().any(|v| v == "?" || v == "help") {
+                print!("{}", def.introspection());
+                introspected = true;
+            }
         }
     }
     if introspected {
         return;
     }
 
-    if args.build_xml {
-        run_build_xml(&args);
-        return;
-    }
-    if let Some(selector) = args.edit.clone() {
-        run_edit(&args, &selector);
-        return;
-    }
-    if args.add_device {
-        run_add_device(&args);
-        return;
-    }
-    if args.remove_device {
-        run_remove_device(&args);
-        return;
-    }
-
-    eprintln!(
-        "virt-xml: only --build-xml, --edit, --add-device, and --remove-device are implemented so far"
-    );
-    std::process::exit(1);
-}
-
-/// Every action below needs exactly one device flag; this picks whichever
-/// of `--watchdog`/`--vsock`/`--disk`/`--memballoon` was given (fixed
-/// priority, not argv order — `--watchdog` wins if more than one were)
-/// and exits with the "nothing implemented for this action" message the
-/// caller supplies if none was.
-fn device_optstr<'a>(args: &'a Args, action: &str) -> (&'static str, &'a str) {
-    if let Some(optstr) = &args.watchdog {
-        return ("watchdog", optstr);
-    }
-    if let Some(optstr) = &args.vsock {
-        return ("vsock", optstr);
-    }
-    if let Some(optstr) = &args.disk {
-        return ("disk", optstr);
-    }
-    if let Some(optstr) = &args.memballoon {
-        return ("memballoon", optstr);
-    }
-    if let Some(optstr) = &args.sound {
-        return ("sound", optstr);
-    }
-    if let Some(optstr) = &args.video {
-        return ("video", optstr);
-    }
-    if let Some(optstr) = &args.controller {
-        return ("controller", optstr);
-    }
-    if let Some(optstr) = &args.tpm {
-        return ("tpm", optstr);
-    }
-    if let Some(optstr) = &args.smartcard {
-        return ("smartcard", optstr);
-    }
-    if let Some(optstr) = &args.redirdev {
-        return ("redirdev", optstr);
-    }
-    if let Some(optstr) = &args.filesystem {
-        return ("filesystem", optstr);
-    }
-    if let Some(optstr) = &args.panic {
-        return ("panic", optstr);
-    }
-    eprintln!(
-        "virt-xml {action}: no device option given (--watchdog/--vsock/--disk/--memballoon/--sound/--video/--controller/--tpm/--smartcard/--redirdev/--filesystem implemented so far)"
-    );
-    std::process::exit(1);
-}
-
-/// Opens `--connect`'s URI and looks up `domain` — the boilerplate every
-/// action but `--build-xml` needs. Exits the process on any failure
-/// (bad URI, no such domain, no domain name given at all) rather than
-/// threading a `Result` through `main`, matching this binary's existing
-/// error-reporting style.
-fn connect_and_lookup(args: &Args) -> (Connection, Domain, String) {
-    let Some(domain_name) = &args.domain else {
-        eprintln!("virt-xml: a domain name is required");
-        std::process::exit(1);
-    };
-
-    let conn = Connection::open(&args.connect).unwrap_or_else(|e| {
-        eprintln!("virt-xml: failed to connect to {}: {e}", args.connect);
-        std::process::exit(1);
-    });
-    let domain = Domain::lookup_by_name(&conn, domain_name).unwrap_or_else(|e| {
-        eprintln!("virt-xml: failed to find domain '{domain_name}': {e}");
-        std::process::exit(1);
-    });
-    (conn, domain, domain_name.clone())
-}
-
-fn run_build_xml(args: &Args) {
-    let (device, optstr) = device_optstr(args, "--build-xml");
-    if let Some(def) = virtinst_cli::parsers::by_name(device) {
-        engine::build_xml(def, optstr);
-        return;
-    }
-
-    let xml = match device {
-        "watchdog" => {
-            let dev = watchdog_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            to_xml_string(&dev).expect("a freshly built DeviceWatchdog always serializes")
-        }
-        "vsock" => {
-            let dev = vsock_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            to_xml_string(&dev).expect("a freshly built DeviceVsock always serializes")
-        }
-        "disk" => {
-            let dev = disk_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            to_xml_string(&dev).expect("a freshly built DeviceDisk always serializes")
-        }
-        "memballoon" => {
-            let dev = memballoon_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            to_xml_string(&dev).expect("a freshly built DeviceMemballoon always serializes")
-        }
-        "sound" => {
-            let dev = sound_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            to_xml_string(&dev).expect("a freshly built DeviceSound always serializes")
-        }
-        "video" => {
-            let dev = video_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            to_xml_string(&dev).expect("a freshly built DeviceVideo always serializes")
-        }
-        "controller" => {
-            let dev = controller_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            to_xml_string(&dev).expect("a freshly built DeviceController always serializes")
-        }
-        "tpm" => {
-            let dev = tpm_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            to_xml_string(&dev).expect("a freshly built DeviceTpm always serializes")
-        }
-        "smartcard" => {
-            let dev = smartcard_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            to_xml_string(&dev).expect("a freshly built DeviceSmartcard always serializes")
-        }
-        "redirdev" => {
-            let dev = redirdev_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            to_xml_string(&dev).expect("a freshly built DeviceRedirdev always serializes")
-        }
-        "filesystem" => {
-            let dev = filesystem_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            to_xml_string(&dev).expect("a freshly built DeviceFilesystem always serializes")
-        }
-        _ => unreachable!(),
-    };
-    println!("{xml}");
-}
-
-/// Shared exit path for a device optstring's own parse errors (e.g.
-/// `--vsock cid.auto=bogus`) — distinct from [`report`], which handles
-/// the libvirt-define outcome after a successful parse.
-fn exit_on_err<T>(e: String) -> T {
-    eprintln!("virt-xml: {e}");
-    std::process::exit(1);
-}
-
-fn run_edit(args: &Args, selector: &str) {
-    let (device, optstr) = device_optstr(args, "--edit");
-    if let Some(def) = virtinst_cli::parsers::by_name(device) {
-        engine::run(args, def, engine::Action::Edit(selector), optstr);
-        return;
-    }
-
-    if args.print_xml {
-        run_print_xml_edit(args, device, optstr, selector);
-        return;
-    }
-
-    let (conn, domain, domain_name) = connect_and_lookup(args);
-    let result = domain.edit_inactive_xml(&conn, |doc, root| {
-        apply_edit(doc, root, device, optstr, selector)
-    });
-    report(&domain_name, result);
-}
-
-/// The `inactive_xml()`-fetch-then-parse step every `--print-xml` path
-/// needs before it can mutate a local copy — factored out once a third
-/// caller ([`run_print_xml_add_device`]/[`run_print_xml_remove_device`],
-/// alongside [`run_print_xml_edit`]) needed the exact same two steps.
-fn fetch_and_parse_inactive(domain: &virtinst_core::connection::Domain) -> (Document, Element) {
-    let xml = domain.inactive_xml().unwrap_or_else(|e| {
-        eprintln!("virt-xml: failed to fetch the domain's XML: {e}");
-        std::process::exit(1);
-    });
-    let doc = parse_libvirt_xml(&xml).unwrap_or_else(|e| {
-        eprintln!("virt-xml: failed to parse the domain's XML: {e}");
-        std::process::exit(1);
-    });
-    let root = doc
-        .root_element()
-        .expect("a parsed domain document has a root element");
-    (doc, root)
-}
-
-/// Every `--print-xml` path ends the same way: serialize and print the
-/// locally-mutated copy — nothing was ever defined.
-fn print_doc(doc: &Document) {
-    let printed = doc
-        .write_str()
-        .expect("an edited domain document always serializes");
-    println!("{printed}");
-}
-
-/// The `--print-xml` path: one `inactive_xml()` read, the edit applied
-/// to that parsed copy exactly like [`run_edit`]'s defining path (same
-/// [`apply_edit`]), printed — `edit_inactive_xml`'s actual redefine call
-/// never happens. See this file's own doc comment for why this exists.
-fn run_print_xml_edit(args: &Args, device: &str, optstr: &str, selector: &str) {
-    let (_conn, domain, _domain_name) = connect_and_lookup(args);
-    let (mut doc, root) = fetch_and_parse_inactive(&domain);
-
-    if let Err(e) = apply_edit(&mut doc, root, device, optstr, selector) {
-        eprintln!("virt-xml: {e}");
-        std::process::exit(1);
-    }
-    print_doc(&doc);
-}
-
-/// [`run_print_xml_edit`]'s `--add-device` counterpart — [`list_add`]
-/// straight onto the parsed copy, same primitive
-/// [`virtinst_core::connection::Domain::add_device`]'s defining path
-/// uses internally.
-fn run_print_xml_add_device(args: &Args, device: &str, optstr: &str) {
-    let (_conn, domain, _domain_name) = connect_and_lookup(args);
-    let (mut doc, root) = fetch_and_parse_inactive(&domain);
-
-    match device {
-        "watchdog" => {
-            let dev = watchdog_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            list_add(&mut doc, root, &["devices"], &dev);
-        }
-        "vsock" => {
-            let dev = vsock_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            list_add(&mut doc, root, &["devices"], &dev);
-        }
-        "disk" => {
-            let dev = disk_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            list_add(&mut doc, root, &["devices"], &dev);
-        }
-        "memballoon" => {
-            let dev = memballoon_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            list_add(&mut doc, root, &["devices"], &dev);
-        }
-        "sound" => {
-            let dev = sound_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            list_add(&mut doc, root, &["devices"], &dev);
-        }
-        "video" => {
-            let dev = video_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            list_add(&mut doc, root, &["devices"], &dev);
-        }
-        "controller" => {
-            let dev = controller_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            list_add(&mut doc, root, &["devices"], &dev);
-        }
-        "tpm" => {
-            let dev = tpm_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            list_add(&mut doc, root, &["devices"], &dev);
-        }
-        "smartcard" => {
-            let dev = smartcard_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            list_add(&mut doc, root, &["devices"], &dev);
-        }
-        "redirdev" => {
-            let dev = redirdev_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            list_add(&mut doc, root, &["devices"], &dev);
-        }
-        "filesystem" => {
-            let dev = filesystem_from_optstr(optstr).unwrap_or_else(exit_on_err);
-            list_add(&mut doc, root, &["devices"], &dev);
-        }
-        _ => unreachable!(),
-    }
-    print_doc(&doc);
-}
-
-/// [`run_print_xml_edit`]'s `--remove-device` counterpart — same
-/// [`remove_elements_by_selector`] the defining path uses, applied to the parsed
-/// copy instead of a document `edit_inactive_xml` will redefine.
-fn run_print_xml_remove_device(args: &Args, device: &str, selector: &str) {
-    let (_conn, domain, _domain_name) = connect_and_lookup(args);
-    let (mut doc, root) = fetch_and_parse_inactive(&domain);
-
-    if let Err(e) = remove_elements_by_selector(&mut doc, root, device, "remove-device", selector) {
-        eprintln!("virt-xml: {e}");
-        std::process::exit(1);
-    }
-    print_doc(&doc);
-}
-
-/// The actual edit, shared between the defining path
-/// ([`Domain::edit_inactive_xml`]'s closure) and the local-only
-/// `--print-xml` path — both need the exact same select-then-apply
-/// sequence against an already-parsed `Document`, just with a different
-/// caller deciding what happens to the result afterward.
-fn apply_edit(
-    doc: &mut virtinst_xml::Document,
-    root: virtinst_xml::Element,
-    device: &str,
-    optstr: &str,
-    selector: &str,
-) -> Result<(), String> {
-    let els = select_elements_by_selector(doc, root, device, "edit", selector)?;
-    for el in els {
-        match device {
-            "watchdog" => apply_watchdog_optstr(doc, el, optstr)?,
-            "vsock" => apply_vsock_optstr(doc, el, optstr)?,
-            "disk" => apply_disk_optstr(doc, el, optstr)?,
-            "memballoon" => apply_memballoon_optstr(doc, el, optstr)?,
-            "sound" => apply_sound_optstr(doc, el, optstr)?,
-            "video" => apply_video_optstr(doc, el, optstr)?,
-            "controller" => apply_controller_optstr(doc, el, optstr)?,
-            "tpm" => apply_tpm_optstr(doc, el, optstr)?,
-            "smartcard" => apply_smartcard_optstr(doc, el, optstr)?,
-            "redirdev" => apply_redirdev_optstr(doc, el, optstr)?,
-            "filesystem" => apply_filesystem_optstr(doc, el, optstr)?,
-            _ => unreachable!(),
-        }
-    }
-    Ok(())
-}
-
-fn run_add_device(args: &Args) {
-    let (device, optstr) = device_optstr(args, "--add-device");
-    if let Some(def) = virtinst_cli::parsers::by_name(device) {
-        engine::run(args, def, engine::Action::AddDevice, optstr);
-        return;
-    }
-
-    if args.print_xml {
-        run_print_xml_add_device(args, device, optstr);
-        return;
-    }
-
-    let (conn, domain, domain_name) = connect_and_lookup(args);
-    let result = match device {
-        "watchdog" => domain.add_device(
-            &conn,
-            &watchdog_from_optstr(optstr).unwrap_or_else(exit_on_err),
-        ),
-        "vsock" => domain.add_device(
-            &conn,
-            &vsock_from_optstr(optstr).unwrap_or_else(exit_on_err),
-        ),
-        "disk" => domain.add_device(&conn, &disk_from_optstr(optstr).unwrap_or_else(exit_on_err)),
-        "memballoon" => domain.add_device(
-            &conn,
-            &memballoon_from_optstr(optstr).unwrap_or_else(exit_on_err),
-        ),
-        "sound" => domain.add_device(
-            &conn,
-            &sound_from_optstr(optstr).unwrap_or_else(exit_on_err),
-        ),
-        "video" => domain.add_device(
-            &conn,
-            &video_from_optstr(optstr).unwrap_or_else(exit_on_err),
-        ),
-        "controller" => domain.add_device(
-            &conn,
-            &controller_from_optstr(optstr).unwrap_or_else(exit_on_err),
-        ),
-        "tpm" => domain.add_device(&conn, &tpm_from_optstr(optstr).unwrap_or_else(exit_on_err)),
-        "smartcard" => domain.add_device(
-            &conn,
-            &smartcard_from_optstr(optstr).unwrap_or_else(exit_on_err),
-        ),
-        "redirdev" => domain.add_device(
-            &conn,
-            &redirdev_from_optstr(optstr).unwrap_or_else(exit_on_err),
-        ),
-        "filesystem" => domain.add_device(
-            &conn,
-            &filesystem_from_optstr(optstr).unwrap_or_else(exit_on_err),
-        ),
-        _ => unreachable!(),
-    };
-    report(&domain_name, result);
-}
-
-fn run_remove_device(args: &Args) {
-    let (device, selector) = device_optstr(args, "--remove-device");
-    if let Some(def) = virtinst_cli::parsers::by_name(device) {
-        engine::run(args, def, engine::Action::RemoveDevice, selector);
-        return;
-    }
-
-    if args.print_xml {
-        run_print_xml_remove_device(args, device, selector);
-        return;
-    }
-
-    let (conn, domain, domain_name) = connect_and_lookup(args);
-    let result = domain.edit_inactive_xml(&conn, |doc, root| {
-        remove_elements_by_selector(doc, root, device, "remove-device", selector)?;
-        Ok(())
-    });
-    report(&domain_name, result);
-}
-
-/// Both actions above end the same way: define succeeded or it didn't.
-fn report<E: std::fmt::Display>(domain_name: &str, result: Result<(), E>) {
-    match result {
-        Ok(()) => println!("Domain '{domain_name}' defined successfully."),
-        Err(e) => {
-            eprintln!("virt-xml: {e}");
-            std::process::exit(1);
-        }
-    }
-}
-
-/// The devices already ported to the `VirtCLIParser` engine
-/// (`virtinst_cli::parser`): upstream's `virtxml.py` actions over a
-/// `Guest` parsed from the domain's XML.
-mod engine {
-    use super::{connect_and_lookup, Args};
-    use virtinst_cli::cli::fail;
-    use virtinst_cli::parser::{
-        find_objects_to_edit, lookup_prop, parse_edit, parse_new, ParserDef,
-    };
-    use virtinst_cli::parsers::misc::set_defaults;
-    use virtinst_core::connection::Domain;
-    use virtinst_core::guest::GUEST;
-    use virtinst_core::xmlbuilder::XmlObject;
-
-    pub enum Action<'a> {
-        Edit(&'a str),
-        AddDevice,
-        RemoveDevice,
-    }
-
-    /// `action_build_xml`: the new device, defaults set, on its own.
-    pub fn build_xml(def: &ParserDef, optstr: &str) {
-        let mut guest = XmlObject::new(&GUEST);
-        let idxs = parse_new(def, &mut guest, optstr).unwrap_or_else(|e| fail(e));
-        for idx in idxs {
-            let dev = &mut lookup_prop(&mut guest, def)[idx];
-            set_defaults(def.cli_arg_name, dev).unwrap_or_else(|e| fail(e));
-            println!("{}", dev.get_xml());
-        }
-    }
-
-    /// `action_edit`/`action_add_device`/`action_remove_device` on the
-    /// domain's inactive XML, then print it (`--print-xml`) or define it.
-    pub fn run(args: &Args, def: &ParserDef, action: Action, optstr: &str) {
-        let (conn, domain, domain_name) = connect_and_lookup(args);
-        let xml = domain
-            .inactive_xml()
-            .unwrap_or_else(|e| fail(format!("failed to fetch the domain's XML: {e}")));
-        let mut guest = XmlObject::parse(&GUEST, &xml).unwrap_or_else(|e| fail(e));
-        match action {
-            Action::Edit(selector) => {
-                let idxs = find_objects_to_edit(def, &mut guest, "edit", Some(selector))
-                    .unwrap_or_else(|e| fail(e));
-                for idx in idxs {
-                    parse_edit(def, &mut guest, idx, optstr).unwrap_or_else(|e| fail(e));
-                }
+    let mut stdinxml = None;
+    if args.domain.is_none() && !args.build_xml {
+        let stdin = std::io::stdin();
+        if !stdin.is_terminal() {
+            if args.confirm {
+                fail("Can't use --confirm with stdin input.");
             }
-            Action::AddDevice => {
-                let idxs = parse_new(def, &mut guest, optstr).unwrap_or_else(|e| fail(e));
-                for idx in idxs {
-                    let dev = &mut lookup_prop(&mut guest, def)[idx];
-                    set_defaults(def.cli_arg_name, dev).unwrap_or_else(|e| fail(e));
-                }
+            if args.update {
+                fail("Can't use --update with stdin input.");
             }
-            Action::RemoveDevice => {
-                let mut idxs = find_objects_to_edit(def, &mut guest, "remove-device", Some(optstr))
-                    .unwrap_or_else(|e| fail(e));
-                idxs.sort_unstable();
-                for idx in idxs.into_iter().rev() {
-                    let name = def
-                        .guest_propname
-                        .and_then(|p| p.rsplit('.').next())
-                        .expect("guest backed parser");
-                    guest.child_mut("devices").remove_child(name, idx);
-                }
-            }
+            let mut xml = String::new();
+            let _ = std::io::Read::read_to_string(&mut stdin.lock(), &mut xml);
+            stdinxml = Some(xml);
+        } else {
+            fail("A domain must be specified");
         }
-        let newxml = guest.get_document_xml();
-        if args.print_xml {
-            println!("{newxml}");
+    }
+
+    // Default to --define, unless:
+    //  --no-define explicitly specified
+    //  --print-* option is used
+    //  XML input came from stdin
+    let mut define = if args.define {
+        Some(true)
+    } else if args.no_define {
+        Some(false)
+    } else {
+        None
+    };
+    if !args.print_xml && !args.print_diff {
+        if stdinxml.is_some() {
+            if define != Some(true) {
+                args.print_xml = true;
+            }
+        } else if define.is_none() {
+            define = Some(true);
+        }
+    }
+    let define = define == Some(true);
+    if args.confirm && !args.print_xml {
+        args.print_diff = true;
+    }
+
+    let conn = cli::get_connection(args.connect.as_deref());
+    let action = parse_action(&args);
+
+    let (domain, inactive, active) = match &args.domain {
+        Some(d) => {
+            let (dom, inactive, active) = get_domain_and_guest(&conn, d);
+            (Some(dom), inactive, active)
+        }
+        None => {
+            // `Guest(conn, parsexml="")` builds an empty guest.
+            let xml = stdinxml.clone().unwrap_or_default();
+            let guest = if xml.is_empty() {
+                XmlObject::new(&GUEST)
+            } else {
+                XmlObject::parse(&GUEST, &xml).unwrap_or_else(|e| fail(e))
+            };
+            (None, guest, None)
+        }
+    };
+    let vm_is_running = active.is_some();
+
+    if action.name == ActionName::BuildXml {
+        let mut guest = inactive;
+        let devs = match action.change {
+            Change::Engine(def) => perform_engine(&action, def, &mut guest),
+            Change::Legacy(name) => legacy::build_xml(name, &action.values),
+        };
+        for dev in devs {
+            print_stdout(&xmlutil::unindent_device_xml(&dev.xml), true);
+        }
+        return;
+    }
+
+    let mut performed_update = false;
+    if args.update {
+        if args.start {
+            fail("Cannot use --update and --start at the same time");
+        }
+        match (&active, &domain) {
+            (Some(active), Some(domain)) => {
+                let (devs, _) = prepare_changes(active, &args, &action);
+                update_changes(domain, &devs, &action, args.confirm);
+                performed_update = true;
+            }
+            _ => log::warn!("The VM is not running, --update is inapplicable."),
+        }
+        if !define {
+            // --update and --no-define passed, so we are done
             return;
         }
-        match Domain::define_new(&conn, &newxml) {
-            Ok(_) => println!("Domain '{domain_name}' defined successfully."),
-            Err(e) => fail(e.message()),
+    }
+
+    let original_xml = inactive.get_document_xml();
+    let (_devs, xmlobj) = prepare_changes(&inactive, &args, &action);
+    let name = guest_name(&xmlobj);
+    if !define {
+        if args.start {
+            if args.confirm && !prompt_yes_or_no(&format!("Start '{name}' with the changed XML?")) {
+                return;
+            }
+            match Domain::create_xml(conn.as_connect(), &xmlobj.get_document_xml(), 0) {
+                Ok(_) => print_stdout(&format!("Domain '{name}' started successfully."), false),
+                Err(e) => fail(format!("Failed starting domain '{name}': {}", e.message())),
+            }
         }
+        return;
+    }
+
+    // `define_changes`
+    if args.confirm && !prompt_yes_or_no(&format!("Define '{name}' with the changed XML?")) {
+        return;
+    }
+    let dom = Domain::define_xml(conn.as_connect(), &xmlobj.get_document_xml())
+        .unwrap_or_else(|e| fail(e.message()));
+    print_stdout(&format!("Domain '{name}' defined successfully."), false);
+
+    if args.start {
+        if let Err(e) = dom.create() {
+            fail(format!(
+                "Failed starting domain '{}': {}",
+                guest_name(&inactive),
+                e.message()
+            ));
+        }
+        print_stdout(
+            &format!("Domain '{}' started successfully.", guest_name(&inactive)),
+            false,
+        );
+    } else if vm_is_running && !performed_update {
+        print_stdout(
+            "Changes will take effect after the domain is fully powered off.",
+            false,
+        );
+    } else if defined_xml_is_unchanged(&dom, &original_xml) {
+        log::warn!(
+            "XML did not change after domain define. You may have changed a value that libvirt \
+             is setting by default."
+        );
+    }
+}
+
+/// Devices whose parser isn't ported yet: the hand-written optstring
+/// code from `virtinst_cli`, run on the guest's document.
+mod legacy {
+    use super::{Action, ActionName, TouchedDev};
+    use virtinst_cli::cli::fail;
+    use virtinst_cli::*;
+    use virtinst_core::xmlbuilder::{element_xml, XmlObject};
+    use virtinst_xml::{list_add, to_xml_string, Document, Element};
+
+    fn apply(doc: &mut Document, el: Element, name: &str, optstr: &str) -> Result<(), String> {
+        match name {
+            "vsock" => apply_vsock_optstr(doc, el, optstr),
+            "disk" => apply_disk_optstr(doc, el, optstr),
+            "sound" => apply_sound_optstr(doc, el, optstr),
+            "video" => apply_video_optstr(doc, el, optstr),
+            "controller" => apply_controller_optstr(doc, el, optstr),
+            "tpm" => apply_tpm_optstr(doc, el, optstr),
+            "smartcard" => apply_smartcard_optstr(doc, el, optstr),
+            "redirdev" => apply_redirdev_optstr(doc, el, optstr),
+            "filesystem" => apply_filesystem_optstr(doc, el, optstr),
+            _ => unreachable!("not a legacy device: {name}"),
+        }
+    }
+
+    fn add(doc: &mut Document, root: Element, name: &str, optstr: &str) -> Result<Element, String> {
+        let d = &["devices"];
+        Ok(match name {
+            "vsock" => list_add(doc, root, d, &vsock_from_optstr(optstr)?),
+            "disk" => list_add(doc, root, d, &disk_from_optstr(optstr)?),
+            "sound" => list_add(doc, root, d, &sound_from_optstr(optstr)?),
+            "video" => list_add(doc, root, d, &video_from_optstr(optstr)?),
+            "controller" => list_add(doc, root, d, &controller_from_optstr(optstr)?),
+            "tpm" => list_add(doc, root, d, &tpm_from_optstr(optstr)?),
+            "smartcard" => list_add(doc, root, d, &smartcard_from_optstr(optstr)?),
+            "redirdev" => list_add(doc, root, d, &redirdev_from_optstr(optstr)?),
+            "filesystem" => list_add(doc, root, d, &filesystem_from_optstr(optstr)?),
+            _ => unreachable!("not a legacy device: {name}"),
+        })
+    }
+
+    pub fn perform(action: &Action, name: &str, guest: &mut XmlObject) -> Vec<TouchedDev> {
+        guest.with_doc(|doc, root| {
+            let r: Result<Vec<TouchedDev>, String> = (|| match action.name {
+                ActionName::Edit => {
+                    let selector = action.selector.as_deref().unwrap_or("1");
+                    let els = select_elements_by_selector(doc, root, name, "edit", selector)?;
+                    for el in &els {
+                        for optstr in &action.values {
+                            apply(doc, *el, name, optstr)?;
+                        }
+                    }
+                    Ok(els
+                        .iter()
+                        .map(|el| TouchedDev {
+                            xml: element_xml(doc, *el),
+                        })
+                        .collect())
+                }
+                ActionName::AddDevice | ActionName::BuildXml => {
+                    let mut devs = vec![];
+                    for optstr in &action.values {
+                        let el = add(doc, root, name, optstr)?;
+                        devs.push(TouchedDev {
+                            xml: element_xml(doc, el),
+                        });
+                    }
+                    Ok(devs)
+                }
+                ActionName::RemoveDevice => {
+                    let selector = action.values.last().expect("one value at least");
+                    let els =
+                        select_elements_by_selector(doc, root, name, "remove-device", selector)?;
+                    let devs = els
+                        .iter()
+                        .map(|el| TouchedDev {
+                            xml: element_xml(doc, *el),
+                        })
+                        .collect();
+                    remove_elements_by_selector(doc, root, name, "remove-device", selector)?;
+                    Ok(devs)
+                }
+            })();
+            r.unwrap_or_else(|e| fail(e))
+        })
+    }
+
+    pub fn build_xml(name: &str, values: &[String]) -> Vec<TouchedDev> {
+        let r: Result<Vec<String>, String> = values
+            .iter()
+            .map(|optstr| {
+                let xml = match name {
+                    "vsock" => to_xml_string(&vsock_from_optstr(optstr)?),
+                    "disk" => to_xml_string(&disk_from_optstr(optstr)?),
+                    "sound" => to_xml_string(&sound_from_optstr(optstr)?),
+                    "video" => to_xml_string(&video_from_optstr(optstr)?),
+                    "controller" => to_xml_string(&controller_from_optstr(optstr)?),
+                    "tpm" => to_xml_string(&tpm_from_optstr(optstr)?),
+                    "smartcard" => to_xml_string(&smartcard_from_optstr(optstr)?),
+                    "redirdev" => to_xml_string(&redirdev_from_optstr(optstr)?),
+                    "filesystem" => to_xml_string(&filesystem_from_optstr(optstr)?),
+                    _ => unreachable!("not a legacy device: {name}"),
+                };
+                xml.map(|x| format!("{x}\n")).map_err(|e| e.to_string())
+            })
+            .collect();
+        r.unwrap_or_else(|e| fail(e))
+            .into_iter()
+            .map(|xml| TouchedDev { xml })
+            .collect()
     }
 }
