@@ -2,7 +2,8 @@
 //! (`setupLogging`), `fail`/`print_stdout`, the `--check` validation
 //! switches (`ParserCheck`, `_optional_fail`), the libvirt connection
 //! with interactive auth (`getConnection`), and the disk/MAC sanity
-//! checks shared by the tools (`validate_disk`, `validate_mac`).
+//! checks shared by the tools (`validate_disk`, `validate_mac`), and
+//! bash completion (`autocomplete`, argcomplete's protocol).
 
 use std::io::Write;
 use std::sync::Mutex;
@@ -265,19 +266,21 @@ pub fn raw_on_off_convert(s: &str) -> Option<bool> {
     }
 }
 
+/// `ParserCheck`'s sub-options.
+pub const CHECK_OPTIONS: [&str; 5] = [
+    "path_in_use",
+    "disk_size",
+    "path_exists",
+    "mac_in_use",
+    "all",
+];
+
 /// `parse_check`: `--check path_in_use=off,all=off`.
 pub fn parse_check(checks: &[String]) {
-    const NAMES: [&str; 5] = [
-        "path_in_use",
-        "disk_size",
-        "path_exists",
-        "mac_in_use",
-        "all",
-    ];
     for optstr in checks {
         let mut leftover = vec![];
         for (key, val) in crate::parse_optstr_tuples(optstr) {
-            if !NAMES.contains(&key.as_str()) {
+            if !CHECK_OPTIONS.contains(&key.as_str()) {
                 leftover.push(key);
                 continue;
             }
@@ -467,6 +470,233 @@ pub fn get_meter() -> virtinst_core::progress::TextMeter {
     virtinst_core::progress::make_meter(quiet)
 }
 
+// ---------------------------------------------------------------------
+// Bash completion helpers: upstream's `autocomplete`, which hands the
+// parser to argcomplete. The same protocol, so upstream's own
+// completion script (`data/bash-completion.sh.in`, shipped here as
+// `crates/virtinst-cli/data/bash-completion/`) drives these tools: the
+// script runs the tool with `_ARGCOMPLETE=1` and the line in
+// `COMP_LINE`/`COMP_POINT`, and reads the completions back from fd 8.
+// ---------------------------------------------------------------------
+
+/// Upstream's `_virtparser_completer`: the sub-options of a parser
+/// option (`name=`), minus the ones already typed in `prefix`.
+fn virtparser_completer(names: &[&str], prefix: &str) -> Vec<String> {
+    let mut names = names.to_vec();
+    names.sort_unstable();
+    let mut sub_options: Vec<String> = names.iter().map(|n| format!("{n}=")).collect();
+    for option in prefix.split(',') {
+        if let Some(pos) = option.find('=').filter(|p| *p > 0) {
+            sub_options.retain(|s| *s != option[..=pos]);
+        }
+    }
+    sub_options
+}
+
+/// Upstream's `_completer_validator`: `--disk path=foo,de<TAB>` offers
+/// the sub-options starting with `de`.
+fn completer_validator(suboption: &str, current_input: &str) -> bool {
+    if current_input.is_empty() {
+        return true;
+    }
+    let current_option = current_input.rsplit(',').next().unwrap_or_default();
+    suboption.starts_with(current_option)
+}
+
+/// argcomplete's `FilesCompleter`: the files and directories (with a
+/// trailing `/`) that start with `prefix`.
+fn files_completer(prefix: &str) -> Vec<String> {
+    let (dir, base) = match prefix.rfind('/') {
+        Some(i) => (&prefix[..=i], &prefix[i + 1..]),
+        None => ("", prefix),
+    };
+    let read = if dir.is_empty() { "." } else { dir };
+    let mut ret: Vec<String> = std::fs::read_dir(read)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            if !name.starts_with(base) || (name.starts_with('.') && !base.starts_with('.')) {
+                return None;
+            }
+            let slash = if e.path().is_dir() { "/" } else { "" };
+            Some(format!("{dir}{name}{slash}"))
+        })
+        .collect();
+    ret.sort();
+    ret
+}
+
+/// Splits the line up to the cursor into the finished words and the
+/// word being completed (argcomplete's `split_line`): shell quoting,
+/// and an unterminated quote is still a word.
+fn split_line(line: &str) -> (Vec<String>, String) {
+    let mut words = vec![];
+    let mut cur = String::new();
+    let mut in_word = false;
+    let mut quote: Option<char> = None;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some('"') if c == '\\' => {
+                if let Some(n) = chars.next() {
+                    cur.push(n);
+                }
+            }
+            Some(_) => cur.push(c),
+            None if c == '\'' || c == '"' => {
+                quote = Some(c);
+                in_word = true;
+            }
+            None if c == '\\' => {
+                if let Some(n) = chars.next() {
+                    cur.push(n);
+                }
+                in_word = true;
+            }
+            None if c.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut cur));
+                    in_word = false;
+                }
+            }
+            None => {
+                cur.push(c);
+                in_word = true;
+            }
+        }
+    }
+    (words, cur)
+}
+
+/// The completions for the line up to the cursor: options that start
+/// with the word, and the value of the option before it (its parser's
+/// sub-options from `parsers`, else files).
+pub fn get_completions(
+    cmd: &clap::Command,
+    parsers: &[(&str, &[&str])],
+    line: &str,
+) -> Vec<String> {
+    let (words, prefix) = split_line(line);
+    let visible: Vec<&clap::Arg> = cmd
+        .get_arguments()
+        .filter(|a| !a.is_hide_set() && !a.is_positional())
+        .collect();
+    let option_strings = |a: &clap::Arg| -> Vec<String> {
+        let mut v = vec![];
+        if let Some(s) = a.get_short() {
+            v.push(format!("-{s}"));
+        }
+        if let Some(l) = a.get_long() {
+            v.push(format!("--{l}"));
+        }
+        v
+    };
+    // The option whose value is being typed: the previous word, with
+    // argparse's prefix matching, or `--opt=` in this word.
+    let find = |word: &str| -> Option<&clap::Arg> {
+        let all: Vec<&clap::Arg> = cmd.get_arguments().collect();
+        if let Some(a) = all
+            .iter()
+            .find(|a| option_strings(a).iter().any(|o| o == word))
+        {
+            return Some(a);
+        }
+        let long = word.strip_prefix("--")?;
+        let matches: Vec<&&clap::Arg> = all
+            .iter()
+            .filter(|a| a.get_long().is_some_and(|l| l.starts_with(long)))
+            .collect();
+        (matches.len() == 1).then(|| *matches[0])
+    };
+    let takes_value = |a: &clap::Arg| a.get_action().takes_values();
+
+    let (active, value_prefix) = match prefix.split_once('=') {
+        Some((opt, val)) if prefix.starts_with("--") => (find(opt), val.to_string()),
+        _ => (
+            words
+                .last()
+                .filter(|w| w.starts_with('-') && !w.contains('='))
+                .and_then(|w| find(w))
+                .filter(|a| takes_value(a)),
+            prefix.clone(),
+        ),
+    };
+
+    let mut completions = vec![];
+    if !(prefix.starts_with("--") && prefix.contains('=')) {
+        for a in &visible {
+            for o in option_strings(a) {
+                if o.starts_with(&prefix) {
+                    completions.push(o);
+                }
+            }
+        }
+    }
+    if let Some(a) = active {
+        let flags = option_strings(a);
+        let parser = parsers
+            .iter()
+            .find(|(flag, _)| flags.iter().any(|f| f == flag));
+        let values = match parser {
+            Some((_, names)) => virtparser_completer(names, &value_prefix)
+                .into_iter()
+                .filter(|s| completer_validator(s, &value_prefix))
+                .collect(),
+            None => files_completer(&value_prefix),
+        };
+        completions.extend(values);
+    }
+    let mut seen = std::collections::HashSet::new();
+    completions.retain(|c| seen.insert(c.clone()));
+    completions
+}
+
+/// `autocomplete(parser)`: when bash's completion script runs the tool
+/// (`_ARGCOMPLETE` set), print the completions for `COMP_LINE` and
+/// exit; otherwise do nothing. `parsers` are the options with
+/// sub-options (`--check` and friends) and their names.
+pub fn autocomplete(cmd: clap::Command, parsers: &[(&str, &[&str])]) {
+    if std::env::var_os("_ARGCOMPLETE").is_none() {
+        return;
+    }
+    let mut cmd = cmd;
+    cmd.build();
+    let line = std::env::var("COMP_LINE").unwrap_or_default();
+    let point = std::env::var("COMP_POINT")
+        .ok()
+        .and_then(|p| p.parse::<usize>().ok())
+        .unwrap_or(line.len());
+    // COMP_POINT counts bytes.
+    let mut end = point.min(line.len());
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut completions = get_completions(&cmd, parsers, &line[..end]);
+
+    // argcomplete's append_space: bash adds the space itself unless the
+    // script couldn't turn `nospace` off.
+    let append_space = std::env::var("_ARGCOMPLETE_SUPPRESS_SPACE").as_deref() != Ok("1");
+    if append_space && completions.len() == 1 && !completions[0].ends_with(['=', '/', ':']) {
+        completions[0].push(' ');
+    }
+    let ifs = std::env::var("IFS").unwrap_or_else(|_| "\u{b}".into());
+    let out = completions.join(&ifs);
+
+    if std::env::var_os("VIRTINST_TEST_SUITE").is_some() {
+        println!("{out}");
+    } else {
+        use std::os::fd::FromRawFd;
+        // SAFETY: fd 8 is the script's stdout (`8>&1`); if it isn't
+        // open the write just fails.
+        let mut f = unsafe { std::fs::File::from_raw_fd(8) };
+        let _ = f.write_all(out.as_bytes());
+    }
+    std::process::exit(0);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -490,5 +720,77 @@ mod tests {
         let mut check = vec!["path_in_use=off".to_string()];
         convert_old_force(true, &mut check);
         assert_eq!(check, ["path_in_use=off"]);
+    }
+
+    fn clone_like_cmd() -> clap::Command {
+        clap::Command::new("virt-clone")
+            .arg(
+                clap::Arg::new("preserve")
+                    .long("preserve-data")
+                    .action(clap::ArgAction::SetTrue),
+            )
+            .arg(clap::Arg::new("orig").short('o').long("original"))
+            .arg(
+                clap::Arg::new("check")
+                    .long("check")
+                    .action(clap::ArgAction::Append),
+            )
+            .arg(
+                clap::Arg::new("nodry")
+                    .long("__test-nodry")
+                    .hide(true)
+                    .action(clap::ArgAction::SetTrue),
+            )
+    }
+
+    /// Upstream's `_add_argcomplete_cmd` cases that apply here.
+    #[test]
+    fn completes_options_and_check_suboptions_like_upstream() {
+        let mut cmd = clone_like_cmd();
+        cmd.build();
+        let parsers: &[(&str, &[&str])] = &[("--check", &CHECK_OPTIONS)];
+        let c = |line: &str| get_completions(&cmd, parsers, line);
+        // "virt-clone --preserve" -> "--preserve-data"
+        assert_eq!(c("virt-clone --preserve"), ["--preserve-data"]);
+        // "virt-install --check d" -> "disk_size"
+        assert_eq!(c("virt-clone --check d"), ["disk_size="]);
+        // "virt-install --disk " lists every sub-option (options too,
+        // argcomplete's always_complete_options).
+        let all = c("virt-clone --check ");
+        for want in [
+            "all=",
+            "disk_size=",
+            "mac_in_use=",
+            "path_exists=",
+            "path_in_use=",
+        ] {
+            assert!(all.contains(&want.to_string()), "{all:?}");
+        }
+        assert!(all.contains(&"--preserve-data".to_string()));
+        assert_eq!(c("virt-clone --check path_in_use=off,pa"), ["path_exists="]);
+        assert_eq!(c("virt-clone --chec all=off,d"), ["disk_size="]);
+        assert_eq!(c("virt-clone --check=m"), ["mac_in_use="]);
+        // Hidden options are never offered.
+        assert!(c("virt-clone --__").is_empty());
+    }
+
+    #[test]
+    fn splits_the_line_like_a_shell() {
+        assert_eq!(
+            split_line("virt-clone --file 'a b' --name \"x"),
+            (
+                vec![
+                    "virt-clone".into(),
+                    "--file".into(),
+                    "a b".into(),
+                    "--name".into()
+                ],
+                "x".to_string()
+            )
+        );
+        assert_eq!(
+            split_line("virt-clone --check "),
+            (vec!["virt-clone".into(), "--check".into()], String::new())
+        );
     }
 }
