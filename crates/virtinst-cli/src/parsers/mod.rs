@@ -20,6 +20,7 @@ pub mod devices;
 pub mod filesystem;
 pub mod graphics;
 pub mod hostdev;
+pub mod memory;
 pub mod misc;
 pub mod network;
 
@@ -29,6 +30,12 @@ pub fn all() -> Vec<&'static ParserDef> {
     vec![
         network::network(),
         graphics::graphics(),
+        memory::memory(),
+        memory::iothreads(),
+        memory::numatune(),
+        memory::memtune(),
+        memory::blkiotune(),
+        memory::memorybacking(),
         devices::controller(),
         devices::input(),
         chardev::serial(),

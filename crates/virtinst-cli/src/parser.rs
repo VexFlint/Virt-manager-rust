@@ -615,12 +615,15 @@ fn child_list_parent<'o>(
 
 /// `_make_find_inst_cb`'s index: the digits after `cliarg` in the key.
 fn find_inst_num(fi: &FindInst, key: &str) -> usize {
-    let Some(i) = key.find(fi.cliarg) else {
-        return 0;
-    };
-    let rest = &key[i + fi.cliarg.len()..];
-    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-    digits.parse().unwrap_or(0)
+    // `re.search(r"%s(\d+)" % cliarg, key)`: the first occurrence
+    // followed by digits (`hugepages.page1` skips the `page` in `huge`).
+    key.match_indices(fi.cliarg)
+        .find_map(|(i, _)| {
+            let rest = &key[i + fi.cliarg.len()..];
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            digits.parse().ok()
+        })
+        .unwrap_or(0)
 }
 
 /// `_make_find_inst_cb(...)(can_edit=True)`: the Nth object of the
@@ -1083,6 +1086,122 @@ pub fn lookup_children(
     r.map_err(|e| to_fail(def, optstr, e))
 }
 
+/// `lookup_child_from_option_string` for a parser whose
+/// `guest_propname` is a plain guest property (`--iothreads`): upstream
+/// looks up the property's int value itself, which fails on the first
+/// option it checks.
+fn lookup_scalar(def: &ParserDef, has_value: bool, optstr: &str) -> Result<Vec<usize>, Error> {
+    if !has_value {
+        return Ok(vec![]);
+    }
+    let mut stand_in = XmlObject::new(&EMPTY);
+    let ctx = ParseCtx {
+        def,
+        guest: &mut stand_in,
+        optstr: optstr.to_string(),
+        optdict: def.optdict(optstr),
+        editing: true,
+        boot_order: None,
+        post_edit: None,
+    };
+    let mut d = ctx.optdict.clone();
+    let r = (|| {
+        if let Some(arg) = ctx.param_list(&mut d)?.into_iter().next() {
+            let err = if arg.def.propname.is_none() && arg.def.lookup_cb.is_none() {
+                format!(
+                    "Don't know how to match device type '' property '{}'",
+                    arg.key
+                )
+            } else if let Some(fi) = arg.def.find_inst {
+                format!("'int' object has no attribute '{}'", fi.list_propname)
+            } else {
+                let p = arg.def.propname.unwrap_or_default();
+                let first = p.split('.').next().unwrap_or_default();
+                format!("'int' object has no attribute '{first}'")
+            };
+            return Err(ParseError::Raised(err));
+        }
+        ctx.check_leftover(&d)?;
+        Ok(vec![0])
+    })();
+    r.map_err(|e| to_fail(def, optstr, e))
+}
+
+/// `run_parser(..., editinst=...)` for a parser whose `guest_propname`
+/// is a plain guest property (`--iothreads`): upstream hands the
+/// property's int value to the parser as the object to edit, so any
+/// option that touches it fails.
+pub fn parse_scalar_edit(
+    def: &ParserDef,
+    guest: &mut XmlObject,
+    optstr: &str,
+) -> Result<(), Error> {
+    if optstr.is_empty() || (def.stub_none && optstr == "none") {
+        return Ok(());
+    }
+    let propname = def.guest_propname.expect("a guest property");
+    let n = guest
+        .get(propname)
+        .map(|v| v.to_xml_string())
+        .unwrap_or_default();
+    let mut stand_in = XmlObject::new(&EMPTY);
+    let ctx = ParseCtx {
+        def,
+        guest: &mut stand_in,
+        optstr: optstr.to_string(),
+        optdict: def.optdict(optstr),
+        editing: true,
+        boot_order: None,
+        post_edit: None,
+    };
+    let mut d = ctx.optdict.clone();
+    let r = (|| {
+        for arg in ctx.param_list(&mut d)? {
+            if arg.def.ignore_default && arg.val == Some(Value::Str("default".into())) {
+                continue;
+            }
+            if let Some(fi) = arg.def.find_inst {
+                return Err(ParseError::Raised(format!(
+                    "'int' object has no attribute '{}'",
+                    fi.list_propname
+                )));
+            }
+            if let Some(p) = arg.def.propname {
+                return Err(ParseError::Raised(format!(
+                    "programming error: obj={n} does not have member={p}"
+                )));
+            }
+            if arg.def.cliname == "clearxml" && arg.val == Some(Value::Bool(true)) {
+                return Err(ParseError::Raised(
+                    "'int' object has no attribute 'clear'".into(),
+                ));
+            }
+        }
+        ctx.check_leftover(&d)
+    })();
+    r.map_err(|e| to_fail(def, optstr, e))
+}
+
+/// `run_parser(guest, parserclass, optstr, editinst=guest)` for a
+/// parser with no `guest_propname` (`--memory`): the guest itself is
+/// the object edited.
+pub fn parse_guest_edit(def: &ParserDef, guest: &mut XmlObject, optstr: &str) -> Result<(), Error> {
+    if optstr.is_empty() || (def.stub_none && optstr == "none") {
+        return Ok(());
+    }
+    let mut stand_in = XmlObject::new(&EMPTY);
+    let mut ctx = ParseCtx {
+        def,
+        guest: &mut stand_in,
+        optstr: optstr.to_string(),
+        optdict: def.optdict(optstr),
+        editing: true,
+        boot_order: None,
+        post_edit: None,
+    };
+    parse_into(&mut ctx, guest).map_err(|e| to_fail(def, optstr, e))
+}
+
 /// A stand-in guest for lookups, which never touch it.
 static EMPTY: XmlClass = XmlClass {
     xml_name: "domain",
@@ -1099,7 +1218,11 @@ pub fn find_objects_to_edit(
     action_name: &str,
     editval: Option<&str>,
 ) -> Result<Vec<usize>, Error> {
-    let n = lookup_prop(guest, def).len();
+    let scalar = def.guest_propname.filter(|p| guest.has_prop(p));
+    let n = match scalar {
+        Some(p) => usize::from(guest.get(p).is_some()),
+        None => lookup_prop(guest, def).len(),
+    };
     let idx: Option<i64> = match editval {
         None => Some(1),
         Some(v) => {
@@ -1145,7 +1268,10 @@ pub fn find_objects_to_edit(
         return Ok((0..n).collect());
     }
     // Lookup device by the passed prop string
-    let found = lookup_children(def, guest, editval)?;
+    let found = match scalar {
+        Some(p) => lookup_scalar(def, guest.get(p).is_some(), editval)?,
+        None => lookup_children(def, guest, editval)?,
+    };
     if found.is_empty() {
         return Err(format!(
             "No matching objects found for --{action_name} {editval}"

@@ -43,3 +43,38 @@ pub struct DomainNumatune {
     #[xml(list)]
     pub memnode: Vec<NumatuneMemnode>,
 }
+
+/// `_Numatune`, for the CLI parsers.
+pub static NUMATUNE_MEMNODE: crate::xmlbuilder::XmlClass = {
+    use crate::xmlbuilder::{prop, Kind, XmlClass};
+    XmlClass {
+        xml_name: "memnode",
+        props: &[
+            prop("cellid", "./@cellid", Kind::Int),
+            prop("mode", "./@mode", Kind::Str),
+            prop("nodeset", "./@nodeset", Kind::Str),
+        ],
+        children: &[],
+        prop_order: &["cellid", "mode", "nodeset"],
+    }
+};
+
+/// `DomainNumatune`, for the CLI parsers.
+pub static DOMAIN_NUMATUNE: crate::xmlbuilder::XmlClass = {
+    use crate::xmlbuilder::{child, prop, Kind, XmlClass};
+    XmlClass {
+        xml_name: "numatune",
+        props: &[
+            prop("memory_nodeset", "./memory/@nodeset", Kind::Str),
+            prop("memory_mode", "./memory/@mode", Kind::Str),
+            prop("memory_placement", "./memory/@placement", Kind::Str),
+        ],
+        children: &[child("memnode", &NUMATUNE_MEMNODE, ".", false)],
+        prop_order: &[
+            "memory_mode",
+            "memory_nodeset",
+            "memory_placement",
+            "memnode",
+        ],
+    }
+};

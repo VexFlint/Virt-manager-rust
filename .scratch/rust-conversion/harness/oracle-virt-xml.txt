@@ -444,3 +444,64 @@
 --connect @SUITE@ test-for-virtxml --remove-device --vsock cid.address=5 --print-diff
 --connect @SUITE@ --vsock help
 --connect @SUITE@ --vsock=?
+#
+# --memory / --memtune / --blkiotune / --memorybacking / --numatune /
+# --iothreads (ParserMemory, ParserMemtune, ParserBlkiotune,
+# ParserMemoryBacking, ParserNumatune, ParserIOThreads)
+--connect @SUITE@ test-for-virtxml --edit --memory 500,maxmemory=1000,hugepages=off --print-diff
+--connect @SUITE@ test-for-virtxml --edit --memory 512,maxmemory=1024 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --memory currentMemory=100,memory=200,maxmemory=300,maxMemory=400,maxMemory.slots=1 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --memory hotplugmemorymax=4096,hotplugmemoryslots=3 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --memory 8192 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --memory memory=100 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --memory hugepages=on --print-diff
+--connect @SUITE@ test-for-virtxml --edit --memory abc
+--connect @SUITE@ test-for-virtxml --edit --memory 200,clearxml=yes
+--connect @SUITE@ test-for-virtxml --edit 2 --memory 300
+--connect @SUITE@ test-for-virtxml --edit memory=4 --memory 600
+--connect @SUITE@ test-for-virtxml --edit all --memory 600 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --memory none --print-diff
+--connect @SUITE@ test-for-virtxml --edit --memory foo=1
+--connect @SUITE@ --build-xml --memory 10,maxmemory=20
+--connect @SUITE@ test-for-virtxml --add-device --memory 10
+--connect @SUITE@ test-for-virtxml --remove-device --memtune 5
+--connect @SUITE@ test-for-virtxml --add-device --memtune 5
+--connect @SUITE@ test-for-virtxml --edit --memorybacking hugepages=on,access.mode=shared,source.type=file --print-diff
+--connect @SUITE@ test-for-virtxml --edit --memorybacking size=1,unit=G,nosharepages=yes,locked=yes,discard=yes,allocation.mode=immediate,access_mode=shared,source_type=file,hugepages.page.size=12,hugepages.page1.size=1234,hugepages.page1.unit=MB,allocation.threads=8 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --memorybacking clearxml=yes --print-diff
+--connect @SUITE@ test --edit --memorybacking hugepages=on --print-diff
+--connect @SUITE@ --build-xml --memorybacking hugepages=on
+--connect @SUITE@ --build-xml --memorybacking hugepages.page0.size=2,hugepages.page0.unit=M,hugepages.page0.nodeset=0
+--connect @SUITE@ test-for-virtxml --edit --numatune memory.nodeset=1-5,7,memory.mode=strict,memory.placement=auto --print-diff
+--connect @SUITE@ test-for-virtxml --edit --numatune 1,2,3,5-7,^6,mode=strict --print-diff
+--connect @SUITE@ test-for-virtxml --edit --numatune memnode0.cellid=1,memnode0.mode=strict,memnode0.nodeset=2 --print-diff
+--connect @SUITE@ --build-xml --numatune 1,2,3,5-7,^6,mode=strict
+--connect @SUITE@ test-for-virtxml --edit --blkiotune weight=500,device_path=/dev/sdf,device_weight=600 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --blkiotune weight=100,device_path=/home/test/1.img,device_weight=200,read_bytes_sec=10000,write_bytes_sec=10000,read_iops_sec=20000,write_iops_sec=20000 --print-diff
+--connect @SUITE@ --build-xml --blkiotune weight=100,device0.path=/dev/sdf,device.weight=200,device0.read_bytes_sec=10000,device0.write_bytes_sec=10000,device0.read_iops_sec=20000,device0.write_iops_sec=20000
+--connect @SUITE@ test-for-virtxml --edit --blkiotune clearxml=yes,weight=5 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --blkiotune weight=abc
+--connect @SUITE@ test-for-virtxml --edit --memtune hard_limit=10,soft_limit=20,swap_hard_limit=30,min_guarantee=40 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --memtune 6 --print-diff
+--connect @SUITE@ test --edit --memtune 6 --print-diff
+--connect @SUITE@ test-for-virtxml --edit 2 --memtune 6
+--connect @SUITE@ test-for-virtxml --edit all --memtune 6 --print-diff
+--connect @SUITE@ test-for-virtxml --edit soft_limit=5 --memtune 6
+--connect @SUITE@ --build-xml --memtune 5
+--connect @SUITE@ test-for-virtxml --edit --iothreads 5
+--connect @SUITE@ test-for-virtxml --edit --iothreads iothreadids.iothread0.id=1
+--connect @SUITE@ test-for-virtxml --edit --iothreads clearxml=yes
+--connect @SUITE@ test-for-virtxml --edit --iothreads clearxml=no --print-diff
+--connect @SUITE@ test-for-virtxml --edit --iothreads defaultiothread.thread_pool_min=2
+--connect @SUITE@ test-for-virtxml --edit --iothreads xpath0.delete=./foo
+--connect @SUITE@ test-for-virtxml --edit --iothreads foo=1
+--connect @SUITE@ test-for-virtxml --edit iothreads=4 --iothreads 5
+--connect @SUITE@ test-for-virtxml --edit all --iothreads 5
+--connect @SUITE@ test --edit --iothreads 2
+--connect @SUITE@ test-for-virtxml --add-device --iothreads 2
+--connect @SUITE@ --memory help
+--connect @SUITE@ --memtune=?
+--connect @SUITE@ --blkiotune help
+--connect @SUITE@ --memorybacking help
+--connect @SUITE@ --numatune help
+--connect @SUITE@ --iothreads help

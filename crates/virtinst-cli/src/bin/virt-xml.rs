@@ -15,7 +15,10 @@ use std::io::{BufRead, IsTerminal, Write};
 use clap::Parser;
 use virt::domain::Domain;
 use virtinst_cli::cli::{self, fail, print_stdout};
-use virtinst_cli::parser::{find_objects_to_edit, lookup_prop, parse_edit, parse_new, ParserDef};
+use virtinst_cli::parser::{
+    find_objects_to_edit, lookup_prop, parse_edit, parse_guest_edit, parse_new, parse_scalar_edit,
+    ParserDef,
+};
 use virtinst_cli::parsers;
 use virtinst_cli::xmlutil;
 use virtinst_core::connection::Connection;
@@ -121,6 +124,33 @@ struct Args {
     /// --graphics none
     #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     graphics: Vec<String>,
+
+    /// Configure guest memory allocation. Ex:
+    /// --memory 1024 (in MiB)
+    /// --memory memory=1024,currentMemory=512
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    memory: Vec<String>,
+
+    /// Set domain <iothreads> and <iothreadids> configuration.
+    #[arg(long, help_heading = "XML options")]
+    iothreads: Vec<String>,
+
+    /// Tune NUMA policy for the domain process.
+    #[arg(long, help_heading = "XML options")]
+    numatune: Vec<String>,
+
+    /// Tune memory policy for the domain process.
+    #[arg(long, help_heading = "XML options")]
+    memtune: Vec<String>,
+
+    /// Tune blkio policy for the domain process.
+    #[arg(long, help_heading = "XML options")]
+    blkiotune: Vec<String>,
+
+    /// Set memory backing policy for the domain process. Ex:
+    /// --memorybacking hugepages=on
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    memorybacking: Vec<String>,
 
     /// Configure a guest controller device. Ex:
     /// --controller type=usb,model=qemu-xhci
@@ -262,6 +292,12 @@ fn xml_options(args: &Args) -> Vec<(Change, &Vec<String>)> {
         legacy("disk", &args.disk),
         engine("network", &args.network),
         engine("graphics", &args.graphics),
+        engine("memory", &args.memory),
+        engine("iothreads", &args.iothreads),
+        engine("numatune", &args.numatune),
+        engine("memtune", &args.memtune),
+        engine("blkiotune", &args.blkiotune),
+        engine("memorybacking", &args.memorybacking),
         engine("controller", &args.controller),
         engine("input", &args.input),
         engine("serial", &args.serial),
@@ -377,12 +413,55 @@ fn validate_action(action: &Action, args: &Args) {
             def.cli_flag_name()
         ));
     }
+    if action.name == ActionName::BuildXml
+        && def.guest_propname.is_some_and(|p| GUEST.prop(p).is_some())
+    {
+        // Upstream builds a whole default guest here (`Guest.set_defaults`),
+        // which comes with the virt-install port.
+        fail(format!(
+            "--build-xml {} is not implemented yet",
+            def.cli_flag_name()
+        ));
+    }
+    if !prop_is_list(def) {
+        if action.name == ActionName::RemoveDevice {
+            fail(format!(
+                "Cannot use --remove-device with {}",
+                def.cli_flag_name()
+            ));
+        }
+        if action.name == ActionName::AddDevice {
+            fail(format!(
+                "Cannot use --add-device with {}",
+                def.cli_flag_name()
+            ));
+        }
+    }
     if args.update && def.guest_propname.is_none() {
         fail(format!(
             "Don't know how to --update for {}",
             def.cli_flag_name()
         ));
     }
+}
+
+/// `parserclass.prop_is_list(stub_guest)`.
+fn prop_is_list(def: &ParserDef) -> bool {
+    let Some(propname) = def.guest_propname else {
+        return false;
+    };
+    let mut class = &GUEST;
+    let mut is_list = false;
+    for piece in propname.split('.') {
+        match class.child(piece) {
+            Some(cp) => {
+                is_list = !cp.is_single;
+                class = cp.class;
+            }
+            None => return false,
+        }
+    }
+    is_list
 }
 
 /// `parse_action`.
@@ -442,6 +521,31 @@ fn perform_engine(
         pending: Some((def, idx)),
     };
     match action.name {
+        ActionName::Edit if def.guest_propname.is_none() => {
+            // `action_edit`: the guest itself is the object.
+            if let Some(sel) = action.selector.as_deref() {
+                if sel != "1" && sel != "all" {
+                    fail(format!(
+                        "'--edit {sel}' doesn't make sense with {}, just use empty '--edit'",
+                        def.cli_flag_name()
+                    ));
+                }
+            }
+            for optstr in &action.values {
+                parse_guest_edit(def, guest, optstr).unwrap_or_else(|e| fail(e));
+            }
+            vec![]
+        }
+        ActionName::Edit if def.guest_propname.is_some_and(|p| guest.has_prop(p)) => {
+            let idxs = find_objects_to_edit(def, guest, "edit", action.selector.as_deref())
+                .unwrap_or_else(|e| fail(e));
+            for _ in idxs {
+                for optstr in &action.values {
+                    parse_scalar_edit(def, guest, optstr).unwrap_or_else(|e| fail(e));
+                }
+            }
+            vec![]
+        }
         ActionName::Edit => {
             let idxs = find_objects_to_edit(def, guest, "edit", action.selector.as_deref())
                 .unwrap_or_else(|e| fail(e));
