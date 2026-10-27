@@ -70,8 +70,12 @@ use virtinst_core::connection::{Connection, Domain};
 use virtinst_xml::{list_add, parse_libvirt_xml, to_xml_string, Document, Element};
 
 #[derive(Parser)]
-#[command(name = "virt-xml")]
+#[command(name = "virt-xml", disable_version_flag = true)]
 struct Args {
+    /// show program's version number and exit
+    #[arg(long = "version")]
+    _version: bool,
+
     /// Domain name — required for --edit/--add-device/--remove-device,
     /// unused (and not required) for --build-xml.
     domain: Option<String>,
@@ -176,6 +180,7 @@ struct Args {
 }
 
 fn main() {
+    virtinst_cli::cli::handle_version_flag();
     let args = Args::parse();
 
     if args.build_xml {
