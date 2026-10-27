@@ -5,7 +5,7 @@
 //! or only print the result (`--print-diff`, `--print-xml`).
 //!
 //! Options backed by a ported `VirtCLIParser` (`virtinst_cli::parsers`)
-//! go through it. The devices not ported yet (`--disk`, `--sound`, ...)
+//! go through it. The devices not ported yet (`--disk`, `--tpm`, ...)
 //! still use the older hand-written optstring code in `virtinst_cli`,
 //! bridged in [`legacy`] onto the same guest document, until their
 //! parser group is ported.
@@ -104,9 +104,17 @@ struct Args {
     #[arg(long, help_heading = "XML options")]
     disk: Vec<String>,
 
-    /// Configure a guest controller device.
-    #[arg(long, help_heading = "XML options")]
+    /// Configure a guest controller device. Ex:
+    /// --controller type=usb,model=qemu-xhci
+    /// --controller type=scsi,model=virtio-scsi
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     controller: Vec<String>,
+
+    /// Configure a guest input device. Ex:
+    /// --input tablet
+    /// --input keyboard,bus=usb
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    input: Vec<String>,
 
     /// Configure a guest filesystem device.
     #[arg(long, help_heading = "XML options")]
@@ -120,9 +128,13 @@ struct Args {
     #[arg(long, help_heading = "XML options")]
     tpm: Vec<String>,
 
-    /// Configure guest sound device emulation.
+    /// Configure guest sound device emulation
     #[arg(long, help_heading = "XML options")]
     sound: Vec<String>,
+
+    /// Configure host audio backend for sound devices
+    #[arg(long, help_heading = "XML options")]
+    audio: Vec<String>,
 
     /// Configure guest video hardware.
     #[arg(long, help_heading = "XML options")]
@@ -184,15 +196,17 @@ fn xml_options(args: &Args) -> Vec<(Change, &Vec<String>)> {
     };
     vec![
         legacy("disk", &args.disk),
-        legacy("controller", &args.controller),
+        engine("controller", &args.controller),
+        engine("input", &args.input),
         legacy("filesystem", &args.filesystem),
-        legacy("smartcard", &args.smartcard),
-        legacy("tpm", &args.tpm),
-        legacy("sound", &args.sound),
-        legacy("video", &args.video),
-        legacy("redirdev", &args.redirdev),
+        engine("sound", &args.sound),
+        engine("audio", &args.audio),
         engine("watchdog", &args.watchdog),
+        engine("video", &args.video),
+        legacy("smartcard", &args.smartcard),
+        legacy("redirdev", &args.redirdev),
         engine("memballoon", &args.memballoon),
+        legacy("tpm", &args.tpm),
         engine("panic", &args.panic),
         legacy("vsock", &args.vsock),
     ]
@@ -317,14 +331,19 @@ struct TouchedDev {
 
 /// `_find_objects_to_edit` + `run_parser` for each, and the other
 /// actions, on `guest`.
-fn perform_action(action: &Action, guest: &mut XmlObject) -> Vec<TouchedDev> {
+fn perform_action(action: &Action, guest: &mut XmlObject, conn: &Connection) -> Vec<TouchedDev> {
     match action.change {
-        Change::Engine(def) => perform_engine(action, def, guest),
+        Change::Engine(def) => perform_engine(action, def, guest, conn),
         Change::Legacy(name) => legacy::perform(action, name, guest),
     }
 }
 
-fn perform_engine(action: &Action, def: &ParserDef, guest: &mut XmlObject) -> Vec<TouchedDev> {
+fn perform_engine(
+    action: &Action,
+    def: &ParserDef,
+    guest: &mut XmlObject,
+    conn: &Connection,
+) -> Vec<TouchedDev> {
     let dev_xml = |guest: &mut XmlObject, idx: usize| TouchedDev {
         xml: lookup_prop(guest, def)[idx].get_xml(),
     };
@@ -345,8 +364,7 @@ fn perform_engine(action: &Action, def: &ParserDef, guest: &mut XmlObject) -> Ve
             let mut devs = vec![];
             for optstr in &action.values {
                 for idx in parse_new(def, guest, optstr).unwrap_or_else(|e| fail(e)) {
-                    let dev = &mut lookup_prop(guest, def)[idx];
-                    parsers::misc::set_defaults(def.cli_arg_name, dev).unwrap_or_else(|e| fail(e));
+                    parsers::set_defaults(def, guest, idx, Some(conn)).unwrap_or_else(|e| fail(e));
                     devs.push(dev_xml(guest, idx));
                 }
             }
@@ -395,10 +413,15 @@ fn guest_name(guest: &XmlObject) -> String {
 
 /// `prepare_changes`: the action on a copy of `orig`, the diff or XML
 /// printed if asked for.
-fn prepare_changes(orig: &XmlObject, args: &Args, action: &Action) -> (Vec<TouchedDev>, XmlObject) {
+fn prepare_changes(
+    orig: &XmlObject,
+    args: &Args,
+    action: &Action,
+    conn: &Connection,
+) -> (Vec<TouchedDev>, XmlObject) {
     let origxml = orig.get_document_xml();
     let mut xmlobj = XmlObject::parse(&GUEST, &origxml).unwrap_or_else(|e| fail(e));
-    let devs = perform_action(action, &mut xmlobj);
+    let devs = perform_action(action, &mut xmlobj, conn);
     let newxml = xmlobj.get_document_xml();
     let diff = xmlutil::diff(&origxml, &newxml, "Original XML", "Altered XML");
     if diff.is_empty() {
@@ -580,6 +603,7 @@ fn main() {
     }
 
     let conn = cli::get_connection(args.connect.as_deref());
+    virtinst_cli::parser::set_conn_support(cli::conn_support(&conn));
     let action = parse_action(&args);
 
     let (domain, inactive, active) = match &args.domain {
@@ -603,7 +627,7 @@ fn main() {
     if action.name == ActionName::BuildXml {
         let mut guest = inactive;
         let devs = match action.change {
-            Change::Engine(def) => perform_engine(&action, def, &mut guest),
+            Change::Engine(def) => perform_engine(&action, def, &mut guest, &conn),
             Change::Legacy(name) => legacy::build_xml(name, &action.values),
         };
         for dev in devs {
@@ -619,7 +643,7 @@ fn main() {
         }
         match (&active, &domain) {
             (Some(active), Some(domain)) => {
-                let (devs, _) = prepare_changes(active, &args, &action);
+                let (devs, _) = prepare_changes(active, &args, &action, &conn);
                 update_changes(domain, &devs, &action, args.confirm);
                 performed_update = true;
             }
@@ -632,7 +656,7 @@ fn main() {
     }
 
     let original_xml = inactive.get_document_xml();
-    let (_devs, xmlobj) = prepare_changes(&inactive, &args, &action);
+    let (_devs, xmlobj) = prepare_changes(&inactive, &args, &action, &conn);
     let name = guest_name(&xmlobj);
     if !define {
         if args.start {

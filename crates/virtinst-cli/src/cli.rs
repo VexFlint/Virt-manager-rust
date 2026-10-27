@@ -400,6 +400,18 @@ pub fn get_connection(uri: Option<&str>) -> Connection {
     }
 }
 
+/// The `conn.support` checks the parsers read: `conn_usb3_ports`
+/// (libvirt 1.3.5) and `conn_qemu_xhci` (libvirt 3.3.0, qemu 2.9.0).
+pub fn conn_support(conn: &Connection) -> crate::parser::ConnSupport {
+    let c = conn.as_connect();
+    let libvirt = c.get_lib_version().unwrap_or(0);
+    let hv = c.get_hyp_version().unwrap_or(0);
+    crate::parser::ConnSupport {
+        usb3_ports: libvirt >= 1_003_005,
+        qemu_xhci: conn.uri().is_qemu() && libvirt >= 3_003_000 && hv >= 2_009_000,
+    }
+}
+
 /// `validate_mac`: a MAC in use by another VM fails unless
 /// `--check mac_in_use=off`.
 pub fn validate_mac(conn: &Connection, macaddr: &str) {

@@ -211,6 +211,36 @@ fn pattern_matches(pattern: &str, s: &str) -> bool {
 /// One parser's custom `_parse` pre-processing of the option dict.
 pub type PreParse = fn(&mut OptDict) -> Result<(), Error>;
 
+/// A parser's own `_parse` override, run before the generic one:
+/// `Some(objects)` replaces the generic parse with those (possibly no)
+/// objects, `None` falls through to it.
+pub type CustomParse = fn(&mut ParseCtx) -> Result<Option<Vec<XmlObject>>, Error>;
+
+/// The `conn.support` answers parsers read.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ConnSupport {
+    /// `conn_qemu_xhci`.
+    pub qemu_xhci: bool,
+    /// `conn_usb3_ports`.
+    pub usb3_ports: bool,
+}
+
+thread_local! {
+    static CONN_SUPPORT: std::cell::Cell<ConnSupport> =
+        const { std::cell::Cell::new(ConnSupport { qemu_xhci: false, usb3_ports: true }) };
+}
+
+/// Record the connection's support answers for the parsers
+/// (`guest.conn.support`).
+pub fn set_conn_support(support: ConnSupport) {
+    CONN_SUPPORT.with(|c| c.set(support));
+}
+
+/// The connection's support answers.
+pub fn conn_support() -> ConnSupport {
+    CONN_SUPPORT.with(|c| c.get())
+}
+
 /// A `VirtCLIParser` subclass.
 pub struct ParserDef {
     pub cli_arg_name: &'static str,
@@ -221,6 +251,7 @@ pub struct ParserDef {
     pub supports_clearxml: bool,
     pub args: Vec<ArgDef>,
     pub pre_parse: Option<PreParse>,
+    pub custom_parse: Option<CustomParse>,
     /// The class of a new object, for list `guest_propname`s.
     pub class: Option<&'static XmlClass>,
 }
@@ -241,6 +272,7 @@ impl ParserDef {
             supports_clearxml: true,
             args: vec![],
             pre_parse: None,
+            custom_parse: None,
             class,
         };
         def.args
@@ -734,6 +766,17 @@ pub fn parse_new(
             optdict,
             editing: false,
         };
+        if let Some(custom) = def.custom_parse {
+            if let Some(objs) = custom(&mut ctx).map_err(|e| raised(def, optstr, &e))? {
+                let mut idxs = vec![];
+                for obj in objs {
+                    let (parent, _, _) = guest_list(guest, propname);
+                    parent.add_child(obj);
+                    idxs.push(lookup_prop(guest, def).len() - 1);
+                }
+                return Ok(idxs);
+            }
+        }
         parse_into(&mut ctx, &mut obj).map_err(|e| to_fail(def, optstr, e))?;
     }
     let (parent, _, _) = guest_list(guest, propname);
@@ -754,6 +797,22 @@ pub fn parse_edit(
     }
     let propname = def.guest_propname.expect("guest backed parser");
     let optdict = def.optdict(optstr);
+    if let Some(custom) = def.custom_parse {
+        let mut ctx = ParseCtx {
+            def,
+            guest,
+            optstr: optstr.to_string(),
+            optdict: optdict.clone(),
+            editing: true,
+        };
+        // Objects a custom parse makes aren't added when editing.
+        if custom(&mut ctx)
+            .map_err(|e| raised(def, optstr, &e))?
+            .is_some()
+        {
+            return Ok(());
+        }
+    }
     let mut taken = {
         let (parent, name, _) = guest_list(guest, propname);
         std::mem::take(parent.children_mut(name))
