@@ -1353,6 +1353,57 @@ impl VmmDomain {
         self.redefine_xmlobj(guest).await
     }
 
+    /// `replace_device_xml`: the XML editor's edit of one device,
+    /// swapped in for it in the inactive config.
+    pub async fn replace_device_xml(
+        &self,
+        id: &virtinst_core::devices::DeviceId,
+        newxml: String,
+    ) -> Result<(), String> {
+        let newdoc = virtinst_xml::parse_libvirt_xml(&newxml).map_err(|e| e.to_string())?;
+        let newroot = newdoc.root_element().ok_or("Empty device XML")?;
+        let mut guest = self.make_xmlobj_to_define().await?;
+        let root = guest.root();
+        let Some(editdev) = virtinst_core::devices::find_device(&guest.doc, root, id) else {
+            return Ok(());
+        };
+        let devices = editdev.parent(&guest.doc).ok_or("Device has no parent")?;
+        let idx = devices
+            .children(&guest.doc)
+            .iter()
+            .position(|n| *n == virtinst_xml::Node::Element(editdev))
+            .ok_or("Device not found under its parent")?;
+        let newdev = virtinst_core::xmlbuilder::copy_element(&newdoc, newroot, &mut guest.doc);
+        devices
+            .insert_child(&mut guest.doc, idx, newdev.into())
+            .map_err(|e| e.to_string())?;
+        editdev.detach(&mut guest.doc).map_err(|e| e.to_string())?;
+        self.redefine_xmlobj(guest).await
+    }
+
+    /// `define_xml`: the XML editor's edit of the whole domain.
+    pub async fn define_xml(&self, xml: String) -> Result<(), String> {
+        let handle = self.handle()?;
+        gio::spawn_blocking(move || {
+            Domain::define_xml(handle.connect(), &xml)
+                .map(|_| ())
+                .map_err(|e| e.message().to_string())
+        })
+        .await
+        .map_err(|_| "Worker thread panicked".to_string())??;
+        self.ensure_latest_xml().await;
+        Ok(())
+    }
+
+    /// `get_xml_to_define`: the inactive XML, as the XML editor shows it.
+    pub async fn get_xml_to_define(&self) -> Result<String, String> {
+        self.with_domain(|_, dom| {
+            dom.get_xml_desc(sys::VIR_DOMAIN_XML_INACTIVE | sys::VIR_DOMAIN_XML_SECURE)
+                .map_err(|e| e.message().to_string())
+        })
+        .await
+    }
+
     /// `remove_device`: drop the device from the inactive config. A
     /// device only the running VM has is left alone, as upstream's
     /// `_lookup_device_to_define` does.

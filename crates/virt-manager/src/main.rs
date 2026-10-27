@@ -60,6 +60,7 @@ mod vmmenu;
 mod vmwindow;
 mod vncdisplay;
 mod vsockdetails;
+mod xmleditor;
 
 use clap::Parser;
 
