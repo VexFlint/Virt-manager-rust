@@ -704,6 +704,44 @@ impl OsInfo {
             || self.has_device_id("http://pcisig.com/pci/1af4/1041")
     }
 
+    /// Upstream's `osdict.py`'s `supports_virtiorng()`.
+    pub fn supports_virtiorng(&self) -> bool {
+        self.has_device_id("http://pcisig.com/pci/1af4/1005")
+            || self.has_device_id("http://pcisig.com/pci/1af4/1044")
+    }
+
+    /// Upstream's `osdict.py`'s `supports_virtioballoon()`.
+    pub fn supports_virtioballoon(&self) -> bool {
+        self.has_device_id("http://pcisig.com/pci/1af4/1002")
+            || self.has_device_id("http://pcisig.com/pci/1af4/1045")
+    }
+
+    /// Upstream's `osdict.py`'s `supports_virtioserial()`, without its
+    /// stopgap for osinfo-db's pre-2018 RHEL 6 data.
+    pub fn supports_virtioserial(&self) -> bool {
+        self.has_device_id("http://pcisig.com/pci/1af4/1003")
+            || self.has_device_id("http://pcisig.com/pci/1af4/1043")
+    }
+
+    /// Upstream's `osdict.py`'s `supports_virtioinput()`: virtio1.0-input.
+    pub fn supports_virtioinput(&self) -> bool {
+        self.has_device_id("http://pcisig.com/pci/1af4/1052")
+    }
+
+    /// Upstream's `osdict.py`'s `supports_usb3()`: qemu-xhci.
+    pub fn supports_usb3(&self) -> bool {
+        self.has_device_id("http://pcisig.com/pci/1b36/0004")
+    }
+
+    /// Upstream's `osdict.py`'s `supports_chipset_q35()`: q35, and
+    /// virtio1.0 too when the OS knows virtio-net at all.
+    pub fn supports_chipset_q35(&self) -> bool {
+        if self.supports_virtionet() && !self.has_device_id("http://pcisig.com/pci/1af4/1041") {
+            return false;
+        }
+        self.has_device_id("http://qemu.org/chipset/x86/q35")
+    }
+
     /// Upstream's `osdict.py`'s `supported_netmodels()` — `self.
     /// _device_filter(cls="net")`: every declared device whose
     /// `get_class()` is `"net"`, by display name (`get_name()`, e.g.
