@@ -1156,6 +1156,9 @@ name = "virtinst-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "libc",
+ "log",
+ "virt",
  "virtinst-core",
  "virtinst-xml",
 ]
@@ -1168,6 +1171,8 @@ dependencies = [
  "gio-sys",
  "glib-sys",
  "gobject-sys",
+ "libc",
+ "log",
  "pkg-config",
  "shlex",
  "uuid",

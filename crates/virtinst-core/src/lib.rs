@@ -14,10 +14,12 @@ pub mod capabilities;
 pub mod cloner;
 pub mod connection;
 pub mod devices;
+pub mod diskbackend;
 pub mod domain;
 pub mod install;
 pub mod nodedev;
 pub mod osinfo;
+pub mod progress;
 pub mod storage;
 
 pub mod guest;

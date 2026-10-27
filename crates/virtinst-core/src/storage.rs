@@ -174,7 +174,7 @@ pub struct Pool {
     pub xml: PoolXml,
 }
 
-fn fetch_all_pools(conn: &Connect) -> Vec<Pool> {
+pub(crate) fn fetch_all_pools(conn: &Connect) -> Vec<Pool> {
     conn.list_all_storage_pools(0)
         .unwrap_or_default()
         .into_iter()
@@ -255,7 +255,7 @@ pub fn generate_name(base: &str, suffix: &str, collides: impl Fn(&str) -> bool) 
         .unwrap_or_else(|| format!("{base}{suffix}"))
 }
 
-fn dirname(path: &str) -> &str {
+pub(crate) fn dirname(path: &str) -> &str {
     match path.rfind('/') {
         Some(0) => "/",
         Some(i) => &path[..i],
@@ -263,7 +263,7 @@ fn dirname(path: &str) -> &str {
     }
 }
 
-fn basename(path: &str) -> &str {
+pub(crate) fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
@@ -295,7 +295,7 @@ pub struct ManagedPath {
     pub pool: Option<Pool>,
 }
 
-fn lookup_vol_by_path(conn: &Connect, path: &str) -> Option<StorageVol> {
+pub(crate) fn lookup_vol_by_path(conn: &Connect, path: &str) -> Option<StorageVol> {
     let vol = StorageVol::lookup_by_path(conn, path).ok()?;
     // Make sure it wasn't removed behind libvirt's back.
     vol.get_info().ok()?;
@@ -303,7 +303,7 @@ fn lookup_vol_by_path(conn: &Connect, path: &str) -> Option<StorageVol> {
 }
 
 /// `_check_if_path_managed`.
-fn check_if_path_managed(
+pub(crate) fn check_if_path_managed(
     conn: &Connect,
     path: &str,
 ) -> Result<(Option<StorageVol>, Option<Pool>), String> {
@@ -338,7 +338,7 @@ fn check_if_path_managed(
 }
 
 /// `path_is_url`.
-fn path_is_url(path: &str) -> bool {
+pub(crate) fn path_is_url(path: &str) -> bool {
     let Some((scheme, rest)) = path.split_once("://") else {
         return false;
     };
@@ -353,7 +353,7 @@ fn path_is_url(path: &str) -> bool {
 }
 
 /// `_can_auto_manage`.
-fn can_auto_manage(path: &str) -> bool {
+pub(crate) fn can_auto_manage(path: &str) -> bool {
     if path_is_url(path) {
         return false;
     }
@@ -363,7 +363,7 @@ fn can_auto_manage(path: &str) -> bool {
 }
 
 /// `os.path.abspath`.
-fn abspath(path: &str) -> String {
+pub(crate) fn abspath(path: &str) -> String {
     let joined = if path.starts_with('/') {
         path.to_string()
     } else {
@@ -448,7 +448,7 @@ pub fn manage_path(conn: &Connect, path: &str) -> Result<ManagedPath, String> {
     })
 }
 
-fn xml_escape(s: &str) -> String {
+pub(crate) fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
