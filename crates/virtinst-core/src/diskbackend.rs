@@ -72,6 +72,23 @@ impl VolXml {
     }
 }
 
+/// `str(OSError)` as Python prints it: `[Errno 2] No such file or
+/// directory: '/path'`, the filename only when the failing call had one.
+/// Rust's own `Display` adds ` (os error 2)` instead.
+pub fn oserror_str(e: &std::io::Error, filename: Option<&str>) -> String {
+    let Some(errno) = e.raw_os_error() else {
+        return e.to_string();
+    };
+    let msg = e.to_string();
+    let strerror = msg
+        .strip_suffix(&format!(" (os error {errno})"))
+        .unwrap_or(&msg);
+    match filename {
+        Some(f) => format!("[Errno {errno}] {strerror}: '{f}'"),
+        None => format!("[Errno {errno}] {strerror}"),
+    }
+}
+
 /// `_stat_is_block`.
 fn stat_is_block(path: &str) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.file_type().is_block_device())
@@ -514,12 +531,17 @@ impl CloneStorageCreator {
             return Ok(());
         }
 
-        let err = |e: std::io::Error| {
+        // Only failures inside upstream's inner `try` get the "Error
+        // cloning" wrapping; the sparse pre-allocation is outside it.
+        let err = |e: std::io::Error, filename: Option<&str>| {
             format!(
-                "Error cloning diskimage {} to {}: {e}",
-                self.input_path, self.output_path
+                "Error cloning diskimage {} to {}: {}",
+                self.input_path,
+                self.output_path,
+                oserror_str(&e, filename)
             )
         };
+        let out = Some(self.output_path.as_str());
         // If a destination file exists and sparse flag is True,
         // this priority takes an existing file.
         let (block_size, sparse) =
@@ -530,8 +552,8 @@ impl CloneStorageCreator {
                     .truncate(false)
                     .mode(0o640)
                     .open(&self.output_path)
-                    .map_err(err)?;
-                f.set_len(size_bytes).map_err(err)?;
+                    .map_err(|e| oserror_str(&e, out))?;
+                f.set_len(size_bytes).map_err(|e| oserror_str(&e, None))?;
                 (4096, true)
             } else {
                 (1024 * 1024 * 10, false)
@@ -542,18 +564,19 @@ impl CloneStorageCreator {
             self.output_path
         );
 
-        let mut src = std::fs::File::open(&self.input_path).map_err(err)?;
+        let mut src =
+            std::fs::File::open(&self.input_path).map_err(|e| err(e, Some(&self.input_path)))?;
         let mut dst = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(false)
             .mode(0o640)
             .open(&self.output_path)
-            .map_err(err)?;
+            .map_err(|e| err(e, out))?;
         let mut buf = vec![0u8; block_size];
         let mut total: u64 = 0;
         loop {
-            let s = read_full(&mut src, &mut buf).map_err(err)?;
+            let s = read_full(&mut src, &mut buf).map_err(|e| err(e, None))?;
             if s == 0 {
                 meter.end();
                 break;
@@ -561,9 +584,10 @@ impl CloneStorageCreator {
             let data = &buf[..s];
             // check sequence of zeros
             if sparse && s == 4096 && data.iter().all(|b| *b == 0) {
-                dst.seek(SeekFrom::Current(s as i64)).map_err(err)?;
+                dst.seek(SeekFrom::Current(s as i64))
+                    .map_err(|e| err(e, None))?;
             } else {
-                dst.write_all(data).map_err(err)?;
+                dst.write_all(data).map_err(|e| err(e, None))?;
             }
             total += s as u64;
             if total < size_bytes {
@@ -784,6 +808,16 @@ mod tests {
         assert_eq!(v.format.as_deref(), Some("qcow2"));
         assert_eq!((v.capacity, v.allocation), (1000, 10));
         assert_eq!(v.perms_mode.as_deref(), Some("0600"));
+    }
+
+    #[test]
+    fn oserror_reads_like_python() {
+        let e = std::fs::File::open("/nonexistent/x.img").unwrap_err();
+        assert_eq!(
+            oserror_str(&e, Some("/nonexistent/x.img")),
+            "[Errno 2] No such file or directory: '/nonexistent/x.img'"
+        );
+        assert_eq!(oserror_str(&e, None), "[Errno 2] No such file or directory");
     }
 
     #[test]

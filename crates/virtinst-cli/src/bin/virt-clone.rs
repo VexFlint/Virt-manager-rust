@@ -125,12 +125,8 @@ struct Args {
 /// `_process_src`.
 fn process_src(args: &Args) -> (Option<String>, Option<String>) {
     let src_xml = args.original_xml.as_ref().map(|path| {
-        std::fs::read_to_string(path).unwrap_or_else(|e| {
-            fail(format!(
-                "[Errno {}] {e}: '{path}'",
-                e.raw_os_error().unwrap_or(0)
-            ))
-        })
+        std::fs::read_to_string(path)
+            .unwrap_or_else(|e| fail(virtinst_core::diskbackend::oserror_str(&e, Some(path))))
     });
     if src_xml.is_none() && args.src_name.is_none() {
         fail("An original machine name is required, use '--original src_name' and try again.");
