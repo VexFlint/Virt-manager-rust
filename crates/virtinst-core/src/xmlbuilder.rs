@@ -1057,7 +1057,12 @@ impl XmlObject {
             let is_build = obj.is_build;
             obj.rebind(doc.clone(), anchor, format!("{path}[{}]", i + 1), is_build);
         }
-        let mut standalone = XmlObject::parse(removed.class, &xml).expect("own XML reparses");
+        // A cleared child has no XML left: it stands on its own empty.
+        let mut standalone = if xml.trim().is_empty() {
+            XmlObject::new(removed.class)
+        } else {
+            XmlObject::parse(removed.class, &xml).expect("own XML reparses")
+        };
         standalone.propstore = removed.propstore;
         standalone
     }

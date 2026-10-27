@@ -421,6 +421,9 @@ pub fn conn_support(conn: &Connection) -> crate::parser::ConnSupport {
                 _ => false,
             },
         is_remote: conn.uri().is_remote(),
+        vmport: libvirt >= 1_002_016
+            && (conn.uri().is_test() || (conn.uri().is_qemu() && hv >= 2_002_000)),
+        graphics_listen_none: libvirt >= 2_000_000,
     }
 }
 

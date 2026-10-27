@@ -497,6 +497,12 @@ pub static DOMAIN_DEVICES: XmlClass = XmlClass {
             false,
         ),
         child("tpm", &crate::devices::tpm::DEVICE_TPM, ".", false),
+        child(
+            "graphics",
+            &crate::devices::graphics::DEVICE_GRAPHICS,
+            ".",
+            false,
+        ),
         child("rng", &crate::devices::rng::DEVICE_RNG, ".", false),
         child(
             "watchdog",
@@ -546,6 +552,14 @@ pub static DOMAIN_DEVICES: XmlClass = XmlClass {
     ],
 };
 
+/// `DomainFeatures`, for now only what the device options touch.
+pub static DOMAIN_FEATURES: XmlClass = XmlClass {
+    xml_name: "features",
+    props: &[prop("vmport", "./vmport/@state", Kind::OnOff)],
+    children: &[],
+    prop_order: &[],
+};
+
 /// `Guest`.
 pub static GUEST: XmlClass = XmlClass {
     xml_name: "domain",
@@ -554,8 +568,11 @@ pub static GUEST: XmlClass = XmlClass {
         prop("name", "./name", Kind::Str),
         prop("uuid", "./uuid", Kind::Str),
     ],
-    children: &[child("devices", &DOMAIN_DEVICES, ".", true)],
-    prop_order: &["type", "name", "uuid"],
+    children: &[
+        child("features", &DOMAIN_FEATURES, ".", true),
+        child("devices", &DOMAIN_DEVICES, ".", true),
+    ],
+    prop_order: &["type", "name", "uuid", "features", "devices"],
 };
 
 #[cfg(test)]

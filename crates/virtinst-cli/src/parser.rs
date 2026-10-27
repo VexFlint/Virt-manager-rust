@@ -250,6 +250,10 @@ pub struct ConnSupport {
     pub is_qemu_unprivileged: bool,
     /// `conn.is_remote()`.
     pub is_remote: bool,
+    /// `conn_vmport`.
+    pub vmport: bool,
+    /// `conn_graphics_listen_none`.
+    pub graphics_listen_none: bool,
 }
 
 thread_local! {
@@ -262,6 +266,8 @@ thread_local! {
                 is_test: false,
                 is_qemu_unprivileged: false,
                 is_remote: false,
+                vmport: false,
+                graphics_listen_none: true,
             })
         };
 }
@@ -551,7 +557,13 @@ pub struct ParseCtx<'a> {
     /// A `boot.order=` value, applied with `guest.reorder_boot_order`
     /// once the object is in the guest.
     pub boot_order: Option<i64>,
+    /// Guest side effects of an edit, run on the guest once the edited
+    /// object is back in it (e.g. `guest.change_graphics`).
+    pub post_edit: Option<PostEdit>,
 }
+
+/// See `ParseCtx::post_edit`: the guest and the edited object's index.
+pub type PostEdit = fn(&mut XmlObject, usize) -> Result<(), Error>;
 
 /// `_clearxml_cb`.
 fn clearxml_cb(
@@ -827,6 +839,7 @@ pub fn parse_new(
                 optdict,
                 editing: false,
                 boot_order: None,
+                post_edit: None,
             };
             parse_into(&mut ctx, &mut taken[0])
         };
@@ -845,6 +858,7 @@ pub fn parse_new(
             optdict,
             editing: false,
             boot_order: None,
+            post_edit: None,
         };
         if let Some(custom) = def.custom_parse {
             if let Some(objs) = custom(&mut ctx).map_err(|e| raised(def, optstr, &e))? {
@@ -889,6 +903,7 @@ pub fn parse_edit(
             optdict,
             editing: true,
             boot_order: None,
+            post_edit: None,
         };
         // Objects a custom parse makes aren't added when editing.
         if custom(&mut ctx)
@@ -912,16 +927,20 @@ pub fn parse_edit(
             optdict,
             editing: true,
             boot_order: None,
+            post_edit: None,
         };
         let r = parse_into(&mut ctx, &mut taken[idx]);
-        (r, ctx.boot_order)
+        (r, ctx.boot_order, ctx.post_edit)
     };
     let (parent, name, _) = guest_list(guest, propname);
     *parent.children_mut(name) = taken;
-    let (r, boot_order) = r;
+    let (r, boot_order, post_edit) = r;
     r.map_err(|e| to_fail(def, optstr, e))?;
     if let Some(order) = boot_order {
         reorder_boot_order(guest, BootTarget::Existing(name, idx), order);
+    }
+    if let Some(hook) = post_edit {
+        hook(guest, idx).map_err(|e| raised(def, optstr, &e))?;
     }
     Ok(())
 }
@@ -1042,6 +1061,7 @@ pub fn lookup_children(
             optdict: optdict.clone(),
             editing: true,
             boot_order: None,
+            post_edit: None,
         };
         let mut ret = vec![];
         for (i, inst) in objs.iter().enumerate() {
