@@ -575,6 +575,9 @@ clone_invalid "Either --auto-clone or --file" "${G[@]}" $CLONE_UNMANAGED
 clone_invalid "overwrite the existing path" "${G[@]}" $CLONE_UNMANAGED --file virt-install
 clone_invalid "matching name 'default-vol'" "${G[@]}" $CLONE_MANAGED --file /tmp/clonevol
 clone_valid "${G[@]}" $CLONE_NOEXIST --file "$EXISTIMG1" --preserve
+# Self-verified (no upstream fixture): a missing --original-xml fails
+# with Python's str(OSError), as upstream's open() does.
+clone_invalid "ERROR    [Errno 2] No such file or directory: '/idontexist.xml'" "${G[@]}" --original-xml /idontexist.xml --auto-clone
 # Upstream's next case ("StoragePool.install testsuite mocked failure")
 # needs MagicURI's mocked pool failure: not covered.
 
