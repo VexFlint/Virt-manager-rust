@@ -82,6 +82,88 @@ pub fn set_device_path(doc: &mut Document, tpm: Element, val: Option<&str>) {
     super::edit::set_attr(doc, tpm, "backend/device", "path", val);
 }
 
+// `DeviceTpm` as an `XMLBuilder` class, for the CLI parsers.
+
+use crate::xmlbuilder::{child, prop, Kind, XmlClass, XmlObject};
+
+/// `_ActivePCRBanks`.
+pub static TPM_ACTIVE_PCR_BANKS: XmlClass = XmlClass {
+    xml_name: "active_pcr_banks",
+    props: &[
+        prop("sha1", "./sha1", Kind::Bool),
+        prop("sha256", "./sha256", Kind::Bool),
+        prop("sha384", "./sha384", Kind::Bool),
+        prop("sha512", "./sha512", Kind::Bool),
+    ],
+    children: &[],
+    prop_order: &[],
+};
+
+/// `DeviceTpm`.
+pub static DEVICE_TPM: XmlClass = XmlClass {
+    xml_name: "tpm",
+    props: &[
+        prop("type", "./backend/@type", Kind::Str),
+        prop("version", "./backend/@version", Kind::Str),
+        prop("model", "./@model", Kind::Str),
+        prop("device_path", "./backend/device/@path", Kind::Str),
+        prop(
+            "encryption_secret",
+            "./backend/encryption/@secret",
+            Kind::Str,
+        ),
+        prop(
+            "persistent_state",
+            "./backend/@persistent_state",
+            Kind::YesNo,
+        ),
+        prop("debug", "./backend/@debug", Kind::Str),
+        prop("source_type", "./backend/source/@type", Kind::Str),
+        prop("source_path", "./backend/source/@path", Kind::Str),
+        prop("profile_source", "./backend/profile/@source", Kind::Str),
+        prop(
+            "profile_removeDisabled",
+            "./backend/profile/@removeDisabled",
+            Kind::Str,
+        ),
+    ],
+    children: crate::device_children!(child(
+        "active_pcr_banks",
+        &TPM_ACTIVE_PCR_BANKS,
+        "./backend",
+        true
+    )),
+    prop_order: crate::device_prop_order!(),
+};
+
+/// `DeviceTpm.set_defaults`. `default_model` is
+/// `DeviceTpm.default_model(guest)`, asked for only when needed.
+pub fn set_defaults(
+    dev: &mut XmlObject,
+    default_model: impl FnOnce() -> Option<&'static str>,
+) -> Result<(), String> {
+    let empty = |v: Option<String>| v.map_or(true, |s| s.is_empty());
+    if !empty(dev.get_str("device_path")) && empty(dev.get_str("type")) {
+        dev.set("type", Some(TYPE_PASSTHROUGH.into()))?;
+    }
+    if empty(dev.get_str("type")) {
+        // Libvirt requires a backend type to be specified. 'emulator'
+        // may not be available if swtpm is not installed, but trying to
+        // fallback to 'passthrough' in that case isn't really workable.
+        // Instead we specify it unconditionally and let libvirt error.
+        dev.set("type", Some(TYPE_EMULATOR.into()))?;
+    }
+    // passthrough and model and version are all interconnected, so
+    // don't try to set a default model if other bits are set
+    if dev.get_str("type").as_deref() == Some(TYPE_EMULATOR)
+        && empty(dev.get_str("model"))
+        && empty(dev.get_str("version"))
+    {
+        dev.set("model", default_model().map(Into::into))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod edit_tests {
     use super::*;

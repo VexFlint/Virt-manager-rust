@@ -796,13 +796,13 @@ pub fn parse_edit(
         return Ok(());
     }
     let propname = def.guest_propname.expect("guest backed parser");
-    let optdict = def.optdict(optstr);
+    let mut optdict = def.optdict(optstr);
     if let Some(custom) = def.custom_parse {
         let mut ctx = ParseCtx {
             def,
             guest,
             optstr: optstr.to_string(),
-            optdict: optdict.clone(),
+            optdict,
             editing: true,
         };
         // Objects a custom parse makes aren't added when editing.
@@ -812,6 +812,8 @@ pub fn parse_edit(
         {
             return Ok(());
         }
+        // What the custom parse left of the options.
+        optdict = ctx.optdict;
     }
     let mut taken = {
         let (parent, name, _) = guest_list(guest, propname);

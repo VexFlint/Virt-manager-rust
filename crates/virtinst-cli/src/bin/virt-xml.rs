@@ -5,7 +5,7 @@
 //! or only print the result (`--print-diff`, `--print-xml`).
 //!
 //! Options backed by a ported `VirtCLIParser` (`virtinst_cli::parsers`)
-//! go through it. The devices not ported yet (`--disk`, `--tpm`, ...)
+//! go through it. The devices not ported yet (`--disk`, `--filesystem`, ...)
 //! still use the older hand-written optstring code in `virtinst_cli`,
 //! bridged in [`legacy`] onto the same guest document, until their
 //! parser group is ported.
@@ -146,6 +146,11 @@ struct Args {
     #[arg(long, help_heading = "XML options")]
     redirdev: Vec<String>,
 
+    /// Configure a guest RNG device. Ex:
+    /// --rng /dev/urandom
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    rng: Vec<String>,
+
     /// Configure a guest watchdog device.
     #[arg(long, help_heading = "XML options")]
     watchdog: Vec<String>,
@@ -205,10 +210,11 @@ fn xml_options(args: &Args) -> Vec<(Change, &Vec<String>)> {
         engine("audio", &args.audio),
         engine("watchdog", &args.watchdog),
         engine("video", &args.video),
-        legacy("smartcard", &args.smartcard),
+        engine("smartcard", &args.smartcard),
         legacy("redirdev", &args.redirdev),
         engine("memballoon", &args.memballoon),
-        legacy("tpm", &args.tpm),
+        engine("tpm", &args.tpm),
+        engine("rng", &args.rng),
         engine("panic", &args.panic),
         legacy("vsock", &args.vsock),
     ]

@@ -26,7 +26,9 @@ Estado para quem continuar o trabalho de CLI. Leia o CLAUDE.md antes.
    (copie de `tests/test_cli.py` do upstream). Teste rápido: rode o harness.
 
 ## Portados no motor
-watchdog, memballoon, panic, controller, input, sound, audio, video.
+watchdog, memballoon, panic, controller, input, sound, audio, video,
+smartcard, tpm, rng. `parsers/charsrc.rs` tem `add_char_source_args` e
+`add_device_seclabel_args` (prontos para serial/console/channel/parallel).
 
 ## Falta (prioridade)
 1. Parsers: disk, network, graphics, serial/parallel/channel/console, hostdev,
