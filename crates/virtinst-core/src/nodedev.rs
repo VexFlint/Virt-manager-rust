@@ -31,8 +31,12 @@ pub struct NodeDevice {
     pub type_id: Option<String>,
     /// `_capability_type`: `./capability/capability/@type`.
     pub capability_type: Option<String>,
-    /// `./capability/host`, for `scsi_host` devices.
+    /// `./capability/host`, for `scsi_host` and `scsi` devices.
     pub host: Option<String>,
+    /// `./capability/target`, for `scsi` devices.
+    pub target: Option<String>,
+    /// `./capability/lun`, for `scsi` devices.
+    pub lun: Option<String>,
 }
 
 fn text(doc: &Document, el: Element, path: &[&str]) -> Option<String> {
@@ -79,6 +83,8 @@ impl NodeDevice {
                 .and_then(|c| c.attribute(&doc, "type"))
                 .map(str::to_string),
             host: cap_text("host"),
+            target: cap_text("target"),
+            lun: cap_text("lun"),
         })
     }
 

@@ -1,7 +1,8 @@
 # One virt-xml invocation per line, run against upstream's own virt-xml
 # (the oracle) and ours with the same arguments: stdout, stderr and the
 # exit code must match byte for byte. Lines are word-split by bash;
-# @SUITE@ is test:// on upstream's tests/data/testdriver/testsuite.xml.
+# @SUITE@ is test:// on upstream's tests/data/testdriver/testsuite.xml,
+# @FULL@ the same on testdriver.xml (URI-TEST-FULL, many node devices).
 #
 # --watchdog / --memballoon / --panic (ParserWatchdog, ParserMemballoon,
 # ParserPanic)
@@ -219,3 +220,51 @@
 --connect @SUITE@ test-for-virtxml --edit --channel=?
 --connect @SUITE@ --build-xml --channel spicevmc
 --connect @SUITE@ --build-xml --serial tcp,host=:4000
+
+# --hostdev / --redirdev (ParserHostdev, ParserRedir), boot.order
+--connect @FULL@ --build-xml --hostdev net_00_1c_25_10_b1_e4,boot_order=4,rom_bar=off
+--connect @FULL@ --build-xml --host-device usb_device_781_5151_2004453082054CA1BEEE
+--connect @FULL@ --build-xml --host-device 001.003
+--connect @FULL@ --build-xml --hostdev 15:0.1
+--connect @FULL@ --build-xml --host-device 2:15:0.2
+--connect @FULL@ --build-xml --hostdev 0:15:0.3,address.type=pci,address.zpci.uid=0xffff,address.zpci.fid=0xffffffff
+--connect @FULL@ --build-xml --host-device 0x062a:0x0001,driver_name=vfio
+--connect @FULL@ --build-xml --host-device 0483:2016
+--connect @FULL@ --build-xml --host-device pci_8086_2829_scsi_host_scsi_device_lun0,rom.bar=on
+--connect @FULL@ --build-xml --hostdev usb_5_20 --hostdev usb_5_21
+--connect @FULL@ --build-xml --hostdev wlan0,type=net
+--connect @FULL@ --build-xml --hostdev /dev/vdz,type=storage
+--connect @FULL@ --build-xml --hostdev /dev/pty7,type=misc
+--connect @FULL@ --build-xml --hostdev usb_device_781_5567_04010819E733024A202F,source.startupPolicy=optional
+--connect @FULL@ --build-xml --hostdev mdev_8e37ee90_2b51_45e3_9b25_bf8283c03110,address.type=ccw,address.cssid=0xfe,address.ssid=0x1,address.devno=0x0008
+--connect @FULL@ --build-xml --hostdev mdev_11f92c9d_b0b0_4016_b306_a8071277f8b9
+--connect @FULL@ --build-xml --hostdev mdev_4b20d080_1b54_4048_85b3_a6a62d165c01,address.type=pci,address.domain=0x0000,address.bus=0x01,address.slot=0x01,address.function=0x0,address.zpci.uid=0x0001,address.zpci.fid=0x00000001
+--connect @FULL@ --build-xml --host-device 1d6b:2
+--connect @FULL@ --build-xml --host-device pci_8086_2850_scsi_host_scsi_host
+--connect @FULL@ --build-xml --host-device foobarhostdev
+--connect @FULL@ --build-xml --host-device 300:400
+--connect @FULL@ --build-xml --host-device 1:2:3
+--connect @FULL@ --build-xml --host-device zz:15:0.1
+--connect @FULL@ --build-xml --hostdev 15:0.1,boot.order=x
+--connect @SUITE@ test-for-virtxml --edit --host-device 0x04b3:0x4485,driver_name=vfio,type=usb --print-diff
+--connect @SUITE@ test-for-virtxml --edit all --host-device driver.name=vfio --print-diff
+--connect @SUITE@ test-for-virtxml --edit name=usb_device_4b3_4485_noserial --hostdev rom.bar=off --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --host-device 0x04b3:0x4485 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --hostdev usb_device_483_2016_noserial,boot.order=1 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --hostdev 0483:2016,boot.order=5 --print-diff
+--connect @SUITE@ test-for-virtxml --edit 2 --hostdev boot.order=1 --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --host-device 1 --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --hostdev type=pci --print-diff
+--connect @SUITE@ test --edit --hostdev driver_name=vfio
+--connect @SUITE@ test-for-virtxml --edit --hostdev=?
+--connect @SUITE@ test-for-virtxml --edit --redirdev type=spicevmc,server=example.com:12345 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --redirdev usb,type=spicevmc --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --redirdev usb,type=tcp,server=localhost:4000 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --redirdev usb,type=tcp,server=127.0.0.1:4002,boot_order=3 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --redirdev usb,type=tcp,server=127.0.0.1:4002,boot_order=1 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --redirdev default --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --redirdev type=unix,source.path=/tmp/foo.socket,log.file=/tmp/123.log --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --redirdev none --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --redirdev all --print-diff
+--connect @SUITE@ test-for-virtxml --edit --redirdev=?
+--connect @SUITE@ --build-xml --redirdev usb,type=tcp,server=:4000

@@ -179,6 +179,140 @@ pub fn set_startup_policy(doc: &mut Document, hostdev: Element, policy: Option<&
     super::edit::set_attr(doc, hostdev, "source", "startupPolicy", policy);
 }
 
+// `DeviceHostdev` as an `XMLBuilder` class, for the CLI parsers.
+
+use crate::nodedev::NodeDevice;
+use crate::xmlbuilder::{prop, Kind, Value, XmlClass, XmlObject};
+
+/// `DeviceHostdev`.
+pub static DEVICE_HOSTDEV: XmlClass = XmlClass {
+    xml_name: "hostdev",
+    props: &[
+        prop("mode", "./@mode", Kind::Str),
+        prop("type", "./@type", Kind::Str),
+        prop("managed", "./@managed", Kind::YesNo),
+        prop("model", "./@model", Kind::Str),
+        prop("display", "./@display", Kind::Str),
+        prop("ramfb", "./@ramfb", Kind::Str),
+        prop("vendor", "./source/vendor/@id", Kind::Str),
+        prop("product", "./source/product/@id", Kind::Str),
+        prop("device", "./source/address/@device", Kind::Str),
+        prop("bus", "./source/address/@bus", Kind::Str),
+        prop("startup_policy", "./source/@startupPolicy", Kind::Str),
+        prop("domain", "./source/address/@domain", Kind::Str),
+        prop("function", "./source/address/@function", Kind::Str),
+        prop("slot", "./source/address/@slot", Kind::Str),
+        prop("driver_name", "./driver/@name", Kind::Str),
+        prop("rom_bar", "./rom/@bar", Kind::OnOff),
+        prop("scsi_adapter", "./source/adapter/@name", Kind::Str),
+        prop("scsi_bus", "./source/address/@bus", Kind::Int),
+        prop("scsi_target", "./source/address/@target", Kind::Int),
+        prop("scsi_unit", "./source/address/@unit", Kind::Int),
+        prop("net_interface", "./source/interface", Kind::Str),
+        prop("misc_char", "./source/char", Kind::Str),
+        prop("storage_block", "./source/block", Kind::Str),
+        prop("uuid", "./source/address/@uuid", Kind::Str),
+    ],
+    children: crate::device_children!(),
+    prop_order: crate::device_prop_order!(
+        "mode", "type", "managed", "vendor", "product", "domain", "bus", "slot", "function",
+        "model", "display", "ramfb",
+    ),
+};
+
+/// `DeviceHostdev.set_from_nodedev`. `all` is
+/// `conn.fetch_all_nodedevs()`.
+pub fn set_from_nodedev(
+    dev: &mut XmlObject,
+    nodedev: Option<&NodeDevice>,
+    all: &[NodeDevice],
+) -> Result<(), String> {
+    let s = |v: &Option<String>| v.as_deref().map(Value::from);
+    let Some(nodedev) = nodedev else {
+        return Err("'NoneType' object has no attribute 'device_type'".into());
+    };
+    match nodedev.device_type.as_deref() {
+        Some("pci") => {
+            dev.set("type", Some("pci".into()))?;
+            dev.set("domain", s(&nodedev.domain))?;
+            dev.set("bus", s(&nodedev.bus))?;
+            dev.set("slot", s(&nodedev.slot))?;
+            dev.set("function", s(&nodedev.function))?;
+        }
+        Some("usb_device") => {
+            dev.set("type", Some("usb".into()))?;
+            dev.set("vendor", s(&nodedev.vendor_id))?;
+            dev.set("product", s(&nodedev.product_id))?;
+            let count = all
+                .iter()
+                .filter(|d| {
+                    d.device_type.as_deref() == Some("usb_device")
+                        && d.vendor_id == nodedev.vendor_id
+                        && d.product_id == nodedev.product_id
+                })
+                .count();
+            if count > 1 {
+                dev.set("bus", s(&nodedev.bus))?;
+                dev.set("device", s(&nodedev.device))?;
+            }
+        }
+        Some("net") => {
+            let founddev = all
+                .iter()
+                .find(|d| Some(&d.name) == nodedev.parent.as_ref());
+            return set_from_nodedev(dev, founddev, all);
+        }
+        Some("scsi") => {
+            dev.set("type", Some("scsi".into()))?;
+            let host = nodedev.host.as_deref().unwrap_or("None");
+            dev.set("scsi_adapter", Some(format!("scsi_host{host}").into()))?;
+            dev.set("scsi_bus", s(&nodedev.bus))?;
+            dev.set("scsi_target", s(&nodedev.target))?;
+            dev.set("scsi_unit", s(&nodedev.lun))?;
+            dev.set("managed", Some(Value::Bool(false)))?;
+        }
+        Some("mdev") => {
+            dev.set("type", Some("mdev".into()))?;
+            let type_id = nodedev.type_id.as_deref().unwrap_or_default();
+            if type_id == "vfio_ccw-io" {
+                dev.set("model", Some("vfio-ccw".into()))?;
+                dev.set("managed", Some("no".into()))?;
+            } else if type_id == "vfio_ap-passthrough" {
+                dev.set("model", Some("vfio-ap".into()))?;
+                dev.set("managed", Some("no".into()))?;
+            } else if super::build::is_vfio_pci_mdev(type_id) {
+                dev.set("model", Some("vfio-pci".into()))?;
+                dev.set("managed", Some("yes".into()))?;
+                dev.set("display", Some("off".into()))?;
+                dev.set("ramfb", Some("off".into()))?;
+            } else {
+                return Err(format!(
+                    "Don't know how to generate nodedev for mdev type id '{type_id}'"
+                ));
+            }
+            dev.set("uuid", Some(nodedev.get_mdev_uuid().into()))?;
+        }
+        other => {
+            return Err(format!(
+                "Unsupported node device type '{}'",
+                other.unwrap_or("None")
+            ))
+        }
+    }
+    Ok(())
+}
+
+/// `DeviceHostdev.set_defaults`.
+pub fn set_defaults(dev: &mut XmlObject, is_xen: bool) -> Result<(), String> {
+    if dev.get("managed").is_none() {
+        dev.set("managed", Some(if is_xen { "no" } else { "yes" }.into()))?;
+    }
+    if dev.get_str("mode").map_or(true, |m| m.is_empty()) {
+        dev.set("mode", Some("subsystem".into()))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod edit_tests {
     use super::*;

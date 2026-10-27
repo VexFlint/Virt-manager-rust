@@ -927,6 +927,14 @@ impl XmlObject {
         f(&mut doc, el)
     }
 
+    /// [`XmlObject::with_doc`] without writing pending sets first: for
+    /// direct edits that must not change when the sets land.
+    pub fn with_doc_unsynced<R>(&self, f: impl FnOnce(&mut Document, Element) -> R) -> Option<R> {
+        let mut doc = self.doc.borrow_mut();
+        let el = find(&doc, self.anchor, &XPath::parse(&self.rel))?;
+        Some(f(&mut doc, el))
+    }
+
     /// The element backing this object, when it exists.
     pub fn element(&self) -> Option<Element> {
         let doc = self.doc.borrow();

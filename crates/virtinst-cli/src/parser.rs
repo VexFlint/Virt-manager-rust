@@ -223,11 +223,35 @@ pub struct ConnSupport {
     pub qemu_xhci: bool,
     /// `conn_usb3_ports`.
     pub usb3_ports: bool,
+    /// `conn.is_xen()`.
+    pub is_xen: bool,
 }
 
 thread_local! {
     static CONN_SUPPORT: std::cell::Cell<ConnSupport> =
-        const { std::cell::Cell::new(ConnSupport { qemu_xhci: false, usb3_ports: true }) };
+        const {
+            std::cell::Cell::new(ConnSupport {
+                qemu_xhci: false,
+                usb3_ports: true,
+                is_xen: false,
+            })
+        };
+}
+
+thread_local! {
+    static NODEDEVS: std::cell::RefCell<Vec<virtinst_core::nodedev::NodeDevice>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Record `conn.fetch_all_nodedevs()` for the parsers that look node
+/// devices up (`--hostdev`).
+pub fn set_nodedevs(devs: Vec<virtinst_core::nodedev::NodeDevice>) {
+    NODEDEVS.with(|n| *n.borrow_mut() = devs);
+}
+
+/// `conn.fetch_all_nodedevs()`, as recorded.
+pub fn nodedevs() -> Vec<virtinst_core::nodedev::NodeDevice> {
+    NODEDEVS.with(|n| n.borrow().clone())
 }
 
 /// Record the connection's support answers for the parsers
@@ -496,6 +520,9 @@ pub struct ParseCtx<'a> {
     pub optstr: String,
     pub optdict: OptDict,
     pub editing: bool,
+    /// A `boot.order=` value, applied with `guest.reorder_boot_order`
+    /// once the object is in the guest.
+    pub boot_order: Option<i64>,
 }
 
 /// `_clearxml_cb`.
@@ -754,6 +781,7 @@ pub fn parse_new(
                 optstr: optstr.to_string(),
                 optdict,
                 editing: false,
+                boot_order: None,
             };
             parse_into(&mut ctx, &mut taken[0])
         };
@@ -763,6 +791,7 @@ pub fn parse_new(
         return Ok(vec![0]);
     }
     let mut obj = XmlObject::new(def.class.expect("list parsers have a class"));
+    let boot_order;
     {
         let mut ctx = ParseCtx {
             def,
@@ -770,6 +799,7 @@ pub fn parse_new(
             optstr: optstr.to_string(),
             optdict,
             editing: false,
+            boot_order: None,
         };
         if let Some(custom) = def.custom_parse {
             if let Some(objs) = custom(&mut ctx).map_err(|e| raised(def, optstr, &e))? {
@@ -783,6 +813,10 @@ pub fn parse_new(
             }
         }
         parse_into(&mut ctx, &mut obj).map_err(|e| to_fail(def, optstr, e))?;
+        boot_order = ctx.boot_order;
+    }
+    if let Some(order) = boot_order {
+        reorder_boot_order(guest, BootTarget::New(&mut obj), order);
     }
     let (parent, _, _) = guest_list(guest, propname);
     parent.add_child(obj);
@@ -809,6 +843,7 @@ pub fn parse_edit(
             optstr: optstr.to_string(),
             optdict,
             editing: true,
+            boot_order: None,
         };
         // Objects a custom parse makes aren't added when editing.
         if custom(&mut ctx)
@@ -831,12 +866,112 @@ pub fn parse_edit(
             optstr: optstr.to_string(),
             optdict,
             editing: true,
+            boot_order: None,
         };
-        parse_into(&mut ctx, &mut taken[idx])
+        let r = parse_into(&mut ctx, &mut taken[idx]);
+        (r, ctx.boot_order)
     };
     let (parent, name, _) = guest_list(guest, propname);
     *parent.children_mut(name) = taken;
-    r.map_err(|e| to_fail(def, optstr, e))
+    let (r, boot_order) = r;
+    r.map_err(|e| to_fail(def, optstr, e))?;
+    if let Some(order) = boot_order {
+        reorder_boot_order(guest, BootTarget::Existing(name, idx), order);
+    }
+    Ok(())
+}
+
+/// `Guest.get_bootable_devices`: the device lists that can boot.
+const BOOTABLE_DEVICES: [&str; 4] = ["disk", "interface", "hostdev", "redirdev"];
+
+/// The device `reorder_boot_order` gives the boot index: a new one not
+/// in the guest yet, or the `idx`th of a guest device list.
+enum BootTarget<'o> {
+    New(&'o mut XmlObject),
+    Existing(&'static str, usize),
+}
+
+/// `Guest.reorder_boot_order`: give the target device boot index
+/// `boot_index`, shifting the others' up to the first hole, and drop
+/// the `<os><boot dev=.../>` order (the two are exclusive).
+fn reorder_boot_order(guest: &mut XmlObject, target: BootTarget, boot_index: i64) {
+    // unset legacy boot order
+    guest.with_doc_unsynced(|doc, root| {
+        if let Some(os) = root.find(doc, "os") {
+            for boot in os.find_all(doc, "boot") {
+                let _ = boot.detach(doc);
+            }
+        }
+    });
+    let devices = guest.child_mut("devices");
+    let order = |d: &XmlObject| match d.get_path("boot.order") {
+        Some(Value::Int(n)) => Some(n),
+        _ => None,
+    };
+    // Sort the bootable devices by boot order
+    let mut sorted: Vec<(&str, usize, i64)> = vec![];
+    for name in BOOTABLE_DEVICES {
+        for (i, d) in devices.children(name).iter().enumerate() {
+            if let Some(n) = order(d) {
+                sorted.push((name, i, n));
+            }
+        }
+    }
+    sorted.sort_by_key(|(_, _, n)| *n);
+    // set new boot order
+    let set = |devices: &mut XmlObject, name: &str, i: usize, n: i64| {
+        let _ = devices.children_mut(name)[i].set_path("boot.order", Some(Value::Int(n)));
+    };
+    let skip = match target {
+        BootTarget::New(dev) => {
+            let _ = dev.set_path("boot.order", Some(Value::Int(boot_index)));
+            None
+        }
+        BootTarget::Existing(list, idx) => {
+            set(devices, list, idx, boot_index);
+            Some((list, idx))
+        }
+    };
+    let mut next_boot_index = None;
+    for (name, i, n) in sorted {
+        if skip == Some((name, i)) {
+            continue;
+        }
+        if Some(n) == next_boot_index || n == boot_index {
+            let next = n + 1;
+            next_boot_index = Some(next);
+            set(devices, name, i, next);
+            continue;
+        }
+        if next_boot_index.is_some() {
+            // we found a hole so we can stop here
+            break;
+        }
+    }
+}
+
+/// `set_boot_order_cb`: `boot.order` is applied once the object is in
+/// the guest.
+fn set_boot_order_cb(
+    ctx: &mut ParseCtx,
+    _inst: &mut XmlObject,
+    val: Option<Value>,
+    _arg: &ArgInst,
+) -> Result<(), Error> {
+    let val = val.map(|v| v.to_xml_string()).unwrap_or_default();
+    let n = val
+        .trim()
+        .parse::<i64>()
+        .map_err(|_| format!("invalid literal for int() with base 10: '{val}'"))?;
+    ctx.boot_order = Some(n);
+    Ok(())
+}
+
+/// `_add_common_device_args(boot_order=True)`'s `boot.order`, added
+/// right after the common arguments.
+pub fn add_boot_order_arg(def: &mut ParserDef) {
+    def.arg(ArgDef::new("boot.order", "boot.order").cb(set_boot_order_cb));
+    def.alias("boot.order", &["boot_order"]);
 }
 
 /// `lookup_child_from_option_string`: the indexes of the objects every
@@ -856,6 +991,7 @@ pub fn lookup_children(
             optstr: optstr.to_string(),
             optdict: optdict.clone(),
             editing: true,
+            boot_order: None,
         };
         let mut ret = vec![];
         for (i, inst) in objs.iter().enumerate() {
