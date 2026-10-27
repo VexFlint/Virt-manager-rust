@@ -781,12 +781,6 @@ mod legacy {
         match name {
             "vsock" => apply_vsock_optstr(doc, el, optstr),
             "disk" => apply_disk_optstr(doc, el, optstr),
-            "sound" => apply_sound_optstr(doc, el, optstr),
-            "video" => apply_video_optstr(doc, el, optstr),
-            "controller" => apply_controller_optstr(doc, el, optstr),
-            "tpm" => apply_tpm_optstr(doc, el, optstr),
-            "smartcard" => apply_smartcard_optstr(doc, el, optstr),
-            "redirdev" => apply_redirdev_optstr(doc, el, optstr),
             "filesystem" => apply_filesystem_optstr(doc, el, optstr),
             _ => unreachable!("not a legacy device: {name}"),
         }
@@ -797,12 +791,6 @@ mod legacy {
         Ok(match name {
             "vsock" => list_add(doc, root, d, &vsock_from_optstr(optstr)?),
             "disk" => list_add(doc, root, d, &disk_from_optstr(optstr)?),
-            "sound" => list_add(doc, root, d, &sound_from_optstr(optstr)?),
-            "video" => list_add(doc, root, d, &video_from_optstr(optstr)?),
-            "controller" => list_add(doc, root, d, &controller_from_optstr(optstr)?),
-            "tpm" => list_add(doc, root, d, &tpm_from_optstr(optstr)?),
-            "smartcard" => list_add(doc, root, d, &smartcard_from_optstr(optstr)?),
-            "redirdev" => list_add(doc, root, d, &redirdev_from_optstr(optstr)?),
             "filesystem" => list_add(doc, root, d, &filesystem_from_optstr(optstr)?),
             _ => unreachable!("not a legacy device: {name}"),
         })
@@ -864,12 +852,6 @@ mod legacy {
                 let xml = match name {
                     "vsock" => to_xml_string(&vsock_from_optstr(optstr)?),
                     "disk" => to_xml_string(&disk_from_optstr(optstr)?),
-                    "sound" => to_xml_string(&sound_from_optstr(optstr)?),
-                    "video" => to_xml_string(&video_from_optstr(optstr)?),
-                    "controller" => to_xml_string(&controller_from_optstr(optstr)?),
-                    "tpm" => to_xml_string(&tpm_from_optstr(optstr)?),
-                    "smartcard" => to_xml_string(&smartcard_from_optstr(optstr)?),
-                    "redirdev" => to_xml_string(&redirdev_from_optstr(optstr)?),
                     "filesystem" => to_xml_string(&filesystem_from_optstr(optstr)?),
                     _ => unreachable!("not a legacy device: {name}"),
                 };
