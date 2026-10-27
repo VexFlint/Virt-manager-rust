@@ -192,9 +192,30 @@ struct Args {
     #[arg(long, help_heading = "XML options")]
     panic: Vec<String>,
 
+    /// Configure a guest shared memory device. Ex:
+    /// --shmem name=shmem0
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    shmem: Vec<String>,
+
+    /// Configure a guest memory device. Ex:
+    /// --memdev dimm,target.size=1024
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    memdev: Vec<String>,
+
     /// Configure guest vsock sockets.
     #[arg(long, help_heading = "XML options")]
     vsock: Vec<String>,
+
+    /// Configure an IOMMU device. Ex:
+    /// --iommu model=intel,driver.aw_bits=48
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    iommu: Vec<String>,
+
+    /// Configure a nvram storage device.
+    /// It's for guest kernel to record oops/panic logs. Ex:
+    /// --pstore backend=acpi-erst,size=8
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    pstore: Vec<String>,
 
     /// Suppress non-error output
     #[arg(short, long, help_heading = "Miscellaneous Options")]
@@ -251,7 +272,11 @@ fn xml_options(args: &Args) -> Vec<(Change, &Vec<String>)> {
         engine("tpm", &args.tpm),
         engine("rng", &args.rng),
         engine("panic", &args.panic),
+        engine("shmem", &args.shmem),
+        engine("memdev", &args.memdev),
         legacy("vsock", &args.vsock),
+        engine("iommu", &args.iommu),
+        engine("pstore", &args.pstore),
     ]
 }
 
@@ -791,12 +816,6 @@ mod legacy {
         match name {
             "vsock" => apply_vsock_optstr(doc, el, optstr),
             "disk" => apply_disk_optstr(doc, el, optstr),
-            "sound" => apply_sound_optstr(doc, el, optstr),
-            "video" => apply_video_optstr(doc, el, optstr),
-            "controller" => apply_controller_optstr(doc, el, optstr),
-            "tpm" => apply_tpm_optstr(doc, el, optstr),
-            "smartcard" => apply_smartcard_optstr(doc, el, optstr),
-            "redirdev" => apply_redirdev_optstr(doc, el, optstr),
             "filesystem" => apply_filesystem_optstr(doc, el, optstr),
             _ => unreachable!("not a legacy device: {name}"),
         }
@@ -807,12 +826,6 @@ mod legacy {
         Ok(match name {
             "vsock" => list_add(doc, root, d, &vsock_from_optstr(optstr)?),
             "disk" => list_add(doc, root, d, &disk_from_optstr(optstr)?),
-            "sound" => list_add(doc, root, d, &sound_from_optstr(optstr)?),
-            "video" => list_add(doc, root, d, &video_from_optstr(optstr)?),
-            "controller" => list_add(doc, root, d, &controller_from_optstr(optstr)?),
-            "tpm" => list_add(doc, root, d, &tpm_from_optstr(optstr)?),
-            "smartcard" => list_add(doc, root, d, &smartcard_from_optstr(optstr)?),
-            "redirdev" => list_add(doc, root, d, &redirdev_from_optstr(optstr)?),
             "filesystem" => list_add(doc, root, d, &filesystem_from_optstr(optstr)?),
             _ => unreachable!("not a legacy device: {name}"),
         })
@@ -874,12 +887,6 @@ mod legacy {
                 let xml = match name {
                     "vsock" => to_xml_string(&vsock_from_optstr(optstr)?),
                     "disk" => to_xml_string(&disk_from_optstr(optstr)?),
-                    "sound" => to_xml_string(&sound_from_optstr(optstr)?),
-                    "video" => to_xml_string(&video_from_optstr(optstr)?),
-                    "controller" => to_xml_string(&controller_from_optstr(optstr)?),
-                    "tpm" => to_xml_string(&tpm_from_optstr(optstr)?),
-                    "smartcard" => to_xml_string(&smartcard_from_optstr(optstr)?),
-                    "redirdev" => to_xml_string(&redirdev_from_optstr(optstr)?),
                     "filesystem" => to_xml_string(&filesystem_from_optstr(optstr)?),
                     _ => unreachable!("not a legacy device: {name}"),
                 };
