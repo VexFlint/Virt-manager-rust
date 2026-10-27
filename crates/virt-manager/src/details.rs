@@ -84,6 +84,7 @@ enum Edit {
     VsockAuto,
     VsockCid,
     Fs,
+    Xml,
 }
 
 impl HwType {
@@ -1569,6 +1570,7 @@ struct Inner {
     config_remove: gtk::Button,
     config_cancel: gtk::Button,
     config_apply: gtk::Button,
+    xmleditor: crate::xmleditor::XmlEditor,
     oldhwkey: RefCell<Option<String>>,
     active_edits: RefCell<Vec<Edit>>,
     /// Set while a page is filled in, so the widgets' change signals
@@ -1681,8 +1683,9 @@ impl VmmDetails {
         buttons.append(&spacer);
         buttons.append(&config_cancel);
         buttons.append(&config_apply);
+        let xmleditor = crate::xmleditor::XmlEditor::new(&panel_scroll);
         let right = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        right.append(&panel_scroll);
+        right.append(xmleditor.widget());
         right.append(&buttons);
 
         let top_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
@@ -1731,6 +1734,7 @@ impl VmmDetails {
             config_remove,
             config_cancel,
             config_apply,
+            xmleditor,
             oldhwkey: RefCell::default(),
             active_edits: RefCell::default(),
             refreshing: Cell::new(false),
@@ -1750,6 +1754,7 @@ impl VmmDetails {
             }
         });
         this.connect_edits();
+        this.connect_xmleditor();
         this.init_cpu_models();
         this.repopulate_hw_list();
         this
@@ -2288,10 +2293,34 @@ impl VmmDetails {
         &self.0.top_box
     }
 
+    /// The XML editor's `changed`, `xml-requested` and `xml-reset`.
+    fn connect_xmleditor(&self) {
+        let weak = Rc::downgrade(&self.0);
+        self.0.xmleditor.connect_changed(move || {
+            if let Some(inner) = weak.upgrade() {
+                VmmDetails(inner).enable_apply(Edit::Xml);
+            }
+        });
+        for reset in [false, true] {
+            let weak = Rc::downgrade(&self.0);
+            let cb = move || {
+                if let Some(inner) = weak.upgrade() {
+                    VmmDetails(inner).refresh_page();
+                }
+            };
+            if reset {
+                self.0.xmleditor.connect_xml_reset(cb);
+            } else {
+                self.0.xmleditor.connect_xml_requested(cb);
+            }
+        }
+    }
+
     fn disable_apply(&self) {
         self.0.active_edits.borrow_mut().clear();
         self.0.config_apply.set_sensitive(false);
         self.0.config_cancel.set_sensitive(false);
+        self.0.xmleditor.set_details_changed(false);
     }
 
     fn enable_apply(&self, edit: Edit) {
@@ -2300,6 +2329,9 @@ impl VmmDetails {
         }
         self.0.config_apply.set_sensitive(true);
         self.0.config_cancel.set_sensitive(true);
+        if edit != Edit::Xml {
+            self.0.xmleditor.set_details_changed(true);
+        }
         let mut edits = self.0.active_edits.borrow_mut();
         if !edits.contains(&edit) {
             edits.push(edit);
@@ -2317,6 +2349,7 @@ impl VmmDetails {
             return true;
         };
         let res = match row.hwtype {
+            _ if self.edited(Edit::Xml) => Ok(self.apply_xmleditor(&row).await),
             HwType::General => self.apply_overview().await,
             HwType::Cpu => Ok(self.apply_vcpus().await),
             HwType::Memory => Ok(self.apply_memory().await),
@@ -2353,6 +2386,26 @@ impl VmmDetails {
             self.disable_apply();
         }
         success
+    }
+
+    /// `_apply_xmleditor_device` / `_apply_xmleditor_domain`. A device
+    /// edit opts out of hotplug, as upstream's does.
+    async fn apply_xmleditor(&self, row: &HwRow) -> bool {
+        let newxml = self.0.xmleditor.get_xml();
+        let vm = self.0.vm.clone();
+        if row.device.is_some() {
+            let Some(id) = self.device_id(row) else {
+                return false;
+            };
+            self.change_config(
+                async move { vm.replace_device_xml(&id, newxml).await },
+                None,
+            )
+            .await
+        } else {
+            self.change_config(async move { vm.define_xml(newxml).await }, None)
+                .await
+        }
     }
 
     /// `_apply_overview`. The machine type and firmware edits belong to
@@ -3272,6 +3325,20 @@ impl VmmDetails {
         i.config_remove.set_sensitive(true);
         i.config_remove
             .set_tooltip_text(Some("Remove this device from the virtual machine"));
+        if let Some((x, el)) = self.device_element(&row) {
+            let xml = virtinst_core::xmlbuilder::element_xml(&x.doc, el);
+            i.xmleditor
+                .set_xml(&crate::xmleditor::unindent_device_xml(&xml));
+        } else if i.xmleditor.is_xml_selected() {
+            // `set_xml_from_libvirtobject(self.vm)`
+            let this = self.clone();
+            glib::spawn_future_local(async move {
+                let xml = this.0.vm.get_xml_to_define().await.unwrap_or_default();
+                this.0.refreshing.set(true);
+                this.0.xmleditor.set_xml(&xml);
+                this.0.refreshing.set(false);
+            });
+        }
         match row.hwtype {
             HwType::General => {
                 self.refresh_overview_page();

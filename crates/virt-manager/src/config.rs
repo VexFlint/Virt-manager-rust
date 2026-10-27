@@ -245,6 +245,11 @@ impl Config {
         let _ = self.root.set_boolean("xmleditor-enabled", val);
     }
 
+    pub fn on_xmleditor_enabled_changed(&self, cb: impl Fn() + 'static) {
+        self.root
+            .connect_changed(Some("xmleditor-enabled"), move |_, _| cb());
+    }
+
     // Libguestfs VM inspection
     pub fn get_libguestfs_inspect_vms(&self) -> bool {
         self.root.boolean("enable-libguestfs-vm-inspection")
