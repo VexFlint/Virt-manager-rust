@@ -17,6 +17,7 @@ use crate::parser::{lookup_prop, ParserDef};
 pub mod chardev;
 pub mod charsrc;
 pub mod devices;
+pub mod graphics;
 pub mod hostdev;
 pub mod misc;
 pub mod network;
@@ -26,6 +27,7 @@ pub mod network;
 pub fn all() -> Vec<&'static ParserDef> {
     vec![
         network::network(),
+        graphics::graphics(),
         devices::controller(),
         devices::input(),
         chardev::serial(),
@@ -103,7 +105,7 @@ pub fn guest_info(guest: &XmlObject) -> GuestInfo {
 }
 
 /// `guest.lookup_domcaps()`: a stub when fetching fails.
-fn lookup_domcaps(info: &GuestInfo, conn: Option<&Connection>) -> Option<DomainCapabilities> {
+pub fn lookup_domcaps(info: &GuestInfo, conn: Option<&Connection>) -> Option<DomainCapabilities> {
     let domcaps = conn.and_then(|c| {
         DomainCapabilities::fetch(
             c,
@@ -130,6 +132,37 @@ fn default_video_model(info: &mut GuestInfo, conn: Option<&Connection>) -> Optio
                 .is_ok_and(|caps| matches!(caps.host.cpu.arch.as_deref(), Some("i686" | "x86_64")))
     });
     info.default_video_model(domcaps.as_ref(), is_qemu)
+}
+
+/// `DeviceGraphics._default_type(guest)`.
+fn default_graphics_type(info: &GuestInfo, conn: Option<&Connection>) -> Option<String> {
+    // `BuildConfig.default_graphics`
+    let mut gtype = "spice";
+    log::debug!("App is configured with default_graphics={gtype}");
+
+    if conn.is_some_and(|c| c.uri().is_xen()) {
+        // Xen domcaps can advertise spice support, but we have historically
+        // not defaulted to it for xen, so force vnc.
+        log::debug!("Not defaulting to spice for xen driver. Using vnc.");
+        gtype = "vnc";
+    }
+
+    if gtype == "spice" {
+        let host_arch = conn.and_then(|c| {
+            Capabilities::fetch(c)
+                .ok()
+                .and_then(|caps| caps.host.cpu.arch)
+        });
+        let supported = match (conn, lookup_domcaps(info, conn)) {
+            (Some(c), Some(dc)) => dc.supports_graphics_spice(c.uri(), host_arch.as_deref()),
+            _ => false,
+        };
+        if !supported {
+            log::debug!("spice requested but HV doesn't support it. Using vnc.");
+            gtype = "vnc";
+        }
+    }
+    Some(gtype.into())
 }
 
 /// `DeviceInterface.generate_mac`: a random MAC that doesn't conflict
@@ -206,6 +239,22 @@ pub fn set_defaults(
                 default_model: info.default_nic_model(is_qemu),
             };
             virtinst_core::devices::network::set_defaults(&mut lookup_prop(guest, def)[idx], &d)
+        }
+        "graphics" => {
+            let info = guest_info(guest);
+            let is_remote = conn.is_some_and(|c| c.uri().is_remote());
+            let default_type = || default_graphics_type(&info, conn);
+            let d = virtinst_core::devices::graphics::GraphicsDefaults {
+                default_type: &default_type,
+                is_remote,
+                rendernode: &graphics::default_rendernode,
+                xauth: std::env::var("HOME")
+                    .ok()
+                    .map(|h| format!("{h}/.Xauthority"))
+                    .or_else(|| Some("~/.Xauthority".into())),
+                display: std::env::var("DISPLAY").ok(),
+            };
+            virtinst_core::devices::graphics::set_defaults(&mut lookup_prop(guest, def)[idx], &d)
         }
         name => misc::set_defaults(name, &mut lookup_prop(guest, def)[idx]),
     }

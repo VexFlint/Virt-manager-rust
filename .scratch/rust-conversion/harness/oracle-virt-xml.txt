@@ -317,6 +317,52 @@
 --connect @SUITE@ --network help
 --connect @SUITE@ --network=?
 #
+# --graphics (ParserGraphics)
+--connect @SUITE@ --build-xml --graphics sdl
+--connect @SUITE@ --build-xml --graphics spice,keymap=none
+--connect @SUITE@ --build-xml --graphics vnc,port=5950,listen=1.2.3.4,keymap=ja,password=foo
+--connect @SUITE@ --build-xml --graphics vnc,port=5950,listen=1.2.3.4,keymap=ja,password=foo,websocket=15950
+--connect @SUITE@ --build-xml --graphics vnc,port=5950,listen=1.2.3.4,keymap=ja,password=foo,websocket=-1
+--connect @SUITE@ --build-xml --graphics spice,port=5950,tlsport=5950,listen=1.2.3.4,keymap=ja
+--connect @SUITE@ --build-xml --graphics spice,image_compression=glz,streaming_mode=filter,clipboard_copypaste=yes,mouse_mode=client,filetransfer_enable=on,zlib.compression=always
+--connect @SUITE@ --build-xml --graphics spice,gl=yes,listen=socket,image.compression=glz,streaming.mode=filter,clipboard.copypaste=yes,mouse.mode=client,filetransfer.enable=on,tlsPort=6000,passwd=testpass,passwdValidTo=2010-04-09T15:51:00,passwordValidTo=2010-04-09T15:51:01,defaultMode=insecure
+--connect @SUITE@ --build-xml --graphics spice,gl=yes,listen=none
+--connect @SUITE@ --build-xml --graphics spice,gl.enable=yes,listen=none,rendernode=/dev/dri/foo,gl.rendernode=/dev/dri/foo2
+--connect @SUITE@ --build-xml --graphics spice,listens0.type=address,listens0.address=1.2.3.4,connected=disconnect
+--connect @SUITE@ --build-xml --graphics spice,listens0.type=network,listens0.network=default
+--connect @SUITE@ --build-xml --graphics spice,listens0.type=socket,listens0.socket=/tmp/foobar
+--connect @SUITE@ --build-xml --graphics vnc,connected=disconnect
+--connect @SUITE@ --build-xml --graphics vnc,keymap=local
+--connect @SUITE@ --build-xml --graphics default
+--connect @SUITE@ --build-xml --graphics none
+--connect @SUITE@ --build-xml --graphics vnc,port=-50
+--connect @SUITE@ --build-xml --graphics spice,tlsport=5
+--connect @SUITE@ --build-xml --graphics vnc,port=abc
+--connect @SUITE@ --build-xml --graphics type=vnc,keymap
+--connect @SUITE@ test-for-virtxml --edit --graphics password=foo --print-diff
+--connect @SUITE@ test-for-virtxml --edit --graphics password=foo,keymap= --print-diff
+--connect @SUITE@ test-for-virtxml --edit --graphics clearxml=yes,type=spice,gl=on,listen=none --print-diff
+--connect @SUITE@ test-for-virtxml --edit --graphics listen=0.0.0.0,port=5901 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --graphics type=spice --print-diff
+--connect @SUITE@ test-for-virtxml --edit --graphics type=sdl --print-xml
+--connect @SUITE@ test-for-virtxml --edit type=vnc --graphics listen=socket --print-diff
+--connect @SUITE@ test-for-virtxml --edit 1 --graphics keymap=de --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --graphics spice --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --graphics vnc,gl.enable=yes --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --graphics all --print-diff
+--connect @SUITE@ test-spice --edit --graphics type=vnc --print-diff
+--connect @SUITE@ test-spice --remove-device --graphics type=spice --print-diff
+--connect @SUITE@ test-spice --edit --graphics listen=none --print-diff
+--connect @SUITE@ test-spice --add-device --graphics vnc --print-diff
+--connect @SUITE@ test-cdrom --add-device --graphics spice --print-diff
+--connect @SUITE@ test --add-device --graphics spice,gl=yes --print-diff
+--connect @SUITE@ test-spice --edit --graphics type=spice,port=5999 --print-diff
+--connect @SUITE@ test-spice --edit --graphics tlsPort=-1,port=-1 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --graphics type=vnc,connected=keep --print-diff
+--connect @SUITE@ test-for-virtxml --edit type=foo --graphics keymap=de --print-diff
+--connect @SUITE@ --graphics help
+--connect @SUITE@ --graphics=?
+#
 # --shmem / --memdev / --iommu / --pstore (ParserShMem, ParserMemdev,
 # ParserIommu, ParserPstore)
 --connect @SUITE@ test-for-virtxml --edit --shmem size=8,size.unit=M,role=master --print-xml

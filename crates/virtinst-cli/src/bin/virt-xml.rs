@@ -115,6 +115,13 @@ struct Args {
     #[arg(short = 'w', long, help_heading = "XML options", verbatim_doc_comment)]
     network: Vec<String>,
 
+    /// Configure guest display settings. Ex:
+    /// --graphics spice
+    /// --graphics vnc,port=5901,listen=0.0.0.0
+    /// --graphics none
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    graphics: Vec<String>,
+
     /// Configure a guest controller device. Ex:
     /// --controller type=usb,model=qemu-xhci
     /// --controller type=scsi,model=virtio-scsi
@@ -254,6 +261,7 @@ fn xml_options(args: &Args) -> Vec<(Change, &Vec<String>)> {
     vec![
         legacy("disk", &args.disk),
         engine("network", &args.network),
+        engine("graphics", &args.graphics),
         engine("controller", &args.controller),
         engine("input", &args.input),
         engine("serial", &args.serial),
@@ -467,7 +475,8 @@ fn perform_engine(
                 .and_then(|p| p.rsplit('.').next())
                 .expect("guest backed parser");
             for idx in idxs.into_iter().rev() {
-                // `guest.remove_device`: and `_remove_duplicate_console`.
+                // `guest.remove_device`: and `_remove_duplicate_console`,
+                // `_remove_spice_devices`.
                 let devices = guest.child_mut("devices");
                 let removed = devices.remove_child(list, idx);
                 if virtinst_core::devices::char::console_duplicate(
@@ -476,6 +485,7 @@ fn perform_engine(
                 ) {
                     devices.remove_child("console", 0);
                 }
+                parsers::graphics::remove_spice_devices(devices, &removed);
             }
             devs
         }
@@ -699,7 +709,7 @@ fn main() {
 
     let conn = cli::get_connection(args.connect.as_deref());
     virtinst_cli::parser::set_conn_support(cli::conn_support(&conn));
-    if !args.hostdev.is_empty() || !args.network.is_empty() {
+    if !args.hostdev.is_empty() || !args.network.is_empty() || !args.graphics.is_empty() {
         virtinst_cli::parser::set_nodedevs(cli::fetch_all_nodedevs(&conn));
     }
     let action = parse_action(&args);
@@ -721,6 +731,12 @@ fn main() {
         }
     };
     let vm_is_running = active.is_some();
+    if !args.graphics.is_empty() {
+        // `guest.lookup_domcaps()`, for the spice devices `--graphics`
+        // edits add.
+        let info = parsers::guest_info(&inactive);
+        parsers::graphics::set_domcaps(parsers::lookup_domcaps(&info, Some(&conn)));
+    }
 
     if action.name == ActionName::BuildXml {
         let mut guest = inactive;
