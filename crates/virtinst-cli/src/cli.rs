@@ -9,6 +9,21 @@ use std::sync::Mutex;
 
 use virtinst_core::connection::Connection;
 
+/// `BuildConfig.version`: the upstream virt-manager release these tools
+/// are a port of, which is what upstream's `--version` prints.
+pub const VERSION: &str = "5.1.0";
+
+/// The `--version` argparse adds in `setupParser`: print just the
+/// version and exit, wherever the flag is and whatever else is on the
+/// command line, before any other parsing.
+pub fn handle_version_flag() {
+    let args = std::env::args().skip(1).take_while(|a| a != "--");
+    if args.into_iter().any(|a| a == "--version") {
+        println!("{VERSION}");
+        std::process::exit(0);
+    }
+}
+
 /// `_GlobalState`.
 struct GlobalState {
     quiet: bool,
@@ -201,7 +216,7 @@ pub fn setup_logging(appname: &str, debug_stdout: bool, quiet: bool) {
     let argv: Vec<String> = std::env::args().collect();
     log::debug!(
         "Version {} launched with command line: {}",
-        env!("CARGO_PKG_VERSION"),
+        VERSION,
         argv.join(" ")
     );
 }

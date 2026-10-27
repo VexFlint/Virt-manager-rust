@@ -75,8 +75,8 @@ if [[ ! -f "$TESTSUITE_XML" ]]; then
     exit 2
 fi
 
-echo "Building virt-xml and virt-clone..."
-cargo build -q --manifest-path "$REPO_ROOT/Cargo.toml" -p virtinst-cli --bin virt-xml --bin virt-clone
+echo "Building virt-xml, virt-clone and virt-install..."
+cargo build -q --manifest-path "$REPO_ROOT/Cargo.toml" -p virtinst-cli --bin virt-xml --bin virt-clone --bin virt-install
 
 pass=0
 fail=0
@@ -580,6 +580,22 @@ clone_valid "${G[@]}" $CLONE_NOEXIST --file "$EXISTIMG1" --preserve
 
 clone_cleanup
 rm -f "${CLONE_TMPFILES[@]}"
+
+# --version: argparse's version action prints BuildConfig.version alone
+# (meson.build's project version) and exits, whatever else is given.
+echo
+echo "=== --version ==="
+UPSTREAM_VERSION="$(sed -n "s/^  version: '\(.*\)',$/\1/p" "$UPSTREAM_REF/meson.build" | head -1)"
+for tool in virt-install virt-clone virt-xml; do
+    actual="$("$REPO_ROOT/target/debug/$tool" --connect test:///default --version 2>&1)"
+    if [[ "$actual" == "$UPSTREAM_VERSION" ]]; then
+        echo "  PASS: $tool --version"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL: $tool --version: expected '$UPSTREAM_VERSION', got '$actual'"
+        fail=$((fail + 1))
+    fi
+done
 
 echo
 echo "$pass passed, $fail failed"

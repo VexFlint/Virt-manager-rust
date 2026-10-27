@@ -20,7 +20,7 @@ see virt-sysprep(1).";
 #[derive(Parser)]
 #[command(
     name = "virt-clone",
-    version,
+    disable_version_flag = true,
     override_usage = "virt-clone --original [NAME] ...",
     about = ABOUT,
     after_help = "See man page for examples and full option syntax.",
@@ -28,6 +28,10 @@ see virt-sysprep(1).";
     args_override_self = true
 )]
 struct Args {
+    /// show program's version number and exit
+    #[arg(long = "version")]
+    _version: bool,
+
     /// Connect to hypervisor with libvirt URI
     #[arg(long, value_name = "URI")]
     connect: Option<String>,
@@ -194,6 +198,7 @@ fn validate_disks(cloner: &Cloner) {
 }
 
 fn main() {
+    cli::handle_version_flag();
     let mut args = Args::parse();
 
     let quiet = args.quiet || args.xmlonly;

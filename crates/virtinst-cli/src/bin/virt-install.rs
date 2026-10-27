@@ -81,8 +81,12 @@ use virtinst_core::install::{
 use virtinst_core::osinfo::OsDb;
 
 #[derive(Parser)]
-#[command(name = "virt-install")]
+#[command(name = "virt-install", disable_version_flag = true)]
 struct Args {
+    /// show program's version number and exit
+    #[arg(long = "version")]
+    _version: bool,
+
     /// Build a guest around an existing disk image (`InstallMethod::
     /// Import`).
     #[arg(long)]
@@ -187,6 +191,7 @@ struct Args {
 }
 
 fn main() {
+    virtinst_cli::cli::handle_version_flag();
     let args = Args::parse();
 
     let conn = Connection::open(&args.connect).unwrap_or_else(|e| {
