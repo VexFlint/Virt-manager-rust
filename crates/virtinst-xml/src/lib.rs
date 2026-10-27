@@ -267,3 +267,40 @@ pub fn list_add<T: XmlBound>(
 pub fn list_remove(doc: &mut Document, item: Element) -> Result<()> {
     item.detach(doc)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Attributes come back in document order (vendored edit-xml's
+    /// ordered map): libvirt's `dev` before `bus`, a replaced value
+    /// keeps its place, a new one goes last.
+    #[test]
+    fn attribute_order_survives_a_round_trip() {
+        let mut doc = parse_libvirt_xml(
+            r#"<disk type="file" device="disk"><target dev="vda" bus="virtio"/></disk>"#,
+        )
+        .unwrap();
+        let root = doc.root_element().unwrap();
+        let target = root.find(&doc, "target").unwrap();
+        target.set_attribute(&mut doc, "dev", "vdb");
+        target.set_attribute(&mut doc, "tray", "open");
+        root.mut_attributes(&mut doc).remove("type");
+        root.set_attribute(&mut doc, "type", "block");
+        let out = doc
+            .write_str_with_opts(WriteOptions {
+                write_decl: false,
+                indent_size: 0,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(
+            out.contains(r#"<disk device="disk" type="block">"#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"<target dev="vdb" bus="virtio" tray="open"/>"#),
+            "{out}"
+        );
+    }
+}

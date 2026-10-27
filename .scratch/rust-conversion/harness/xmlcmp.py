@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare two XML documents structurally: same elements in the same
-order, same attributes (in any order: virtinst-xml's DOM doesn't keep
-attribute order yet) and same non-whitespace text.
+order, same attributes in the same order (upstream keeps document
+order, and so must we) and same non-whitespace text.
 
 Usage: xmlcmp.py ACTUAL EXPECTED   (exit 0 when equal, else prints the
 first difference and exits 1)
@@ -14,7 +14,7 @@ def walk(a, b, path):
     if a.tag != b.tag:
         return "%s: tag %r != %r" % (path, a.tag, b.tag)
     here = "%s/%s" % (path, a.tag)
-    if a.attrib != b.attrib:
+    if list(a.attrib.items()) != list(b.attrib.items()):
         return "%s: attributes %r != %r" % (here, a.attrib, b.attrib)
     if (a.text or "").strip() != (b.text or "").strip():
         return "%s: text %r != %r" % (here, a.text, b.text)
