@@ -8,6 +8,7 @@ use std::io::Write;
 use std::sync::Mutex;
 
 use virtinst_core::connection::Connection;
+use virtinst_core::diskbackend::oserror_str;
 
 /// `BuildConfig.version`: the upstream virt-manager release these tools
 /// are a port of, which is what upstream's `--version` prints.
@@ -160,7 +161,12 @@ fn open_logfile(appname: &str) -> Result<std::fs::File, String> {
             .recursive(true)
             .mode(0o751)
             .create(&dir)
-            .map_err(|e| format!("Could not create directory {dir}: {e}"))?;
+            .map_err(|e| {
+                format!(
+                    "Could not create directory {dir}: {}",
+                    oserror_str(&e, Some(&dir))
+                )
+            })?;
     }
     let logfile = format!("{dir}/{appname}.log");
     if std::fs::metadata(&logfile).is_ok_and(|m| m.len() >= 1024 * 1024) {
@@ -173,7 +179,12 @@ fn open_logfile(appname: &str) -> Result<std::fs::File, String> {
         .append(true)
         .create(true)
         .open(&logfile)
-        .map_err(|e| format!("No write access to logfile {logfile}: {e}"))
+        .map_err(|e| {
+            format!(
+                "No write access to logfile {logfile}: {}",
+                oserror_str(&e, Some(&logfile))
+            )
+        })
 }
 
 /// `setupLogging`: errors and warnings on stderr (only errors when
