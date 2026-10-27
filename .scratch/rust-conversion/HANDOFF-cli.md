@@ -26,18 +26,18 @@ Estado para quem continuar o trabalho de CLI. Leia o CLAUDE.md antes.
    (copie de `tests/test_cli.py` do upstream). Teste rápido: rode o harness.
 
 ## Portados no motor
-watchdog, memballoon, panic, controller, input, sound, audio, video, shmem, memdev, iommu, pstore,
+watchdog, memballoon, panic, controller, input, sound, audio, video, network,
+shmem, memdev, iommu, pstore,
 smartcard, tpm, rng, serial, parallel, channel, console, hostdev, redirdev.
 `parsers/charsrc.rs` tem `add_char_source_args` e `add_device_seclabel_args`.
 `boot.order` (`add_boot_order_arg`) aplica o `reorder_boot_order` do guest;
-`disk` e `interface` já estão em `DOMAIN_DEVICES` só com os filhos comuns
+`disk` já está em `DOMAIN_DEVICES` só com os filhos comuns
 (para o boot order) e ganham as propriedades quando forem portados.
 O `--hostdev` lê os nodedevs de `parser::set_nodedevs` (o `virt-xml` busca
 quando a opção é usada). No oráculo, `@FULL@` é o testdriver.xml.
 
 ## Falta (prioridade)
-1. Parsers: disk, network, graphics, filesystem, vsock.
-   Depois apagar o código legado de `lib.rs`.
+1. Parsers: disk, graphics, filesystem, vsock.
 2. Opções de guest (memory, vcpus, cpu, boot, features, clock, xml, metadata...)
    e o resto do virt-install (`--os-variant` etc.).
 3. Só depois: GUI (ver CLAUDE.md seção 7).

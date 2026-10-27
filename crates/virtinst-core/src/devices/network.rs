@@ -154,6 +154,218 @@ pub fn recommended_models(
     ret
 }
 
+// `DeviceInterface` as an `XMLBuilder` class, for the CLI parsers.
+
+use crate::xmlbuilder::{child, prop, Kind, XmlClass, XmlObject, DEVICE_ADDRESS};
+
+/// `_Backend`.
+pub static INTERFACE_BACKEND: XmlClass = XmlClass {
+    xml_name: "backend",
+    props: &[
+        prop("type", "./@type", Kind::Str),
+        prop("logFile", "./@logFile", Kind::AbsPath),
+    ],
+    children: &[],
+    prop_order: &[],
+};
+
+/// `_VirtualPort`.
+pub static INTERFACE_VIRTUALPORT: XmlClass = XmlClass {
+    xml_name: "virtualport",
+    props: &[
+        prop("type", "./@type", Kind::Str),
+        prop("managerid", "./parameters/@managerid", Kind::Int),
+        prop("typeid", "./parameters/@typeid", Kind::Int),
+        prop("typeidversion", "./parameters/@typeidversion", Kind::Int),
+        prop("instanceid", "./parameters/@instanceid", Kind::Str),
+        prop("profileid", "./parameters/@profileid", Kind::Str),
+        prop("interfaceid", "./parameters/@interfaceid", Kind::Str),
+    ],
+    children: &[],
+    prop_order: &[],
+};
+
+/// `_PortForwardRange`.
+pub static PORT_FORWARD_RANGE: XmlClass = XmlClass {
+    xml_name: "range",
+    props: &[
+        prop("start", "./@start", Kind::Int),
+        prop("end", "./@end", Kind::Int),
+        prop("to", "./@to", Kind::Int),
+        prop("exclude", "./@exclude", Kind::YesNo),
+    ],
+    children: &[],
+    prop_order: &[],
+};
+
+/// `_PortForward`.
+pub static PORT_FORWARD: XmlClass = XmlClass {
+    xml_name: "portForward",
+    props: &[
+        prop("proto", "./@proto", Kind::Str),
+        prop("address", "./@address", Kind::Str),
+        prop("dev", "./@dev", Kind::Str),
+    ],
+    children: &[child("range", &PORT_FORWARD_RANGE, ".", false)],
+    prop_order: &[],
+};
+
+/// `DeviceInterface`.
+pub static DEVICE_INTERFACE: XmlClass = XmlClass {
+    xml_name: "interface",
+    props: &[
+        prop("bridge", "./source/@bridge", Kind::Str),
+        prop("network", "./source/@network", Kind::Str),
+        prop("source_dev", "./source/@dev", Kind::Str),
+        prop("type", "./@type", Kind::Str),
+        prop("trustGuestRxFilters", "./@trustGuestRxFilters", Kind::YesNo),
+        prop("macaddr", "./mac/@address", Kind::Str),
+        prop("source_type", "./source/@type", Kind::Str),
+        prop("source_path", "./source/@path", Kind::Str),
+        prop("source_mode", "./source/@mode", Kind::Str),
+        prop("managed", "./@managed", Kind::YesNo),
+        prop("portgroup", "./source/@portgroup", Kind::Str),
+        prop("model", "./model/@type", Kind::Str),
+        prop("target_dev", "./target/@dev", Kind::Str),
+        prop("filterref", "./filterref/@filter", Kind::Str),
+        prop("link_state", "./link/@state", Kind::Str),
+        prop("driver_name", "./driver/@name", Kind::Str),
+        prop("driver_queues", "./driver/@queues", Kind::Int),
+        prop("rom_bar", "./rom/@bar", Kind::OnOff),
+        prop("rom_file", "./rom/@file", Kind::Str),
+        prop("mtu_size", "./mtu/@size", Kind::Int),
+    ],
+    children: crate::device_children!(
+        child("backend", &INTERFACE_BACKEND, ".", true),
+        child("virtualport", &INTERFACE_VIRTUALPORT, ".", true),
+        child("source_address", &DEVICE_ADDRESS, "./source", true),
+        child("portForward", &PORT_FORWARD, ".", false),
+    ),
+    prop_order: crate::device_prop_order!(
+        "backend",
+        "bridge",
+        "network",
+        "source_dev",
+        "source_type",
+        "source_path",
+        "source_mode",
+        "portgroup",
+        "macaddr",
+        "target_dev",
+        "model",
+        "virtualport",
+        "filterref",
+        "rom_bar",
+        "rom_file",
+        "mtu_size",
+        "portForward",
+    ),
+};
+
+/// The property `DeviceInterface.source` maps to for `type`.
+pub fn source_propname(iface_type: Option<&str>) -> Option<&'static str> {
+    match iface_type {
+        Some("network") => Some("network"),
+        Some("bridge") => Some("bridge"),
+        Some("direct" | "vdpa") => Some("source_dev"),
+        _ => None,
+    }
+}
+
+/// `DeviceInterface._set_source`.
+pub fn set_source_prop(dev: &mut XmlObject, newsource: Option<String>) -> Result<(), String> {
+    dev.set("bridge", None)?;
+    dev.set("network", None)?;
+    dev.set("source_dev", None)?;
+    let typ = dev.get_str("type");
+    match source_propname(typ.as_deref()) {
+        Some(p) => dev.set(p, newsource.map(Into::into)),
+        None => Ok(()),
+    }
+}
+
+/// Upstream's `DeviceInterface._set_default_type`.
+fn set_default_type(dev: &mut XmlObject) -> Result<(), String> {
+    if dev.get_str("type").is_some_and(|t| !t.is_empty()) {
+        return Ok(());
+    }
+    if dev.child("backend").get_str("type").as_deref() == Some("passt") {
+        return dev.set("type", Some("user".into()));
+    }
+    dev.set("type", Some("bridge".into()))
+}
+
+/// What `DeviceInterface.set_defaults` needs from the connection and
+/// the guest.
+pub struct InterfaceDefaults<'a> {
+    /// `generate_mac(conn)`.
+    pub generate_mac: &'a dyn Fn() -> Option<String>,
+    /// `_default_bridge(conn)`.
+    pub default_bridge: &'a dyn Fn() -> Option<String>,
+    /// `default_model(guest)`.
+    pub default_model: Option<&'static str>,
+}
+
+/// `DeviceInterface.set_defaults`.
+pub fn set_defaults(dev: &mut XmlObject, d: &InterfaceDefaults) -> Result<(), String> {
+    set_default_type(dev)?;
+    if dev.get_str("macaddr").map_or(true, |m| m.is_empty()) {
+        dev.set("macaddr", (d.generate_mac)().map(Into::into))?;
+    }
+    if dev.get_str("type").as_deref() == Some("bridge")
+        && dev.get_str("bridge").map_or(true, |b| b.is_empty())
+    {
+        dev.set("bridge", (d.default_bridge)().map(Into::into))?;
+    }
+    if dev.get_str("model").map_or(true, |m| m.is_empty()) {
+        dev.set("model", d.default_model.map(Into::into))?;
+    }
+    Ok(())
+}
+
+/// `_default_route`: the interface of `/proc/net/route`'s default route.
+fn default_route() -> Option<String> {
+    let routes = std::fs::read_to_string("/proc/net/route").ok()?;
+    for line in routes.lines() {
+        let info: Vec<&str> = line.split_whitespace().collect();
+        if info.len() != 11 {
+            log::debug!(
+                "Unexpected field count={} when parsing /proc/net/route",
+                info.len()
+            );
+            break;
+        }
+        if u64::from_str_radix(info[1], 16) == Ok(0) {
+            return Some(info[0].to_string());
+        }
+    }
+    None
+}
+
+/// `_host_default_bridge`.
+pub fn host_default_bridge() -> Option<String> {
+    let dev = default_route()?;
+    // New style peth0 == phys dev, eth0 == bridge, eth0 == default route
+    if std::path::Path::new(&format!("/sys/class/net/{dev}/bridge")).exists() {
+        return Some(dev);
+    }
+    // Old style, peth0 == phys dev, eth0 == netloop, xenbr0 == bridge,
+    // vif0.0 == netloop attached, eth0 == default route
+    let defn = dev
+        .chars()
+        .last()
+        .and_then(|c| c.to_digit(10))
+        .map_or(-1, |d| d as i64);
+    if defn >= 0
+        && std::path::Path::new(&format!("/sys/class/net/peth{defn}/brport")).exists()
+        && std::path::Path::new(&format!("/sys/class/net/xenbr{defn}/bridge")).exists()
+    {
+        // Upstream returns the unformatted "xenbr%d" here.
+        return Some("xenbr%d".into());
+    }
+    None
+}
+
 #[cfg(test)]
 mod edit_tests {
     use super::*;

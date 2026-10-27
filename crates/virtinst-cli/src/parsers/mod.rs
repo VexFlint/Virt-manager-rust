@@ -19,11 +19,13 @@ pub mod charsrc;
 pub mod devices;
 pub mod hostdev;
 pub mod misc;
+pub mod network;
 
 /// Every ported parser, in upstream's registration order (the order
 /// `VIRT_PARSERS` runs them in).
 pub fn all() -> Vec<&'static ParserDef> {
     vec![
+        network::network(),
         devices::controller(),
         devices::input(),
         chardev::serial(),
@@ -130,6 +132,20 @@ fn default_video_model(info: &mut GuestInfo, conn: Option<&Connection>) -> Optio
     info.default_video_model(domcaps.as_ref(), is_qemu)
 }
 
+/// `DeviceInterface.generate_mac`: a random MAC that doesn't conflict
+/// with any VMs on the connection.
+fn generate_mac(conn: Option<&Connection>, is_qemu: bool) -> Option<String> {
+    for _ in 0..256 {
+        let mac = virtinst_core::cloner::generate_mac(is_qemu);
+        match conn {
+            Some(c) if virtinst_core::cloner::check_mac_in_use(c, &mac).is_err() => continue,
+            _ => return Some(mac),
+        }
+    }
+    log::debug!("Failed to generate non-conflicting MAC");
+    None
+}
+
 /// `dev.set_defaults(guest)` for the `idx`th device a parser made.
 pub fn set_defaults(
     def: &ParserDef,
@@ -177,6 +193,19 @@ pub fn set_defaults(
                     &info,
                 )
             })
+        }
+        "network" => {
+            let info = guest_info(guest);
+            let is_qemu = conn.is_some_and(|c| c.uri().is_qemu());
+            let is_remote = conn.is_some_and(|c| c.uri().is_remote());
+            let generate_mac = || generate_mac(conn, is_qemu);
+            let default_bridge = || network::default_bridge(is_remote);
+            let d = virtinst_core::devices::network::InterfaceDefaults {
+                generate_mac: &generate_mac,
+                default_bridge: &default_bridge,
+                default_model: info.default_nic_model(is_qemu),
+            };
+            virtinst_core::devices::network::set_defaults(&mut lookup_prop(guest, def)[idx], &d)
         }
         name => misc::set_defaults(name, &mut lookup_prop(guest, def)[idx]),
     }

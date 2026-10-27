@@ -81,7 +81,7 @@ fn compare(nodedev: &NodeDevice, dev: &XmlObject) -> bool {
 }
 
 /// `_lookupNodedevFromString`.
-fn lookup_nodedev(all: &[NodeDevice], idstring: &str) -> Result<NodeDevice, Error> {
+pub(crate) fn lookup_nodedev(all: &[NodeDevice], idstring: &str) -> Result<NodeDevice, Error> {
     // First try and see if this is a libvirt nodedev name
     if let Some(dev) = all.iter().find(|d| d.name == idstring) {
         return Ok(dev.clone());

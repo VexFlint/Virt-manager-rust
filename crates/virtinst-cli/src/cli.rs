@@ -410,6 +410,17 @@ pub fn conn_support(conn: &Connection) -> crate::parser::ConnSupport {
         usb3_ports: libvirt >= 1_003_005,
         qemu_xhci: conn.uri().is_qemu() && libvirt >= 3_003_000 && hv >= 2_009_000,
         is_xen: conn.uri().is_xen(),
+        is_test: conn.uri().is_test(),
+        // `is_privileged`: `/embed` needs root, anything else but
+        // `/session` is privileged.
+        is_qemu_unprivileged: conn.uri().is_qemu()
+            && match conn.uri().path.as_str() {
+                "/session" => true,
+                // SAFETY: getuid has no preconditions.
+                "/embed" => (unsafe { libc::getuid() }) != 0,
+                _ => false,
+            },
+        is_remote: conn.uri().is_remote(),
     }
 }
 
