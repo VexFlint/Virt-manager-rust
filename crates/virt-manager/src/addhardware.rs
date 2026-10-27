@@ -2003,6 +2003,7 @@ fn guest_info(vm: &VmmDomain) -> GuestInfo {
             .as_ref()
             .map(|o| o.supported_netmodels())
             .unwrap_or_default(),
+        spice_fallback: false,
     }
 }
 

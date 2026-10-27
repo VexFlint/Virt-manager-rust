@@ -426,7 +426,7 @@ fn edit_shared_mem(doc: &mut virtinst_xml::Document, root: virtinst_xml::Element
 /// `_get_expanded_cpu`: `baselineHypervisorCPU` with
 /// `EXPAND_FEATURES`, falling back to the older `baselineCPU`.
 /// Blocking.
-fn baseline_hypervisor_cpu(
+pub(crate) fn baseline_hypervisor_cpu(
     conn: &Connect,
     (emulator, arch, machine, virttype): (
         Option<String>,
@@ -726,6 +726,9 @@ mod imp {
         pub domcaps: RefCell<Option<Rc<DomainCapabilities>>>,
         /// `domcaps.get_cpu_security_features()`, cached like upstream.
         pub cpu_security_features: RefCell<Option<Rc<Vec<String>>>>,
+        /// `_install_abort`: the user stopped the VM themselves, so a
+        /// finished install doesn't restart it.
+        pub install_abort: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -828,6 +831,12 @@ impl VmmDomain {
     /// `run_status_reason`.
     pub fn run_status_reason(&self) -> Option<&'static str> {
         self.snap(|s| enummap::pretty_status_reason(s.state, s.reason))
+    }
+    pub fn get_install_abort(&self) -> bool {
+        self.imp().install_abort.get()
+    }
+    pub fn is_shutoff(&self) -> bool {
+        enummap::is_shutoff(self.status())
     }
     pub fn is_crashed(&self) -> bool {
         enummap::is_crashed(self.status())
@@ -1817,6 +1826,16 @@ impl VmmDomain {
     /// interval. The error string is libvirt's message, for
     /// `asyncjob::simple_async_noshow`'s dialog.
     pub async fn run_action(&self, action: DomainAction) -> Result<(), String> {
+        if matches!(
+            action,
+            DomainAction::Shutdown
+                | DomainAction::Reboot
+                | DomainAction::Destroy
+                | DomainAction::Reset
+                | DomainAction::Save
+        ) {
+            self.imp().install_abort.set(true);
+        }
         let conn = self.conn().ok_or("Connection closed")?;
         let handle = conn.handle().ok_or("Not connected")?;
         let uuid = self.get_uuid();

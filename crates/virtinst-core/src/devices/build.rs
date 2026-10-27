@@ -41,6 +41,9 @@ pub struct GuestInfo {
     pub os_netmodels: Vec<String>,
     /// `guest.osinfo.supports_virtioscsi()`.
     pub os_virtioscsi: bool,
+    /// `supports_graphics_spice`'s answer for domcaps that don't list
+    /// graphics: a qemu or test connection on an x86 host.
+    pub spice_fallback: bool,
 }
 
 impl GuestInfo {
@@ -153,6 +156,9 @@ impl GuestInfo {
         let qxl = match model_type {
             Some(e) => e.has_value("qxl"),
             None => domcaps.is_some_and(|d| {
+                if d.devices.graphics.supported != Some(true) {
+                    return self.spice_fallback;
+                }
                 d.devices
                     .graphics
                     .get_enum("type")
@@ -732,6 +738,11 @@ pub fn disk(doc: &mut Document, d: &NewDisk, is_qemu: bool, is_xen: bool) -> Ele
     if discard_unmap && super::edit::attr(doc, el, &["driver"], "discard").is_none() {
         set_attr(doc, el, "driver", "discard", Some("unmap"));
     }
+    // `_XML_PROP_ORDER` puts `<driver>` first.
+    if let Some(driver) = el.find(doc, "driver") {
+        let _ = driver.detach(doc);
+        let _ = el.insert_child(doc, 0, driver.into());
+    }
     el
 }
 
@@ -878,12 +889,12 @@ mod tests {
                 "disk",
                 "disk@device=disk",
                 "disk@type=file",
-                "disk/source",
-                "disk/source@file=/var/lib/libvirt/images/vm.qcow2",
                 "disk/driver",
                 "disk/driver@discard=unmap",
                 "disk/driver@name=qemu",
                 "disk/driver@type=qcow2",
+                "disk/source",
+                "disk/source@file=/var/lib/libvirt/images/vm.qcow2",
                 "disk/target",
                 "disk/target@bus=virtio",
                 "disk/target@dev=vdb",

@@ -315,10 +315,14 @@ pub struct DomainCapabilities {
     /// models, so no new struct was needed, just a field at the right
     /// level.
     pub os: CapsBlock,
+    /// `<os><loader>`.
+    pub loader: CapsBlock,
     pub devices: DomainCapabilitiesDevices,
     pub cpu: Cpu,
     /// `<memoryBacking>` — upstream's `_MemoryBacking`.
     pub memorybacking: CapsBlock,
+    /// `<features><hyperv>`.
+    pub hyperv: CapsBlock,
     /// `_convert_mode_to_cpu` for the supported `host-model` mode: a
     /// `<cpu>` document to expand with `baselineHypervisorCPU`, kept
     /// at parse time since the mode's raw children aren't modeled.
@@ -341,6 +345,10 @@ impl DomainCapabilities {
             machine: root.find(&doc, "machine").map(|e| e.text_content(&doc)),
             arch: root.find(&doc, "arch").map(|e| e.text_content(&doc)),
             os: CapsBlock::from_optional_child(&doc, root, "os"),
+            loader: match root.find(&doc, "os") {
+                Some(el) => CapsBlock::from_optional_child(&doc, el, "loader"),
+                None => CapsBlock::default(),
+            },
             devices: match root.find(&doc, "devices") {
                 Some(el) => DomainCapabilitiesDevices::from_element(&doc, el),
                 None => DomainCapabilitiesDevices::default(),
@@ -350,6 +358,10 @@ impl DomainCapabilities {
                 None => Cpu::default(),
             },
             memorybacking: CapsBlock::from_optional_child(&doc, root, "memoryBacking"),
+            hyperv: match root.find(&doc, "features") {
+                Some(el) => CapsBlock::from_optional_child(&doc, el, "hyperv"),
+                None => CapsBlock::default(),
+            },
             host_model_cpu_xml: host_model_cpu_xml(&doc, root),
         })
     }
@@ -497,6 +509,125 @@ impl DomainCapabilities {
             && mode
                 .get_enum("hostPassthroughMigratable")
                 .is_some_and(|e| e.has_value("on"))
+    }
+
+    /// Upstream's `supports_uefi_loader`.
+    pub fn supports_uefi_loader(&self) -> bool {
+        self.loader
+            .get_enum("readonly")
+            .is_some_and(|e| e.has_value("yes"))
+    }
+
+    /// Upstream's `arch_can_uefi`.
+    pub fn arch_can_uefi(&self) -> bool {
+        matches!(
+            self.arch.as_deref(),
+            Some("i686" | "x86_64" | "aarch64" | "armv7l" | "riscv64" | "loongarch64")
+        )
+    }
+
+    /// Upstream's `find_uefi_path_for_arch`: the first loader path
+    /// matching the arch's `_uefi_arch_patterns`, in pattern order.
+    pub fn find_uefi_path_for_arch(&self, is_bhyve: bool) -> Option<String> {
+        if !self.arch_can_uefi() {
+            return None;
+        }
+        let files = &self.loader.values;
+        if is_bhyve {
+            return files
+                .iter()
+                .find(|f| f.contains("BHYVE_UEFI.fd"))
+                .or(files.first())
+                .cloned();
+        }
+        // The `re.match(".*X")` patterns, as substring checks.
+        let after = |p: &str, pre: &str, post: &str| {
+            p.find(pre)
+                .is_some_and(|i| p[i + pre.len()..].contains(post))
+        };
+        type Pat = Box<dyn Fn(&str) -> bool>;
+        let patterns: Vec<Pat> = match self.arch.as_deref() {
+            Some("i686") => vec![
+                Box::new(move |p| after(p, "edk2-i386-", ".fd")),
+                Box::new(|p| p.contains("ovmf-ia32")),
+            ],
+            Some("x86_64") => vec![
+                Box::new(move |p| after(p, "edk2-x86_64-", ".fd")),
+                Box::new(|p| p.contains("OVMF_CODE.fd")),
+                Box::new(move |p| after(p, "ovmf-x64/OVMF", ".fd")),
+                Box::new(|p| p.contains("ovmf-x86_64-")),
+                Box::new(|p| p.contains("ovmf")),
+                Box::new(|p| p.contains("OVMF")),
+            ],
+            Some("aarch64") => vec![
+                Box::new(|p| p.contains("AAVMF_CODE.fd")),
+                Box::new(|p| p.contains("aarch64/QEMU_EFI")),
+                Box::new(|p| p.contains("aarch64")),
+                Box::new(|p| p.contains("edk2-aarch64-code.fd")),
+            ],
+            Some("armv7l") => vec![
+                Box::new(|p| p.contains("AAVMF32_CODE.fd")),
+                Box::new(|p| p.contains("arm/QEMU_EFI")),
+                Box::new(|p| p.contains("edk2-arm-code.fd")),
+            ],
+            Some("riscv64") => vec![
+                Box::new(|p| p.contains("RISCV_VIRT_CODE.")),
+                Box::new(|p| p.contains("riscv64")),
+            ],
+            Some("loongarch64") => vec![
+                Box::new(|p| p.contains("loongarch64/QEMU_CODE.")),
+                Box::new(|p| p.contains("loongarch64")),
+            ],
+            _ => vec![],
+        };
+        patterns
+            .iter()
+            .find_map(|pat| files.iter().find(|f| pat(f)))
+            .cloned()
+    }
+
+    /// Upstream's `supports_tpm_emulator`.
+    pub fn supports_tpm_emulator(&self) -> bool {
+        let values = |name: &str| {
+            self.devices
+                .tpm
+                .get_enum(name)
+                .map(|e| e.values.clone())
+                .unwrap_or_default()
+        };
+        let models = values("model");
+        if self.arch.as_deref() == Some("armv7l") && models == ["tpm-tis"] {
+            // libvirt can advertise armv7l tpm-tis, then rejects it
+            return false;
+        }
+        !models.is_empty() && values("backendModel").iter().any(|b| b == "emulator")
+    }
+
+    /// Upstream's `supports_channel_spicevmc`: only an explicit "no"
+    /// from libvirt counts.
+    pub fn supports_channel_spicevmc(&self) -> bool {
+        let channel = &self.devices.channel;
+        channel.supported.is_none()
+            || channel
+                .get_enum("type")
+                .is_some_and(|e| e.has_value("spicevmc"))
+    }
+
+    /// Upstream's `supports_redirdev_usb`, same shape.
+    pub fn supports_redirdev_usb(&self) -> bool {
+        let redirdev = &self.devices.redirdev;
+        redirdev.supported.is_none() || redirdev.get_enum("bus").is_some_and(|e| e.has_value("usb"))
+    }
+
+    /// Upstream's `supported_hyperv_features`.
+    pub fn supported_hyperv_features(&self) -> Vec<String> {
+        if self.hyperv.supported != Some(true) {
+            return vec![];
+        }
+        self.hyperv
+            .get_enum("features")
+            .map(|e| e.values.clone())
+            .unwrap_or_default()
     }
 
     /// Upstream's `get_cpu_models`: the usable custom models.

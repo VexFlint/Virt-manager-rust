@@ -16,6 +16,7 @@ pub(crate) mod domain_skeleton;
 pub mod import;
 pub mod iso;
 pub mod manual;
+pub mod newguest;
 pub use container::build_container_os_document;
 pub use domain_skeleton::{
     default_disk_bus, default_firmware, default_nic_model, prefers_uefi, GuestCapsDefaults,

@@ -4,6 +4,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use gtk::prelude::*;
 use gtk::{gio, glib};
@@ -11,6 +13,7 @@ use virtinst_core::capabilities::{Capabilities, CapsInfo};
 use virtinst_core::install::{prefers_uefi, GuestCapsDefaults};
 
 use crate::addstorage::{get_default_path, plan_disk, AddStorage, DiskPlan, DiskRequest};
+use crate::asyncjob;
 use crate::connection::VmmConnection;
 use crate::devpages::{EntryCombo, Grid, GridRow, SimpleCombo};
 use crate::domain::pretty_hv;
@@ -596,20 +599,114 @@ impl FinishWidgets {
 
 /// The NIC the finish page picked.
 #[derive(Clone)]
-// Read by the install step, ported next.
-#[allow(dead_code)]
 struct NewInterface {
     selection: NetSelection,
     mac: String,
 }
 
+/// What a failed install left behind: `failed_guest`'s disk, and
+/// whether the install created it.
+#[derive(Clone)]
+struct FailedGuest {
+    disk_path: Option<String>,
+    storage_was_created: bool,
+}
+
+/// What `_start_install` needs: the guest's XML and its storage.
+struct InstallPlan {
+    name: String,
+    uuid: String,
+    is_vz: bool,
+    needs_postboot: bool,
+    xml: virtinst_core::install::newguest::InstallXml,
+    vol_install: Option<virtinst_core::storage::VolInstall>,
+    disk_path: Option<String>,
+    bootstrap: Option<BootstrapArgs>,
+}
+
+/// The `virtBootstrap.bootstrap` arguments for an OS container.
+struct BootstrapArgs {
+    src: String,
+    dest: String,
+    user: String,
+    passwd: String,
+    insecure: bool,
+    root_password: String,
+}
+
+impl BootstrapArgs {
+    /// Runs `virt-bootstrap`; the error is its output.
+    fn run(&self) -> Result<(), String> {
+        let mut cmd = std::process::Command::new("virt-bootstrap");
+        if self.insecure {
+            cmd.arg("--not-secure");
+        }
+        if !self.user.is_empty() {
+            cmd.args(["--username", &self.user]);
+        }
+        if !self.passwd.is_empty() {
+            cmd.args(["--password", &self.passwd]);
+        }
+        if !self.root_password.is_empty() {
+            cmd.args(["--root-password", &self.root_password]);
+        }
+        cmd.args([&self.src, &self.dest]);
+        let out = cmd.output().map_err(|e| e.to_string())?;
+        if out.status.success() {
+            return Ok(());
+        }
+        Err(format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ))
+    }
+}
+
+/// `_check_install_status`: watches the installing domain and starts
+/// it again once the install shut it down.
+fn watch_install_status(vm: &crate::domain::VmmDomain) {
+    let id: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::default();
+    let id2 = id.clone();
+    let handler = vm.connect_local("state-changed", false, move |args| {
+        let vm = args[0].get::<crate::domain::VmmDomain>().ok()?;
+        let done = if vm.is_crashed() {
+            eprintln!("VM crashed, cancelling install plans.");
+            true
+        } else if !vm.is_shutoff() {
+            false
+        } else if vm.get_install_abort() {
+            eprintln!("User manually shutdown VM, not restarting guest after install.");
+            true
+        } else {
+            eprintln!("Install should be completed, starting VM.");
+            let vm2 = vm.clone();
+            glib::spawn_future_local(async move {
+                if let Err(e) = vm2.run_action(crate::domain::DomainAction::Startup).await {
+                    error::show_err(None, &format!("Error continuing install: {e}"), None, "")
+                        .await;
+                }
+            });
+            true
+        };
+        if done {
+            if let Some(id) = id2.borrow_mut().take() {
+                vm.disconnect(id);
+            }
+        }
+        None
+    });
+    id.replace(Some(handler));
+}
+
 /// `_GuestData`: what the pages so far chose for the guest.
 #[derive(Default, Clone)]
-// Read by the summary and install steps, ported next.
-#[allow(dead_code)]
 struct GuestData {
     /// The OS short id (`guest.osinfo.name`).
     osinfo: Option<String>,
+    /// Its libosinfo full id.
+    osinfo_id: Option<String>,
+    failed_guest: Option<FailedGuest>,
     name: Option<String>,
     location: Option<String>,
     cdrom: Option<String>,
@@ -1081,10 +1178,45 @@ impl VmmCreateVM {
         self.0.gdata.replace(GuestData::default());
     }
 
-    /// `_close_requested`: nothing was created yet, so nothing to clean
-    /// up before closing.
+    /// `_close_requested`: removes the disk a failed install created
+    /// before closing.
     fn close_requested(&self) {
-        self.close();
+        let failed = self.0.gdata.borrow().failed_guest.clone();
+        let handle = self.0.conn.borrow().as_ref().and_then(|c| c.handle());
+        let (Some(failed), Some(handle)) = (failed, handle) else {
+            self.close();
+            return;
+        };
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let err = asyncjob::run(
+                Some(&this.0.window),
+                "Removing disk images",
+                "Removing disk images we created for this virtual machine.",
+                true,
+                move |job| {
+                    // `Installer.cleanup_created_disks`
+                    let Some(path) = failed.disk_path.filter(|_| failed.storage_was_created) else {
+                        return Ok(());
+                    };
+                    let name = path.rsplit('/').next().unwrap_or_default().to_string();
+                    let mut meter = job.meter();
+                    meter.start(&format!("Removing disk '{name}'"), None);
+                    match virt::storage_vol::StorageVol::lookup_by_path(handle.connect(), &path)
+                        .and_then(|vol| vol.delete(0))
+                    {
+                        Ok(()) => meter.end(),
+                        Err(e) => eprintln!("Failed to remove disk '{name}': {e}"),
+                    }
+                    Ok(())
+                },
+            )
+            .await;
+            if let Some((error, details)) = err {
+                eprintln!("Error cleaning up disk images:\nerror={error}\ndetails={details}");
+            }
+            this.close();
+        });
     }
 
     // Initial state handling
@@ -2165,7 +2297,381 @@ impl VmmCreateVM {
                 return;
             }
             eprintln!("Starting create finish() sequence");
+            this.0.gdata.borrow_mut().failed_guest = None;
+
+            this.0.window.set_cursor_from_name(Some("progress"));
+            // `build_guest` + `build_installer` + `set_install_defaults`
+            match this.build_install().await {
+                Ok(plan) => this.start_install(plan).await,
+                Err(e) => {
+                    this.0.window.set_cursor_from_name(None);
+                    error::show_err(
+                        Some(&this.0.window),
+                        &format!("Error starting installation: {e}"),
+                        None,
+                        "",
+                    )
+                    .await;
+                }
+            }
         });
+    }
+
+    /// `_GuestData.build_guest` and `build_installer`, then
+    /// `installer.set_install_defaults(guest)` and the XML it makes.
+    async fn build_install(&self) -> Result<InstallPlan, String> {
+        use virtinst_core::install::newguest as ng;
+        let i = &self.0;
+        let conn = i.conn.borrow().clone().ok_or("No connection")?;
+        let handle = conn.handle().ok_or("Not connected")?;
+        let caps = i.caps.borrow().clone().ok_or("No capabilities")?;
+        let capsinfo = i.capsinfo.borrow().clone().ok_or("No capabilities")?;
+        let gdata = i.gdata.borrow().clone();
+        if gdata.location.is_some() {
+            return Err("Installing from a URL isn't supported yet.".into());
+        }
+
+        let cf = ng::ConnFacts {
+            uri: virtinst_core::connection::Uri::parse(&conn.get_uri()),
+            host_arch: caps.host.cpu.arch.clone().unwrap_or_default(),
+            host_cpu_vendor: caps.host.cpu.vendor.clone(),
+        };
+        let features = caps
+            .guest_for_info(&capsinfo)
+            .map(|g| g.features.clone())
+            .unwrap_or_default();
+        let capsf = ng::CapsFacts {
+            machines: capsinfo.machines.clone(),
+            acpi: features.acpi == Some(true),
+            apic: features.apic == Some(true),
+            pae: features.pae,
+        };
+
+        // `set_capabilities_defaults`
+        let arch = capsinfo.arch.clone().unwrap_or_default();
+        let os_type = capsinfo.os_type.clone().unwrap_or_default();
+        let domain_type = capsinfo.hypervisor_type.clone().unwrap_or_default();
+        let is_xenpv = matches!(os_type.as_str(), "xen" | "linux" | "xenpvh");
+        let machine = self.get_config_machine().or_else(|| {
+            capsinfo
+                .recommended_machine(conn.is_qemu() || conn.is_test())
+                .map(String::from)
+        });
+        let os = match gdata.osinfo_id.as_deref().and_then(oslist::lookup_osinfo) {
+            Some(os) => ng::OsFacts::from_osinfo(&os, &arch),
+            None => ng::OsFacts::default(),
+        };
+        let mut guest = ng::NewGuest {
+            emulator: capsinfo
+                .emulator
+                .clone()
+                .filter(|_| !is_xenpv && domain_type != "vz"),
+            loader: capsinfo.loader.clone(),
+            domain_type,
+            os_type,
+            arch: arch.clone(),
+            machine,
+            name: gdata.name.clone().unwrap_or_default(),
+            memory: gdata.memory,
+            current_memory: gdata.memory,
+            vcpus: gdata.vcpus,
+            os,
+            uefi_requested: i.uefi_requested.get().then_some(true),
+            init: gdata.init.clone(),
+            ..Default::default()
+        };
+
+        if let Some((fstype, source)) = &gdata.filesystem {
+            guest.devices.push(ng::Device::Filesystem {
+                fstype: fstype.clone(),
+                accessmode: None,
+                source: source.clone(),
+                target: "/".into(),
+            });
+        }
+        let mut vol_install = None;
+        let mut disk_path = None;
+        if let Some(plan) = &gdata.disk {
+            vol_install = plan.vol_install.clone();
+            disk_path = plan.path.clone();
+            guest
+                .devices
+                .push(ng::Device::Disk(virtinst_core::devices::build::NewDisk {
+                    device: "disk".into(),
+                    path: plan.path.clone(),
+                    props: plan.props.clone(),
+                    sparse_install: plan.vol_install.as_ref().is_some_and(|v| v.allocation == 0),
+                    ..Default::default()
+                }));
+        }
+        if let Some(nic) = &gdata.interface {
+            let (nettype, source, source_mode, portgroup) = nic.selection.clone();
+            guest.devices.push(ng::Device::Interface(
+                virtinst_core::devices::build::NewInterface {
+                    nettype,
+                    source,
+                    source_mode,
+                    portgroup,
+                    mac: nic.mac.clone(),
+                    model: None,
+                },
+            ));
+        }
+
+        // The installer's CD-ROM storage, `manage_path` style.
+        let installer = match gdata.cdrom.clone() {
+            Some(path) => {
+                let is_local = !conn.is_remote();
+                let h = handle.clone();
+                let (path, props) = gio::spawn_blocking(move || {
+                    let path = virtinst_core::storage::manage_path(h.connect(), &path)
+                        .map(|m| m.path)
+                        .unwrap_or(path);
+                    let props = crate::domain::path_props(h.connect(), &path, is_local);
+                    (path, props)
+                })
+                .await
+                .map_err(|_| "Worker thread panicked".to_string())?;
+                ng::Installer::for_cdrom(&path, Some(props))
+            }
+            None => ng::Installer::default(),
+        };
+
+        guest.set_default_machine(&cf, &capsf);
+        let domcaps = conn
+            .fetch_domcaps(
+                guest.emulator.clone(),
+                Some(guest.arch.clone()),
+                guest.machine.clone(),
+                Some(guest.domain_type.clone()),
+            )
+            .await
+            .unwrap_or_default();
+        guest.cpu_ctx = self.cpu_context(&conn, &guest, &domcaps).await;
+        installer.set_install_defaults(&mut guest, &cf, &capsf, &domcaps)?;
+        let xml = installer.build_xml(&guest, &cf);
+        eprintln!(
+            "Generated initial_xml: {}",
+            xml.initial
+                .as_ref()
+                .map_or("None required".to_string(), |x| format!("\n{x}"))
+        );
+        eprintln!("Generated final_xml: \n{}", xml.final_xml);
+
+        let bootstrap = (gdata.filesystem.as_ref().is_some_and(|f| f.0.is_none())
+            && i.inst.oscontainer_bootstrap.is_active())
+        .then(|| BootstrapArgs {
+            src: self.get_config_oscontainer_source_url(false),
+            dest: i.inst.oscontainer_fs.text().to_string(),
+            user: i.inst.oscontainer_source_user.text().trim().to_string(),
+            passwd: i.inst.oscontainer_source_passwd.text().to_string(),
+            insecure: i.inst.oscontainer_source_insecure.is_active(),
+            root_password: i.inst.oscontainer_rootpw.text().to_string(),
+        });
+
+        Ok(InstallPlan {
+            name: guest.name.clone(),
+            uuid: guest.uuid.clone(),
+            is_vz: guest.domain_type == "vz",
+            needs_postboot: installer.requires_postboot_xml_changes(),
+            xml,
+            vol_install,
+            disk_path,
+            bootstrap,
+        })
+    }
+
+    /// What `DomainCpu.set_defaults` reads: the app default CPU mode
+    /// and, for `host-model-only`, the host model's security features.
+    async fn cpu_context(
+        &self,
+        conn: &VmmConnection,
+        guest: &virtinst_core::install::newguest::NewGuest,
+        domcaps: &virtinst_core::capabilities::DomainCapabilities,
+    ) -> virtinst_core::domain::cpu::CpuEditContext {
+        let mode = domcaps.app_default_cpu_mode(
+            Some(&guest.domain_type),
+            Some(&guest.arch),
+            guest.machine.as_deref(),
+        );
+        let mut security_features = vec![];
+        if mode == "host-model-only" {
+            if let (Some(cpu_xml), Some(handle)) =
+                (domcaps.host_model_cpu_xml.clone(), conn.handle())
+            {
+                let params = (
+                    domcaps.path.clone(),
+                    domcaps.arch.clone(),
+                    domcaps.machine.clone(),
+                    domcaps.domain.clone(),
+                );
+                let expanded = gio::spawn_blocking(move || {
+                    crate::domain::baseline_hypervisor_cpu(handle.connect(), params, &cpu_xml)
+                })
+                .await
+                .ok()
+                .flatten();
+                if let Some(xml) = expanded {
+                    security_features =
+                        virtinst_core::capabilities::domcaps::cpu_security_features(&xml);
+                }
+            }
+        }
+        virtinst_core::domain::cpu::CpuEditContext {
+            app_default_mode: mode.to_string(),
+            host_cpu_model: conn.host_cpu_model(),
+            security_features,
+        }
+    }
+
+    /// `_start_install` + `_do_async_install` + `_install_finished_cb`.
+    async fn start_install(&self, plan: InstallPlan) {
+        let i = &self.0;
+        let Some(conn) = i.conn.borrow().clone() else {
+            return;
+        };
+        let Some(handle) = conn.handle() else {
+            return;
+        };
+        let storage_created = Arc::new(AtomicBool::new(false));
+        let created = storage_created.clone();
+        let InstallPlan {
+            name,
+            uuid,
+            is_vz,
+            needs_postboot,
+            xml,
+            vol_install,
+            disk_path,
+            bootstrap,
+        } = plan;
+        let err = asyncjob::run(
+            Some(&i.window),
+            "Creating Virtual Machine",
+            "The virtual machine is now being created. Allocation of disk storage and \
+             retrieval of the installation images may take a few minutes to complete.",
+            true,
+            move |job| {
+                let mut meter = job.meter();
+                if let Some(args) = bootstrap {
+                    // `_create_directory_tree`
+                    meter.start("Bootstrapping container", None);
+                    args.run().map_err(|e| {
+                        (
+                            "virt-bootstrap did not complete successfully".to_string(),
+                            e,
+                        )
+                    })?;
+                }
+                let conn = handle.connect();
+                eprintln!("Starting background install process");
+                // `build_storage`
+                if let Some(vol) = &vol_install {
+                    meter.start(&format!("Allocating '{}'", vol.name), None);
+                    vol.install(conn).map_err(|e| (e.clone(), e))?;
+                    created.store(true, Ordering::SeqCst);
+                    meter.end();
+                }
+                // `_create_guest`
+                meter.start("Creating domain...", None);
+                let verr = |e: virt::error::Error| {
+                    let msg = e.message().to_string();
+                    (msg.clone(), msg)
+                };
+                if is_vz {
+                    // `_manual_transient_create`
+                    let dom = virt::domain::Domain::define_xml(
+                        conn,
+                        xml.initial.as_deref().unwrap_or(&xml.final_xml),
+                    )
+                    .map_err(verr)?;
+                    if let Err(e) = dom.create() {
+                        let _ = dom.undefine();
+                        return Err(verr(e));
+                    }
+                    if xml.initial.as_ref().is_some_and(|x| *x != xml.final_xml) {
+                        virt::domain::Domain::define_xml(conn, &xml.final_xml).map_err(verr)?;
+                    }
+                } else {
+                    virt::domain::Domain::create_xml(
+                        conn,
+                        xml.initial.as_deref().unwrap_or(&xml.final_xml),
+                        0,
+                    )
+                    .map_err(verr)?;
+                    virt::domain::Domain::define_xml(conn, &xml.final_xml).map_err(verr)?;
+                }
+                meter.end();
+                eprintln!("Install completed");
+                // Kick off pool updates
+                if let Some(vol) = &vol_install {
+                    match virt::storage_pool::StoragePool::lookup_by_name(conn, &vol.pool_name) {
+                        Ok(pool) => {
+                            let _ = pool.refresh(0);
+                        }
+                        Err(_) => eprintln!(
+                            "Error looking up pool={} for refresh after VM creation.",
+                            vol.pool_name
+                        ),
+                    }
+                }
+                Ok(())
+            },
+        )
+        .await;
+
+        // Wait for VM to show up
+        let mut error = err;
+        let mut foundvm = None;
+        if error.is_none() {
+            for _ in 0..200 {
+                conn.tick();
+                foundvm = conn.list_vms().into_iter().find(|v| v.get_uuid() == uuid);
+                if foundvm.is_some() {
+                    break;
+                }
+                glib::timeout_future(std::time::Duration::from_millis(100)).await;
+            }
+            if foundvm.is_none() {
+                let e = format!("VM '{name}' didn't show up after expected time.");
+                error = Some((e.clone(), e));
+            }
+        }
+
+        i.window.set_cursor_from_name(None);
+        let vm = match (error, foundvm) {
+            (None, Some(vm)) => vm,
+            (error, _) => {
+                let (e, details) = error.unwrap_or_default();
+                error::show_err(
+                    Some(&i.window),
+                    &format!("Unable to complete install: '{e}'"),
+                    Some(&details),
+                    "",
+                )
+                .await;
+                i.gdata.borrow_mut().failed_guest = Some(FailedGuest {
+                    disk_path,
+                    storage_was_created: storage_created.load(Ordering::SeqCst),
+                });
+                return;
+            }
+        };
+
+        if vm.is_shutoff() {
+            // Domain is already shutdown, but no error was raised.
+            // Probably means guest had no 'install' phase, as in
+            // for live cds. Try to restart the domain.
+            let _ = vm.run_action(crate::domain::DomainAction::Startup).await;
+        } else if needs_postboot {
+            // Register a status listener, which will restart the
+            // guest after the install has finished
+            watch_install_status(&vm);
+        }
+
+        self.close();
+        // Launch details dialog for new VM
+        crate::vmwindow::VmmVMWindow::show_instance(&vm);
     }
 
     /// `_validate_storage_page`.
@@ -2184,14 +2690,26 @@ impl VmmCreateVM {
 
         let mut disk = None;
         if storage_enabled {
-            // `_get_storage_path` + `build_device`
+            // `_get_storage_path` + `build_device`. Don't generate a new
+            // path if the install failed.
+            let is_default = !is_import && i.addstorage.is_default_storage();
+            let failed_path = i
+                .gdata
+                .borrow()
+                .failed_guest
+                .as_ref()
+                .and_then(|f| f.disk_path.clone())
+                .filter(|_| is_default);
+            if let Some(p) = &failed_path {
+                eprintln!("Reusing failed disk path={p}");
+            }
             let req = DiskRequest {
                 vmname: i.gdata.borrow().name.clone().unwrap_or_default(),
-                is_default_storage: !is_import && i.addstorage.is_default_storage(),
+                is_default_storage: is_default && failed_path.is_none(),
                 entry_path: if is_import {
                     i.inst.import_entry.text().to_string()
                 } else {
-                    i.addstorage.entry_path()
+                    failed_path.unwrap_or_else(|| i.addstorage.entry_path())
                 },
                 size: i.addstorage.size(),
                 fmt: conn.get_default_storage_format(),
@@ -2768,6 +3286,7 @@ impl VmmCreateVM {
             gdata.extra_args = extra;
             gdata.livecd = false;
             gdata.osinfo = osobj.as_ref().map(|o| o.name.clone());
+            gdata.osinfo_id = osobj.as_ref().and_then(|o| o.full_id.clone());
             gdata.name = Some(name);
         }
 
