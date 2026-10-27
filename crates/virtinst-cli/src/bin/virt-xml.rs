@@ -31,7 +31,9 @@ use virtinst_core::xmlbuilder::XmlObject;
     after_help = "Use '--option=?' or '--option help' to see available suboptions\n\
                   See man page for examples and full option syntax.",
     infer_long_args = true,
-    args_override_self = true
+    args_override_self = true,
+    // `--edit -1`: argparse takes a negative number as a value.
+    allow_negative_numbers = true
 )]
 struct Args {
     /// show program's version number and exit
@@ -327,6 +329,19 @@ fn parse_action(args: &Args) -> Action {
 /// `--confirm`.
 struct TouchedDev {
     xml: String,
+    /// A device still in the guest, whose XML is read (`dev.get_xml()`)
+    /// only after the guest's: like upstream, pending sets are written
+    /// once, by the guest's `get_xml`.
+    pending: Option<(&'static ParserDef, usize)>,
+}
+
+/// Fill in the XML of the devices still in `guest`.
+fn read_dev_xml(devs: &mut [TouchedDev], guest: &mut XmlObject) {
+    for dev in devs {
+        if let Some((def, idx)) = dev.pending.take() {
+            dev.xml = lookup_prop(guest, def)[idx].get_xml();
+        }
+    }
 }
 
 /// `_find_objects_to_edit` + `run_parser` for each, and the other
@@ -340,12 +355,17 @@ fn perform_action(action: &Action, guest: &mut XmlObject, conn: &Connection) -> 
 
 fn perform_engine(
     action: &Action,
-    def: &ParserDef,
+    def: &'static ParserDef,
     guest: &mut XmlObject,
     conn: &Connection,
 ) -> Vec<TouchedDev> {
     let dev_xml = |guest: &mut XmlObject, idx: usize| TouchedDev {
         xml: lookup_prop(guest, def)[idx].get_xml(),
+        pending: None,
+    };
+    let pending = |idx: usize| TouchedDev {
+        xml: String::new(),
+        pending: Some((def, idx)),
     };
     match action.name {
         ActionName::Edit => {
@@ -356,7 +376,7 @@ fn perform_engine(
                 for optstr in &action.values {
                     parse_edit(def, guest, idx, optstr).unwrap_or_else(|e| fail(e));
                 }
-                devs.push(dev_xml(guest, idx));
+                devs.push(pending(idx));
             }
             devs
         }
@@ -365,7 +385,7 @@ fn perform_engine(
             for optstr in &action.values {
                 for idx in parse_new(def, guest, optstr).unwrap_or_else(|e| fail(e)) {
                     parsers::set_defaults(def, guest, idx, Some(conn)).unwrap_or_else(|e| fail(e));
-                    devs.push(dev_xml(guest, idx));
+                    devs.push(pending(idx));
                 }
             }
             devs
@@ -421,8 +441,9 @@ fn prepare_changes(
 ) -> (Vec<TouchedDev>, XmlObject) {
     let origxml = orig.get_document_xml();
     let mut xmlobj = XmlObject::parse(&GUEST, &origxml).unwrap_or_else(|e| fail(e));
-    let devs = perform_action(action, &mut xmlobj, conn);
+    let mut devs = perform_action(action, &mut xmlobj, conn);
     let newxml = xmlobj.get_document_xml();
+    read_dev_xml(&mut devs, &mut xmlobj);
     let diff = xmlutil::diff(&origxml, &newxml, "Original XML", "Altered XML");
     if diff.is_empty() {
         log::debug!("No XML diff, didn't generate any change.");
@@ -626,10 +647,11 @@ fn main() {
 
     if action.name == ActionName::BuildXml {
         let mut guest = inactive;
-        let devs = match action.change {
+        let mut devs = match action.change {
             Change::Engine(def) => perform_engine(&action, def, &mut guest, &conn),
             Change::Legacy(name) => legacy::build_xml(name, &action.values),
         };
+        read_dev_xml(&mut devs, &mut guest);
         for dev in devs {
             print_stdout(&xmlutil::unindent_device_xml(&dev.xml), true);
         }
@@ -759,6 +781,7 @@ mod legacy {
                         .iter()
                         .map(|el| TouchedDev {
                             xml: element_xml(doc, *el),
+                            pending: None,
                         })
                         .collect())
                 }
@@ -768,6 +791,7 @@ mod legacy {
                         let el = add(doc, root, name, optstr)?;
                         devs.push(TouchedDev {
                             xml: element_xml(doc, el),
+                            pending: None,
                         });
                     }
                     Ok(devs)
@@ -780,6 +804,7 @@ mod legacy {
                         .iter()
                         .map(|el| TouchedDev {
                             xml: element_xml(doc, *el),
+                            pending: None,
                         })
                         .collect();
                     remove_elements_by_selector(doc, root, name, "remove-device", selector)?;
@@ -811,7 +836,7 @@ mod legacy {
             .collect();
         r.unwrap_or_else(|e| fail(e))
             .into_iter()
-            .map(|xml| TouchedDev { xml })
+            .map(|xml| TouchedDev { xml, pending: None })
             .collect()
     }
 }
