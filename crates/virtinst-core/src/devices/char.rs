@@ -185,3 +185,96 @@ pub struct DeviceChannel {
     #[xml(path = "target/model", attribute = "name")]
     pub target_model_name: Option<String>,
 }
+
+// `CharSource` as an `XMLBuilder` class, for the CLI parsers.
+
+use crate::xmlbuilder::{child, prop, Kind, XmlClass, XmlObject};
+
+/// `CharSource`.
+pub static CHAR_SOURCE: XmlClass = XmlClass {
+    xml_name: "source",
+    props: &[
+        prop("host", "./@host", Kind::Str),
+        prop("service", "./@service", Kind::Int),
+        prop("path", "./@path", Kind::Str),
+        prop("channel", "./@channel", Kind::Str),
+        prop("master", "./@master", Kind::Str),
+        prop("slave", "./@slave", Kind::Str),
+        prop("mode", "./@mode", Kind::Str),
+        prop("tls", "./@tls", Kind::YesNo),
+        prop("clipboard_copypaste", "./clipboard/@copypaste", Kind::YesNo),
+        prop("mouse_mode", "./mouse/@mode", Kind::Str),
+        prop("protocol", "./../protocol/@type", Kind::Str),
+        prop("log_file", "./../log/@file", Kind::Str),
+        prop("log_append", "./../log/@append", Kind::OnOff),
+        prop(
+            "connect_host",
+            "./../source[@mode='connect']/@host",
+            Kind::Str,
+        ),
+        prop(
+            "connect_service",
+            "./../source[@mode='connect']/@service",
+            Kind::Int,
+        ),
+        prop("bind_host", "./../source[@mode='bind']/@host", Kind::Str),
+        prop(
+            "bind_service",
+            "./../source[@mode='bind']/@service",
+            Kind::Int,
+        ),
+    ],
+    children: &[child(
+        "seclabels",
+        &crate::xmlbuilder::DEVICE_SECLABEL,
+        ".",
+        false,
+    )],
+    prop_order: &[
+        "bind_host",
+        "bind_service",
+        "mode",
+        "connect_host",
+        "connect_service",
+        "path",
+        "channel",
+    ],
+};
+
+/// `_set_host_helper`: `host:port` into a host and a port property.
+fn set_host_helper(
+    obj: &mut XmlObject,
+    hostparam: &str,
+    portparam: &str,
+    val: Option<&str>,
+) -> Result<(), String> {
+    let (host, port) = val
+        .unwrap_or_default()
+        .split_once(':')
+        .map_or_else(|| (val.unwrap_or_default(), ""), |(h, p)| (h, p));
+    let mut host = (!host.is_empty()).then(|| host.to_string());
+    let port = (!port.is_empty()).then(|| port.to_string());
+    if port.is_some() && host.is_none() {
+        host = Some("127.0.0.1".into());
+    }
+    obj.set(hostparam, host.map(Into::into))?;
+    if let Some(port) = port {
+        obj.set(portparam, Some(port.into()))?;
+    }
+    Ok(())
+}
+
+/// `CharSource.set_friendly_host`.
+pub fn set_friendly_host(src: &mut XmlObject, val: Option<&str>) -> Result<(), String> {
+    set_host_helper(src, "host", "service", val)
+}
+
+/// `CharSource.set_friendly_bind`.
+pub fn set_friendly_bind(src: &mut XmlObject, val: Option<&str>) -> Result<(), String> {
+    set_host_helper(src, "bind_host", "bind_service", val)
+}
+
+/// `CharSource.set_friendly_connect`.
+pub fn set_friendly_connect(src: &mut XmlObject, val: Option<&str>) -> Result<(), String> {
+    set_host_helper(src, "connect_host", "connect_service", val)
+}

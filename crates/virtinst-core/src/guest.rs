@@ -453,6 +453,14 @@ pub static DOMAIN_DEVICES: XmlClass = XmlClass {
         child("audio", &crate::devices::audio::DEVICE_AUDIO, ".", false),
         child("video", &crate::devices::video::DEVICE_VIDEO, ".", false),
         child(
+            "smartcard",
+            &crate::devices::smartcard::DEVICE_SMARTCARD,
+            ".",
+            false,
+        ),
+        child("tpm", &crate::devices::tpm::DEVICE_TPM, ".", false),
+        child("rng", &crate::devices::rng::DEVICE_RNG, ".", false),
+        child(
             "watchdog",
             &crate::devices::watchdog::DEVICE_WATCHDOG,
             ".",

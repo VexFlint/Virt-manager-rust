@@ -44,3 +44,35 @@ pub struct DeviceRng {
     #[xml(path = "rate", attribute = "period")]
     pub rate_period: Option<u32>,
 }
+
+// `DeviceRng` as an `XMLBuilder` class, for the CLI parsers.
+
+use crate::xmlbuilder::{child, prop, Kind, XmlClass, XmlObject};
+
+/// `DeviceRng`.
+pub static DEVICE_RNG: XmlClass = XmlClass {
+    xml_name: "rng",
+    props: &[
+        prop("model", "./@model", Kind::Str),
+        prop("backend_model", "./backend/@model", Kind::Str),
+        prop("backend_type", "./backend/@type", Kind::Str),
+        prop("rate_bytes", "./rate/@bytes", Kind::Str),
+        prop("rate_period", "./rate/@period", Kind::Str),
+        prop("device", "./backend[@model='random']", Kind::Str),
+    ],
+    children: crate::device_children!(child(
+        "source",
+        &super::char::CHAR_SOURCE,
+        "./backend",
+        true
+    )),
+    prop_order: crate::device_prop_order!(),
+};
+
+/// `DeviceRng.set_defaults`.
+pub fn set_defaults(dev: &mut XmlObject) -> Result<(), String> {
+    if dev.get_str("model").map_or(true, |m| m.is_empty()) {
+        dev.set("model", Some("virtio".into()))?;
+    }
+    Ok(())
+}

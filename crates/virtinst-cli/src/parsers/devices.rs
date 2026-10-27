@@ -1,12 +1,15 @@
-//! `--controller`, `--input`, `--sound`, `--audio` and `--video`:
-//! `ParserController`, `ParserInput`, `ParserSound`, `ParserAudio` and
-//! `ParserVideo`.
+//! Device parsers: `--controller`, `--input`, `--sound`, `--audio`,
+//! `--video`, `--smartcard`, `--tpm` and `--rng` (`ParserController`,
+//! `ParserInput`, `ParserSound`, `ParserAudio`, `ParserVideo`,
+//! `ParserSmartcard`, `ParserTPM` and `ParserRNG`).
 
 use std::sync::OnceLock;
 
 use virtinst_core::devices::{audio, controller, input, sound, video};
+use virtinst_core::devices::{rng as rngdev, smartcard as smartcarddev, tpm as tpmdev};
 use virtinst_core::xmlbuilder::{Value, XmlObject};
 
+use super::charsrc::add_char_source_args;
 use crate::parser::{
     add_common_device_args, conn_support, ArgDef, ArgInst, Error, ParseCtx, ParserDef,
 };
@@ -209,6 +212,164 @@ pub fn video() -> &'static ParserDef {
         def.alias("model.vram64", &["vram64"]);
         def.alias("model.vgamem", &["vgamem"]);
         def.alias("model.acceleration.accel3d", &["accel3d"]);
+        def
+    })
+}
+
+/// `ParserSmartcard`.
+pub fn smartcard() -> &'static ParserDef {
+    static DEF: OnceLock<ParserDef> = OnceLock::new();
+    DEF.get_or_init(|| {
+        let mut def = ParserDef::new(
+            "smartcard",
+            Some("devices.smartcard"),
+            Some(&smartcarddev::DEVICE_SMARTCARD),
+        );
+        def.remove_first = &["mode"];
+        add_common_device_args(&mut def, false, false);
+        def.arg(ArgDef::new("mode", "mode").ignore_default());
+        def.arg(ArgDef::new("type", "type").ignore_default());
+        add_char_source_args(&mut def, "");
+        def.arg(ArgDef::new("database", "database").can_comma());
+        def.arg(
+            ArgDef::new("certificate[0-9]*", "value")
+                .can_comma()
+                .find_inst("certificate", "certificates"),
+        );
+        def
+    })
+}
+
+/// `ParserTPM._parse`.
+fn tpm_parse(ctx: &mut ParseCtx) -> Result<Option<Vec<XmlObject>>, Error> {
+    if ctx.optstr == "none" {
+        // `self.guest.skip_default_tpm = True`: only virt-install's
+        // default devices read it.
+        return Ok(Some(vec![]));
+    }
+    // Handle --tpm /dev/tpm0
+    let typ = ctx
+        .optdict
+        .get("type")
+        .cloned()
+        .flatten()
+        .unwrap_or_default();
+    if typ.starts_with('/') {
+        let val = ctx.optdict.remove("type").flatten();
+        ctx.optdict.insert("path".into(), val);
+    }
+    // Let --tpm default,... hit our DeviceTpm defaults code
+    if ctx.optdict.get("type").cloned().flatten().as_deref() == Some("default") {
+        ctx.optdict.remove("type");
+    }
+    Ok(None)
+}
+
+/// `ParserTPM`.
+pub fn tpm() -> &'static ParserDef {
+    static DEF: OnceLock<ParserDef> = OnceLock::new();
+    DEF.get_or_init(|| {
+        let mut def = ParserDef::new("tpm", Some("devices.tpm"), Some(&tpmdev::DEVICE_TPM));
+        def.remove_first = &["type"];
+        def.stub_none = false;
+        def.custom_parse = Some(tpm_parse);
+        add_common_device_args(&mut def, false, false);
+        for (cli, prop) in [
+            ("model", "model"),
+            ("backend.type", "type"),
+            ("backend.version", "version"),
+            ("backend.device.path", "device_path"),
+            ("backend.encryption.secret", "encryption_secret"),
+        ] {
+            def.arg(ArgDef::new(cli, prop));
+        }
+        def.arg(ArgDef::new("backend.persistent_state", "persistent_state").onoff());
+        for (cli, prop) in [
+            ("backend.debug", "debug"),
+            ("backend.source.type", "source_type"),
+            ("backend.source.path", "source_path"),
+            ("backend.profile.source", "profile_source"),
+            ("backend.profile.removeDisabled", "profile_removeDisabled"),
+        ] {
+            def.arg(ArgDef::new(cli, prop));
+        }
+        for (cli, prop) in [
+            ("backend.active_pcr_banks.sha1", "active_pcr_banks.sha1"),
+            ("backend.active_pcr_banks.sha256", "active_pcr_banks.sha256"),
+            ("backend.active_pcr_banks.sha384", "active_pcr_banks.sha384"),
+            ("backend.active_pcr_banks.sha512", "active_pcr_banks.sha512"),
+        ] {
+            def.arg(ArgDef::new(cli, prop).onoff());
+        }
+        def.alias("backend.type", &["type"]);
+        def.alias("backend.version", &["version"]);
+        def.alias("backend.device.path", &["path"]);
+        def
+    })
+}
+
+/// `ParserRNG._parse`, with `_add_advertised_aliases`.
+fn rng_parse(ctx: &mut ParseCtx) -> Result<Option<Vec<XmlObject>>, Error> {
+    if ctx.optstr == "none" {
+        // `self.guest.skip_default_rng = True`: only virt-install's
+        // default devices read it.
+        return Ok(Some(vec![]));
+    }
+    // These are essentially aliases for new style options, but we still
+    // want to advertise them in --rng=help output because they are
+    // historically commonly used. This should rarely, if ever, be extended
+    if let Some(val) = ctx.optdict.remove("type") {
+        ctx.optdict.insert("backend.model".into(), val);
+    }
+    if let Some(val) = ctx.optdict.remove("device") {
+        ctx.optdict.insert("backend".into(), val);
+    }
+    let model = ctx
+        .optdict
+        .get("backend.model")
+        .cloned()
+        .flatten()
+        .unwrap_or_default();
+    if model.starts_with('/') {
+        // Handle --rng /path/to/dev
+        let val = ctx.optdict.remove("backend.model").flatten();
+        ctx.optdict.insert("backend".into(), val);
+        ctx.optdict
+            .insert("backend.model".into(), Some("random".into()));
+    }
+    Ok(None)
+}
+
+/// `ParserRNG`.
+pub fn rng() -> &'static ParserDef {
+    static DEF: OnceLock<ParserDef> = OnceLock::new();
+    DEF.get_or_init(|| {
+        let mut def = ParserDef::new("rng", Some("devices.rng"), Some(&rngdev::DEVICE_RNG));
+        def.remove_first = &["backend.model"];
+        def.stub_none = false;
+        def.custom_parse = Some(rng_parse);
+        add_common_device_args(&mut def, false, true);
+        // These are handled in _add_advertised_aliases
+        def.arg(ArgDef::new("type", "backend_model").cb(noset_cb));
+        def.arg(ArgDef::new("device", "device").cb(noset_cb));
+        def.arg(ArgDef::new("model", "model"));
+        def.arg(ArgDef::new("backend", "device"));
+        def.arg(ArgDef::new("backend.model", "backend_model"));
+        def.arg(ArgDef::new("backend.type", "backend_type"));
+        add_char_source_args(&mut def, "backend.");
+        def.arg(ArgDef::new("rate.bytes", "rate_bytes"));
+        def.arg(ArgDef::new("rate.period", "rate_period"));
+        def.alias("backend.type", &["backend_type"]);
+        def.alias("backend.source.mode", &["backend_mode"]);
+        def.alias("backend.source.host", &["backend_host"]);
+        def.alias("backend.source.service", &["backend_service"]);
+        def.alias("backend.source.connect_host", &["backend_connect_host"]);
+        def.alias(
+            "backend.source.connect_service",
+            &["backend_connect_service"],
+        );
+        def.alias("rate.bytes", &["rate_bytes"]);
+        def.alias("rate.period", &["rate_period"]);
         def
     })
 }

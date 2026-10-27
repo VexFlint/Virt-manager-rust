@@ -14,6 +14,7 @@ use virtinst_xml::XmlBound;
 
 use crate::parser::{lookup_prop, ParserDef};
 
+pub mod charsrc;
 pub mod devices;
 pub mod misc;
 
@@ -27,7 +28,10 @@ pub fn all() -> Vec<&'static ParserDef> {
         devices::audio(),
         misc::watchdog(),
         devices::video(),
+        devices::smartcard(),
         misc::memballoon(),
+        devices::tpm(),
+        devices::rng(),
         misc::panic(),
     ]
 }
@@ -84,10 +88,8 @@ pub fn guest_info(guest: &XmlObject) -> GuestInfo {
     })
 }
 
-/// `DeviceVideo.default_model(guest)`: `guest.lookup_domcaps()` is
-/// fetched only when the answer needs it, a stub if that fails.
-fn default_video_model(info: &mut GuestInfo, conn: Option<&Connection>) -> Option<&'static str> {
-    let is_qemu = conn.is_some_and(|c| c.uri().is_qemu());
+/// `guest.lookup_domcaps()`: a stub when fetching fails.
+fn lookup_domcaps(info: &GuestInfo, conn: Option<&Connection>) -> Option<DomainCapabilities> {
     let domcaps = conn.and_then(|c| {
         DomainCapabilities::fetch(
             c,
@@ -99,7 +101,14 @@ fn default_video_model(info: &mut GuestInfo, conn: Option<&Connection>) -> Optio
         .map_err(|e| log::debug!("Error fetching domcapabilities XML: {e}"))
         .ok()
     });
-    let domcaps = domcaps.or_else(|| DomainCapabilities::parse("<domainCapabilities/>").ok());
+    domcaps.or_else(|| DomainCapabilities::parse("<domainCapabilities/>").ok())
+}
+
+/// `DeviceVideo.default_model(guest)`: `guest.lookup_domcaps()` is
+/// fetched only when the answer needs it, a stub if that fails.
+fn default_video_model(info: &mut GuestInfo, conn: Option<&Connection>) -> Option<&'static str> {
+    let is_qemu = conn.is_some_and(|c| c.uri().is_qemu());
+    let domcaps = lookup_domcaps(info, conn);
     // `supports_graphics_spice`'s fallback for domcaps without graphics.
     info.spice_fallback = conn.is_some_and(|c| {
         (c.uri().is_qemu() || c.uri().is_test())
@@ -134,6 +143,19 @@ pub fn set_defaults(
             video::set_defaults(&mut lookup_prop(guest, def)[idx], model, info.has_gl)
         }
         "input" => virtinst_core::devices::input::set_defaults(&mut lookup_prop(guest, def)[idx]),
+        "rng" => virtinst_core::devices::rng::set_defaults(&mut lookup_prop(guest, def)[idx]),
+        "smartcard" => {
+            virtinst_core::devices::smartcard::set_defaults(&mut lookup_prop(guest, def)[idx])
+        }
+        "tpm" => {
+            let info = guest_info(guest);
+            virtinst_core::devices::tpm::set_defaults(&mut lookup_prop(guest, def)[idx], || {
+                virtinst_core::devices::build::default_tpm_model(
+                    lookup_domcaps(&info, conn).as_ref(),
+                    &info,
+                )
+            })
+        }
         name => misc::set_defaults(name, &mut lookup_prop(guest, def)[idx]),
     }
 }

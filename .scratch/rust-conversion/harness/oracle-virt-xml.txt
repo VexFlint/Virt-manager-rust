@@ -146,3 +146,42 @@
 --connect @SUITE@ test-for-virtxml --edit -2 --sound pcspk --print-diff
 --connect @SUITE@ test-for-virtxml --edit -9 --sound pcspk --print-diff
 --connect @SUITE@ test-for-virtxml --edit -1 --watchdog action=reset --print-diff
+
+# --smartcard / --tpm / --rng (ParserSmartcard, ParserTPM, ParserRNG)
+--connect @SUITE@ test-for-virtxml --edit --smartcard type=spicevmc --print-diff
+--connect @SUITE@ test-for-virtxml --edit --smartcard clearxml=yes,mode=host,database=/x --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --smartcard passthrough,type=spicevmc --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --smartcard mode=host --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --smartcard default --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --smartcard passthrough,type=tcp,source.mode=bind,source.host=1.2.3.4,source.service=5678,protocol.type=telnet --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --smartcard passthrough,type=tcp,source.host=:4000,log.file=/tmp/log,log.append=on --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --smartcard passthrough,type=tcp,source.bind_host=1.2.3.4:99,source.connect_host=5.6.7.8:100 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --smartcard host-certificates,type=spicevmc,database=/fake/path/to/database,certificate0=/path/to/fake/cert0,certificate1=/path/to/fake/cert1,certificate2=/path/to/fake/cert2 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --smartcard passthrough,source.service=abc --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --smartcard none --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --smartcard mode=host --print-diff
+--connect @SUITE@ test-for-virtxml --edit --smartcard=?
+--connect @SUITE@ test-for-virtxml --edit 5 --tpm /dev/tpm --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --tpm /dev/tpm0 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --tpm default --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --tpm none --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --tpm passthrough,model=tpm-crb,path=/dev/tpm0,backend.encryption.secret=11111111-2222-3333-4444-5555555555,backend.persistent_state=yes,backend.active_pcr_banks.sha1=on,backend.active_pcr_banks.sha256=yes,backend.active_pcr_banks.sha384=yes,backend.active_pcr_banks.sha512=yes,version=2.0 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --tpm model=tpm-tis,backend.type=emulator,backend.version=2.0,backend.debug=3,backend.source.type=dir,backend.source.path=/some/dir,backend.profile.source=local:mytest,backend.profile.removeDisabled=check --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --tpm backend.persistent_state=maybe --print-diff
+--connect @SUITE@ --build-xml --tpm path=/dev/tpm
+--connect @SUITE@ --build-xml --tpm emulator
+--connect @SUITE@ test-for-virtxml --edit --tpm=?
+--connect @SUITE@ test-for-virtxml --add-device --rng /dev/random --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --rng device=/dev/urandom,backend.protocol.type=,backend.log.file=,backend.log.append=,backend.source.clipboard.copypaste=,backend.source.mouse.mode=,backend.source.channel=,backend.source.tls= --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --rng type=egd,backend.type=nmdm,backend.source.master=/dev/foo1,backend.source.slave=/dev/foo2 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --rng egd,backend_host=127.0.0.1,backend_service=8000,backend_type=udp,backend_mode=bind,backend_connect_host=foo,backend_connect_service=708,rate.bytes=1234,rate.period=1000,model=virtio --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --rng none --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --rng egd,backend.type=unix,backend.source.mode=connect,backend.source.path=/tmp/unix,backend.source.seclabel.model=dac,backend.source.seclabel.label=foo,backend.source.seclabel.relabel=yes,driver.iommu=on --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --rng egd,backend.type=tcp,backend.source.seclabel1.model=dac,backend.source.tls=on --print-diff
+--connect @SUITE@ --build-xml --rng /dev/urandom
+--connect @SUITE@ test-for-virtxml --edit --rng=?
+--connect @SUITE@ test-for-virtxml --edit --rng rate_bytes=3333 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --tpm backend.device.path=,backend.type=emulator,backend.version=2.0 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --tpm /dev/tpm9 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --rng rate_bytes=3333,rate_period=4444,backend.source.connect_host=,backend.source.connect_service=,backend.source.host=,backend.source.service=,backend.source.bind_host=,backend.source.bind_service=,backend.source.mode=,backend.type=unix,backend.source.mode=connect,backend.source.path=/tmp/unix,backend.source.seclabel.model=dac,backend.source.seclabel.label=foo,backend.source.seclabel.relabel=yes --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --tpm all --print-diff

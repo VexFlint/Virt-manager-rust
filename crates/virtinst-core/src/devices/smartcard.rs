@@ -77,3 +77,48 @@ pub fn set_mode(doc: &mut virtinst_xml::Document, sc: virtinst_xml::Element, mod
     };
     sc.set_attribute(doc, "type", default_type);
 }
+
+// `DeviceSmartcard` as an `XMLBuilder` class, for the CLI parsers.
+
+use crate::xmlbuilder::{child, prop, Kind, XmlClass, XmlObject};
+
+/// `_Certificate`.
+pub static SMARTCARD_CERTIFICATE: XmlClass = XmlClass {
+    xml_name: "certificate",
+    props: &[prop("value", "./.", Kind::Str)],
+    children: &[],
+    prop_order: &[],
+};
+
+/// `DeviceSmartcard`.
+pub static DEVICE_SMARTCARD: XmlClass = XmlClass {
+    xml_name: "smartcard",
+    props: &[
+        prop("mode", "./@mode", Kind::Str),
+        prop("type", "./@type", Kind::Str),
+        prop("database", "./database", Kind::Str),
+    ],
+    children: crate::device_children!(
+        child("source", &super::char::CHAR_SOURCE, ".", true),
+        child("certificates", &SMARTCARD_CERTIFICATE, ".", false),
+    ),
+    prop_order: crate::device_prop_order!("mode", "type"),
+};
+
+/// `DeviceSmartcard.set_defaults`.
+pub fn set_defaults(dev: &mut XmlObject) -> Result<(), String> {
+    let empty = |v: Option<String>| v.map_or(true, |s| s.is_empty());
+    if empty(dev.get_str("mode")) {
+        dev.set("mode", Some("passthrough".into()))?;
+    }
+    if empty(dev.get_str("type")) {
+        // `default_type`
+        let typ = if dev.get_str("mode").as_deref() == Some("passthrough") {
+            "spicevmc"
+        } else {
+            "tcp"
+        };
+        dev.set("type", Some(typ.into()))?;
+    }
+    Ok(())
+}
