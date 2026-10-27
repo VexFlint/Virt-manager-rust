@@ -57,6 +57,11 @@ pub mod panic;
 pub use panic::DevicePanic;
 
 pub mod vsock;
+
+pub mod iommu;
+pub mod memory;
+pub mod pstore;
+pub mod shmem;
 pub use vsock::DeviceVsock;
 
 pub mod watchdog;

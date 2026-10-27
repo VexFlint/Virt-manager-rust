@@ -41,6 +41,10 @@ pub fn all() -> Vec<&'static ParserDef> {
         devices::tpm(),
         devices::rng(),
         misc::panic(),
+        misc::shmem(),
+        misc::memdev(),
+        misc::iommu(),
+        misc::pstore(),
     ]
 }
 
