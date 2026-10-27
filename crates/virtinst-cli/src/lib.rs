@@ -1709,30 +1709,15 @@ mod tests {
         assert_eq!(dev.action.as_deref(), Some("none"));
     }
 
-    /// Pins `--build-xml`'s actual printed contract: tag, self-closing,
-    /// both attribute values present — not the exact attribute *order*.
-    /// `edit_xml::Element` stores attributes in a `HashMap`
-    /// (`element.rs`: `attributes: HashMap<String, String>`) and its
-    /// writer iterates that map directly (`document.rs`'s `write`:
-    /// `for (key, val) in element.attributes(self)`), so serialized
-    /// attribute order is only stable *within* one process run, not
-    /// across runs (confirmed empirically: this test's expected string
-    /// flipped between `model` and `action` first depending on the
-    /// process's `RandomState` seed). Real, upstream-in-the-dependency
-    /// gap, not introduced here — worth a closer look before ticket
-    /// 03's "byte-exact preservation" claim is leaned on harder (an
-    /// element with untouched attributes still gets fully reserialized
-    /// in map order whenever *any* write touches its document), but
-    /// out of scope for this slice. Assert order-independently here
-    /// rather than pin a golden string that's flaky by construction.
+    /// Pins `--build-xml`'s exact printed output, attribute order
+    /// included: upstream's `<watchdog model="itco" action="none"/>`.
+    /// (Attributes keep their order since edit-xml was vendored with an
+    /// ordered attribute map, vendor/edit-xml/VENDORED.md.)
     #[test]
     fn watchdog_build_xml_output_matches_expected_shape() {
         let dev = watchdog_from_optstr("model=itco,action=none").unwrap();
         let xml = virtinst_xml::to_xml_string(&dev).unwrap();
-        assert!(xml.starts_with("<watchdog "));
-        assert!(xml.ends_with("/>"));
-        assert!(xml.contains(r#"model="itco""#));
-        assert!(xml.contains(r#"action="none""#));
+        assert_eq!(xml, r#"<watchdog model="itco" action="none"/>"#);
     }
 
     /// Two watchdogs (an artificial domain — real ones have at most
@@ -2641,14 +2626,8 @@ mod tests {
         assert!(xml.contains(r#"type="file""#));
         assert!(xml.contains(r#"device="disk""#));
         assert!(xml.contains(r#"<source file="/pool-dir/testvol1.img"/>"#));
-        assert!(
-            xml.contains(r#"<target dev="vdf" bus="virtio"/>"#) || {
-                // attribute order on <target> isn't guaranteed (see
-                // watchdog_build_xml_output_matches_expected_shape's doc
-                // comment) — check both orders rather than pin one.
-                xml.contains(r#"<target bus="virtio" dev="vdf"/>"#)
-            }
-        );
+        assert!(xml.starts_with(r#"<disk type="file" device="disk">"#));
+        assert!(xml.contains(r#"<target dev="vdf" bus="virtio"/>"#));
     }
 
     const DISK_FIXTURE: &str = r#"<domain>

@@ -7,6 +7,7 @@ members = [
     "crates/virt-manager",
     "crates/virtinst-cli",
 ]
+exclude = ["vendor"]
 
 # See .scratch/rust-conversion/map.md and its issues/ for the decisions
 # this workspace shape encodes — ticket 15 in particular (crate/module
@@ -18,3 +19,7 @@ edition = "2021"
 license = "GPL-2.0-or-later"
 rust-version = "1.75"
 repository = "https://github.com/BrunoGrande/Virt-manager-rust"
+
+# edit-xml with attributes kept in document order: vendor/edit-xml/VENDORED.md.
+[patch.crates-io]
+edit-xml = { path = "vendor/edit-xml" }

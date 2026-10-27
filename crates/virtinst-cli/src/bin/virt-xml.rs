@@ -5,12 +5,10 @@
 //! mutate only the attributes named on the command line, proven (see
 //! `virtinst_cli`'s test suite) to leave both the untouched attributes
 //! on that same element *and* a completely foreign `<qemu:commandline>`
-//! block elsewhere in the document intact. That's ticket 03's bar at
-//! the content level — not literally byte-for-byte, since `edit_xml`'s
-//! own attribute storage (a `HashMap`) doesn't guarantee stable
-//! serialization order across process runs; see
-//! `watchdog_build_xml_output_matches_expected_shape`'s doc comment in
-//! `virtinst-cli` for where that was found.
+//! block elsewhere in the document intact. That's ticket 03's bar,
+//! attribute order included: edit-xml is vendored with an ordered
+//! attribute map (vendor/edit-xml/VENDORED.md), so untouched attributes
+//! are written back in their original order.
 //!
 //! This slice covers `--build-xml`/`--edit`/`--add-device`/
 //! `--remove-device`, for `--watchdog`/`--vsock`/`--disk`/

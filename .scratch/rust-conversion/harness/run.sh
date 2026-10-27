@@ -420,8 +420,8 @@ check_xpath "$xml" "string(//filesystem/target/@dir)" "/4/5/6" "target dir chang
 # ---------------------------------------------------------------------
 # virt-clone: upstream's whole "virt-clone tests" block in
 # tests/test_cli.py. Compare cases check the full printed XML against
-# tests/data/cli/compare/virt-clone-*.xml (structurally, xmlcmp.py:
-# attribute order isn't kept by our DOM yet); invalid cases grep the
+# tests/data/cli/compare/virt-clone-*.xml (structurally, xmlcmp.py,
+# attribute order included); invalid cases grep the
 # error the same way upstream's add_invalid does. Like upstream's
 # harness, compare cases get --print-xml --__test-nodry appended, so the
 # clone really runs against the test driver too. URI-KVM-X86 is
