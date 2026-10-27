@@ -136,3 +136,13 @@
 --connect @SUITE@ test-for-virtxml --edit --audio=?
 --connect @SUITE@ test-for-virtxml --edit --video=?
 --connect @SUITE@ test-for-virtxml --edit --video model=qxl --sound pcspk
+
+# Known-bug fixes: find_inst children written once, empty <devices>, --edit -N
+--connect @SUITE@ test-for-virtxml --edit --sound codec1.type=duplex --print-diff
+--connect @SUITE@ test-for-virtxml --edit --sound codec2.type=duplex,codec0.type=micro --print-diff
+--connect @SUITE@ test --print-diff --define --add-device --sound model=ich9 --sound model=ac97
+--connect @SUITE@ test --print-xml --add-device --watchdog ib700
+--connect @SUITE@ test-for-virtxml --edit -1 --video qxl --print-diff
+--connect @SUITE@ test-for-virtxml --edit -2 --sound pcspk --print-diff
+--connect @SUITE@ test-for-virtxml --edit -9 --sound pcspk --print-diff
+--connect @SUITE@ test-for-virtxml --edit -1 --watchdog action=reset --print-diff

@@ -248,6 +248,11 @@ impl Document {
         for node in nodes {
             match node {
                 Node::Element(eid) => self.write_element(writer, *eid)?,
+                // An empty text node (what `empty_text_node` leaves for a
+                // whitespace-only element like libvirt's
+                // `<devices>\n  </devices>`) writes nothing, so the
+                // indentation around it stays libxml2-like.
+                Node::Text(text) if text.is_empty() => {}
                 Node::Text(text) => writer.write_event(Event::Text(BytesText::new(text)))?,
                 Node::DocType(text) => writer.write_event(Event::DocType(
                     BytesText::new(&format!(" {}", text)), // add a whitespace before text

@@ -36,16 +36,15 @@ watchdog, memballoon, panic, controller, input, sound, audio, video.
    e o resto do virt-install (`--os-variant` etc.).
 3. Só depois: GUI (ver CLAUDE.md seção 7).
 
-## Bugs conhecidos (achados pelo oráculo, ainda não corrigidos)
-- `virt-xml VM --edit --sound codec1.type=duplex`: nós criamos `codec0` vazio
-  e `codec1`; o upstream não (ver como `_make_find_inst_cb` cria só o índice
-  pedido quando a lista é parseada do XML).
-- `virt-xml test --add-device --sound ...` num guest com `<devices></devices>`
-  vazio: o upstream re-renderiza `<devices>` com quebra de linha/indentação;
-  nós inserimos inline.
-- `--edit -1`: o clap recusa `-1` como valor (precisa `allow_hyphen_values`
-  ou `allow_negative_numbers` no `--edit`) e `find_objects_to_edit` precisa
-  aceitar índice negativo.
+## Bugs conhecidos
 - `num_pcie_root_ports` e `--input none`/`--sound none` (skip_default_*) só
   validam; o virt-install vai precisar guardar esses valores quando migrar
   para o motor.
+
+## Armadilhas já resolvidas (não reintroduza)
+- O XML dos dispositivos tocados (`TouchedDev`) é lido só depois do
+  `get_document_xml` do guest: aplicar o propstore duas vezes duplica
+  filhos com índice além do fim (`codec1.type` sem `codec0`).
+- O writer do `vendor/edit-xml` não escreve nós de texto vazios: assim
+  `<devices>\n  </devices>` do libvirt sai indentado como no libxml2.
+- `--edit -1`: o clap usa `allow_negative_numbers`.
