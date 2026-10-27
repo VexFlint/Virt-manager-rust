@@ -185,3 +185,37 @@
 --connect @SUITE@ test-for-virtxml --edit --tpm /dev/tpm9 --print-diff
 --connect @SUITE@ test-for-virtxml --edit --rng rate_bytes=3333,rate_period=4444,backend.source.connect_host=,backend.source.connect_service=,backend.source.host=,backend.source.service=,backend.source.bind_host=,backend.source.bind_service=,backend.source.mode=,backend.type=unix,backend.source.mode=connect,backend.source.path=/tmp/unix,backend.source.seclabel.model=dac,backend.source.seclabel.label=foo,backend.source.seclabel.relabel=yes --print-diff
 --connect @SUITE@ test-for-virtxml --remove-device --tpm all --print-diff
+
+# --serial / --parallel / --channel / --console (_ParserChar)
+--connect @SUITE@ test-for-virtxml --edit --serial pty --print-diff
+--connect @SUITE@ test-for-virtxml --edit --parallel unix,path=/some/other/log --print-diff
+--connect @SUITE@ test-for-virtxml --edit --channel null --print-diff
+--connect @SUITE@ test-for-virtxml --edit --console name=foo.bar.baz --print-diff
+--connect @SUITE@ test-for-virtxml --edit 2 --console target.name=foo.bar.baz --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --serial char_type=tcp,host=:2222,mode=bind,protocol=telnet,log.file=/tmp/foo.log,log.append=yes,,target.model.name=pci-serial,source.tls=on --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --serial nmdm,source.master=/dev/foo1,source.slave=/dev/foo2,alias.name=testalias7 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --serial spiceport,source.channel=org.qemu.console.serial.0 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --serial tcp,host=foo:1234 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --serial unix,path=/tmp/sock --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --parallel type=udp,host=0.0.0.0:1234,bind_host=127.0.0.1:1234 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --parallel udp,source.connect_host=127.0.0.2,source.connect_service=8888,source.bind_host=127.0.0.1,source.bind_service=7777 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --parallel unix,path=/tmp/foo-socket,source.seclabel0.model=none,source.seclabel1.model=dac,source.seclabel1.relabel=yes,source.seclabel1.label=foobar,source.seclabel.relabel=no --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --parallel char_type=pty --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --channel pty,target_type=guestfwd,target_address=127.0.0.1:10000 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --channel pty,target.type=guestfwd,target.address=127.0.0.1,target.port=1234 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --channel pty,target.type=virtio,target.name=org.linux-kvm.port2 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --channel spicevmc --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --channel qemu-vdagent,source.clipboard.copypaste=on,source.mouse.mode=client --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --channel none --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --console pty,target_type=virtio --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --console pty,target.type=virtio --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --console none --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --serial none --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --serial tcp,target.port=x --print-diff
+--connect @SUITE@ test-for-virtxml --print-diff --remove-device --serial 1
+--connect @SUITE@ test-for-virtxml --print-diff --remove-device --serial all
+--connect @SUITE@ test-for-virtxml --print-diff --remove-device --console 2
+--connect @SUITE@ test-for-virtxml --edit --serial=?
+--connect @SUITE@ test-for-virtxml --edit --channel=?
+--connect @SUITE@ --build-xml --channel spicevmc
+--connect @SUITE@ --build-xml --serial tcp,host=:4000
