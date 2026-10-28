@@ -241,12 +241,31 @@ pub type PreParse = fn(&str, &mut OptDict) -> Result<(), Error>;
 
 /// A parser's own pick of an existing guest object to parse into
 /// instead of a new one (`ParserSysinfo.parse`'s merge by type).
+/// See `ParserDef::post_parse`.
+pub type PostParse = fn(&mut ParseCtx, &mut XmlObject) -> Result<(), Error>;
+
 pub type ExistingInst = fn(&XmlObject, &OptDict) -> Option<usize>;
 
 /// A parser's own `_parse` override, run before the generic one:
 /// `Some(objects)` replaces the generic parse with those (possibly no)
 /// objects, `None` falls through to it.
 pub type CustomParse = fn(&mut ParseCtx) -> Result<Option<Vec<XmlObject>>, Error>;
+
+thread_local! {
+    static CONNECT: std::cell::RefCell<Option<virt::connect::Connect>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The libvirt connection parsers that look up storage use
+/// (`self.guest.conn`).
+pub fn set_connect(conn: Option<virt::connect::Connect>) {
+    CONNECT.with(|c| *c.borrow_mut() = conn);
+}
+
+/// See [`set_connect`].
+pub fn connect() -> Option<virt::connect::Connect> {
+    CONNECT.with(|c| c.borrow().clone())
+}
 
 /// The `conn.support` answers parsers read.
 #[derive(Clone, Copy, Debug, Default)]
@@ -267,6 +286,12 @@ pub struct ConnSupport {
     pub vmport: bool,
     /// `conn_graphics_listen_none`.
     pub graphics_listen_none: bool,
+    /// `conn.is_qemu()`.
+    pub is_qemu: bool,
+    /// `conn.is_bhyve()`.
+    pub is_bhyve: bool,
+    /// `conn_disk_driver_name_qemu`.
+    pub disk_driver_name_qemu: bool,
 }
 
 thread_local! {
@@ -281,6 +306,9 @@ thread_local! {
                 is_remote: false,
                 vmport: false,
                 graphics_listen_none: true,
+                is_qemu: false,
+                is_bhyve: false,
+                disk_driver_name_qemu: false,
             })
         };
 }
@@ -324,6 +352,8 @@ pub struct ParserDef {
     pub pre_parse: Option<PreParse>,
     pub custom_parse: Option<CustomParse>,
     pub existing_inst: Option<ExistingInst>,
+    /// The rest of a custom `_parse`, after the options are applied.
+    pub post_parse: Option<PostParse>,
     /// `ParserXML`: each option string is a new `XMLManualAction`
     /// appended to the guest's `xml_actions`.
     pub is_xml_action: bool,
@@ -349,6 +379,7 @@ impl ParserDef {
             pre_parse: None,
             custom_parse: None,
             existing_inst: None,
+            post_parse: None,
             is_xml_action: false,
             class,
         };
@@ -579,6 +610,9 @@ pub struct ParseCtx<'a> {
     /// Guest side effects of an edit, run on the guest once the edited
     /// object is back in it (e.g. `guest.change_graphics`).
     pub post_edit: Option<PostEdit>,
+    /// Options a parser's `custom_parse` took out of the dict for its
+    /// `post_parse`.
+    pub stash: OptDict,
 }
 
 /// See `ParseCtx::post_edit`: the guest and the edited object's index.
@@ -783,8 +817,20 @@ fn device_type(class: &XmlClass) -> &'static str {
     }
 }
 
+/// Marks an [`Error`] a callback made with [`fail`].
+const FAIL_MARK: char = '\u{0}';
+
+/// `fail(msg)` from inside a parser callback: the message is shown as
+/// is, without the "Error: --flag optstr:" prefix an exception gets.
+pub fn fail(msg: impl Into<String>) -> Error {
+    format!("{FAIL_MARK}{}", msg.into())
+}
+
 /// `fail()`'s message for an exception inside a parser.
 fn raised(def: &ParserDef, optstr: &str, err: &str) -> Error {
+    if let Some(msg) = err.strip_prefix(FAIL_MARK) {
+        return msg.to_string();
+    }
     format!("Error: {} {optstr}: {err}", def.cli_flag_name())
 }
 
@@ -806,6 +852,9 @@ fn parse_into(ctx: &mut ParseCtx, inst: &mut XmlObject) -> Result<(), ParseError
         ctx.parse_param(inst, &arg).map_err(ParseError::Raised)?;
     }
     ctx.check_leftover(&optdict)?;
+    if let Some(post) = ctx.def.post_parse {
+        post(ctx, inst).map_err(ParseError::Raised)?;
+    }
     for action in &inst.xml_actions {
         action.validate().map_err(ParseError::Fail)?;
     }
@@ -881,6 +930,7 @@ pub fn parse_new(
                 editing: false,
                 boot_order: None,
                 post_edit: None,
+                stash: OptDict::default(),
             };
             parse_into(&mut ctx, &mut taken[idx])
         };
@@ -900,6 +950,7 @@ pub fn parse_new(
             editing: false,
             boot_order: None,
             post_edit: None,
+            stash: OptDict::default(),
         };
         if let Some(custom) = def.custom_parse {
             if let Some(objs) = custom(&mut ctx).map_err(|e| raised(def, optstr, &e))? {
@@ -936,6 +987,7 @@ pub fn parse_edit(
     }
     let propname = def.guest_propname.expect("guest backed parser");
     let mut optdict = def.optdict(optstr);
+    let mut stash = OptDict::default();
     if let Some(custom) = def.custom_parse {
         let mut ctx = ParseCtx {
             def,
@@ -945,6 +997,7 @@ pub fn parse_edit(
             editing: true,
             boot_order: None,
             post_edit: None,
+            stash: OptDict::default(),
         };
         // Objects a custom parse makes aren't added when editing.
         if custom(&mut ctx)
@@ -955,6 +1008,7 @@ pub fn parse_edit(
         }
         // What the custom parse left of the options.
         optdict = ctx.optdict;
+        stash = ctx.stash;
     }
     let mut taken = {
         let (parent, name, _) = guest_list(guest, propname);
@@ -969,6 +1023,7 @@ pub fn parse_edit(
             editing: true,
             boot_order: None,
             post_edit: None,
+            stash,
         };
         let r = parse_into(&mut ctx, &mut taken[idx]);
         (r, ctx.boot_order, ctx.post_edit)
@@ -1102,6 +1157,7 @@ pub fn lookup_children(
             editing: true,
             boot_order: None,
             post_edit: None,
+            stash: OptDict::default(),
         };
         let mut ret = vec![];
         for (i, inst) in objs.iter().enumerate() {
@@ -1141,6 +1197,7 @@ fn lookup_scalar(def: &ParserDef, has_value: bool, optstr: &str) -> Result<Vec<u
         editing: true,
         boot_order: None,
         post_edit: None,
+        stash: OptDict::default(),
     };
     let mut d = ctx.optdict.clone();
     let r = (|| {
@@ -1191,6 +1248,7 @@ pub fn parse_scalar_edit(
         editing: true,
         boot_order: None,
         post_edit: None,
+        stash: OptDict::default(),
     };
     let mut d = ctx.optdict.clone();
     let r = (|| {
@@ -1242,6 +1300,7 @@ pub fn parse_guest_edit(def: &ParserDef, guest: &mut XmlObject, optstr: &str) ->
         editing: true,
         boot_order: None,
         post_edit: None,
+        stash: OptDict::default(),
     };
     if def.is_xml_action {
         // The action is built on its own, then appended to the guest's.

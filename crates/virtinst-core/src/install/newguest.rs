@@ -332,6 +332,7 @@ impl NewGuest {
             os_netmodels: self.os.netmodels.clone(),
             os_virtioscsi: self.os.virtioscsi,
             spice_fallback: false,
+            ..Default::default()
         }
     }
 

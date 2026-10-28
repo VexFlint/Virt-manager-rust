@@ -41,6 +41,8 @@ pub struct GuestInfo {
     pub os_netmodels: Vec<String>,
     /// `guest.osinfo.supports_virtioscsi()`.
     pub os_virtioscsi: bool,
+    /// `guest.osinfo.supports_virtiodisk()`.
+    pub os_virtiodisk: bool,
     /// `supports_graphics_spice`'s answer for domcaps that don't list
     /// graphics: a qemu or test connection on an x86 host.
     pub spice_fallback: bool,
@@ -106,6 +108,53 @@ impl GuestInfo {
             is_qemu,
             self.os_virtioscsi,
         )
+    }
+
+    /// `DeviceDisk._default_bus`. `is_qemu`/`is_bhyve` are the
+    /// connection's.
+    pub fn default_disk_bus(&self, device: &str, is_qemu: bool, is_bhyve: bool) -> &'static str {
+        let supports_virtio = |os_support: bool| {
+            crate::install::domain_skeleton::supports_virtio(
+                self.arch(),
+                self.machine.as_deref(),
+                is_qemu,
+                os_support,
+            )
+        };
+        if device == "floppy" {
+            return "fdc";
+        }
+        if matches!(self.os_type.as_deref(), Some("xen" | "linux" | "xenpvh")) {
+            return "xen";
+        }
+        if !self.is_hvm() {
+            // This likely isn't correct, but it's kind of a catch all
+            // for virt types we don't know how to handle.
+            return "ide";
+        }
+        if device == "disk" && supports_virtio(self.os_virtiodisk) {
+            return "virtio";
+        }
+        if self.is_q35() {
+            return "sata";
+        }
+        if is_bhyve {
+            // IDE bus is not supported by bhyve
+            return "sata";
+        }
+        if self.is_x86() {
+            return "ide";
+        }
+        if device == "cdrom" && supports_virtio(self.os_virtioscsi) {
+            // x86 long time default has been IDE CDROM, stick with that to
+            // avoid churn, but every newer virt arch that supports virtio-scsi
+            // should use it
+            return "scsi";
+        }
+        if self.machine().starts_with("vexpress") {
+            return "sd";
+        }
+        "usb"
     }
 
     /// `DeviceInterface.default_model`. `is_qemu` is the connection's.
