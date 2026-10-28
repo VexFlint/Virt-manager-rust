@@ -263,10 +263,70 @@ impl OsDb {
     }
 }
 
+/// `_OsMedia`: a libosinfo media object.
+pub struct OsMedia {
+    ptr: *mut ffi::OsinfoMedia,
+}
+
+impl OsMedia {
+    pub fn get_kernel_path(&self) -> Option<String> {
+        let p = unsafe { ffi::osinfo_media_get_kernel_path(self.ptr) };
+        (!p.is_null()).then(|| unsafe { c_str_to_string(p) })
+    }
+
+    pub fn get_initrd_path(&self) -> Option<String> {
+        let p = unsafe { ffi::osinfo_media_get_initrd_path(self.ptr) };
+        (!p.is_null()).then(|| unsafe { c_str_to_string(p) })
+    }
+
+    /// `is_netinst`.
+    pub fn is_netinst(&self) -> bool {
+        unsafe {
+            let list = ffi::osinfo_media_get_os_variants(self.ptr) as *mut ffi::OsinfoList;
+            if list.is_null() {
+                return false;
+            }
+            let mut ret = false;
+            for i in 0..ffi::osinfo_list_get_length(list) {
+                let v = ffi::osinfo_list_get_nth(list, i) as *mut ffi::OsinfoEntity;
+                if !v.is_null() && c_str_to_string(ffi::osinfo_entity_get_id(v)).contains("netinst")
+                {
+                    ret = true;
+                }
+            }
+            gobject_sys::g_object_unref(list as *mut gobject_sys::GObject);
+            ret
+        }
+    }
+}
+
+impl Drop for OsMedia {
+    fn drop(&mut self) {
+        unsafe { gobject_sys::g_object_unref(self.ptr as *mut gobject_sys::GObject) };
+    }
+}
+
+/// `_OsTree`: a libosinfo tree object.
+pub struct OsTree {
+    #[allow(dead_code)]
+    ptr: *mut ffi::OsinfoTree,
+}
+
+impl Drop for OsTree {
+    fn drop(&mut self) {
+        unsafe { gobject_sys::g_object_unref(self.ptr as *mut gobject_sys::GObject) };
+    }
+}
+
 impl OsDb {
     /// Upstream's `guess_os_by_iso`: the OS libosinfo identifies from
     /// an install ISO's volume descriptors.
     pub fn guess_os_by_iso(&self, location: &str) -> Option<OsInfo> {
+        self.guess_media_by_iso(location).map(|(os, _)| os)
+    }
+
+    /// `guess_os_by_iso`, with the media object.
+    pub fn guess_media_by_iso(&self, location: &str) -> Option<(OsInfo, OsMedia)> {
         let c_loc = CString::new(location).ok()?;
         unsafe {
             let mut error: *mut glib_sys::GError = ptr::null_mut();
@@ -286,19 +346,30 @@ impl OsDb {
             } else {
                 ptr::null_mut()
             };
-            gobject_sys::g_object_unref(media as *mut gobject_sys::GObject);
-            (!os.is_null()).then_some(OsInfo { ptr: os })
+            let media = OsMedia { ptr: media };
+            (!os.is_null()).then_some((OsInfo { ptr: os }, media))
         }
     }
 
     /// Upstream's `guess_os_by_tree`: the OS of a network install tree
     /// (a URL, or a local path).
     pub fn guess_os_by_tree(&self, location: &str) -> Option<OsInfo> {
+        self.guess_tree(location, false).map(|(os, _)| os)
+    }
+
+    /// `guess_os_by_tree`, with the tree object. `in_testsuite` skips
+    /// non-file URLs like upstream's mock network tests do.
+    pub fn guess_tree(&self, location: &str, in_testsuite: bool) -> Option<(OsInfo, OsTree)> {
         let location = if location.starts_with('/') {
             format!("file://{location}")
         } else {
             location.to_string()
         };
+        if in_testsuite && !location.starts_with("file:") {
+            // We have mock network tests, but we don't want to pass the
+            // fake URL to libosinfo because it slows down the testcase
+            return None;
+        }
         let c_loc = CString::new(location.clone()).ok()?;
         unsafe {
             let mut error: *mut glib_sys::GError = ptr::null_mut();
@@ -306,7 +377,7 @@ impl OsDb {
             let tree =
                 ffi::osinfo_tree_create_from_location(c_loc.as_ptr(), ptr::null_mut(), &mut error);
             if let Some(e) = take_glib_error(error) {
-                eprintln!("Error creating libosinfo tree object for location={location} : {e}");
+                log::debug!("Error creating libosinfo tree object for location={location} : {e}");
                 return None;
             }
             if tree.is_null() {
@@ -318,8 +389,8 @@ impl OsDb {
             } else {
                 ptr::null_mut()
             };
-            gobject_sys::g_object_unref(tree as *mut gobject_sys::GObject);
-            (!os.is_null()).then_some(OsInfo { ptr: os })
+            let tree = OsTree { ptr: tree };
+            (!os.is_null()).then_some((OsInfo { ptr: os }, tree))
         }
     }
 }
@@ -437,7 +508,7 @@ impl OsDb {
 
 /// `alphanum_key`: lowercase text runs, with digit runs negated so
 /// higher numbers sort first.
-fn alphanum_key(val: &str) -> Vec<Result<i64, String>> {
+pub fn alphanum_key(val: &str) -> Vec<Result<i64, String>> {
     let mut out = Vec::new();
     let mut rest = val;
     while !rest.is_empty() {
@@ -965,6 +1036,49 @@ impl OsInfo {
         let supports_efi = self.supports_firmware_type("efi", arch, false);
         let supports_bios = self.supports_firmware_type("bios", arch, true);
         supports_efi && !supports_bios
+    }
+
+    /// `codename` (empty when unset).
+    pub fn codename(&self) -> String {
+        unsafe {
+            c_str_to_string(ffi::osinfo_product_get_codename(
+                self.ptr as *mut ffi::OsinfoProduct,
+            ))
+        }
+    }
+
+    /// `distro` (empty when unset).
+    pub fn distro(&self) -> String {
+        unsafe { c_str_to_string(ffi::osinfo_os_get_distro(self.ptr)) }
+    }
+
+    /// `get_kernel_url_arg`: the kernel argument name the distro's
+    /// installer uses to reference a network source.
+    pub fn get_kernel_url_arg(&self) -> Option<String> {
+        // Let's ask the OS for its kernel argument for the source
+        let osarg = unsafe { ffi::osinfo_os_get_kernel_url_argument(self.ptr) };
+        if !osarg.is_null() {
+            return Some(unsafe { c_str_to_string(osarg) });
+        }
+        let distro = self.distro();
+        // SUSE distros
+        if ["caasp", "sle", "sled", "sles", "opensuse"].contains(&distro.as_str()) {
+            return Some("install".into());
+        }
+        if !["centos", "rhel", "fedora"].contains(&distro.as_str()) {
+            return None;
+        }
+        // Default for RH distros, in case libosinfo data isn't complete
+        Some("inst.repo".into())
+    }
+
+    /// `get_network_install_required_ram` (bytes).
+    pub fn get_network_install_required_ram(&self, arch: &str) -> Option<i64> {
+        let list =
+            unsafe { take_resources_list(ffi::osinfo_os_get_network_install_resources(self.ptr)) };
+        list.into_iter()
+            .find(|(a, _)| a == arch || a == "all")
+            .map(|(_, r)| r.ram)
     }
 
     /// Upstream's `get_recommended_resources`.

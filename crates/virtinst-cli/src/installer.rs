@@ -15,7 +15,7 @@ use virtinst_core::osinfo::OsDb;
 use virtinst_core::xmlbuilder::{Value, XmlObject};
 
 use crate::guest::{self, GuestOpts};
-use crate::installertreemedia::{self as treemedia, TreeMedia};
+use crate::installertreemedia::{self as treemedia, GuestInfo, TreeMedia};
 use crate::parsers;
 
 /// `_make_testsuite_path`.
@@ -23,6 +23,15 @@ fn make_testsuite_path(path: &str) -> String {
     let base = path.rsplit('/').next().unwrap_or(path);
     let tail = base.splitn(3, '-').last().unwrap_or(base);
     format!("/VIRTINST-TESTSUITE/{tail}")
+}
+
+/// What the tree media reads from the guest.
+fn guest_info(guest: &XmlObject) -> GuestInfo {
+    GuestInfo {
+        arch: guest.child("os").get_str("arch").unwrap_or_default(),
+        os_type: guest.child("os").get_str("os_type").unwrap_or_default(),
+        os_name: guest::osinfo_name(guest),
+    }
 }
 
 /// `conn.in_testsuite()`.
@@ -418,11 +427,12 @@ impl Installer {
     /// `_prepare_treemedia`.
     fn prepare_treemedia(
         &mut self,
+        guest: &XmlObject,
         conn: &Connection,
         meter: &mut dyn virtinst_core::progress::Meter,
     ) -> Result<(), String> {
         let tm = self.treemedia.as_mut().expect("checked by the caller");
-        let (kernel, initrd, kernel_args) = tm.prepare(conn, meter)?;
+        let (kernel, initrd, kernel_args) = tm.prepare(conn, &guest_info(guest), meter)?;
         let paths = self.upload_media(conn, meter, vec![kernel, initrd])?;
         self.treemedia_bootconfig = Some((paths[0].clone(), paths[1].clone(), kernel_args));
         Ok(())
@@ -439,7 +449,7 @@ impl Installer {
             self.pre_reinstall_xml = Some(guest.get_xml());
         }
         if self.treemedia.is_some() {
-            self.prepare_treemedia(conn, meter)?;
+            self.prepare_treemedia(guest, conn, meter)?;
         }
         Ok(())
     }
@@ -537,10 +547,14 @@ impl Installer {
 
     /// `detect_distro`: the OS short id libosinfo detects from the
     /// install media, if any.
-    pub fn detect_distro(&mut self, conn: &Connection) -> Result<Option<String>, String> {
+    pub fn detect_distro(
+        &mut self,
+        guest: &XmlObject,
+        conn: &Connection,
+    ) -> Result<Option<String>, String> {
         let mut ret = None;
         if let Some(tm) = &mut self.treemedia {
-            ret = tm.detect_distro(conn)?;
+            ret = tm.detect_distro(conn, &guest_info(guest))?;
         } else if let Some(cdrom) = &self.cdrom {
             if conn.uri().is_remote() {
                 log::debug!("Can't detect distro for cdrom remote connection.");
@@ -562,12 +576,13 @@ impl Installer {
 
     /// `_build_postboot_xml`.
     fn build_postboot_xml(
-        &self,
+        &mut self,
         final_xml: &str,
         conn: &Connection,
     ) -> Result<(String, String), String> {
         let mut initial_guest = XmlObject::parse(&GUEST, final_xml).map_err(|e| e.to_string())?;
         self.alter_bootconfig(&mut initial_guest)?;
+        self.alter_install_resources(&mut initial_guest, conn)?;
 
         let mut final_guest = XmlObject::parse(&GUEST, final_xml).map_err(|e| e.to_string())?;
         self.remove_install_cdrom_media(&mut final_guest, conn);
@@ -575,9 +590,42 @@ impl Installer {
         Ok((initial_guest.get_xml(), final_guest.get_xml()))
     }
 
+    /// `_alter_install_resources`: sets the appropriate amount of ram
+    /// needed when performing a "network" based installation.
+    fn alter_install_resources(
+        &mut self,
+        guest: &mut XmlObject,
+        conn: &Connection,
+    ) -> Result<(), String> {
+        let Some(tm) = &mut self.treemedia else {
+            return Ok(());
+        };
+        if !tm.requires_internet(conn, &guest_info(guest))? {
+            return Ok(());
+        }
+        let Some(os) = guest::osinfo_obj(guest) else {
+            return Ok(());
+        };
+        let arch = guest.child("os").get_str("arch").unwrap_or_default();
+        let ram = os.get_network_install_required_ram(&arch).unwrap_or(0) / 1024;
+        let current = match guest.get("_currentMemory") {
+            Some(Value::Int(m)) => m,
+            _ => 0,
+        };
+        if ram > current {
+            log::warn!(
+                "Overriding memory to {} MiB needed for {} network install.",
+                ram / 1024,
+                os.short_id()
+            );
+            virtinst_core::guest::set_current_memory(guest, Some(ram))?;
+        }
+        Ok(())
+    }
+
     /// `_build_xml`.
     fn build_xml(
-        &self,
+        &mut self,
         guest: &XmlObject,
         conn: &Connection,
     ) -> Result<(Option<String>, String), String> {

@@ -31,6 +31,8 @@ uuid = { version = "1.20.0", features = ["v4"] }
 glib-sys = "0.22"
 gobject-sys = "0.22"
 gio-sys = "0.22"
+ureq = "2"
+regex = "1"
 #
 # gir-generated, not yet vendored/generated (ticket 09):
 #   - libvirt-glib event-loop + Connection/Domain signals

@@ -2,7 +2,8 @@
 //! media, a local tree, an ISO (read with `xorriso`) or a network URL.
 
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
 use std::process::{Command, Stdio};
 
 use crate::progress::Meter;
@@ -135,6 +136,168 @@ impl XorrisoReader {
     }
 }
 
+/// Python's `urllib.parse.unquote`.
+fn unquote(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = vec![];
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Some(v) = std::str::from_utf8(&b[i + 1..i + 3])
+                .ok()
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+            {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The parts of an `ftp://user:pass@host:port/path` URL that ftplib
+/// needs.
+struct FtpUrl {
+    username: String,
+    password: String,
+    host: String,
+    port: u16,
+}
+
+fn parse_ftp_url(url: &str) -> FtpUrl {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let netloc = rest.split('/').next().unwrap_or("");
+    let (userinfo, hostport) = match netloc.rsplit_once('@') {
+        Some((u, h)) => (Some(u), h),
+        None => (None, netloc),
+    };
+    let (username, password) = match userinfo {
+        Some(u) => match u.split_once(':') {
+            Some((a, b)) => (unquote(a), unquote(b)),
+            None => (unquote(u), String::new()),
+        },
+        None => (String::new(), String::new()),
+    };
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((h, p)) if !h.ends_with(']') || hostport.starts_with('[') => {
+            (h.to_string(), p.parse().unwrap_or(21))
+        }
+        _ => (hostport.to_string(), 21),
+    };
+    let host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
+    FtpUrl {
+        username,
+        password,
+        host,
+        port,
+    }
+}
+
+/// A tiny `ftplib.FTP`: control connection plus passive transfers.
+struct Ftp {
+    ctrl: BufReader<TcpStream>,
+}
+
+impl Ftp {
+    /// One (possibly multiline) reply: (code, full text).
+    fn getresp(&mut self) -> Result<(u32, String), String> {
+        let mut line = String::new();
+        self.ctrl.read_line(&mut line).map_err(|e| e.to_string())?;
+        let code: u32 = line
+            .get(..3)
+            .and_then(|c| c.parse().ok())
+            .ok_or_else(|| line.trim_end().to_string())?;
+        let mut text = line.clone();
+        if line.as_bytes().get(3) == Some(&b'-') {
+            let end = format!("{code} ");
+            loop {
+                let mut l = String::new();
+                if self.ctrl.read_line(&mut l).map_err(|e| e.to_string())? == 0 {
+                    break;
+                }
+                text += &l;
+                if l.starts_with(&end) {
+                    break;
+                }
+            }
+        }
+        let text = text.trim_end().to_string();
+        if code >= 400 {
+            return Err(text);
+        }
+        Ok((code, text))
+    }
+
+    fn sendcmd(&mut self, cmd: &str) -> Result<(u32, String), String> {
+        let stream = self.ctrl.get_mut();
+        stream
+            .write_all(format!("{cmd}\r\n").as_bytes())
+            .map_err(|e| e.to_string())?;
+        self.getresp()
+    }
+
+    fn connect(url: &FtpUrl) -> Result<Ftp, String> {
+        let stream =
+            TcpStream::connect((url.host.as_str(), url.port)).map_err(|e| e.to_string())?;
+        let mut ftp = Ftp {
+            ctrl: BufReader::new(stream),
+        };
+        ftp.getresp()?;
+        // ftplib's login defaults
+        let user = if url.username.is_empty() {
+            "anonymous"
+        } else {
+            &url.username
+        };
+        let passwd = if url.password.is_empty() && user == "anonymous" {
+            "anonymous@"
+        } else {
+            &url.password
+        };
+        let (code, _) = ftp.sendcmd(&format!("USER {user}"))?;
+        if code == 331 {
+            ftp.sendcmd(&format!("PASS {passwd}"))?;
+        }
+        Ok(ftp)
+    }
+
+    fn size(&mut self, path: &str) -> Result<u64, String> {
+        let (_, text) = self.sendcmd(&format!("SIZE {path}"))?;
+        text.get(4..)
+            .and_then(|s| s.trim().parse().ok())
+            .ok_or_else(|| text.clone())
+    }
+
+    fn retr(&mut self, path: &str) -> Result<Vec<u8>, String> {
+        let (_, text) = self.sendcmd("PASV")?;
+        let nums: Vec<u16> = text
+            .split(['(', ')'])
+            .nth(1)
+            .unwrap_or("")
+            .split(',')
+            .filter_map(|n| n.trim().parse().ok())
+            .collect();
+        if nums.len() != 6 {
+            return Err(text);
+        }
+        let host = format!("{}.{}.{}.{}", nums[0], nums[1], nums[2], nums[3]);
+        let port = nums[4] * 256 + nums[5];
+        let mut data = TcpStream::connect((host.as_str(), port)).map_err(|e| e.to_string())?;
+        self.sendcmd(&format!("RETR {path}"))?;
+        let mut buf = vec![];
+        data.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+        drop(data);
+        self.getresp()?;
+        Ok(buf)
+    }
+}
+
 /// Which `_URLFetcher` subclass a fetcher is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
@@ -151,6 +314,8 @@ pub struct Fetcher {
     pub scratchdir: String,
     kind: Kind,
     isoreader: Option<XorrisoReader>,
+    http: Option<ureq::Agent>,
+    ftp: Option<Ftp>,
 }
 
 const BLOCK_SIZE: usize = 16384;
@@ -164,7 +329,7 @@ fn url_path(url: &str) -> &str {
 }
 
 /// `fetcherForURI`.
-pub fn fetcher_for_uri(uri: &str, scratchdir: &str, direct: bool) -> Fetcher {
+pub fn fetcher_for_uri(uri: &str, scratchdir: &str, direct: bool) -> Result<Fetcher, String> {
     let kind = if uri.starts_with("http://") || uri.starts_with("https://") {
         Kind::Http
     } else if uri.starts_with("ftp://") {
@@ -181,18 +346,49 @@ pub fn fetcher_for_uri(uri: &str, scratchdir: &str, direct: bool) -> Fetcher {
 
 /// `DirectFetcher`: each file is its own full URL.
 pub fn direct_fetcher(scratchdir: &str) -> Fetcher {
-    Fetcher::new("", scratchdir, Kind::Direct)
+    Fetcher {
+        location: String::new(),
+        scratchdir: scratchdir.into(),
+        kind: Kind::Direct,
+        isoreader: None,
+        http: None,
+        ftp: None,
+    }
 }
 
 impl Fetcher {
-    fn new(location: &str, scratchdir: &str, kind: Kind) -> Fetcher {
+    fn new(location: &str, scratchdir: &str, kind: Kind) -> Result<Fetcher, String> {
         log::debug!("Using scratchdir={scratchdir}");
-        Fetcher {
-            location: location.into(),
-            scratchdir: scratchdir.into(),
-            kind,
-            isoreader: None,
+        let mut f = direct_fetcher(scratchdir);
+        f.location = location.into();
+        f.kind = kind;
+        f.prepare()?;
+        Ok(f)
+    }
+
+    /// `_prepare`.
+    fn prepare(&mut self) -> Result<(), String> {
+        match self.kind {
+            Kind::Http => {
+                self.http = Some(ureq::AgentBuilder::new().try_proxy_from_env(true).build());
+            }
+            Kind::Ftp => {
+                let url = parse_ftp_url(&self.location);
+                let res = Ftp::connect(&url).and_then(|mut ftp| {
+                    // Force binary mode
+                    ftp.sendcmd("TYPE I")?;
+                    Ok(ftp)
+                });
+                match res {
+                    Ok(ftp) => self.ftp = Some(ftp),
+                    Err(e) => {
+                        return Err(format!("Opening URL {} failed: {e}", self.location));
+                    }
+                }
+            }
+            _ => {}
         }
+        Ok(())
     }
 
     /// `is_iso`: a fetcher for local CDROM/ISO.
@@ -236,9 +432,32 @@ impl Fetcher {
                 }
             },
             Kind::Direct => true,
-            Kind::Http | Kind::Ftp => {
-                log::debug!("network hasFile for {url}: not supported yet in this port");
-                false
+            Kind::Http => {
+                // We just do a HEAD request to see if the file exists
+                let agent = self.http.as_ref().expect("prepared");
+                match agent.head(url).call() {
+                    Ok(_) => true,
+                    Err(e) => {
+                        log::debug!("HTTP hasFile request failed: {e}");
+                        false
+                    }
+                }
+            }
+            Kind::Ftp => {
+                let path = url_path(url).to_string();
+                let ftp = self.ftp.as_mut().expect("prepared");
+                // If it's a file, else if it's a dir
+                let res = ftp
+                    .size(&path)
+                    .map(|_| ())
+                    .or_else(|_| ftp.sendcmd(&format!("CWD {path}")).map(|_| ()));
+                match res {
+                    Ok(()) => true,
+                    Err(e) => {
+                        log::debug!("FTP hasFile: couldn't access {url}: {e}");
+                        false
+                    }
+                }
             }
         }
     }
@@ -274,8 +493,20 @@ impl Fetcher {
                 Ok((Box::new(std::io::Cursor::new(data)), Some(len)))
             }
             Kind::Direct => Err("DirectFetcher shouldn't be used for file access.".into()),
-            Kind::Http | Kind::Ftp => {
-                Err("network install media is not supported yet in this port".into())
+            Kind::Http => {
+                let agent = self.http.as_ref().expect("prepared");
+                let response = agent.get(url).call().map_err(|e| e.to_string())?;
+                let size = response
+                    .header("content-length")
+                    .and_then(|s| s.parse().ok());
+                Ok((response.into_reader(), size))
+            }
+            Kind::Ftp => {
+                let path = url_path(url).to_string();
+                let ftp = self.ftp.as_mut().expect("prepared");
+                let size = ftp.size(&path).ok();
+                let data = ftp.retr(&path)?;
+                Ok((Box::new(std::io::Cursor::new(data)), size))
             }
         }
     }
@@ -323,7 +554,7 @@ impl Fetcher {
     ) -> Result<String, String> {
         if self.kind == Kind::Direct {
             let fullurl = fullurl.unwrap_or(filename).to_string();
-            let mut fetcher = fetcher_for_uri(&fullurl, &self.scratchdir, true);
+            let mut fetcher = fetcher_for_uri(&fullurl, &self.scratchdir, true)?;
             return fetcher.acquire_file(basename(filename), Some(&fullurl), meter);
         }
         let (mut file, path) = named_tempfile(
@@ -355,6 +586,17 @@ impl Fetcher {
     }
 }
 
+impl Drop for Fetcher {
+    /// `_cleanup`.
+    fn drop(&mut self) {
+        if let Some(mut ftp) = self.ftp.take() {
+            if let Err(e) = ftp.sendcmd("QUIT") {
+                log::debug!("Error quitting ftp connection: {e}");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,5 +608,17 @@ mod tests {
         assert_eq!(path_join("/a", "/b"), "/b");
         assert_eq!(url_path("http://h/x/y"), "/x/y");
         assert_eq!(url_path("/x/y"), "/x/y");
+        let u = parse_ftp_url("ftp://me:p%40ss@example.com:2121/pub/tree");
+        assert_eq!(
+            (
+                u.username.as_str(),
+                u.password.as_str(),
+                u.host.as_str(),
+                u.port
+            ),
+            ("me", "p@ss", "example.com", 2121)
+        );
+        let u = parse_ftp_url("ftp://example.com/pub");
+        assert_eq!((u.host.as_str(), u.port), ("example.com", 21));
     }
 }
