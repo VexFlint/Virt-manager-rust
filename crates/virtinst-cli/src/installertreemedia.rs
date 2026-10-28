@@ -1,13 +1,12 @@
 //! `InstallerTreeMedia` from upstream's
 //! `virtinst/install/installertreemedia.py`: `--location` trees and
 //! kernel/initrd installs.
-//!
-//! Distro detection inside an install tree (`urldetect.py`) isn't
-//! ported yet, so a `--location` install stops where it needs it.
 
 use virtinst_core::connection::Connection;
 use virtinst_core::install::installerinject::perform_initrd_injections;
+use virtinst_core::install::urldetect::{self, GuestFacts};
 use virtinst_core::install::urlfetcher::{self, Fetcher};
+use virtinst_core::osinfo::{OsDb, OsMedia, OsTree};
 use virtinst_core::progress::Meter;
 
 /// The kind of install media.
@@ -27,6 +26,20 @@ fn is_url(url: &str) -> bool {
 struct LocationData {
     osinfo: Option<String>,
     kernel_pairs: Vec<(String, String)>,
+    os_media: Option<OsMedia>,
+    #[allow(dead_code)]
+    os_tree: Option<OsTree>,
+}
+
+/// The guest facts the tree media reads.
+pub struct GuestInfo {
+    pub arch: String,
+    pub os_type: String,
+    pub os_name: String,
+}
+
+fn in_testsuite() -> bool {
+    std::env::var_os("VIRTINST_TEST_SUITE").is_some()
 }
 
 /// `get_system_scratchdir`: the tmpdir that's accessible by VMs on
@@ -167,41 +180,58 @@ impl TreeMedia {
                     self.location.as_deref().unwrap_or_default(),
                     &scratchdir,
                     false,
-                )
+                )?
             });
         }
         Ok(self.cached_fetcher.as_mut().expect("just set"))
     }
 
     /// `_get_cached_data`.
-    fn cached_data(&mut self, conn: &Connection) -> Result<&LocationData, String> {
+    fn cached_data(
+        &mut self,
+        conn: &Connection,
+        guest: &GuestInfo,
+    ) -> Result<&LocationData, String> {
         if self.cached_data.is_none() {
             let has_location_kernel =
                 self.location_kernel.is_some() && self.location_initrd.is_some();
-            let mut kernel_pairs = vec![];
+            let mut data = LocationData {
+                osinfo: None,
+                kernel_pairs: vec![],
+                os_media: None,
+                os_tree: None,
+            };
             if self.media_type == MediaType::Kernel {
-                kernel_pairs = vec![(
+                data.kernel_pairs = vec![(
                     self.install_kernel.clone().unwrap_or_default(),
                     self.install_initrd.clone().unwrap_or_default(),
                 )];
             } else {
-                self.fetcher(conn)?;
-                return Err(
-                    "Detecting the distribution of an install tree (--location) is not \
-                     implemented yet in this port of virt-install"
-                        .into(),
-                );
+                let facts = GuestFacts {
+                    arch: &guest.arch,
+                    os_type: &guest.os_type,
+                    os_name: &guest.os_name,
+                };
+                let fetcher = self.fetcher(conn)?;
+                if let Some(store) = urldetect::get_distro_store(
+                    &facts,
+                    fetcher,
+                    has_location_kernel,
+                    in_testsuite(),
+                )? {
+                    data.kernel_pairs = store.kernel_paths;
+                    data.osinfo = store.os_variant;
+                    data.os_media = store.os_media;
+                    data.os_tree = store.os_tree;
+                }
             }
             if has_location_kernel {
-                kernel_pairs = vec![(
+                data.kernel_pairs = vec![(
                     self.location_kernel.clone().unwrap_or_default(),
                     self.location_initrd.clone().unwrap_or_default(),
                 )];
             }
-            self.cached_data = Some(LocationData {
-                osinfo: None,
-                kernel_pairs,
-            });
+            self.cached_data = Some(data);
         }
         Ok(self.cached_data.as_ref().expect("just set"))
     }
@@ -210,14 +240,16 @@ impl TreeMedia {
     fn prepare_kernel_url(
         &mut self,
         conn: &Connection,
+        guest: &GuestInfo,
         meter: &mut dyn Meter,
     ) -> Result<(String, String), String> {
-        let pairs = self.cached_data(conn)?.kernel_pairs.clone();
+        let pairs = self.cached_data(conn, guest)?.kernel_pairs.clone();
         let fetcher = self.fetcher(conn)?;
         let (kernelpath, initrdpath) = pairs
             .into_iter()
             .find(|(k, i)| fetcher.has_file(k) && fetcher.has_file(i))
             .ok_or("Couldn't find kernel for install tree.")?;
+        let fetcher = self.fetcher(conn)?;
         let kernel = fetcher.acquire_file(&kernelpath, None, meter)?;
         self.tmpfiles.push(kernel.clone());
         let fetcher = self.fetcher(conn)?;
@@ -235,11 +267,32 @@ impl TreeMedia {
         Ok((kernel, initrd))
     }
 
+    /// `_prepare_kernel_url_arg`.
+    fn prepare_kernel_url_arg(&self, guest: &GuestInfo) -> Option<String> {
+        let osinfo = self
+            .cached_data
+            .as_ref()
+            .and_then(|d| d.osinfo.clone())
+            .unwrap_or_else(|| guest.os_name.clone());
+        let db = OsDb::load_default().ok()?;
+        db.lookup_os(&osinfo)?.get_kernel_url_arg()
+    }
+
     /// `_prepare_kernel_args`.
-    fn prepare_kernel_args(&mut self) -> String {
+    fn prepare_kernel_args(&mut self, guest: &GuestInfo) -> String {
+        let mut install_args = None;
+        if let Some(location) = self.is_network_url().map(str::to_string) {
+            if let Some(kernel_url_arg) = self.prepare_kernel_url_arg(guest) {
+                install_args = Some(format!("{kernel_url_arg}={location}"));
+            }
+        }
+        if let Some(a) = install_args {
+            self.extra_args.push(a);
+        }
+
         let ret = match &self.install_kernel_args {
-            Some(a) => a.clone(),
-            None => self.extra_args.join(" "),
+            Some(a) if !a.is_empty() => a.clone(),
+            _ => self.extra_args.join(" "),
         };
         if self.media_type == MediaType::Dir && ret.is_empty() {
             log::warn!(
@@ -255,11 +308,12 @@ impl TreeMedia {
     pub fn prepare(
         &mut self,
         conn: &Connection,
+        guest: &GuestInfo,
         meter: &mut dyn Meter,
     ) -> Result<(String, String, String), String> {
-        self.cached_data(conn)?;
-        let kernel_args = self.prepare_kernel_args();
-        let (kernel, initrd) = self.prepare_kernel_url(conn, meter)?;
+        self.cached_data(conn, guest)?;
+        let kernel_args = self.prepare_kernel_args(guest);
+        let (kernel, initrd) = self.prepare_kernel_url(conn, guest, meter)?;
         Ok((kernel, initrd, kernel_args))
     }
 
@@ -296,12 +350,27 @@ impl TreeMedia {
     }
 
     /// `detect_distro`.
-    pub fn detect_distro(&mut self, conn: &Connection) -> Result<Option<String>, String> {
-        Ok(self.cached_data(conn)?.osinfo.clone())
+    pub fn detect_distro(
+        &mut self,
+        conn: &Connection,
+        guest: &GuestInfo,
+    ) -> Result<Option<String>, String> {
+        Ok(self.cached_data(conn, guest)?.osinfo.clone())
     }
 
     /// `requires_internet`.
-    pub fn requires_internet(&mut self) -> bool {
-        matches!(self.media_type, MediaType::Url | MediaType::Dir)
+    pub fn requires_internet(
+        &mut self,
+        conn: &Connection,
+        guest: &GuestInfo,
+    ) -> Result<bool, String> {
+        if matches!(self.media_type, MediaType::Url | MediaType::Dir) {
+            return Ok(true);
+        }
+        Ok(self
+            .cached_data(conn, guest)?
+            .os_media
+            .as_ref()
+            .is_some_and(|m| m.is_netinst()))
     }
 }

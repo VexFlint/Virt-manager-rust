@@ -4,9 +4,8 @@
 //! install media/bootdev handling is the `Installer`
 //! (`virtinst_cli::installer`).
 //!
-//! Distro detection for `--location` trees, `--unattended`,
-//! `--cloud-init` and `--test-media-detection` are the next step of the
-//! port; they fail with a clear message for now.
+//! `--unattended` and `--cloud-init` are the next step of the port;
+//! they fail with a clear message for now.
 
 use clap::{ArgAction, Parser};
 use virtinst_cli::cli::{self, fail, print_stderr, print_stdout};
@@ -1330,6 +1329,37 @@ fn show_guest_warnings(args: &Args, guest: &XmlObject, conn: &Connection) {
     show_memory_warnings(guest);
 }
 
+/// `do_test_media_detection`.
+fn do_test_media_detection(args: &Args, conn: &Connection, caps: &Capabilities) {
+    let url = args.test_media_detection.clone();
+    let mut guest = XmlObject::new(&GUEST);
+    if let Some(arch) = args.arch.clone().filter(|a| !a.is_empty()) {
+        guest
+            .set_path("os.arch", Some(Value::Str(arch)))
+            .unwrap_or_else(|e| fail(e));
+    }
+    if let Some(t) = args.os_type() {
+        guest
+            .set_path("os.os_type", Some(Value::Str(t.into())))
+            .unwrap_or_else(|e| fail(e));
+    }
+    let support = parser::conn_support();
+    guest::set_capabilities_defaults(&mut guest, caps, &support).unwrap_or_else(|e| fail(e));
+
+    let mut installer = Installer::new(
+        conn,
+        InstallerArgs {
+            location: url,
+            ..InstallerArgs::default()
+        },
+    )
+    .unwrap_or_else(|e| fail(e));
+    let ret = installer
+        .detect_distro(&guest, conn)
+        .unwrap_or_else(|e| fail(e));
+    print_stdout(ret.as_deref().unwrap_or("None"), true);
+}
+
 /// `get_location_for_os`.
 fn get_location_for_os(guest: &XmlObject, osname: &str, profile: Option<&str>) -> String {
     let db = OsDb::load_default().unwrap_or_else(|e| fail(e));
@@ -1558,7 +1588,7 @@ fn installer_detect_distro(
 
     // This also validates the install location
     let autodistro = installer
-        .detect_distro(conn)
+        .detect_distro(guest, conn)
         .unwrap_or_else(|e| fail(format!("Error validating install location: {e}")));
     if osdata.detect {
         if let Some(d) = autodistro {
@@ -2419,11 +2449,12 @@ fn main() {
     parser::defer_xml_action_checks();
     parser::set_connect(Some(conn.as_connect().clone()));
 
+    let caps = Capabilities::fetch(&conn).unwrap_or_else(|e| fail(e));
     if args.test_media_detection.is_some() {
-        fail("--test-media-detection is not implemented yet in this port of virt-install");
+        do_test_media_detection(&args, &conn, &caps);
+        return;
     }
 
-    let caps = Capabilities::fetch(&conn).unwrap_or_else(|e| fail(e));
     let mut b = build_guest_instance(&mut args, &conn, &caps);
     if args.xmlonly.is_some() || args.dry {
         if let Some(xml) = xml_to_print(&mut b, &args, &conn) {

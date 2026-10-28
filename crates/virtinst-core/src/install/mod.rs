@@ -18,6 +18,7 @@ pub mod installerinject;
 pub mod iso;
 pub mod manual;
 pub mod newguest;
+pub mod urldetect;
 pub mod urlfetcher;
 pub mod volumeupload;
 pub use container::build_container_os_document;
@@ -163,7 +164,6 @@ impl InstallMethod {
 
 // TODO: pub struct CloudInit { ... }
 // TODO: pub struct Unattended { ... }
-// TODO: pub mod url_detect;
 
 #[cfg(test)]
 mod tests {

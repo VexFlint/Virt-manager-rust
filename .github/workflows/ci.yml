@@ -24,10 +24,13 @@ jobs:
       # python3-libvirt, python3-libxml2 and python3-requests let the
       # harness run upstream's own virt-xml as an oracle (byte for byte
       # comparison with ours).
+      # cpio, xorriso and genisoimage are what virt-install (ours and
+      # upstream's) runs for --location ISO trees, --initrd-inject and
+      # the cloud-init/unattended ISOs.
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libvirt-dev libosinfo-1.0-dev libclang-dev pkg-config libxml2-utils libgtk-4-dev libgvnc-1.0-dev libspice-client-glib-2.0-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev python3-libvirt python3-libxml2 python3-requests
+          sudo apt-get install -y libvirt-dev libosinfo-1.0-dev libclang-dev pkg-config libxml2-utils libgtk-4-dev libgvnc-1.0-dev libspice-client-glib-2.0-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev python3-libvirt python3-libxml2 python3-requests cpio xorriso genisoimage
 
       - uses: dtolnay/rust-toolchain@stable
         with:
