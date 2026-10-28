@@ -255,7 +255,7 @@ impl StorageBackend {
     /// Size in GiB.
     pub fn get_size(&self) -> f64 {
         let bytes = if let Some(vi) = &self.vol_install {
-            vi.capacity
+            vi.capacity as u64
         } else if let Some(v) = &self.vol_xml {
             v.capacity
         } else if let Some(path) = &self.path {

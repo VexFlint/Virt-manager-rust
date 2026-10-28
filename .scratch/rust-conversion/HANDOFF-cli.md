@@ -70,14 +70,23 @@ em `--build-xml --iothreads`. MagicURI (`__virtinst_test__...`) em
 `cli::get_connection` vira as variáveis `VIRTINST_TEST_*`; no oráculo,
 `@MAGIC@` e `@CAPS@` montam as URIs de teste do upstream.
 
+O virt-install é o port do `virtinstall.py` (`bin/virt-install.rs`) sobre o motor,
+com o `Installer` em `installer.rs`. Os parsers marcam os `skip_default_*`,
+`uefi_requested`, `num_pcie_root_ports` e `cpu_special_mode_was_set` no
+`parser::GuestFlags`, e o `GuestOpts::from_flags` lê de lá. `run_parser` escolhe
+entre guest, escalar e lista. `cli::argparse_parse` imita o argparse (prefixos de
+opção como `--dry`, erros `usage:`/`error:` com código 2). No virt-install os
+erros do `--xml` saem no `get_xml` (`parser::defer_xml_action_checks` e
+`XmlObject::check_xml_actions`). Oráculo: `oracle-virt-install.txt` (206 casos).
+
 ## Falta (prioridade)
-1. Reescrever o virt-install sobre o motor + `guest.rs` (parte 2 do #5).
+1. Métodos de instalação (#6): `--location`, `--install`, `--extra-args`,
+   `--cloud-init`, `--unattended`, `--reinstall`, `--test-media-detection`
+   (hoje falham com "not implemented yet"). Os casos deles ficaram fora do oráculo.
 2. Só depois: GUI (ver CLAUDE.md seção 7).
 
 ## Bugs conhecidos
-- `num_pcie_root_ports` e `--input none`/`--sound none` (skip_default_*) só
-  validam; o virt-install vai precisar guardar esses valores quando migrar
-  para o motor.
+- Nenhum conhecido no corpus do oráculo.
 
 ## Armadilhas já resolvidas (não reintroduza)
 - O XML dos dispositivos tocados (`TouchedDev`) é lido só depois do
@@ -86,3 +95,6 @@ em `--build-xml --iothreads`. MagicURI (`__virtinst_test__...`) em
 - O writer do `vendor/edit-xml` não escreve nós de texto vazios: assim
   `<devices>\n  </devices>` do libvirt sai indentado como no libxml2.
 - `--edit -1`: o clap usa `allow_negative_numbers`.
+- O writer do `edit-xml` escapa atributos e texto como o libxml2
+  (`libxml2_escape`); empurrar `(&str, &str)` no quick-xml escapava de novo.
+- `VolInstall.capacity` é `u128`: `size=100000000000` estoura `u64`.

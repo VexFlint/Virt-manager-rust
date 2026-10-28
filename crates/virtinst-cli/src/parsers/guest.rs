@@ -33,13 +33,9 @@ fn set_os_name_cb(
         OsVariant::generic().full_id
     } else {
         let db = OsDb::load_default().map_err(|e| e.to_string())?;
-        db.all_os()
-            .into_iter()
-            .find(|o| o.short_id() == name)
-            .map(|o| Some(o.id()))
-            .ok_or_else(|| {
-                format!("Unknown OS name '{name}'. See `--osinfo list` for valid values.")
-            })?
+        db.lookup_os(&name).map(|o| Some(o.id())).ok_or_else(|| {
+            format!("Unknown OS name '{name}'. See `--osinfo list` for valid values.")
+        })?
     };
     set_os_id(inst, full_id)
 }

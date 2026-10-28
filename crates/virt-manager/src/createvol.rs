@@ -427,8 +427,8 @@ impl CreateVolume {
         let gib = 1024.0 * 1024.0 * 1024.0;
         VolInstall {
             name: volname,
-            capacity: (cap * gib) as u64,
-            allocation: (alloc * gib) as u64,
+            capacity: (cap * gib) as u128,
+            allocation: (alloc * gib) as u128,
             backing_store: Some(backing).filter(|b| !b.is_empty()),
             format: fmt,
             ..self.stub_vol()

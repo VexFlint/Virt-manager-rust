@@ -249,6 +249,14 @@ impl OsDb {
     /// if a future caller (e.g. a GUI OS-picker) calls this in a loop.
     /// Upstream avoids it with `Libosinfo.Filter` + `PRODUCT_PROP_SHORT_ID`;
     /// switch to that if this ever shows up in a loop.
+    /// `_OSDB.lookup_os`: the first entry with `key` among its
+    /// short-ids (aliases included).
+    pub fn lookup_os(&self, key: &str) -> Option<OsInfo> {
+        self.all_os()
+            .into_iter()
+            .find(|o| o.short_id_list().iter().any(|s| s == key))
+    }
+
     pub fn os_by_id_or_short_id(&self, id: &str) -> Option<OsInfo> {
         self.os(id)
             .or_else(|| self.all_os().into_iter().find(|o| o.short_id() == id))
@@ -266,7 +274,7 @@ impl OsDb {
             let media =
                 ffi::osinfo_media_create_from_location(c_loc.as_ptr(), ptr::null_mut(), &mut error);
             if let Some(e) = take_glib_error(error) {
-                eprintln!("Error creating libosinfo media object: {e}");
+                log::debug!("Error creating libosinfo media object: {e}");
                 return None;
             }
             if media.is_null() {
@@ -577,6 +585,27 @@ impl OsInfo {
                 self.ptr as *mut ffi::OsinfoProduct,
             ))
         }
+    }
+
+    /// Every short-id of this entry (`short_id_list`), primary first:
+    /// aliases like `fedora-unknown` included.
+    pub fn short_id_list(&self) -> Vec<String> {
+        let mut ret = vec![];
+        unsafe {
+            // (transfer container) (element-type utf8): the strings
+            // belong to the entity, only the list is ours.
+            let list = ffi::osinfo_product_get_short_id_list(self.ptr as *mut ffi::OsinfoProduct);
+            let mut node = list;
+            while !node.is_null() {
+                ret.push(c_str_to_string((*node).data as *const std::os::raw::c_char));
+                node = (*node).next;
+            }
+            glib_sys::g_list_free(list);
+        }
+        if ret.is_empty() {
+            ret.push(self.short_id());
+        }
+        ret
     }
 
     /// Human-readable display name, e.g. `"Fedora 40"`.

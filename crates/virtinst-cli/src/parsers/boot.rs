@@ -179,10 +179,7 @@ fn set_uefi_cb(
         // From virt-install, we just set this flag, and set_defaults()
         // will fill in everything for us, otherwise we have a circular
         // dep on determining arch/machine info
-        ctx.stash.insert(
-            "uefi_requested".into(),
-            val.map(|v| if v { "on" } else { "off" }.to_string()),
-        );
+        crate::parser::update_guest_flags(|f| f.uefi_requested = val);
         Ok(())
     } else if val != Some(true) {
         disable_uefi(inst)

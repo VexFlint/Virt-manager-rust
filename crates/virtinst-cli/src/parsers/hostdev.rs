@@ -167,8 +167,7 @@ pub fn hostdev() -> &'static ParserDef {
 /// `ParserRedir._parse`.
 fn redir_parse(ctx: &mut ParseCtx) -> Result<Option<Vec<XmlObject>>, Error> {
     if ctx.optstr == "none" {
-        // `self.guest.skip_default_usbredir = True`: only virt-install's
-        // default devices read it.
+        crate::parser::update_guest_flags(|f| f.skip_default_usbredir = true);
         return Ok(Some(vec![]));
     }
     Ok(None)

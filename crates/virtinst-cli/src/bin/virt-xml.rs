@@ -15,7 +15,7 @@ use virtinst_cli::cli::{self, fail, print_stdout};
 use virtinst_cli::guest::{self, GuestOpts};
 use virtinst_cli::parser::{
     find_objects_to_edit, lookup_prop, parse_edit, parse_guest_edit, parse_new, parse_scalar_edit,
-    ParserDef,
+    run_parser, ParserDef,
 };
 use virtinst_cli::parsers;
 use virtinst_cli::xmlutil;
@@ -973,15 +973,8 @@ fn main() {
         {
             // A plain guest property (`--iothreads`): the parser edits the
             // guest itself, and the whole default guest is printed.
-            let propname = action.change.guest_propname.expect("a guest property");
             for optstr in &action.values {
-                // Once the property has a value, upstream hands that value
-                // to the parser as the object to edit.
-                let r = match guest.get(propname) {
-                    Some(_) => parse_scalar_edit(action.change, &mut guest, optstr),
-                    _ => parse_guest_edit(action.change, &mut guest, optstr),
-                };
-                r.unwrap_or_else(|e| fail(e));
+                run_parser(action.change, &mut guest, optstr).unwrap_or_else(|e| fail(e));
             }
             guest::set_defaults(&mut guest, &mut GuestOpts::default(), &conn)
                 .unwrap_or_else(|e| fail(e));

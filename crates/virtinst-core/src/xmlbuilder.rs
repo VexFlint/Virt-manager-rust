@@ -238,7 +238,9 @@ fn matches_segment(doc: &Document, el: Element, seg: &Segment) -> bool {
 
 /// The element a segment names under `parent`, if it exists.
 fn find_child(doc: &Document, parent: Element, seg: &Segment) -> Option<Element> {
-    if seg.full == "." {
+    // The empty segment of an absolute xpath stands for the root, like
+    // `.` does (`_node_make_stub` skips the first segment).
+    if seg.full == "." || seg.full.is_empty() {
         return Some(parent);
     }
     let mut matching = parent
@@ -254,7 +256,18 @@ fn find_child(doc: &Document, parent: Element, seg: &Segment) -> Option<Element>
 /// `_find`: the element an xpath (minus any final `@prop`) names.
 fn find(doc: &Document, anchor: Element, xpath: &XPath) -> Option<Element> {
     let mut node = anchor;
-    for seg in &xpath.segments {
+    let mut segs = &xpath.segments[..];
+    // An absolute xpath (`/domain/...`, from `--xml`) starts at the
+    // document's root element, which its first name must match.
+    if segs.len() > 1 && segs[0].full.is_empty() {
+        let root = doc.root_element()?;
+        if !matches_segment(doc, root, &segs[1]) {
+            return None;
+        }
+        node = root;
+        segs = &segs[2..];
+    }
+    for seg in segs {
         node = find_child(doc, node, seg)?;
     }
     Some(node)
@@ -307,6 +320,9 @@ fn has_content(doc: &Document, el: Element) -> bool {
 /// `_node_make_stub`: build every missing element of the xpath,
 /// filling in `[@prop='val']` conditions.
 fn make_stub(doc: &mut Document, anchor: Element, xpath: &XPath) -> Element {
+    if let Some(n) = find(doc, anchor, xpath) {
+        return n;
+    }
     let mut parent = anchor;
     for seg in &xpath.segments {
         if let Some(n) = find_child(doc, parent, seg) {
@@ -626,6 +642,20 @@ impl XmlManualAction {
     /// Checks the request can be performed, before the XML is touched.
     pub fn validate(&self) -> Result<(), Error> {
         self.process().map(|_| ())
+    }
+
+    /// `perform`'s failures: [`validate`](Self::validate) plus an
+    /// absolute xpath naming no element (`/@foo`), where libxml2's
+    /// `xpathEval` prints "Invalid expression" and fails.
+    pub fn check_perform(&self) -> Result<(), Error> {
+        if let Some((xpath, _)) = self.process()? {
+            let x = XPath::parse(&xpath);
+            if x.segments.len() == 1 && x.segments[0].full.is_empty() {
+                eprintln!("Invalid expression");
+                return Err(format!("{xpath} xmlXPathEval() failed"));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1093,6 +1123,68 @@ impl XmlObject {
             is_build,
         );
         self.children_mut(cp.name).push(obj);
+    }
+
+    /// `add_child(obj, idx=idx)`: like [`add_child`](Self::add_child),
+    /// but `obj` becomes the `idx`th object of its list property (and,
+    /// for an object parsed from XML, its node goes before that sibling).
+    pub fn add_child_at(&mut self, obj: XmlObject, idx: usize) {
+        let cp = self
+            .class
+            .children
+            .iter()
+            .find(|c| !c.is_single && std::ptr::eq(c.class, obj.class))
+            .unwrap_or_else(|| {
+                panic!(
+                    "Didn't find child property for child_class={}",
+                    obj.class.xml_name
+                )
+            });
+        if idx >= self.children(cp.name).len() {
+            self.add_child(obj);
+            return;
+        }
+        if !obj.is_build && !self.is_build {
+            let sib_rel = self.children(cp.name)[idx].rel.clone();
+            let xml = obj.get_xml();
+            let src = parse_libvirt_xml(&xml).expect("rendered XML parses");
+            let src_root = src.root_element().expect("rendered XML has a root");
+            let mut doc = self.doc.borrow_mut();
+            let sib = find(&doc, self.anchor, &XPath::parse(&sib_rel)).expect("sibling exists");
+            let parent = sib.parent(&doc).expect("sibling has a parent");
+            let pos = parent
+                .children(&doc)
+                .iter()
+                .position(|n| matches!(n, Node::Element(e) if *e == sib))
+                .expect("sibling is a child of its parent");
+            let new = copy_element(&src, src_root, &mut doc);
+            parent
+                .insert_child(&mut doc, pos, Node::Element(new))
+                .expect("a fresh element always attaches");
+        }
+        let path = self.child_xpath(cp);
+        self.children_mut(cp.name).insert(idx, obj);
+        let doc = self.doc.clone();
+        let anchor = self.anchor;
+        let parent_build = self.is_build;
+        for (i, o) in self.children_mut(cp.name).iter_mut().enumerate() {
+            let is_build = parent_build || o.is_build;
+            o.rebind(doc.clone(), anchor, format!("{path}[{}]", i + 1), is_build);
+        }
+    }
+
+    /// The errors `get_xml` hits performing the `xml_actions` of this
+    /// object and its children, in render order.
+    pub fn check_xml_actions(&self) -> Result<(), Error> {
+        for (_, objs) in &self.children {
+            for obj in objs {
+                obj.check_xml_actions()?;
+            }
+        }
+        for action in &self.xml_actions {
+            action.check_perform()?;
+        }
+        Ok(())
     }
 
     /// `remove_child`: drop the `idx`th object of child property `name`

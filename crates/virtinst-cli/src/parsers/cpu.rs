@@ -152,7 +152,9 @@ fn set_model_cb(
         } else {
             plain
         };
-        dcpu::set_special_mode(inst, &cctx, &val, secure)
+        dcpu::set_special_mode(inst, &cctx, &val, secure)?;
+        crate::parser::update_guest_flags(|f| f.cpu_special_mode_was_set = true);
+        Ok(())
     } else {
         let cctx = cpu_context(ctx.guest, !val.is_empty());
         dcpu::set_model(inst, &cctx, Some(&val), secure)

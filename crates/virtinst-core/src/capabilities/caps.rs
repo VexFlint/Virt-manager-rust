@@ -438,7 +438,7 @@ impl Capabilities {
             })?;
 
         let domain = self.best_domain_type(guest, typ, machine).ok_or_else(|| {
-            let typ = typ.unwrap_or_default();
+            let typ = typ.unwrap_or("None");
             let os = guest.os_type.as_deref().unwrap_or_default();
             let arch = guest.arch.as_deref().unwrap_or_default();
             match machine {
