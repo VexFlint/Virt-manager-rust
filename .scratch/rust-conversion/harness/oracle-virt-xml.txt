@@ -806,3 +806,31 @@
 --connect @SUITE@ --build-xml --launchSecurity tdx
 --connect @SUITE@ --build-xml --launchSecurity type=foo
 --connect @SUITE@ test-for-virtxml --add-device --launchSecurity sev --print-diff
+
+# --build-xml of a plain guest property: the whole default guest (Guest.set_defaults), on upstream's test MagicURIs
+--connect @MAGIC@ --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=test:///default --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=qemu:///system,caps=@CAPS@/kvm-x86_64.xml,domcaps=@CAPS@/kvm-x86_64-domcaps-latest.xml --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=qemu:///session,caps=@CAPS@/kvm-x86_64.xml,domcaps=@CAPS@/kvm-x86_64-domcaps-latest.xml --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=qemu:///system,caps=@CAPS@/kvm-x86_64.xml --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=qemu:///system,caps=@CAPS@/kvm-x86_64.xml,domcaps=@CAPS@/kvm-x86_64-domcaps-insecure.xml --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=qemu:///system,caps=@CAPS@/kvm-x86_64.xml,domcaps=@CAPS@/kvm-x86_64-domcaps-oldfirmware.xml --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=qemu:///system,caps=@CAPS@/kvm-x86_64.xml,domcaps=@CAPS@/kvm-x86_64-domcaps-amd-sev.xml --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=qemu:///system,caps=@CAPS@/kvm-armv7l.xml --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=qemu:///system,caps=@CAPS@/kvm-armv7l.xml,domcaps=@CAPS@/kvm-armv7l-domcaps.xml --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=qemu:///system,caps=@CAPS@/kvm-aarch64.xml,domcaps=@CAPS@/kvm-aarch64-domcaps.xml --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=qemu:///system,caps=@CAPS@/kvm-ppc64le.xml,domcaps=@CAPS@/kvm-ppc64le-domcaps.xml --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=qemu:///system,caps=@CAPS@/kvm-s390x.xml,domcaps=@CAPS@/kvm-s390x-domcaps.xml --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=qemu:///system,caps=@CAPS@/qemu-riscv64.xml,domcaps=@CAPS@/qemu-riscv64-domcaps.xml --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=qemu:///system,caps=@CAPS@/kvm-loongarch64.xml,domcaps=@CAPS@/kvm-loongarch64-domcaps.xml --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=qemu:///system,caps=@CAPS@/hvf-x86_64.xml,domcaps=@CAPS@/hvf-x86_64-domcaps.xml --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=xen:///,caps=@CAPS@/xen-rhel5.4.xml --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=lxc:///,caps=@CAPS@/lxc.xml --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=vz:///,caps=@CAPS@/vz.xml --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=bhyve:///,caps=@CAPS@/bhyve.xml,domcaps=@CAPS@/bhyve-domcaps.xml --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=test+tls://fakeuri.example.com/ --build-xml --iothreads 3
+--connect @MAGIC@,fakeuri=qemu:///system,caps=@CAPS@/kvm-x86_64.xml,domcaps=@CAPS@/kvm-x86_64-domcaps-latest.xml --build-xml --iothreads 3,foo=bar
+--connect @MAGIC@,bogus=1 --build-xml --iothreads 3
+--connect @MAGIC@ --build-xml --iothreads 3 --iothreads 5
+--connect @MAGIC@ --build-xml --iothreads 0 --iothreads 5
+--connect @MAGIC@ --build-xml --iothreads iothreads=2

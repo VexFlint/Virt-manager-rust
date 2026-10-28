@@ -769,6 +769,11 @@ impl XmlObject {
         Ok(())
     }
 
+    /// Whether `name` was ever set on this object (`name in _propstore`).
+    pub fn prop_in_store(&self, name: &str) -> bool {
+        self.propstore.iter().any(|(k, _)| *k == name)
+    }
+
     pub fn has_prop(&self, name: &str) -> bool {
         self.class.prop(name).is_some()
     }

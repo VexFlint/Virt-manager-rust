@@ -61,9 +61,9 @@ fn convert_boot_order(
 }
 
 /// `guest.lookup_domcaps()` with `os` the guest's (taken out) `<os>`.
-fn lookup_domcaps(ctx: &ParseCtx, os: &XmlObject) -> DomainCapabilities {
+fn lookup_domcaps(guest: &XmlObject, os: &XmlObject) -> DomainCapabilities {
     os.sync();
-    let info = super::guest_info(ctx.guest);
+    let info = super::guest_info(guest);
     connect()
         .and_then(|c| {
             DomainCapabilities::fetch_from(
@@ -111,9 +111,9 @@ fn set_uefi_path(guest: &mut XmlObject, os: &mut XmlObject, path: String) -> Res
     Ok(())
 }
 
-/// `Guest.enable_uefi`.
-fn enable_uefi(ctx: &mut ParseCtx, os: &mut XmlObject) -> Result<(), Error> {
-    let domcaps = lookup_domcaps(ctx, os);
+/// `Guest.enable_uefi`, with `os` the guest's (taken out) `<os>`.
+pub fn enable_uefi(guest: &mut XmlObject, os: &mut XmlObject) -> Result<(), Error> {
+    let domcaps = lookup_domcaps(guest, os);
     if domcaps.supports_firmware_efi() {
         return os.set("firmware", Some(Value::Str("efi".into())));
     }
@@ -130,7 +130,7 @@ fn enable_uefi(ctx: &mut ParseCtx, os: &mut XmlObject) -> Result<(), Error> {
         .find_uefi_path_for_arch(conn_support().is_bhyve)
         .ok_or_else(|| format!("Did not find any UEFI binary path for arch '{arch}'"))?;
     log::debug!("Setting default UEFI path={path}");
-    set_uefi_path(ctx.guest, os, path)
+    set_uefi_path(guest, os, path)
 }
 
 /// `Guest.disable_uefi`.
@@ -187,7 +187,7 @@ fn set_uefi_cb(
     } else if val != Some(true) {
         disable_uefi(inst)
     } else {
-        enable_uefi(ctx, inst)
+        enable_uefi(ctx.guest, inst)
     }
 }
 

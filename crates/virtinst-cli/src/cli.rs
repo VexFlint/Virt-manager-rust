@@ -388,7 +388,11 @@ pub fn get_connection(uri: Option<&str>) -> Connection {
     // reported by whoever gets them, not printed by libvirt.
     virt::error::clear_error_callback();
     log::debug!("Requesting libvirt URI {}", uri.unwrap_or("default"));
-    match Connection::open_auth(uri, openauth_cb) {
+    let open_uri = uri.map(|u| match u.strip_prefix(MAGIC_URI_PREFIX) {
+        Some(magic) => apply_magic_uri(magic).unwrap_or_else(|e| fail(e)),
+        None => u.to_string(),
+    });
+    match Connection::open_auth(open_uri.as_deref(), openauth_cb) {
         Ok(conn) => {
             log::debug!(
                 "Received libvirt URI {}",
@@ -400,12 +404,88 @@ pub fn get_connection(uri: Option<&str>) -> Connection {
     }
 }
 
+/// `MagicURI.VIRTINST_URI_MAGIC_PREFIX`.
+const MAGIC_URI_PREFIX: &str = "__virtinst_test__";
+
+/// `MagicURI`: upstream's test-suite URIs, `__virtinst_test__` then an
+/// openable URI and comma separated options (`predictable`,
+/// `fakeuri=`, `connver=`, `libver=`, `caps=`, `domcaps=`). Each
+/// option becomes the `VIRTINST_TEST_*` variable the libvirt wrappers
+/// already read; returns the URI to really open.
+fn apply_magic_uri(uri: &str) -> Result<String, String> {
+    let (open_uri, opts) = uri.split_once(',').unwrap_or((uri, ""));
+    let mut opts: Vec<(String, Option<String>)> = crate::parser::parse_optstr_tuples(opts);
+    let mut pop = |field: &str| {
+        let idx = opts.iter().position(|(k, _)| k == field)?;
+        Some(opts.remove(idx).1)
+    };
+    let predictable = pop("predictable").is_some();
+    let fakeuri = pop("fakeuri").flatten();
+    let capsfile = pop("caps").flatten();
+    let domcapsfile = pop("domcaps").flatten();
+    let mut conn_version = pop("connver").flatten();
+    if conn_version.is_none() && fakeuri.is_some() {
+        conn_version = Some("10000000000".into());
+    }
+    let libvirt_version = pop("libver").flatten();
+    if !opts.is_empty() {
+        let opts: Vec<String> = opts
+            .iter()
+            .map(|(k, v)| match v {
+                Some(v) => format!("'{k}': '{v}'"),
+                None => format!("'{k}': None"),
+            })
+            .collect();
+        return Err(format!(
+            "MagicURI has unhandled opts={{{}}}",
+            opts.join(", ")
+        ));
+    }
+    let vars = [
+        (
+            "VIRTINST_TEST_PREDICTABLE",
+            predictable.then(|| "1".to_string()),
+        ),
+        ("VIRTINST_TEST_FAKE_URI", fakeuri),
+        ("VIRTINST_TEST_CAPS_FILE", capsfile),
+        (
+            "VIRTINST_TEST_DOMCAPS_NOSUPPORT",
+            domcapsfile.is_none().then(|| "1".to_string()),
+        ),
+        ("VIRTINST_TEST_DOMCAPS_FILE", domcapsfile),
+        ("VIRTINST_TEST_CONN_VERSION", conn_version),
+        ("VIRTINST_TEST_LIBVIRT_VERSION", libvirt_version),
+    ];
+    for (name, val) in vars {
+        if let Some(val) = val {
+            // Only ever set here, before any other thread runs.
+            std::env::set_var(name, val);
+        }
+    }
+    Ok(open_uri.to_string())
+}
+
+/// `conn.local_libvirt_version()`, faked by a magic URI's `libver=`.
+fn libvirt_version(conn: &Connection) -> u64 {
+    std::env::var("VIRTINST_TEST_LIBVIRT_VERSION")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| conn.as_connect().get_lib_version().unwrap_or(0) as u64)
+}
+
+/// `conn.conn_version()`, faked by a magic URI's `connver=`.
+fn conn_version(conn: &Connection) -> u64 {
+    std::env::var("VIRTINST_TEST_CONN_VERSION")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| conn.as_connect().get_hyp_version().unwrap_or(0) as u64)
+}
+
 /// The `conn.support` checks the parsers read: `conn_usb3_ports`
 /// (libvirt 1.3.5) and `conn_qemu_xhci` (libvirt 3.3.0, qemu 2.9.0).
 pub fn conn_support(conn: &Connection) -> crate::parser::ConnSupport {
-    let c = conn.as_connect();
-    let libvirt = c.get_lib_version().unwrap_or(0);
-    let hv = c.get_hyp_version().unwrap_or(0);
+    let libvirt = libvirt_version(conn);
+    let hv = conn_version(conn);
     crate::parser::ConnSupport {
         usb3_ports: libvirt >= 1_003_005,
         qemu_xhci: conn.uri().is_qemu() && libvirt >= 3_003_000 && hv >= 2_009_000,

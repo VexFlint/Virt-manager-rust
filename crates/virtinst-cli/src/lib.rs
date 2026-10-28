@@ -8,6 +8,7 @@
 //! [`parsers`].
 
 pub mod cli;
+pub mod guest;
 pub mod parser;
 pub mod parsers;
 pub mod xmlutil;

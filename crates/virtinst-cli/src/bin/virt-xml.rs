@@ -12,6 +12,7 @@ use std::io::{BufRead, IsTerminal, Write};
 use clap::Parser;
 use virt::domain::Domain;
 use virtinst_cli::cli::{self, fail, print_stdout};
+use virtinst_cli::guest::{self, GuestOpts};
 use virtinst_cli::parser::{
     find_objects_to_edit, lookup_prop, parse_edit, parse_guest_edit, parse_new, parse_scalar_edit,
     ParserDef,
@@ -500,16 +501,6 @@ fn validate_action(action: &Action, args: &Args) {
             def.cli_flag_name()
         ));
     }
-    if action.name == ActionName::BuildXml
-        && def.guest_propname.is_some_and(|p| GUEST.prop(p).is_some())
-    {
-        // Upstream builds a whole default guest here (`Guest.set_defaults`),
-        // which comes with the virt-install port.
-        fail(format!(
-            "--build-xml {} is not implemented yet",
-            def.cli_flag_name()
-        ));
-    }
     if !prop_is_list(def) {
         if action.name == ActionName::RemoveDevice {
             fail(format!(
@@ -975,6 +966,28 @@ fn main() {
 
     if action.name == ActionName::BuildXml {
         let mut guest = inactive;
+        if action
+            .change
+            .guest_propname
+            .is_some_and(|p| GUEST.prop(p).is_some())
+        {
+            // A plain guest property (`--iothreads`): the parser edits the
+            // guest itself, and the whole default guest is printed.
+            let propname = action.change.guest_propname.expect("a guest property");
+            for optstr in &action.values {
+                // Once the property has a value, upstream hands that value
+                // to the parser as the object to edit.
+                let r = match guest.get(propname) {
+                    Some(_) => parse_scalar_edit(action.change, &mut guest, optstr),
+                    _ => parse_guest_edit(action.change, &mut guest, optstr),
+                };
+                r.unwrap_or_else(|e| fail(e));
+            }
+            guest::set_defaults(&mut guest, &mut GuestOpts::default(), &conn)
+                .unwrap_or_else(|e| fail(e));
+            print_stdout(&guest.get_xml(), true);
+            return;
+        }
         let mut devs = perform_engine(&action, action.change, &mut guest, &conn);
         read_dev_xml(&mut devs, &mut guest);
         for dev in devs {

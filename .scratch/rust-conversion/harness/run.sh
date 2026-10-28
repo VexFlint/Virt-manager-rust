@@ -642,6 +642,10 @@ else
         [[ -z "$line" || "$line" == \#* ]] && continue
         line="${line//@SUITE@/test://$TESTSUITE_XML}"
         line="${line//@FULL@/test://$UPSTREAM_REF/tests/data/testdriver/testdriver.xml}"
+        # upstream's test MagicURIs (tests/utils.py), `predictable` so
+        # the UUIDs and MACs match
+        line="${line//@MAGIC@/__virtinst_test__test://$UPSTREAM_REF/tests/data/testdriver/testdriver.xml,predictable}"
+        line="${line//@CAPS@/$UPSTREAM_REF/tests/data/capabilities}"
         read -ra oargs <<<"$line"
         up_rc=0
         (cd "$UPSTREAM_REF" && "$ORACLE_PY" ./virt-xml "${oargs[@]}") \
