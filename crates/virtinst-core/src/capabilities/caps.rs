@@ -58,11 +58,12 @@ impl CapsCpu {
     }
 }
 
-/// `<host>` — upstream's `_CapsHost`, minus `secmodels` (see this
-/// module's doc comment for why).
+/// `<host>` — upstream's `_CapsHost`. Of `secmodels` only each
+/// `<secmodel><model>` (see this module's doc comment for why).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CapsHost {
     pub cpu: CapsCpu,
+    pub secmodels: Vec<Option<String>>,
 }
 
 impl CapsHost {
@@ -72,6 +73,11 @@ impl CapsHost {
                 Some(c) => CapsCpu::from_element(doc, c),
                 None => CapsCpu::default(),
             },
+            secmodels: el
+                .find_all(doc, "secmodel")
+                .into_iter()
+                .map(|m| m.find(doc, "model").map(|e| e.text_content(doc)))
+                .collect(),
         }
     }
 }
@@ -301,11 +307,16 @@ impl Capabilities {
     /// `virConnectGetCapabilities`. Checks `VIRTINST_TEST_CAPS_FILE`
     /// first (see this module's doc comment); real call otherwise.
     pub fn fetch(conn: &Connection) -> Result<Capabilities, CapabilitiesError> {
+        Capabilities::fetch_from(conn.as_connect())
+    }
+
+    /// [`Capabilities::fetch`] on a bare libvirt connection.
+    pub fn fetch_from(conn: &virt::connect::Connect) -> Result<Capabilities, CapabilitiesError> {
         if let Some(path) = std::env::var_os("VIRTINST_TEST_CAPS_FILE") {
             let xml = std::fs::read_to_string(&path)?;
             return Ok(Capabilities::parse(&xml)?);
         }
-        let xml = conn.as_connect().get_capabilities()?;
+        let xml = conn.get_capabilities()?;
         Ok(Capabilities::parse(&xml)?)
     }
 
@@ -453,6 +464,35 @@ impl Capabilities {
             // empty), flagged rather than silently matched.
             emulator: domain.emulator.clone().or_else(|| guest.emulator.clone()),
             machines: guest.all_machine_names(Some(domain)),
+        })
+    }
+
+    /// `(capsinfo.domain and capsinfo.domain.machines) or
+    /// capsinfo.guest.machines` for a [`Capabilities::guest_lookup`],
+    /// as `Guest.refresh_machine_type` reads it.
+    pub fn guest_lookup_machines(
+        &self,
+        os_type: Option<&str>,
+        arch: Option<&str>,
+        typ: Option<&str>,
+        machine: Option<&str>,
+    ) -> Result<Vec<CapsMachine>, String> {
+        self.guest_lookup(os_type, arch, typ, machine)?;
+        let os_type = if os_type == Some("linux") {
+            Some("xen")
+        } else {
+            os_type
+        };
+        let guest = self
+            .guest_for_os_type(os_type, arch)
+            .expect("guest_lookup found it");
+        let domain = self
+            .best_domain_type(guest, typ, machine)
+            .expect("guest_lookup found it");
+        Ok(if domain.machines.is_empty() {
+            guest.machines.clone()
+        } else {
+            domain.machines.clone()
         })
     }
 }

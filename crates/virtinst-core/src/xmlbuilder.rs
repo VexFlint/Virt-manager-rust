@@ -965,6 +965,18 @@ impl XmlObject {
         Some(f(&mut doc, el))
     }
 
+    /// `xmlapi.node_force_remove(xpath)`, relative to this object.
+    pub fn force_remove_path(&self, xpath: &str) {
+        if self.is_build {
+            return;
+        }
+        self.sync();
+        let mut doc = self.doc.borrow_mut();
+        if let Some(el) = find(&doc, self.anchor, &XPath::parse(&self.rel)) {
+            force_remove(&mut doc, el, xpath);
+        }
+    }
+
     /// The element backing this object, when it exists.
     pub fn element(&self) -> Option<Element> {
         let doc = self.doc.borrow();
@@ -976,6 +988,18 @@ impl XmlObject {
         let names: Vec<&'static str> = self.propstore.iter().map(|(k, _)| *k).collect();
         for name in names {
             let _ = self.set(name, None);
+        }
+        let lists: Vec<&'static str> = self
+            .class
+            .children
+            .iter()
+            .filter(|c| !c.is_single)
+            .map(|c| c.name)
+            .collect();
+        for name in lists {
+            while !self.children(name).is_empty() {
+                self.remove_child(name, 0);
+            }
         }
         for (_, objs) in self.children.iter_mut() {
             for obj in objs.iter_mut() {

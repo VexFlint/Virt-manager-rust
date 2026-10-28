@@ -740,3 +740,69 @@
 --connect @SUITE@ test-for-virtxml --edit --cpu help
 --connect @SUITE@ test-for-virtxml --edit --vcpus help
 --connect @SUITE@ test-for-virtxml --edit --cputune help
+--connect @SUITE@ test-for-virtxml --edit --cpu clearxml=yes,+foo --print-diff
+
+# --boot / --idmap / --seclabel / --keywrap / --launchSecurity (ParserBoot, ParserIdmap,
+# ParserSeclabel, ParserKeyWrap, ParserLaunchSecurity)
+--connect @SUITE@ test-for-virtxml --edit --boot loader=foo.bar,useserial=on,init=/bin/bash,nvram=/test/nvram.img,os_type=hvm,domain_type=test,loader.readonly=on,loader.secure=no,machine=,smbios_mode=emulate --print-diff
+--connect @SUITE@ test-for-virtxml --edit --boot refresh-machine-type=yes --print-diff
+--connect @SUITE@ 4a64cc71-19c4-2fd0-2323-3050941ea3c3 --edit --boot network,cdrom --print-diff
+--connect @SUITE@ test --edit --boot emulator=/foo --boot bootmenu.enable=yes --print-diff
+--connect @SUITE@ test --edit --boot uefi --print-diff
+--connect @SUITE@ test --edit --boot uefi=off --print-diff
+--connect @SUITE@ test --edit --boot uefi=foo --print-diff
+--connect @SUITE@ test-for-virtxml --edit --boot uefi=off --print-diff
+--connect @SUITE@ test-for-virtxml --edit --boot hd,cdrom,menu=on --print-diff
+--connect @SUITE@ test-for-virtxml --edit --boot kernel=/tmp/k,initrd=/tmp/i,cmdline=console=ttyS0,foo=bar,dtb=/tmp/d,acpi.table=/tmp/t,acpi.table.type=slic --print-diff
+--connect @SUITE@ test-for-virtxml --edit --boot init=/sbin/init,initargs=foo_bar_baz,initdir=/tmp,inituser=1000,initgroup=1000,initenv0=bar,initenv0.name=foo --print-diff
+--connect @SUITE@ test-for-virtxml --edit --boot initarg0=one,initarg1=two --print-diff
+--connect @SUITE@ test-for-virtxml --edit --boot firmware=efi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=yes,firmware.feature1.name=enrolled-keys,firmware.feature1.enabled=no --print-diff
+--connect @SUITE@ test-for-virtxml --edit --boot boot0.dev=hd,boot1.dev=network,bootmenu.timeout=5000,bios.rebootTimeout=0,nvram.template=/t,nvram.templateFormat=raw --print-diff
+--connect @SUITE@ test-for-virtxml --edit --boot loader.stateless=yes,loader.type=rom --print-diff
+--connect @SUITE@ test-for-virtxml --edit --boot bootloader=/usr/bin/pygrub,bootloader_args=--foo --print-diff
+--connect @SUITE@ test-for-virtxml --edit --boot clearxml=yes,hd --print-diff
+--connect @SUITE@ test-for-virtxml --edit --boot arch=i686 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --boot bootmenu.timeout=foo --print-diff
+--connect @SUITE@ test-for-virtxml --edit --boot help
+--connect @SUITE@ test-for-virtxml --edit --idmap uid_start=0,uid_target=2000,uid_count=30,gid_start=0,gid_target=3000,gid_count=40 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --idmap uid.start=0,uid.target=1000,uid.count=10 --print-diff
+--connect @SUITE@ --build-xml --idmap clearxml=no,uid.start=0,uid.target=1000,uid.count=10,gid.start=0,gid.target=1000,gid.count=10
+--connect @SUITE@ test-for-virtxml --edit --idmap help
+--connect @SUITE@ test-for-virtxml --edit --seclabel label=foo,bar,baz,UNKNOWN=val,relabel=on --print-diff
+--connect @SUITE@ test-for-virtxml --edit --seclabel label=foo,bar,baz,relabel=on --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --seclabel model=dac --print-diff
+--connect @SUITE@ test-for-virtxml --edit --security type=static,model=selinux,label=a:b:c,baselabel=x:y --print-diff
+--connect @SUITE@ test-for-virtxml --edit --seclabel clearxml=yes --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --seclabel all --print-diff
+--connect @SUITE@ test-for-virtxml --edit --seclabel help
+--connect @SUITE@ test-for-virtxml --edit --keywrap cipher0.name=aes,cipher0.state=on,cipher1.name=dea,cipher1.state=off --print-diff
+--connect @SUITE@ test-for-virtxml --edit --keywrap cipher.name=aes,cipher.state=on --print-diff
+--connect @SUITE@ test-for-virtxml --edit --keywrap help
+--connect @SUITE@ test-for-virtxml --edit --launchSecurity sev,cbitpos=47,reducedPhysBits=1,policy=0x0001,session=BASE64,dhCert=BASE64,kernelHashes=yes --print-diff
+--connect @SUITE@ test-for-virtxml --edit --launchsecurity type=sev-snp,authorKey=yes,vcek=no,idBlock=a,idAuth=b,hostData=c,guestVisibleWorkarounds=d --print-diff
+--connect @SUITE@ test-for-virtxml --edit --launchSecurity tdx,mrConfigId=a,mrOwner=b,mrOwnerConfig=c,quoteGenerationService=on,quoteGenerationSocket=/s --print-diff
+--connect @SUITE@ test-for-virtxml --edit --launchSecurity cbitpos=foo --print-diff
+--connect @SUITE@ test-for-virtxml --edit --launchSecurity help
+--connect @SUITE@ --build-xml --seclabel model=dac
+--connect @SUITE@ --build-xml --boot hd
+--connect @FULL@ test-many-devices --edit --boot uefi --print-diff
+--connect @FULL@ test-many-devices --edit --boot network --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --sysinfo all --print-diff
+--connect @SUITE@ --build-xml --launchSecurity sev
+--connect @SUITE@ --build-xml --keywrap cipher0.name=aes
+--connect @SUITE@ test-for-virtxml --add-device --idmap uid.start=1 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --seclabel label=a:b --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --seclabel type=static --print-diff
+--connect @SUITE@ test-for-virtxml --edit --boot uefi --print-diff
+--connect @SUITE@ test-for-virtxml --edit --boot uefi=on,arch=x86_64,machine=q35 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --boot loader=/usr/share/OVMF/OVMF_CODE.secboot.fd,loader_ro=yes --print-diff
+--connect @FULL@ test-many-devices --edit --boot refresh-machine-type=yes --print-diff
+--connect @SUITE@ test-for-virtxml --edit 2 --seclabel relabel=no --print-diff
+--connect @SUITE@ test-for-virtxml --edit all --seclabel relabel=no --print-diff
+--connect @SUITE@ test-for-virtxml --edit --keywrap clearxml=yes --print-diff
+--connect @SUITE@ test-for-virtxml --edit --launchSecurity clearxml=yes --print-diff
+--connect @SUITE@ test-for-virtxml --edit --idmap clearxml=yes --print-diff
+--connect @SUITE@ test-for-virtxml --edit --boot menu=on,useserial=off,rebootTimeout=10 --print-diff
+--connect @SUITE@ --build-xml --launchSecurity tdx
+--connect @SUITE@ --build-xml --launchSecurity type=foo
+--connect @SUITE@ test-for-virtxml --add-device --launchSecurity sev --print-diff

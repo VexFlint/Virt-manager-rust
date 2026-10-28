@@ -14,6 +14,7 @@ use virtinst_xml::XmlBound;
 
 use crate::parser::{lookup_prop, ParserDef};
 
+pub mod boot;
 pub mod chardev;
 pub mod charsrc;
 pub mod cpu;
@@ -40,6 +41,8 @@ pub fn all() -> Vec<&'static ParserDef> {
         cpu::vcpus(),
         guest::xml(),
         memory::iothreads(),
+        boot::seclabel(),
+        boot::keywrap(),
         cpu::cputune(),
         memory::numatune(),
         memory::memtune(),
@@ -52,6 +55,9 @@ pub fn all() -> Vec<&'static ParserDef> {
         guest::resource(),
         guest::sysinfo(),
         guest::qemu_commandline(),
+        boot::launch_security(),
+        boot::boot(),
+        boot::idmap(),
         devices::controller(),
         devices::input(),
         chardev::serial(),
@@ -314,6 +320,25 @@ pub fn set_defaults(
                 used_targets,
             };
             virtinst_core::devices::disk::set_defaults_obj(&mut disks[idx], backend.as_deref(), &d)
+        }
+        "seclabel" => {
+            virtinst_core::domain::seclabel::set_defaults(&mut lookup_prop(guest, def)[idx], || {
+                conn.and_then(|c| Capabilities::fetch(c).ok())
+                    .map(|c| c.host.secmodels)
+                    .unwrap_or_default()
+            })
+        }
+        "launchSecurity" => {
+            let info = guest_info(guest);
+            let q35_uefi = virtinst_core::domain::os::is_q35(guest.child("os")) && info.is_uefi;
+            virtinst_core::domain::launch_security::set_defaults(
+                &mut lookup_prop(guest, def)[idx],
+                q35_uefi,
+                || {
+                    lookup_domcaps(&info, conn)
+                        .is_some_and(|d| d.supports_sev_launch_security(true))
+                },
+            )
         }
         name => misc::set_defaults(name, &mut lookup_prop(guest, def)[idx]),
     }

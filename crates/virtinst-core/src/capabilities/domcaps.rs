@@ -327,9 +327,32 @@ pub struct DomainCapabilities {
     /// `<cpu>` document to expand with `baselineHypervisorCPU`, kept
     /// at parse time since the mode's raw children aren't modeled.
     pub host_model_cpu_xml: Option<String>,
+    /// `<features><sev supported=...>` — upstream's `_SEV.supported`.
+    pub sev_supported: bool,
+    /// `<features><sev><maxESGuests>`.
+    pub sev_max_es_guests: Option<String>,
+}
+
+/// `<domainCapabilities><features><sev>`.
+fn sev(doc: &Document, root: Element) -> Option<Element> {
+    root.find(doc, "features")?.find(doc, "sev")
 }
 
 impl DomainCapabilities {
+    /// `supports_sev_launch_security`: False if either libvirt doesn't
+    /// advertise support for SEV at all (< libvirt-4.5.0) or if it
+    /// explicitly advertises it as unsupported on the platform
+    pub fn supports_sev_launch_security(&self, check_es: bool) -> bool {
+        if check_es {
+            return self.sev_supported
+                && self
+                    .sev_max_es_guests
+                    .as_deref()
+                    .is_some_and(|v| !v.is_empty());
+        }
+        self.sev_supported
+    }
+
     /// Parses already-fetched `domainCapabilities` XML — split from
     /// [`fetch`](DomainCapabilities::fetch) so a captured real fixture
     /// can be tested without a live connection.
@@ -363,6 +386,12 @@ impl DomainCapabilities {
                 None => CapsBlock::default(),
             },
             host_model_cpu_xml: host_model_cpu_xml(&doc, root),
+            sev_supported: sev(&doc, root)
+                .and_then(|e| e.attribute(&doc, "supported"))
+                .is_some_and(|v| v == "yes"),
+            sev_max_es_guests: sev(&doc, root)
+                .and_then(|e| e.find(&doc, "maxESGuests"))
+                .map(|e| e.text_content(&doc)),
         })
     }
 
@@ -388,13 +417,22 @@ impl DomainCapabilities {
         machine: Option<&str>,
         virttype: Option<&str>,
     ) -> Result<DomainCapabilities, CapabilitiesError> {
+        DomainCapabilities::fetch_from(conn.as_connect(), emulator, arch, machine, virttype)
+    }
+
+    /// [`DomainCapabilities::fetch`] on a bare libvirt connection.
+    pub fn fetch_from(
+        conn: &virt::connect::Connect,
+        emulator: Option<&str>,
+        arch: Option<&str>,
+        machine: Option<&str>,
+        virttype: Option<&str>,
+    ) -> Result<DomainCapabilities, CapabilitiesError> {
         if let Some(path) = std::env::var_os("VIRTINST_TEST_DOMCAPS_FILE") {
             let xml = std::fs::read_to_string(&path)?;
             return Ok(DomainCapabilities::parse(&xml)?);
         }
-        let xml = conn
-            .as_connect()
-            .get_domain_capabilities(emulator, arch, machine, virttype, 0)?;
+        let xml = conn.get_domain_capabilities(emulator, arch, machine, virttype, 0)?;
         Ok(DomainCapabilities::parse(&xml)?)
     }
 

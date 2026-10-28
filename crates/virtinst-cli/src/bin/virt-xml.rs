@@ -161,6 +161,14 @@ struct Args {
     #[arg(long, help_heading = "XML options")]
     iothreads: Vec<String>,
 
+    /// Set domain seclabel configuration.
+    #[arg(long, alias = "security", help_heading = "XML options")]
+    seclabel: Vec<String>,
+
+    /// Set guest to perform the S390 cryptographic key management operations.
+    #[arg(long, help_heading = "XML options")]
+    keywrap: Vec<String>,
+
     /// Tune CPU parameters for the domain process.
     #[arg(long, help_heading = "XML options")]
     cputune: Vec<String>,
@@ -216,6 +224,27 @@ struct Args {
     /// --qemu-commandline env=DISPLAY=:0.1
     #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     qemu_commandline: Vec<String>,
+
+    /// Configure VM launch security (e.g. SEV memory encryption). Ex:
+    /// --launchSecurity sev
+    #[arg(
+        long = "launchSecurity",
+        alias = "launchsecurity",
+        help_heading = "XML options",
+        verbatim_doc_comment
+    )]
+    launch_security: Vec<String>,
+
+    /// Configure guest boot settings. Ex:
+    /// --boot hd,cdrom,menu=on
+    /// --boot init=/sbin/init (for containers)
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    boot: Vec<String>,
+
+    /// Enable user namespace for LXC container. Ex:
+    /// --idmap uid.start=0,uid.target=1000,uid.count=10
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    idmap: Vec<String>,
 
     /// Configure a guest controller device. Ex:
     /// --controller type=usb,model=qemu-xhci
@@ -341,6 +370,8 @@ fn xml_options(args: &Args) -> Vec<(&'static ParserDef, &Vec<String>)> {
         engine("vcpus", &args.vcpus),
         engine("xml", &args.xml),
         engine("iothreads", &args.iothreads),
+        engine("seclabel", &args.seclabel),
+        engine("keywrap", &args.keywrap),
         engine("cputune", &args.cputune),
         engine("numatune", &args.numatune),
         engine("memtune", &args.memtune),
@@ -353,6 +384,9 @@ fn xml_options(args: &Args) -> Vec<(&'static ParserDef, &Vec<String>)> {
         engine("resource", &args.resource),
         engine("sysinfo", &args.sysinfo),
         engine("qemu_commandline", &args.qemu_commandline),
+        engine("launchSecurity", &args.launch_security),
+        engine("boot", &args.boot),
+        engine("idmap", &args.idmap),
         engine("controller", &args.controller),
         engine("input", &args.input),
         engine("serial", &args.serial),
@@ -636,6 +670,21 @@ fn perform_engine(
                 .guest_propname
                 .and_then(|p| p.rsplit('.').next())
                 .expect("guest backed parser");
+            if !def
+                .guest_propname
+                .is_some_and(|p| p.starts_with("devices."))
+                && !idxs.is_empty()
+            {
+                // `guest.remove_device` only looks in `<devices>`.
+                let class = match list {
+                    "seclabels" => "virtinst.domain.seclabel.DomainSeclabel",
+                    "sysinfo" => "virtinst.domain.sysinfo.DomainSysinfo",
+                    other => other,
+                };
+                fail(format!(
+                    "programming error: Didn't find child property for child_class=<class '{class}'>"
+                ));
+            }
             for idx in idxs.into_iter().rev() {
                 // `guest.remove_device`: and `_remove_duplicate_console`,
                 // `_remove_spice_devices`.
