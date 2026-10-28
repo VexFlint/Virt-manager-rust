@@ -47,6 +47,9 @@ Elementos com prefixo (`qemu:`, `libosinfo:`) ganham o `xmlns` como no `_node_ne
 o `lib.rs` antigo e o `legacy` do virt-xml sumiram. O `_storage_backend` vive num
 thread-local do parser (`disk::backend()`): `None` é o stub do upstream, e o
 `get_source_path` resolve a `<source>` quando o stub não tem caminho.
+Criação de storage: `StorageBackend::for_vol_install` (o `ManagedStorageCreator`);
+o virt-xml cria o volume no define/`--start`/`--update` (`setup_device`) com o
+`VolInstall` guardado no `TouchedDev`.
 Erros `fail()` de dentro de callbacks usam `parser::fail` (sem o prefixo `Error: --x`).
 `guest_info` não sincroniza o guest (senão o XML do dispositivo novo entra antes dos
 defaults e a ordem dos atributos muda).
@@ -54,12 +57,9 @@ O `--hostdev` lê os nodedevs de `parser::set_nodedevs` (o `virt-xml` busca
 quando a opção é usada). No oráculo, `@FULL@` é o testdriver.xml.
 
 ## Falta (prioridade)
-1. `--disk` storage: criar volumes (`size=`, `pool=`, `format=`, `backing_store=`,
-   caminho novo). Hoje esses casos dão "Storage creation for --disk is not
-   implemented yet" (no `--edit` também, onde o upstream monta o `vol_install`).
-2. Opções de guest (vcpus, cpu, cputune, boot, seclabel, idmap, keywrap, launchSecurity)
+1. Opções de guest (vcpus, cpu, cputune, boot, seclabel, idmap, keywrap, launchSecurity)
    e o resto do virt-install (`--os-variant` etc.).
-3. Só depois: GUI (ver CLAUDE.md seção 7).
+2. Só depois: GUI (ver CLAUDE.md seção 7).
 
 ## Bugs conhecidos
 - `num_pcie_root_ports` e `--input none`/`--sound none` (skip_default_*) só

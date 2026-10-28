@@ -16,7 +16,7 @@ use virt::storage_vol::StorageVol;
 use virt::sys;
 
 use crate::progress::Meter;
-use crate::storage::{self, can_auto_manage, path_is_url, xml_escape, Pool, PoolXml};
+use crate::storage::{self, can_auto_manage, path_is_url, xml_escape, Pool, PoolXml, VolInstall};
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
@@ -163,6 +163,8 @@ pub struct StorageBackend {
     pub pool: Option<Pool>,
     remote: bool,
     vol_xml: Option<VolXml>,
+    /// `ManagedStorageCreator`: the volume to create in `pool`.
+    vol_install: Option<Box<VolInstall>>,
 }
 
 impl StorageBackend {
@@ -179,7 +181,31 @@ impl StorageBackend {
             pool,
             remote,
             vol_xml,
+            vol_install: None,
         }
+    }
+
+    /// `ManagedStorageCreator(vol_install)`: storage to create, `pool`
+    /// being the volume's.
+    pub fn for_vol_install(vol_install: VolInstall, pool: Pool, remote: bool) -> StorageBackend {
+        StorageBackend {
+            path: None,
+            vol: None,
+            pool: Some(pool),
+            remote,
+            vol_xml: None,
+            vol_install: Some(Box::new(vol_install)),
+        }
+    }
+
+    /// The volume this backend will create.
+    pub fn vol_install(&self) -> Option<&VolInstall> {
+        self.vol_install.as_deref()
+    }
+
+    /// `will_create_storage`.
+    pub fn will_create_storage(&self) -> bool {
+        self.vol_install.is_some()
     }
 
     /// `manage_path` then a backend for what it found: what
@@ -198,6 +224,20 @@ impl StorageBackend {
     }
 
     pub fn get_path(&self) -> Option<String> {
+        if let Some(vi) = &self.vol_install {
+            if self.get_dev_type() == "network" {
+                return Some(vi.name.clone());
+            }
+            // `os.path.join(target_path, name)`
+            let mut path = self
+                .pool_xml()
+                .and_then(|p| p.target_path.clone())
+                .unwrap_or_default();
+            if !path.is_empty() && !path.ends_with('/') {
+                path.push('/');
+            }
+            return Some(path + &vi.name);
+        }
         match &self.vol_xml {
             Some(v) => v.target_path.clone(),
             None => self.path.clone(),
@@ -214,7 +254,9 @@ impl StorageBackend {
 
     /// Size in GiB.
     pub fn get_size(&self) -> f64 {
-        let bytes = if let Some(v) = &self.vol_xml {
+        let bytes = if let Some(vi) = &self.vol_install {
+            vi.capacity
+        } else if let Some(v) = &self.vol_xml {
             v.capacity
         } else if let Some(path) = &self.path {
             get_local_size(path)
@@ -225,6 +267,9 @@ impl StorageBackend {
     }
 
     pub fn exists(&self) -> bool {
+        if self.vol_install.is_some() {
+            return false;
+        }
         if self.vol.is_some() || self.path.is_none() {
             return true;
         }
@@ -256,6 +301,12 @@ impl StorageBackend {
     }
 
     pub fn get_driver_type(&self) -> Option<String> {
+        if let Some(vi) = &self.vol_install {
+            if vi.supports_format() {
+                return vi.format.clone();
+            }
+            return Some("raw".into());
+        }
         let v = self.vol_xml.as_ref()?;
         if v.supports_format(self.pool_xml()) {
             v.format.clone()

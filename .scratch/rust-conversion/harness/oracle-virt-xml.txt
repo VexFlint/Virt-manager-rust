@@ -617,7 +617,7 @@
 --connect @SUITE@ test-for-virtxml --edit --pm none --print-diff
 --connect @SUITE@ test-for-virtxml --edit --qemu-commandline=args=-a,env=B=c --print-diff
 
-# --disk (ParserDisk). Storage creation (size=, pool=, new paths) comes later.
+# --disk (ParserDisk).
 --connect @SUITE@ test-for-virtxml --edit --disk /dev/zero,perms=ro,source.startupPolicy=optional --print-diff
 --connect @SUITE@ test-for-virtxml --edit --disk path= --print-diff
 --connect @SUITE@ test-for-virtxml --edit target=hda --disk /dev/null --print-diff
@@ -675,3 +675,27 @@
 --connect @SUITE@ test-for-virtxml --add-device --disk type=block,device=lun --print-diff
 --connect @SUITE@ test-for-virtxml --add-device --disk type=weird --print-diff
 --connect @SUITE@ test-for-virtxml --edit --disk driver_name=qemu,driver_type=raw,io=native,discard=ignore,detect_zeroes=on,error_policy=stop --print-diff
+# --disk storage creation (the define/--start cases print a timed meter; checked by hand).
+--connect @SUITE@ --build-xml --disk path=foo
+--connect @SUITE@ --build-xml --disk /pool-dir/new1.img,size=.01
+--connect @SUITE@ test-for-virtxml --edit --disk /pool-dir/new1.img --print-diff
+--connect @SUITE@ test-for-virtxml --edit --disk /pool-dir/new1.img,size=1 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk /pool-dir,device=disk --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk /pool-dir/new1.img,size=.01 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk size=.01 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk size=1,format=raw --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk size=1,sparse=no --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk pool=pool-dir,size=1 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk pool=pool-disk,size=1 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk pool=pool-logical,size=1 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk pool=pool-rbd-ceph,size=1 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk pool=pool-iscsi,size=1 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk pool=pool-dir,size=1,format=qcow2,backing_store=/pool-dir/testvol1.img --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk pool=pool-disk,size=1,format=qcow2 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk pool=nope,size=1 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk pool=pool-dir --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk /dev/idontexist,size=1 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk /pool-dir/testvol1.img,size=1 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk /pool-dir/new1.img,size=100000 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk size=.01,device=cdrom --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk /pool-dir/testvol1.img,size=.01 --print-diff

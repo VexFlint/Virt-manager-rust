@@ -428,6 +428,8 @@ pub fn conn_support(conn: &Connection) -> crate::parser::ConnSupport {
         is_bhyve: conn.uri().is_bhyve(),
         disk_driver_name_qemu: conn.uri().is_qemu()
             || (conn.uri().is_xen() && libvirt >= 1_001_000 && hv >= 4_002_000),
+        default_qcow2: conn.uri().is_test() || (conn.uri().is_qemu() && hv >= 1_002_000),
+        is_session: conn.uri().path == "/session",
     }
 }
 

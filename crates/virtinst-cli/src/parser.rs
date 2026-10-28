@@ -292,6 +292,10 @@ pub struct ConnSupport {
     pub is_bhyve: bool,
     /// `conn_disk_driver_name_qemu`.
     pub disk_driver_name_qemu: bool,
+    /// `conn_default_qcow2`.
+    pub default_qcow2: bool,
+    /// `conn.is_session_uri()`.
+    pub is_session: bool,
 }
 
 thread_local! {
@@ -309,6 +313,8 @@ thread_local! {
                 is_qemu: false,
                 is_bhyve: false,
                 disk_driver_name_qemu: false,
+                default_qcow2: false,
+                is_session: false,
             })
         };
 }

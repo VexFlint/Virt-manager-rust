@@ -680,16 +680,22 @@ pub fn set_defaults_obj(
     if device == "cdrom" {
         disk.set("read_only", Some(Value::Bool(true)))?;
     }
+    let mut discard_unmap = d.is_qemu
+        && device == "disk"
+        && backend
+            .and_then(StorageBackend::vol_install)
+            .is_some_and(|vi| vi.allocation == 0);
     if d.is_qemu && device == "disk" && typ == "block" {
+        discard_unmap = true;
         if unset(disk, "driver_cache") {
             disk.set("driver_cache", str_val("none"))?;
         }
         if unset(disk, "driver_io") {
             disk.set("driver_io", str_val("native"))?;
         }
-        if unset(disk, "driver_discard") {
-            disk.set("driver_discard", str_val("unmap"))?;
-        }
+    }
+    if discard_unmap && unset(disk, "driver_discard") {
+        disk.set("driver_discard", str_val("unmap"))?;
     }
     if unset(disk, "target") {
         let used: Vec<String> = d
