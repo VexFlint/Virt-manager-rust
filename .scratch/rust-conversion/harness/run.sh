@@ -692,12 +692,18 @@ else
         [[ -z "$line" || "$line" == \#* ]] && continue
         line="${line//@UP@/$UPSTREAM_REF}"
         eval "oargs=($line)"
+        # Leading NAME=value words are extra environment (test_cli.py's env=).
+        oenv=()
+        while [[ ${#oargs[@]} -gt 0 && "${oargs[0]}" =~ ^[A-Z_]+= ]]; do
+            oenv+=("${oargs[0]}")
+            oargs=("${oargs[@]:1}")
+        done
         up_rc=0
-        (cd "$UPSTREAM_REF" && HOME=/tmp DISPLAY=:3.4 VIRTINST_TEST_SUITE=1 \
+        (cd "$UPSTREAM_REF" && env HOME=/tmp DISPLAY=:3.4 VIRTINST_TEST_SUITE=1 "${oenv[@]}" \
             "$ORACLE_PY" ./virt-install "${oargs[@]}") \
             >"$ORACLE_TMP/up.out" 2>"$ORACLE_TMP/up.err" </dev/null || up_rc=$?
         me_rc=0
-        (cd "$UPSTREAM_REF" && HOME=/tmp DISPLAY=:3.4 VIRTINST_TEST_SUITE=1 \
+        (cd "$UPSTREAM_REF" && env HOME=/tmp DISPLAY=:3.4 VIRTINST_TEST_SUITE=1 "${oenv[@]}" \
             "$REPO_ROOT/target/debug/virt-install" "${oargs[@]}") \
             >"$ORACLE_TMP/me.out" 2>"$ORACLE_TMP/me.err" </dev/null || me_rc=$?
         short="${line//$UPSTREAM_REF/@UP@}"

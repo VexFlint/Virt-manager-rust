@@ -3,9 +3,6 @@
 //! the guest gets `Guest.set_defaults` (`virtinst_cli::guest`), and the
 //! install media/bootdev handling is the `Installer`
 //! (`virtinst_cli::installer`).
-//!
-//! `--unattended` and `--cloud-init` are the next step of the port;
-//! they fail with a clear message for now.
 
 use clap::{ArgAction, Parser};
 use virtinst_cli::cli::{self, fail, print_stderr, print_stdout};
@@ -17,6 +14,8 @@ use virtinst_core::capabilities::caps::Capabilities;
 use virtinst_core::connection::Connection;
 use virtinst_core::devices::disk as dd;
 use virtinst_core::guest::GUEST;
+use virtinst_core::install::cloudinit::CloudInitData;
+use virtinst_core::install::unattended::UnattendedData;
 use virtinst_core::osinfo::OsDb;
 use virtinst_core::xmlbuilder::{Value, XmlObject};
 
@@ -1360,6 +1359,126 @@ fn do_test_media_detection(args: &Args, conn: &Connection, caps: &Capabilities) 
     print_stdout(ret.as_deref().unwrap_or("None"), true);
 }
 
+/// `parse_cloud_init`: `None` for "none".
+fn parse_cloud_init(optstr: &str) -> Option<CloudInitData> {
+    let mut ret = CloudInitData::default();
+    if optstr == "1" {
+        // This means bare --cloud-init, so there's nothing to parse.
+        log::warn!("Defaulting to --cloud-init root-password-generate=yes,disable=yes");
+        ret.root_password_generate = Some(true);
+        ret.disable = Some(true);
+        return Some(ret);
+    }
+    if optstr.is_empty() || optstr == "none" {
+        return None;
+    }
+    let mut leftover: Vec<String> = vec![];
+    for (k, v) in parser::parse_optstr_tuples(optstr) {
+        let key = if k == "ssh-key" {
+            "root-ssh-key".to_string()
+        } else {
+            k
+        };
+        let v = v.unwrap_or_default();
+        let onoff = || {
+            Some(
+                cli::raw_on_off_convert(&v)
+                    .unwrap_or_else(|| fail(format!("{key} must be 'yes' or 'no'"))),
+            )
+        };
+        match key.as_str() {
+            "root-password-generate" => ret.root_password_generate = onoff(),
+            "root-password-file" => ret.root_password_file = Some(v.clone()),
+            "disable" => ret.disable = onoff(),
+            "root-ssh-key" => ret.root_ssh_key = Some(v.clone()),
+            "clouduser-ssh-key" => ret.clouduser_ssh_key = Some(v.clone()),
+            "user-data" => ret.user_data = Some(v.clone()),
+            "meta-data" => ret.meta_data = Some(v.clone()),
+            "network-config" => ret.network_config = Some(v.clone()),
+            _ => {
+                if !leftover.contains(&key) {
+                    leftover.push(key.clone());
+                }
+            }
+        }
+    }
+    if !leftover.is_empty() {
+        let list: Vec<String> = leftover.iter().map(|k| format!("'{k}'")).collect();
+        fail(format!(
+            "Unknown --cloud-init options: [{}]",
+            list.join(", ")
+        ));
+    }
+    Some(ret)
+}
+
+/// `parse_unattended`: `None` for "none".
+fn parse_unattended(optstr: &str) -> Option<UnattendedData> {
+    let mut ret = UnattendedData::default();
+    if optstr == "1" {
+        // This means bare --unattended, so there's nothing to parse
+        return Some(ret);
+    }
+    if optstr.is_empty() || optstr == "none" {
+        return None;
+    }
+    let mut leftover: Vec<String> = vec![];
+    for (key, v) in parser::parse_optstr_tuples(optstr) {
+        let v = Some(v.unwrap_or_default());
+        match key.as_str() {
+            "profile" => ret.profile = v,
+            "admin-password-file" => ret.admin_password_file = v,
+            "user-login" => ret.user_login = v,
+            "user-password-file" => ret.user_password_file = v,
+            "product-key" => ret.product_key = v,
+            "reg-login" => ret.reg_login = v,
+            _ => {
+                if !leftover.contains(&key) {
+                    leftover.push(key.clone());
+                }
+            }
+        }
+    }
+    if !leftover.is_empty() {
+        let list: Vec<String> = leftover.iter().map(|k| format!("'{k}'")).collect();
+        fail(format!(
+            "Unknown --unattended options: [{}]",
+            list.join(", ")
+        ));
+    }
+    Some(ret)
+}
+
+/// `_print_cloudinit_passwd`.
+fn print_cloudinit_passwd(installer: &mut Installer) {
+    let Some(passwd) = installer.get_generated_password() else {
+        return;
+    };
+    println!("Password for first root login is: {passwd}");
+
+    use std::io::{IsTerminal, Write};
+    let mut timeout_ms = 10_000;
+    let mut watch_stdin = true;
+    if !std::io::stdin().is_terminal() {
+        if std::env::var_os("VIRTINST_TEST_SUITE").is_none() {
+            return;
+        }
+        watch_stdin = false;
+        timeout_ms = 0;
+    }
+    print!("Installation will continue in 10 seconds (press Enter to skip)...");
+    let _ = std::io::stdout().flush();
+    if watch_stdin {
+        let mut fds = libc::pollfd {
+            fd: 0,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one valid pollfd for the duration of the call.
+        unsafe { libc::poll(&mut fds, 1, timeout_ms) };
+    }
+}
+
 /// `get_location_for_os`.
 fn get_location_for_os(guest: &XmlObject, osname: &str, profile: Option<&str>) -> String {
     let db = OsDb::load_default().unwrap_or_else(|e| fail(e));
@@ -1429,19 +1548,11 @@ fn build_installer(
     if args.unattended.is_some() && args.cloud_init.is_some() {
         fail_conflicting("--unattended", "--cloud-init");
     }
-    let not_yet = |opt: &str| -> ! {
-        fail(format!(
-            "{opt} is not implemented yet in this port of virt-install"
-        ))
-    };
-    // `parse_unattended`/`parse_cloud_init` return nothing for "none"
-    let given = |o: &Option<String>| o.as_deref().is_some_and(|v| v != "none");
-    if given(&args.unattended) {
-        not_yet("--unattended");
-    }
+    let unattended_data = args.unattended.as_deref().and_then(parse_unattended);
 
     if let Some(os) = &installdata.os {
-        a.location = Some(get_location_for_os(guest, os, None));
+        let profile = unattended_data.as_ref().and_then(|d| d.profile.as_deref());
+        a.location = Some(get_location_for_os(guest, os, profile));
     } else if let Some(loc) = &args.location {
         (a.location, a.location_kernel, a.location_initrd) = parse_location(loc);
     } else if let Some(c) = &args.cdrom {
@@ -1470,8 +1581,11 @@ fn build_installer(
     if args.autostart {
         installer.autostart = true;
     }
-    if given(&args.cloud_init) {
-        not_yet("--cloud-init");
+    if let Some(data) = unattended_data {
+        installer.set_unattended_data(data);
+    }
+    if let Some(data) = args.cloud_init.as_deref().and_then(parse_cloud_init) {
+        installer.set_cloudinit_data(data);
     }
     installer
 }
@@ -1508,6 +1622,12 @@ fn set_cli_defaults(args: &mut Args, b: &mut Built) {
     };
     let osname = os.short_id();
     let arch = guest.child("os").get_str("arch").unwrap_or_default();
+
+    if args.unattended.is_some() && os.is_windows() && os.supports_unattended_drivers(&arch) {
+        virtinst_core::osinfo::installscript::add_extra_drivers(
+            os.get_pre_installable_devices(&arch),
+        );
+    }
     let res = os.get_recommended_resources();
     let storage = res.get_recommended_storage(&arch);
     let ram = res.get_recommended_ram(&arch);
@@ -1814,14 +1934,14 @@ struct AutoconsoleData {
 }
 
 impl AutoconsoleData {
-    fn new(autoconsole: &str, guest: &XmlObject) -> AutoconsoleData {
+    fn new(autoconsole: &str, guest: &XmlObject, installer: &Installer) -> AutoconsoleData {
         if !["none", "default", "text", "graphical"].contains(&autoconsole) {
             fail(format!("Unknown autoconsole type '{autoconsole}'"));
         }
         let is_default = autoconsole == "default";
         let mut autoconsole = autoconsole.to_string();
         if is_default {
-            autoconsole = default_autoconsole_type(guest)
+            autoconsole = default_autoconsole_type(guest, installer)
                 .unwrap_or("none")
                 .to_string();
         }
@@ -1849,7 +1969,11 @@ fn in_testsuite() -> bool {
 }
 
 /// `_determine_default_autoconsole_type`.
-fn default_autoconsole_type(guest: &XmlObject) -> Option<&'static str> {
+fn default_autoconsole_type(guest: &XmlObject, installer: &Installer) -> Option<&'static str> {
+    if installer.has_cloudinit() {
+        log::info!("--cloud-init specified, defaulting to --autoconsole text");
+        return Some("text");
+    }
     let gdevs = guest.child("devices").children("graphics");
     let Some(g) = gdevs.first() else {
         return Some("text");
@@ -2213,7 +2337,7 @@ fn storage_builder<'a>(
 
 /// `start_install`.
 fn start_install(b: &mut Built, args: &mut Args, conn: &Connection) {
-    let autoconsole = AutoconsoleData::new(&args.autoconsole(), &b.guest);
+    let autoconsole = AutoconsoleData::new(&args.autoconsole(), &b.guest, &b.installer);
     show_console_warnings(&b.installer, &autoconsole);
     // `_set_default_wait`
     if args.wait.is_none() && !autoconsole.has_console_cb() && autoconsole.is_default {
@@ -2226,6 +2350,7 @@ fn start_install(b: &mut Built, args: &mut Args, conn: &Connection) {
 
     // we've got everything -- try to start the install
     print_stdout("\nStarting install...", false);
+    print_cloudinit_passwd(&mut b.installer);
 
     let vols = std::mem::take(&mut b.vol_installs);
     let build = storage_builder(&vols, conn);

@@ -56,6 +56,7 @@
 //! caller (this crate has none yet) forces the question.
 
 mod ffi;
+pub mod installscript;
 
 use std::ffi::{CStr, CString};
 use std::fmt;
@@ -266,6 +267,9 @@ impl OsDb {
 /// `_OsMedia`: a libosinfo media object.
 pub struct OsMedia {
     ptr: *mut ffi::OsinfoMedia,
+    /// The media only holds a weak ref to its OS: keep it alive, like
+    /// upstream's process-wide OSDB does.
+    os: Option<OsInfo>,
 }
 
 impl OsMedia {
@@ -308,8 +312,9 @@ impl Drop for OsMedia {
 
 /// `_OsTree`: a libosinfo tree object.
 pub struct OsTree {
-    #[allow(dead_code)]
     ptr: *mut ffi::OsinfoTree,
+    /// Same as `OsMedia::os`.
+    os: Option<OsInfo>,
 }
 
 impl Drop for OsTree {
@@ -346,8 +351,19 @@ impl OsDb {
             } else {
                 ptr::null_mut()
             };
-            let media = OsMedia { ptr: media };
-            (!os.is_null()).then_some((OsInfo { ptr: os }, media))
+            if os.is_null() {
+                let _ = OsMedia {
+                    ptr: media,
+                    os: None,
+                };
+                return None;
+            }
+            let os = OsInfo { ptr: os };
+            let media = OsMedia {
+                ptr: media,
+                os: Some(os.clone()),
+            };
+            Some((os, media))
         }
     }
 
@@ -389,8 +405,19 @@ impl OsDb {
             } else {
                 ptr::null_mut()
             };
-            let tree = OsTree { ptr: tree };
-            (!os.is_null()).then_some((OsInfo { ptr: os }, tree))
+            if os.is_null() {
+                let _ = OsTree {
+                    ptr: tree,
+                    os: None,
+                };
+                return None;
+            }
+            let os = OsInfo { ptr: os };
+            let tree = OsTree {
+                ptr: tree,
+                os: Some(os.clone()),
+            };
+            Some((os, tree))
         }
     }
 }
@@ -835,24 +862,31 @@ impl OsInfo {
         }
     }
 
-    /// Upstream's `osdict.py`'s `supports_virtiodisk()` — the exact two
-    /// PCI device ids it hardcodes (`virtio-block` and `virtio1.0-block`),
-    /// ported literally. Doesn't model the `extra_devs` parameter
-    /// (locally-added device driver overrides from a
-    /// `--disk driver.name=...`-style CLI knob this crate hasn't built)
-    /// — upstream's own default call site passes `self._extra_drivers`,
-    /// which stays empty absent that knob, so this is the same
-    /// observable result for every caller this crate has today.
-    pub fn supports_virtiodisk(&self) -> bool {
-        self.has_device_id("http://pcisig.com/pci/1af4/1001")
-            || self.has_device_id("http://pcisig.com/pci/1af4/1042")
+    /// `_device_filter(devids, extra_devs=guest._extra_drivers)`: like
+    /// `has_device_id`, plus the devices `add_extra_drivers` registered.
+    fn has_device_id_or_extra(&self, device_id: &str) -> bool {
+        self.has_device_id(device_id)
+            || installscript::extra_devices()
+                .iter()
+                .any(|d| d.id == device_id)
     }
 
-    /// Upstream's `osdict.py`'s `supports_virtioscsi()` — same two-id,
-    /// `extra_devs`-unmodeled shape as `supports_virtiodisk()` above.
+    /// Upstream's `osdict.py`'s `supports_virtiodisk()` — the exact two
+    /// PCI device ids it hardcodes (`virtio-block` and `virtio1.0-block`),
+    /// ported literally. `extra_devs` (`Guest._extra_drivers`, set by
+    /// `--unattended` for Windows) lives in `installscript::
+    /// add_extra_drivers`; the checks guest.py passes it to use
+    /// `has_device_id_or_extra`.
+    pub fn supports_virtiodisk(&self) -> bool {
+        self.has_device_id_or_extra("http://pcisig.com/pci/1af4/1001")
+            || self.has_device_id_or_extra("http://pcisig.com/pci/1af4/1042")
+    }
+
+    /// Upstream's `osdict.py`'s `supports_virtioscsi()` — same two-id
+    /// shape as `supports_virtiodisk()` above.
     pub fn supports_virtioscsi(&self) -> bool {
-        self.has_device_id("http://pcisig.com/pci/1af4/1004")
-            || self.has_device_id("http://pcisig.com/pci/1af4/1048")
+        self.has_device_id_or_extra("http://pcisig.com/pci/1af4/1004")
+            || self.has_device_id_or_extra("http://pcisig.com/pci/1af4/1048")
     }
 
     /// Upstream's `osdict.py`'s `supports_virtiogpu()`: virtio1.0-gpu.
@@ -862,32 +896,32 @@ impl OsInfo {
 
     /// Upstream's `osdict.py`'s `supports_virtionet()` — same shape.
     pub fn supports_virtionet(&self) -> bool {
-        self.has_device_id("http://pcisig.com/pci/1af4/1000")
-            || self.has_device_id("http://pcisig.com/pci/1af4/1041")
+        self.has_device_id_or_extra("http://pcisig.com/pci/1af4/1000")
+            || self.has_device_id_or_extra("http://pcisig.com/pci/1af4/1041")
     }
 
     /// Upstream's `osdict.py`'s `supports_virtiorng()`.
     pub fn supports_virtiorng(&self) -> bool {
-        self.has_device_id("http://pcisig.com/pci/1af4/1005")
-            || self.has_device_id("http://pcisig.com/pci/1af4/1044")
+        self.has_device_id_or_extra("http://pcisig.com/pci/1af4/1005")
+            || self.has_device_id_or_extra("http://pcisig.com/pci/1af4/1044")
     }
 
     /// Upstream's `osdict.py`'s `supports_virtioballoon()`.
     pub fn supports_virtioballoon(&self) -> bool {
-        self.has_device_id("http://pcisig.com/pci/1af4/1002")
-            || self.has_device_id("http://pcisig.com/pci/1af4/1045")
+        self.has_device_id_or_extra("http://pcisig.com/pci/1af4/1002")
+            || self.has_device_id_or_extra("http://pcisig.com/pci/1af4/1045")
     }
 
     /// Upstream's `osdict.py`'s `supports_virtioserial()`, without its
     /// stopgap for osinfo-db's pre-2018 RHEL 6 data.
     pub fn supports_virtioserial(&self) -> bool {
-        self.has_device_id("http://pcisig.com/pci/1af4/1003")
-            || self.has_device_id("http://pcisig.com/pci/1af4/1043")
+        self.has_device_id_or_extra("http://pcisig.com/pci/1af4/1003")
+            || self.has_device_id_or_extra("http://pcisig.com/pci/1af4/1043")
     }
 
     /// Upstream's `osdict.py`'s `supports_virtioinput()`: virtio1.0-input.
     pub fn supports_virtioinput(&self) -> bool {
-        self.has_device_id("http://pcisig.com/pci/1af4/1052")
+        self.has_device_id_or_extra("http://pcisig.com/pci/1af4/1052")
     }
 
     /// Upstream's `osdict.py`'s `supports_usb3()`: qemu-xhci.
@@ -898,7 +932,9 @@ impl OsInfo {
     /// Upstream's `osdict.py`'s `supports_chipset_q35()`: q35, and
     /// virtio1.0 too when the OS knows virtio-net at all.
     pub fn supports_chipset_q35(&self) -> bool {
-        if self.supports_virtionet() && !self.has_device_id("http://pcisig.com/pci/1af4/1041") {
+        let virtionet = self.has_device_id("http://pcisig.com/pci/1af4/1000")
+            || self.has_device_id("http://pcisig.com/pci/1af4/1041");
+        if virtionet && !self.has_device_id("http://pcisig.com/pci/1af4/1041") {
             return false;
         }
         self.has_device_id("http://qemu.org/chipset/x86/q35")
@@ -924,8 +960,7 @@ impl OsInfo {
     /// `*mut OsinfoDevice` here — this device list has no other entity
     /// type in it.
     ///
-    /// Doesn't model `extra_devs`, same posture and same reason as
-    /// `supports_virtiodisk()` above.
+    /// Upstream doesn't pass `extra_devs` here.
     pub fn supported_netmodels(&self) -> Vec<String> {
         unsafe {
             let list = ffi::osinfo_os_get_all_devices(self.ptr, std::ptr::null_mut());

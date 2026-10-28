@@ -77,18 +77,18 @@ com o `Installer` em `installer.rs`. Os parsers marcam os `skip_default_*`,
 entre guest, escalar e lista. `cli::argparse_parse` imita o argparse (prefixos de
 opção como `--dry`, erros `usage:`/`error:` com código 2). No virt-install os
 erros do `--xml` saem no `get_xml` (`parser::defer_xml_action_checks` e
-`XmlObject::check_xml_actions`). Oráculo: `oracle-virt-install.txt` (232 casos).
+`XmlObject::check_xml_actions`). Oráculo: `oracle-virt-install.txt` (251 casos).
 
 Instalação (#6): `installertreemedia.rs` (CLI) e `virtinst-core/src/install/`
 (`urlfetcher` com HTTP via `ureq` e FTP próprio, `urldetect`, `installerinject`
-com cpio/xorriso, `volumeupload`). No testsuite o upload usa o `_MockStream` e
-os caminhos viram `/VIRTINST-TESTSUITE/...`, como no upstream.
+com cpio/xorriso, `volumeupload`, `cloudinit`, `unattended`). Os scripts do
+`--unattended` vêm do libosinfo (`osinfo/installscript.rs`). No testsuite o
+upload usa o `_MockStream` e os caminhos viram `/VIRTINST-TESTSUITE/...`, como
+no upstream.
 
 ## Falta (prioridade)
-1. Métodos de instalação (#6): faltam `--cloud-init` e `--unattended` (hoje
-   falham com "not implemented yet"). Casos que precisam de rede (http/ftp,
-   `--install OSNAME`) ficam fora do oráculo.
-2. Só depois: GUI (ver CLAUDE.md seção 7).
+1. GUI (ver CLAUDE.md seção 7). Casos de instalação que precisam de rede
+   (http/ftp, `--install OSNAME`, drivers do Windows) ficam fora do oráculo.
 
 ## Bugs conhecidos
 - Nenhum conhecido no corpus do oráculo.
