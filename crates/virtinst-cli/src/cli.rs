@@ -290,7 +290,7 @@ pub const CHECK_OPTIONS: [&str; 5] = [
 pub fn parse_check(checks: &[String]) {
     for optstr in checks {
         let mut leftover = vec![];
-        for (key, val) in crate::parse_optstr_tuples(optstr) {
+        for (key, val) in crate::parser::parse_optstr_tuples(optstr) {
             if !CHECK_OPTIONS.contains(&key.as_str()) {
                 leftover.push(key);
                 continue;
@@ -424,6 +424,10 @@ pub fn conn_support(conn: &Connection) -> crate::parser::ConnSupport {
         vmport: libvirt >= 1_002_016
             && (conn.uri().is_test() || (conn.uri().is_qemu() && hv >= 2_002_000)),
         graphics_listen_none: libvirt >= 2_000_000,
+        is_qemu: conn.uri().is_qemu(),
+        is_bhyve: conn.uri().is_bhyve(),
+        disk_driver_name_qemu: conn.uri().is_qemu()
+            || (conn.uri().is_xen() && libvirt >= 1_001_000 && hv >= 4_002_000),
     }
 }
 

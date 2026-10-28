@@ -14,11 +14,8 @@
 # directly against tests/test_cli.py, not assumed) — same rigor as the
 # analogous virtinst-cli/src/lib.rs unit tests, one level up through the
 # real compiled binary instead of virtinst-core's library API directly.
-# --disk's cases are also bounded by disk_from_optstr/apply_disk_optstr
-# being only a partial slice of upstream's real (40+-field) ParserDisk —
-# see that function's own doc comment for exactly which fields, and why
-# a couple of real disk fixtures (edit-simple-disk and its sibling) are
-# out of this slice's reach even though they exist.
+# --disk is the full ParserDisk now; its byte-for-byte cases live in
+# oracle-virt-xml.txt.
 #
 # --memballoon has three real upstream fixtures, all covered, and no
 # add-device case: the real driver rejects a second <memballoon>
@@ -215,13 +212,7 @@ echo "  cmd: --remove-device --vsock 1"
 xml="$(run_virt_xml_action --remove-device --vsock 1)"
 check_xpath "$xml" "count(//vsock)" "0" "the only vsock is gone"
 
-# --disk cases. disk_from_optstr/apply_disk_optstr (virtinst-cli/src/
-# lib.rs) are only a partial slice of upstream's real ParserDisk — see
-# that function's own doc comment for exactly which fields. The two
-# upstream fixtures below are within that slice's reach exactly;
-# edit-simple-disk/edit-simple-disk-remove-path aren't (both need
-# block-device source.dev handling this slice doesn't model), so the
-# --edit case here is self-verified instead, like the four cases above.
+# --disk cases (ParserDisk; more, byte for byte, in oracle-virt-xml.txt).
 
 echo
 echo "=== add-disk-basic ==="

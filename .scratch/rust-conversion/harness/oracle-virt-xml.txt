@@ -616,3 +616,62 @@
 --connect @SUITE@ test-for-virtxml --edit --clock timer0.name=rtc,offset=localtime --features acpi=off
 --connect @SUITE@ test-for-virtxml --edit --pm none --print-diff
 --connect @SUITE@ test-for-virtxml --edit --qemu-commandline=args=-a,env=B=c --print-diff
+
+# --disk (ParserDisk). Storage creation (size=, pool=, new paths) comes later.
+--connect @SUITE@ test-for-virtxml --edit --disk /dev/zero,perms=ro,source.startupPolicy=optional --print-diff
+--connect @SUITE@ test-for-virtxml --edit --disk path= --print-diff
+--connect @SUITE@ test-for-virtxml --edit target=hda --disk /dev/null --print-diff
+--connect @SUITE@ test-for-virtxml --edit /tmp/foobar2 --disk shareable=off,readonly=on --print-diff
+--connect @SUITE@ test-for-virtxml --edit target=hda --disk boot_order=1 --print-diff
+--connect @SUITE@ test-for-virtxml --edit target=vda --disk boot_order=1 --print-diff
+--connect @SUITE@ test-for-virtxml --edit path=/dev/null --disk path=,target=fdb,boot_order=12 --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --disk 3 --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --disk /dev/null --print-diff
+--connect @SUITE@ test-for-virtxml --remove-device --disk all --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk /pool-dir/testvol1.img,bus=virtio,target=vdf --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk /pool-dir/testvol1.img --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk /dev/zero --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk /dev/zero,device=cdrom --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk device=cdrom --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk device=floppy --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk vol=pool-dir/testvol2.img --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk vol=foo --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk vol=nopool/foo --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk vol=pool-dir/nope --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk perms=badformat --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk size=badformat --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk /dev/zero,sparse=maybe --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk /dev/zero,perms=sh,cache=writeback,bus=scsi --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk /dev/zero,perms=rw,serial=abc,wwn=0x123,driver.io=threads,iotune.read_bytes_sec=1,blockio.logical_block_size=512,geometry.cyls=1 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk source.protocol=nbd,source.name=foo,source.host0.name=example.com,source.host0.port=10809,type=network --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk type=network,source.protocol=http,source.name=/foo.iso,source.host.name=example.com,device=cdrom --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk /dev/zero,seclabel.model=dac,seclabel.relabel=no,source.seclabel1.model=selinux --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk source.pool=pool-dir,source.volume=testvol1.img --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk none --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk device=disk --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk /pool-dir/testvol1.img,address.type=pci,address.slot=0x9,boot.order=2,driver.iommu=on,transient=on,transient.shareBacking=yes --print-diff
+--connect @SUITE@ --build-xml --disk /pool-dir/testvol1.img
+--connect @SUITE@ --build-xml --disk /dev/zero,target.dev=sdz,bus=usb,target.removable=on
+--connect @SUITE@ --build-xml --disk type=nvme,source.type=pci,source.managed=on,source.namespace=1,source.address.domain=0,source.address.bus=1,source.address.slot=0,source.address.function=0
+--connect @SUITE@ --build-xml --disk device=lun,sgio=unfiltered,rawio=yes,source.reservations.managed=no,source.reservations.source.type=unix,source.reservations.source.path=/var/run/x,source.reservations.source.mode=client,/dev/zero
+--connect @SUITE@ test-for-virtxml --edit --disk xpath.set=./@foo=bar --print-diff
+--connect @SUITE@ test-for-virtxml --edit 2 --disk clearxml=yes,/dev/zero --print-diff
+--connect @SUITE@ test-for-virtxml --edit all --disk driver.discard=unmap --print-diff
+--connect @SUITE@ test-for-virtxml --edit --disk foo=bar --print-diff
+--connect @SUITE@ test-for-virtxml --edit target=vvv --disk /dev/null --print-diff
+--connect @SUITE@ test-for-virtxml --edit --disk size=1 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --disk vol=pool-dir/testvol2.img --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk /dev/zero --disk /dev/null --print-diff
+--connect @SUITE@ --build-xml --disk=?
+--connect @SUITE@ --build-xml --disk help
+--connect @FULL@ --build-xml --disk /dev/zero
+--connect @SUITE@ test-for-virtxml --remove-device --disk nbd://example.com --print-diff
+--connect @SUITE@ test-for-virtxml --edit --disk source.host0.name=newhost --print-diff
+--connect @SUITE@ test-for-virtxml --edit 3 --disk target.dev=sdq,cache=none,bus=sata --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk vol=a/b/c --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk /dev/zero,size=0 --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk /dev/zero,sparse=no --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk /dev/zero,format=raw --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk type=block,device=lun --print-diff
+--connect @SUITE@ test-for-virtxml --add-device --disk type=weird --print-diff
+--connect @SUITE@ test-for-virtxml --edit --disk driver_name=qemu,driver_type=raw,io=native,discard=ignore,detect_zeroes=on,error_policy=stop --print-diff

@@ -17,6 +17,7 @@ use crate::parser::{lookup_prop, ParserDef};
 pub mod chardev;
 pub mod charsrc;
 pub mod devices;
+pub mod disk;
 pub mod filesystem;
 pub mod graphics;
 pub mod guest;
@@ -29,6 +30,7 @@ pub mod network;
 /// `VIRT_PARSERS` runs them in).
 pub fn all() -> Vec<&'static ParserDef> {
     vec![
+        disk::disk(),
         network::network(),
         graphics::graphics(),
         guest::metadata(),
@@ -78,50 +80,52 @@ pub fn by_name(cli_arg_name: &str) -> Option<&'static ParserDef> {
 }
 
 /// The guest facts device defaults read (`guest.os`, its graphics,
-/// `guest.osinfo`), from the guest's XML.
+/// `guest.osinfo`), from the guest's XML. Pending sets aren't written
+/// first: that would put a new device's XML in the document before its
+/// defaults are set, out of upstream's attribute order.
 pub fn guest_info(guest: &XmlObject) -> GuestInfo {
-    if guest.element().is_none() {
-        return GuestInfo::default();
-    }
-    guest.with_doc(|doc, root| {
-        let g = Guest::from_element(doc, root);
-        let graphics = root
-            .find(doc, "devices")
-            .map(|d| d.find_all(doc, "graphics"))
-            .unwrap_or_default();
-        let has_spice = graphics
-            .iter()
-            .any(|g| g.attribute(doc, "type") == Some("spice"));
-        let has_gl = graphics
-            .iter()
-            .any(|g| g.find(doc, "gl").and_then(|gl| gl.attribute(doc, "enable")) == Some("yes"));
-        let os = &g.os;
-        let is_uefi = (os.loader.is_some() && os.loader_type.as_deref() == Some("pflash"))
-            || os.firmware.as_deref() == Some("efi");
-        let osinfo = g
-            .metadata
-            .libosinfo
-            .os_id
-            .as_deref()
-            .and_then(|id| OsDb::load_default().ok().and_then(|db| db.os(id)));
-        GuestInfo {
-            os_type: os.os_type.clone(),
-            arch: os.arch.clone(),
-            machine: os.machine.clone(),
-            domain_type: g.domain_type.clone(),
-            has_spice,
-            has_gl,
-            is_uefi,
-            os_virtiogpu: osinfo.as_ref().is_some_and(|o| o.supports_virtiogpu()),
-            os_virtionet: osinfo.as_ref().is_some_and(|o| o.supports_virtionet()),
-            os_virtioscsi: osinfo.as_ref().is_some_and(|o| o.supports_virtioscsi()),
-            os_netmodels: osinfo
-                .as_ref()
-                .map(|o| o.supported_netmodels())
-                .unwrap_or_default(),
-            spice_fallback: false,
-        }
-    })
+    guest
+        .with_doc_unsynced(|doc, root| {
+            let g = Guest::from_element(doc, root);
+            let graphics = root
+                .find(doc, "devices")
+                .map(|d| d.find_all(doc, "graphics"))
+                .unwrap_or_default();
+            let has_spice = graphics
+                .iter()
+                .any(|g| g.attribute(doc, "type") == Some("spice"));
+            let has_gl = graphics.iter().any(|g| {
+                g.find(doc, "gl").and_then(|gl| gl.attribute(doc, "enable")) == Some("yes")
+            });
+            let os = &g.os;
+            let is_uefi = (os.loader.is_some() && os.loader_type.as_deref() == Some("pflash"))
+                || os.firmware.as_deref() == Some("efi");
+            let osinfo = g
+                .metadata
+                .libosinfo
+                .os_id
+                .as_deref()
+                .and_then(|id| OsDb::load_default().ok().and_then(|db| db.os(id)));
+            GuestInfo {
+                os_type: os.os_type.clone(),
+                arch: os.arch.clone(),
+                machine: os.machine.clone(),
+                domain_type: g.domain_type.clone(),
+                has_spice,
+                has_gl,
+                is_uefi,
+                os_virtiogpu: osinfo.as_ref().is_some_and(|o| o.supports_virtiogpu()),
+                os_virtionet: osinfo.as_ref().is_some_and(|o| o.supports_virtionet()),
+                os_virtioscsi: osinfo.as_ref().is_some_and(|o| o.supports_virtioscsi()),
+                os_virtiodisk: osinfo.as_ref().is_some_and(|o| o.supports_virtiodisk()),
+                os_netmodels: osinfo
+                    .as_ref()
+                    .map(|o| o.supported_netmodels())
+                    .unwrap_or_default(),
+                spice_fallback: false,
+            }
+        })
+        .unwrap_or_default()
 }
 
 /// `guest.lookup_domcaps()`: a stub when fetching fails.
@@ -283,6 +287,29 @@ pub fn set_defaults(
                 display: std::env::var("DISPLAY").ok(),
             };
             virtinst_core::devices::graphics::set_defaults(&mut lookup_prop(guest, def)[idx], &d)
+        }
+        "disk" => {
+            let cs = crate::parser::conn_support();
+            let info = guest_info(guest);
+            let disks = lookup_prop(guest, def);
+            let used_targets = disks
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != idx)
+                .filter_map(|(_, d)| d.get_str("target"))
+                .collect();
+            let device = virtinst_core::devices::disk::disk_device(&disks[idx]);
+            let backend = disk::backend();
+            let d = virtinst_core::devices::disk::DiskDefaults {
+                default_bus: info
+                    .default_disk_bus(&device, cs.is_qemu, cs.is_bhyve)
+                    .to_string(),
+                driver_name_qemu: cs.disk_driver_name_qemu,
+                is_xen: cs.is_xen,
+                is_qemu: cs.is_qemu,
+                used_targets,
+            };
+            virtinst_core::devices::disk::set_defaults_obj(&mut disks[idx], backend.as_deref(), &d)
         }
         name => misc::set_defaults(name, &mut lookup_prop(guest, def)[idx]),
     }

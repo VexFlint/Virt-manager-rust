@@ -1999,6 +1999,7 @@ fn guest_info(vm: &VmmDomain) -> GuestInfo {
         os_virtiogpu: osinfo.as_ref().is_some_and(|o| o.supports_virtiogpu()),
         os_virtionet: osinfo.as_ref().is_some_and(|o| o.supports_virtionet()),
         os_virtioscsi: osinfo.as_ref().is_some_and(|o| o.supports_virtioscsi()),
+        os_virtiodisk: osinfo.as_ref().is_some_and(|o| o.supports_virtiodisk()),
         os_netmodels: osinfo
             .as_ref()
             .map(|o| o.supported_netmodels())

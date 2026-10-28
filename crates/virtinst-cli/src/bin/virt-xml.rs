@@ -4,11 +4,8 @@
 //! (`--build-xml`), then define it, hotplug it (`--update`), start it,
 //! or only print the result (`--print-diff`, `--print-xml`).
 //!
-//! Options backed by a ported `VirtCLIParser` (`virtinst_cli::parsers`)
-//! go through it. The devices not ported yet (`--disk`, `--filesystem` and `--vsock`)
-//! still use the older hand-written optstring code in `virtinst_cli`,
-//! bridged in [`legacy`] onto the same guest document, until their
-//! parser group is ported.
+//! Every XML option goes through its ported `VirtCLIParser`
+//! (`virtinst_cli::parsers`).
 
 use std::io::{BufRead, IsTerminal, Write};
 
@@ -311,33 +308,11 @@ struct Args {
     debug: bool,
 }
 
-/// The XML option given: a ported parser or a legacy device.
-#[derive(Clone, Copy)]
-enum Change {
-    Engine(&'static ParserDef),
-    Legacy(&'static str),
-}
-
-impl Change {
-    fn cli_flag_name(&self) -> String {
-        match self {
-            Change::Engine(def) => def.cli_flag_name(),
-            Change::Legacy(name) => format!("--{name}"),
-        }
-    }
-}
-
 /// Upstream's `VIRT_PARSERS` order for the options this binary has.
-fn xml_options(args: &Args) -> Vec<(Change, &Vec<String>)> {
-    let legacy = |name: &'static str, v| (Change::Legacy(name), v);
-    let engine = |name: &str, v| {
-        (
-            Change::Engine(parsers::by_name(name).expect("ported parser")),
-            v,
-        )
-    };
+fn xml_options(args: &Args) -> Vec<(&'static ParserDef, &Vec<String>)> {
+    let engine = |name: &str, v| (parsers::by_name(name).expect("ported parser"), v);
     vec![
-        legacy("disk", &args.disk),
+        engine("disk", &args.disk),
         engine("network", &args.network),
         engine("graphics", &args.graphics),
         engine("metadata", &args.metadata),
@@ -404,13 +379,13 @@ impl ActionName {
 struct Action {
     name: ActionName,
     selector: Option<String>,
-    change: Change,
+    change: &'static ParserDef,
     values: Vec<String>,
 }
 
 /// `check_xmlopt_collision`.
-fn check_xmlopt_collision(args: &Args) -> (Change, Vec<String>) {
-    let collisions: Vec<(Change, &Vec<String>)> = xml_options(args)
+fn check_xmlopt_collision(args: &Args) -> (&'static ParserDef, Vec<String>) {
+    let collisions: Vec<(&'static ParserDef, &Vec<String>)> = xml_options(args)
         .into_iter()
         .filter(|(_, v)| !v.is_empty())
         .collect();
@@ -461,9 +436,7 @@ fn check_action_collision(args: &Args) -> (ActionName, Option<String>) {
 
 /// `validate_action`.
 fn validate_action(action: &Action, args: &Args) {
-    let Change::Engine(def) = action.change else {
-        return;
-    };
+    let def = action.change;
     if def.guest_propname.is_none() && action.name == ActionName::BuildXml {
         fail(format!(
             "--build-xml not supported for {}",
@@ -557,10 +530,7 @@ fn read_dev_xml(devs: &mut [TouchedDev], guest: &mut XmlObject) {
 /// `_find_objects_to_edit` + `run_parser` for each, and the other
 /// actions, on `guest`.
 fn perform_action(action: &Action, guest: &mut XmlObject, conn: &Connection) -> Vec<TouchedDev> {
-    match action.change {
-        Change::Engine(def) => perform_engine(action, def, guest, conn),
-        Change::Legacy(name) => legacy::perform(action, name, guest),
-    }
+    perform_engine(action, action.change, guest, conn)
 }
 
 fn perform_engine(
@@ -813,12 +783,10 @@ fn main() {
 
     // `check_option_introspection`: `--disk=?`/`--disk help`.
     let mut introspected = false;
-    for (change, values) in xml_options(&args) {
-        if let Change::Engine(def) = change {
-            if values.iter().any(|v| v == "?" || v == "help") {
-                print!("{}", def.introspection());
-                introspected = true;
-            }
+    for (def, values) in xml_options(&args) {
+        if values.iter().any(|v| v == "?" || v == "help") {
+            print!("{}", def.introspection());
+            introspected = true;
         }
     }
     if introspected {
@@ -870,6 +838,7 @@ fn main() {
 
     let conn = cli::get_connection(args.connect.as_deref());
     virtinst_cli::parser::set_conn_support(cli::conn_support(&conn));
+    virtinst_cli::parser::set_connect(Some(conn.as_connect().clone()));
     if !args.hostdev.is_empty() || !args.network.is_empty() || !args.graphics.is_empty() {
         virtinst_cli::parser::set_nodedevs(cli::fetch_all_nodedevs(&conn));
     }
@@ -901,10 +870,7 @@ fn main() {
 
     if action.name == ActionName::BuildXml {
         let mut guest = inactive;
-        let mut devs = match action.change {
-            Change::Engine(def) => perform_engine(&action, def, &mut guest, &conn),
-            Change::Legacy(name) => legacy::build_xml(name, &action.values),
-        };
+        let mut devs = perform_engine(&action, action.change, &mut guest, &conn);
         read_dev_xml(&mut devs, &mut guest);
         for dev in devs {
             print_stdout(&xmlutil::unindent_device_xml(&dev.xml), true);
@@ -977,96 +943,5 @@ fn main() {
             "XML did not change after domain define. You may have changed a value that libvirt \
              is setting by default."
         );
-    }
-}
-
-/// Devices whose parser isn't ported yet: the hand-written optstring
-/// code from `virtinst_cli`, run on the guest's document.
-mod legacy {
-    use super::{Action, ActionName, TouchedDev};
-    use virtinst_cli::cli::fail;
-    use virtinst_cli::*;
-    use virtinst_core::xmlbuilder::{element_xml, XmlObject};
-    use virtinst_xml::{list_add, to_xml_string, Document, Element};
-
-    fn apply(doc: &mut Document, el: Element, name: &str, optstr: &str) -> Result<(), String> {
-        match name {
-            "disk" => apply_disk_optstr(doc, el, optstr),
-            _ => unreachable!("not a legacy device: {name}"),
-        }
-    }
-
-    fn add(doc: &mut Document, root: Element, name: &str, optstr: &str) -> Result<Element, String> {
-        let d = &["devices"];
-        Ok(match name {
-            "disk" => list_add(doc, root, d, &disk_from_optstr(optstr)?),
-            _ => unreachable!("not a legacy device: {name}"),
-        })
-    }
-
-    pub fn perform(action: &Action, name: &str, guest: &mut XmlObject) -> Vec<TouchedDev> {
-        guest.with_doc(|doc, root| {
-            let r: Result<Vec<TouchedDev>, String> = (|| match action.name {
-                ActionName::Edit => {
-                    let selector = action.selector.as_deref().unwrap_or("1");
-                    let els = select_elements_by_selector(doc, root, name, "edit", selector)?;
-                    for el in &els {
-                        for optstr in &action.values {
-                            apply(doc, *el, name, optstr)?;
-                        }
-                    }
-                    Ok(els
-                        .iter()
-                        .map(|el| TouchedDev {
-                            xml: element_xml(doc, *el),
-                            pending: None,
-                        })
-                        .collect())
-                }
-                ActionName::AddDevice | ActionName::BuildXml => {
-                    let mut devs = vec![];
-                    for optstr in &action.values {
-                        let el = add(doc, root, name, optstr)?;
-                        devs.push(TouchedDev {
-                            xml: element_xml(doc, el),
-                            pending: None,
-                        });
-                    }
-                    Ok(devs)
-                }
-                ActionName::RemoveDevice => {
-                    let selector = action.values.last().expect("one value at least");
-                    let els =
-                        select_elements_by_selector(doc, root, name, "remove-device", selector)?;
-                    let devs = els
-                        .iter()
-                        .map(|el| TouchedDev {
-                            xml: element_xml(doc, *el),
-                            pending: None,
-                        })
-                        .collect();
-                    remove_elements_by_selector(doc, root, name, "remove-device", selector)?;
-                    Ok(devs)
-                }
-            })();
-            r.unwrap_or_else(|e| fail(e))
-        })
-    }
-
-    pub fn build_xml(name: &str, values: &[String]) -> Vec<TouchedDev> {
-        let r: Result<Vec<String>, String> = values
-            .iter()
-            .map(|optstr| {
-                let xml = match name {
-                    "disk" => to_xml_string(&disk_from_optstr(optstr)?),
-                    _ => unreachable!("not a legacy device: {name}"),
-                };
-                xml.map(|x| format!("{x}\n")).map_err(|e| e.to_string())
-            })
-            .collect();
-        r.unwrap_or_else(|e| fail(e))
-            .into_iter()
-            .map(|xml| TouchedDev { xml, pending: None })
-            .collect()
     }
 }

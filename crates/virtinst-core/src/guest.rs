@@ -439,20 +439,12 @@ pub fn initargs_string(os: &DomainOs) -> String {
 
 use crate::xmlbuilder::{child, prop, Kind, XmlClass};
 
-/// `DeviceDisk`, for now only its device children.
-pub static DEVICE_DISK: XmlClass = XmlClass {
-    xml_name: "disk",
-    props: &[],
-    children: crate::device_children!(),
-    prop_order: crate::device_prop_order!(),
-};
-
 /// `_DomainDevices`.
 pub static DOMAIN_DEVICES: XmlClass = XmlClass {
     xml_name: "devices",
     props: &[],
     children: &[
-        child("disk", &DEVICE_DISK, ".", false),
+        child("disk", &crate::devices::disk::DEVICE_DISK, ".", false),
         child(
             "controller",
             &crate::devices::controller::DEVICE_CONTROLLER,
