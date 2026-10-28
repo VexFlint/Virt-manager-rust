@@ -31,7 +31,7 @@ fn noset_cb(
 /// currentMemory is specified, interpret currentMemory and memory as
 /// the XML values. Otherwise treat memory and maxmemory as the old
 /// swapped names.
-fn convert_old_memory_options(o: &mut OptDict) -> Result<(), Error> {
+fn convert_old_memory_options(_optstr: &str, o: &mut OptDict) -> Result<(), Error> {
     let havecur = o.get("currentMemory").is_some();
     let havemax = o.get("maxmemory").is_some();
     let havemem = o.get("memory").is_some();

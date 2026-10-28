@@ -33,3 +33,25 @@ pub struct DomainMetadata {
     #[xml(nested)]
     pub libosinfo: MetadataLibosinfo,
 }
+
+/// `_XMLNSLibosinfo`, for the CLI parsers.
+pub static METADATA_LIBOSINFO: crate::xmlbuilder::XmlClass = {
+    use crate::xmlbuilder::{prop, Kind, XmlClass};
+    XmlClass {
+        xml_name: "libosinfo:libosinfo",
+        props: &[prop("os_id", "./libosinfo:os/@id", Kind::Str)],
+        children: &[],
+        prop_order: &[],
+    }
+};
+
+/// `DomainMetadata`, for the CLI parsers.
+pub static DOMAIN_METADATA: crate::xmlbuilder::XmlClass = {
+    use crate::xmlbuilder::{child, XmlClass};
+    XmlClass {
+        xml_name: "metadata",
+        props: &[],
+        children: &[child("libosinfo", &METADATA_LIBOSINFO, ".", true)],
+        prop_order: &[],
+    }
+};

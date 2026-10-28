@@ -158,3 +158,86 @@ pub struct DomainFeatures {
     #[xml(path = "msrs", attribute = "unknown")]
     pub msrs_unknown: Option<String>,
 }
+
+/// `DomainFeatures`, for the CLI parsers.
+pub static DOMAIN_FEATURES: crate::xmlbuilder::XmlClass = {
+    use crate::xmlbuilder::{prop, Kind, XmlClass};
+    XmlClass {
+        xml_name: "features",
+        props: &[
+            prop("acpi", "./acpi", Kind::Bool),
+            prop("apic", "./apic", Kind::Bool),
+            prop("pae", "./pae", Kind::Bool),
+            prop("gic_version", "./gic/@version", Kind::Str),
+            prop("hap", "./hap", Kind::Bool),
+            prop("viridian", "./viridian", Kind::Bool),
+            prop("privnet", "./privnet", Kind::Bool),
+            prop("pmu", "./pmu/@state", Kind::OnOff),
+            prop("eoi", "./apic/@eoi", Kind::OnOff),
+            prop("hyperv_relaxed", "./hyperv/relaxed/@state", Kind::OnOff),
+            prop("hyperv_vapic", "./hyperv/vapic/@state", Kind::OnOff),
+            prop("hyperv_spinlocks", "./hyperv/spinlocks/@state", Kind::OnOff),
+            prop(
+                "hyperv_spinlocks_retries",
+                "./hyperv/spinlocks/@retries",
+                Kind::Int,
+            ),
+            prop("hyperv_vpindex", "./hyperv/vpindex/@state", Kind::OnOff),
+            prop("hyperv_runtime", "./hyperv/runtime/@state", Kind::OnOff),
+            prop("hyperv_synic", "./hyperv/synic/@state", Kind::OnOff),
+            prop("hyperv_stimer", "./hyperv/stimer/@state", Kind::OnOff),
+            prop(
+                "hyperv_stimer_direct",
+                "./hyperv/stimer/direct/@state",
+                Kind::OnOff,
+            ),
+            prop("hyperv_reset", "./hyperv/reset/@state", Kind::OnOff),
+            prop(
+                "hyperv_frequencies",
+                "./hyperv/frequencies/@state",
+                Kind::OnOff,
+            ),
+            prop(
+                "hyperv_reenlightenment",
+                "./hyperv/reenlightenment/@state",
+                Kind::OnOff,
+            ),
+            prop("hyperv_tlbflush", "./hyperv/tlbflush/@state", Kind::OnOff),
+            prop(
+                "hyperv_tlbflush_direct",
+                "./hyperv/tlbflush/direct/@state",
+                Kind::OnOff,
+            ),
+            prop(
+                "hyperv_tlbflush_extended",
+                "./hyperv/tlbflush/extended/@state",
+                Kind::OnOff,
+            ),
+            prop("hyperv_ipi", "./hyperv/ipi/@state", Kind::OnOff),
+            prop("hyperv_evmcs", "./hyperv/evmcs/@state", Kind::OnOff),
+            prop("hyperv_avic", "./hyperv/avic/@state", Kind::OnOff),
+            prop("hyperv_xmm_input", "./hyperv/xmm_input/@state", Kind::OnOff),
+            prop(
+                "hyperv_emsr_bitmap",
+                "./hyperv/emsr_bitmap/@state",
+                Kind::OnOff,
+            ),
+            prop("vmport", "./vmport/@state", Kind::OnOff),
+            prop("kvm_hidden", "./kvm/hidden/@state", Kind::OnOff),
+            prop(
+                "kvm_hint_dedicated",
+                "./kvm/hint-dedicated/@state",
+                Kind::OnOff,
+            ),
+            prop("kvm_poll_control", "./kvm/poll-control/@state", Kind::OnOff),
+            prop("kvm_pv_ipi", "./kvm/pv-ipi/@state", Kind::OnOff),
+            prop("pvspinlock", "./pvspinlock/@state", Kind::OnOff),
+            prop("smm", "./smm/@state", Kind::OnOff),
+            prop("vmcoreinfo", "./vmcoreinfo/@state", Kind::OnOff),
+            prop("ioapic_driver", "./ioapic/@driver", Kind::Str),
+            prop("msrs_unknown", "./msrs/@unknown", Kind::Str),
+        ],
+        children: &[],
+        prop_order: &["acpi", "apic", "pae", "gic_version"],
+    }
+};

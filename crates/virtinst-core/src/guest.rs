@@ -559,10 +559,11 @@ pub static DOMAIN_DEVICES: XmlClass = XmlClass {
     ],
 };
 
-/// `DomainFeatures`, for now only what the device options touch.
-pub static DOMAIN_FEATURES: XmlClass = XmlClass {
-    xml_name: "features",
-    props: &[prop("vmport", "./vmport/@state", Kind::OnOff)],
+/// `DomainOs`, for now only what the guest options touch (the rest
+/// comes with `--boot`).
+pub static DOMAIN_OS: XmlClass = XmlClass {
+    xml_name: "os",
+    props: &[prop("smbios_mode", "./smbios/@mode", Kind::Str)],
     children: &[],
     prop_order: &[],
 };
@@ -601,6 +602,14 @@ pub static GUEST: XmlClass = XmlClass {
         prop("type", "./@type", Kind::Str),
         prop("name", "./name", Kind::Str),
         prop("uuid", "./uuid", Kind::Str),
+        prop("genid", "./genid", Kind::Str),
+        prop("genid_enable", "./genid", Kind::Bool),
+        prop("title", "./title", Kind::Str),
+        prop("description", "./description", Kind::Str),
+        prop("on_poweroff", "./on_poweroff", Kind::Str),
+        prop("on_reboot", "./on_reboot", Kind::Str),
+        prop("on_crash", "./on_crash", Kind::Str),
+        prop("on_lockfailure", "./on_lockfailure", Kind::Str),
         prop("iothreads", "./iothreads", Kind::Int),
         prop("_currentMemory", "./currentMemory", Kind::Int),
         prop("memory", "./memory", Kind::Int),
@@ -608,6 +617,12 @@ pub static GUEST: XmlClass = XmlClass {
         prop("maxMemorySlots", "./maxMemory/@slots", Kind::Int),
     ],
     children: &[
+        child(
+            "_metadata",
+            &crate::domain::metadata::DOMAIN_METADATA,
+            ".",
+            true,
+        ),
         child("iothreadids", &IOTHREAD_ID, "./iothreadids", false),
         child("defaultiothread", &DEFAULT_IOTHREAD, ".", true),
         child(
@@ -634,13 +649,44 @@ pub static GUEST: XmlClass = XmlClass {
             ".",
             true,
         ),
-        child("features", &DOMAIN_FEATURES, ".", true),
+        child(
+            "resource",
+            &crate::domain::resource::DOMAIN_RESOURCE,
+            ".",
+            true,
+        ),
+        child(
+            "sysinfo",
+            &crate::domain::sysinfo::DOMAIN_SYSINFO,
+            ".",
+            false,
+        ),
+        child("os", &DOMAIN_OS, ".", true),
+        child(
+            "features",
+            &crate::domain::features::DOMAIN_FEATURES,
+            ".",
+            true,
+        ),
+        child("clock", &crate::domain::clock::DOMAIN_CLOCK, ".", true),
+        child("pm", &crate::domain::pm::DOMAIN_PM, ".", true),
         child("devices", &DOMAIN_DEVICES, ".", true),
+        child(
+            "xmlns_qemu",
+            &crate::domain::xmlnsqemu::DOMAIN_XMLNS_QEMU,
+            ".",
+            true,
+        ),
     ],
     prop_order: &[
         "type",
         "name",
         "uuid",
+        "genid",
+        "genid_enable",
+        "title",
+        "description",
+        "_metadata",
         "iothreads",
         "iothreadids",
         "defaultiothread",
@@ -652,7 +698,15 @@ pub static GUEST: XmlClass = XmlClass {
         "memtune",
         "memoryBacking",
         "numatune",
+        "resource",
+        "sysinfo",
+        "os",
         "features",
+        "clock",
+        "on_poweroff",
+        "on_reboot",
+        "on_crash",
+        "pm",
         "devices",
     ],
 };

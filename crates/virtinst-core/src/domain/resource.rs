@@ -20,3 +20,17 @@ pub struct DomainResource {
     #[xml(path = "fibrechannel", attribute = "appid")]
     pub fibrechannel_appid: Option<String>,
 }
+
+/// `DomainResource`, for the CLI parsers.
+pub static DOMAIN_RESOURCE: crate::xmlbuilder::XmlClass = {
+    use crate::xmlbuilder::{prop, Kind, XmlClass};
+    XmlClass {
+        xml_name: "resource",
+        props: &[
+            prop("partition", "./partition", Kind::Str),
+            prop("fibrechannel_appid", "./fibrechannel/@appid", Kind::Str),
+        ],
+        children: &[],
+        prop_order: &["partition", "fibrechannel_appid"],
+    }
+};

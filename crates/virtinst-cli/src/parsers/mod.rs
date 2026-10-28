@@ -19,6 +19,7 @@ pub mod charsrc;
 pub mod devices;
 pub mod filesystem;
 pub mod graphics;
+pub mod guest;
 pub mod hostdev;
 pub mod memory;
 pub mod misc;
@@ -30,12 +31,21 @@ pub fn all() -> Vec<&'static ParserDef> {
     vec![
         network::network(),
         graphics::graphics(),
+        guest::metadata(),
         memory::memory(),
+        guest::xml(),
         memory::iothreads(),
         memory::numatune(),
         memory::memtune(),
         memory::blkiotune(),
         memory::memorybacking(),
+        guest::features(),
+        guest::clock(),
+        guest::pm(),
+        guest::events(),
+        guest::resource(),
+        guest::sysinfo(),
+        guest::qemu_commandline(),
         devices::controller(),
         devices::input(),
         chardev::serial(),

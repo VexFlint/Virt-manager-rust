@@ -50,7 +50,7 @@ pub fn memballoon() -> &'static ParserDef {
 }
 
 /// `ParserPanic._parse`: old style `--panic 0xFOO` sets the iobase.
-fn panic_pre_parse(optdict: &mut OptDict) -> Result<(), String> {
+fn panic_pre_parse(_optstr: &str, optdict: &mut OptDict) -> Result<(), String> {
     let model = optdict.get("model").cloned().flatten().unwrap_or_default();
     if optdict.len() == 1 && model.starts_with("0x") {
         optdict.insert("address.iobase".into(), Some(model));
