@@ -201,3 +201,165 @@ pub struct DomainCputune {
     #[xml(list)]
     pub memorytunes: Vec<Memorytune>,
 }
+
+// ---------------------------------------------------------------------
+// `DomainCputune` as an XML backed object, for the CLI parsers.
+// ---------------------------------------------------------------------
+
+use crate::xmlbuilder::{child, prop, Kind, XmlClass};
+
+/// `_VCPUPin`.
+pub static VCPU_PIN: XmlClass = XmlClass {
+    xml_name: "vcpupin",
+    props: &[
+        prop("vcpu", "./@vcpu", Kind::Int),
+        prop("cpuset", "./@cpuset", Kind::Str),
+    ],
+    children: &[],
+    prop_order: &["vcpu", "cpuset"],
+};
+
+/// `_IOThreadPin`.
+pub static IOTHREAD_PIN: XmlClass = XmlClass {
+    xml_name: "iothreadpin",
+    props: &[
+        prop("iothread", "./@iothread", Kind::Int),
+        prop("cpuset", "./@cpuset", Kind::Str),
+    ],
+    children: &[],
+    prop_order: &["iothread", "cpuset"],
+};
+
+/// `_VCPUSched`.
+pub static VCPU_SCHED: XmlClass = XmlClass {
+    xml_name: "vcpusched",
+    props: &[
+        prop("vcpus", "./@vcpus", Kind::Str),
+        prop("scheduler", "./@scheduler", Kind::Str),
+        prop("priority", "./@priority", Kind::Int),
+    ],
+    children: &[],
+    prop_order: &["vcpus", "scheduler", "priority"],
+};
+
+/// `_IOThreadSched`.
+pub static IOTHREAD_SCHED: XmlClass = XmlClass {
+    xml_name: "iothreadsched",
+    props: &[
+        prop("iothreads", "./@iothreads", Kind::Str),
+        prop("scheduler", "./@scheduler", Kind::Str),
+        prop("priority", "./@priority", Kind::Int),
+    ],
+    children: &[],
+    prop_order: &["iothreads", "scheduler", "priority"],
+};
+
+/// `_CacheTuneCache`.
+pub static CACHETUNE_CACHE: XmlClass = XmlClass {
+    xml_name: "cache",
+    props: &[
+        prop("id", "./@id", Kind::Int),
+        prop("level", "./@level", Kind::Int),
+        prop("type", "./@type", Kind::Str),
+        prop("size", "./@size", Kind::Int),
+        prop("unit", "./@unit", Kind::Str),
+    ],
+    children: &[],
+    prop_order: &["id", "level", "type", "size", "unit"],
+};
+
+/// `_CacheTuneMonitor`.
+pub static CACHETUNE_MONITOR: XmlClass = XmlClass {
+    xml_name: "monitor",
+    props: &[
+        prop("level", "./@level", Kind::Int),
+        prop("vcpus", "./@vcpus", Kind::Str),
+    ],
+    children: &[],
+    prop_order: &["level", "vcpus"],
+};
+
+/// `_CacheTune`.
+pub static CACHETUNE: XmlClass = XmlClass {
+    xml_name: "cachetune",
+    props: &[prop("vcpus", "./@vcpus", Kind::Str)],
+    children: &[
+        child("caches", &CACHETUNE_CACHE, ".", false),
+        child("monitors", &CACHETUNE_MONITOR, ".", false),
+    ],
+    prop_order: &["vcpus", "caches"],
+};
+
+/// `_MemoryTuneNode`.
+pub static MEMORYTUNE_NODE: XmlClass = XmlClass {
+    xml_name: "node",
+    props: &[
+        prop("id", "./@id", Kind::Int),
+        prop("bandwidth", "./@bandwidth", Kind::Int),
+    ],
+    children: &[],
+    prop_order: &["id", "bandwidth"],
+};
+
+/// `_MemoryTune`.
+pub static MEMORYTUNE: XmlClass = XmlClass {
+    xml_name: "memorytune",
+    props: &[prop("vcpus", "./@vcpus", Kind::Str)],
+    children: &[child("nodes", &MEMORYTUNE_NODE, ".", false)],
+    prop_order: &["vcpus", "nodes"],
+};
+
+/// `DomainCputune`.
+pub static DOMAIN_CPUTUNE: XmlClass = XmlClass {
+    xml_name: "cputune",
+    props: &[
+        prop("shares", "./shares", Kind::Int),
+        prop("period", "./period", Kind::Int),
+        prop("quota", "./quota", Kind::Int),
+        prop("global_period", "./global_period", Kind::Int),
+        prop("global_quota", "./global_quota", Kind::Int),
+        prop("emulator_period", "./emulator_period", Kind::Int),
+        prop("emulator_quota", "./emulator_quota", Kind::Int),
+        prop("iothread_period", "./iothread_period", Kind::Int),
+        prop("iothread_quota", "./iothread_quota", Kind::Int),
+        prop("emulatorpin_cpuset", "./emulatorpin/@cpuset", Kind::Str),
+        prop(
+            "emulatorsched_scheduler",
+            "./emulatorsched/@scheduler",
+            Kind::Str,
+        ),
+        prop(
+            "emulatorsched_priority",
+            "./emulatorsched/@priority",
+            Kind::Int,
+        ),
+    ],
+    children: &[
+        child("vcpupins", &VCPU_PIN, ".", false),
+        child("iothreadpins", &IOTHREAD_PIN, ".", false),
+        child("vcpuscheds", &VCPU_SCHED, ".", false),
+        child("iothreadscheds", &IOTHREAD_SCHED, ".", false),
+        child("cachetunes", &CACHETUNE, ".", false),
+        child("memorytunes", &MEMORYTUNE, ".", false),
+    ],
+    prop_order: &[
+        "shares",
+        "period",
+        "quota",
+        "global_period",
+        "global_quota",
+        "emulator_period",
+        "emulator_quota",
+        "iothread_period",
+        "iothread_quota",
+        "vcpupins",
+        "emulatorpin_cpuset",
+        "iothreadpins",
+        "emulatorsched_scheduler",
+        "emulatorsched_priority",
+        "vcpuscheds",
+        "iothreadscheds",
+        "cachetunes",
+        "memorytunes",
+    ],
+};

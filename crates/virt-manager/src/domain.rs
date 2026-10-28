@@ -423,57 +423,6 @@ fn edit_shared_mem(doc: &mut virtinst_xml::Document, root: virtinst_xml::Element
     }
 }
 
-/// `_get_expanded_cpu`: `baselineHypervisorCPU` with
-/// `EXPAND_FEATURES`, falling back to the older `baselineCPU`.
-/// Blocking.
-pub(crate) fn baseline_hypervisor_cpu(
-    conn: &Connect,
-    (emulator, arch, machine, virttype): (
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ),
-    cpu_xml: &str,
-) -> Option<String> {
-    use std::ffi::{CStr, CString};
-    use std::os::raw::{c_char, c_void};
-    extern "C" {
-        fn free(p: *mut c_void);
-    }
-    let cstr = |s: Option<String>| s.and_then(|s| CString::new(s).ok());
-    let (emulator, arch, machine, virttype) =
-        (cstr(emulator), cstr(arch), cstr(machine), cstr(virttype));
-    let ptr = |s: &Option<CString>| s.as_ref().map_or(std::ptr::null(), |s| s.as_ptr());
-    let xml = CString::new(cpu_xml).ok()?;
-    let mut xmls: [*const c_char; 1] = [xml.as_ptr()];
-    // SAFETY: every pointer is a live NUL-terminated string or null,
-    // which libvirt accepts for the optional parameters; the result
-    // is a malloc'd string we own.
-    let ret = unsafe {
-        sys::virConnectBaselineHypervisorCPU(
-            conn.as_ptr(),
-            ptr(&emulator),
-            ptr(&arch),
-            ptr(&machine),
-            ptr(&virttype),
-            xmls.as_mut_ptr(),
-            1,
-            sys::VIR_CONNECT_BASELINE_CPU_EXPAND_FEATURES,
-        )
-    };
-    if !ret.is_null() {
-        // SAFETY: non-null result from libvirt, freed right after.
-        let out = unsafe { CStr::from_ptr(ret) }
-            .to_string_lossy()
-            .into_owned();
-        unsafe { free(ret as *mut c_void) };
-        return Some(out);
-    }
-    conn.baseline_cpu(&[cpu_xml], sys::VIR_CONNECT_BASELINE_CPU_EXPAND_FEATURES)
-        .ok()
-}
-
 /// `DeviceDisk.path_in_use_by`, blocking: the VMs on `conn` using
 /// `path` for a disk, for direct kernel boot, or as the backing store
 /// of a volume a disk uses.
@@ -1034,7 +983,11 @@ impl VmmDomain {
                     caps.domain.clone(),
                 );
                 let expanded = gio::spawn_blocking(move || {
-                    baseline_hypervisor_cpu(handle.connect(), params, &cpu_xml)
+                    virtinst_core::capabilities::domcaps::baseline_hypervisor_cpu(
+                        handle.connect(),
+                        params,
+                        &cpu_xml,
+                    )
                 })
                 .await
                 .ok()

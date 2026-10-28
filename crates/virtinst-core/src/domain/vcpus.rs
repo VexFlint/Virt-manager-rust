@@ -39,3 +39,30 @@ pub struct DomainVcpus {
     #[xml(list)]
     pub vcpu: Vec<DomainVcpu>,
 }
+
+// ---------------------------------------------------------------------
+// `DomainVCPUs` as an XML backed object, for the CLI parsers.
+// ---------------------------------------------------------------------
+
+use crate::xmlbuilder::{child, prop, Kind, XmlClass};
+
+/// `_DomainVCPU`.
+pub static DOMAIN_VCPU: XmlClass = XmlClass {
+    xml_name: "vcpu",
+    props: &[
+        prop("id", "./@id", Kind::Int),
+        prop("enabled", "./@enabled", Kind::YesNo),
+        prop("hotpluggable", "./@hotpluggable", Kind::YesNo),
+        prop("order", "./@order", Kind::Int),
+    ],
+    children: &[],
+    prop_order: &["id", "enabled", "hotpluggable", "order"],
+};
+
+/// `DomainVCPUs`.
+pub static DOMAIN_VCPUS: XmlClass = XmlClass {
+    xml_name: "vcpus",
+    props: &[],
+    children: &[child("vcpu", &DOMAIN_VCPU, ".", false)],
+    prop_order: &[],
+};

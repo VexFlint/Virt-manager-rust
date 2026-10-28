@@ -607,6 +607,10 @@ pub static GUEST: XmlClass = XmlClass {
         prop("memory", "./memory", Kind::Int),
         prop("maxMemory", "./maxMemory", Kind::Int),
         prop("maxMemorySlots", "./maxMemory/@slots", Kind::Int),
+        prop("_vcpus", "./vcpu", Kind::Int),
+        prop("vcpu_current", "./vcpu/@current", Kind::Int),
+        prop("vcpu_placement", "./vcpu/@placement", Kind::Str),
+        prop("vcpu_cpuset", "./vcpu/@cpuset", Kind::Str),
     ],
     children: &[
         child(
@@ -635,6 +639,7 @@ pub static GUEST: XmlClass = XmlClass {
             ".",
             true,
         ),
+        child("vcpulist", &crate::domain::vcpus::DOMAIN_VCPUS, ".", true),
         child(
             "numatune",
             &crate::domain::numatune::DOMAIN_NUMATUNE,
@@ -657,6 +662,13 @@ pub static GUEST: XmlClass = XmlClass {
         child(
             "features",
             &crate::domain::features::DOMAIN_FEATURES,
+            ".",
+            true,
+        ),
+        child("cpu", &crate::domain::cpu::DOMAIN_CPU, ".", true),
+        child(
+            "cputune",
+            &crate::domain::cputune::DOMAIN_CPUTUNE,
             ".",
             true,
         ),
@@ -689,11 +701,17 @@ pub static GUEST: XmlClass = XmlClass {
         "blkiotune",
         "memtune",
         "memoryBacking",
+        "_vcpus",
+        "vcpu_current",
+        "vcpu_placement",
+        "vcpu_cpuset",
+        "vcpulist",
         "numatune",
         "resource",
         "sysinfo",
         "os",
         "features",
+        "cpu",
         "clock",
         "on_poweroff",
         "on_reboot",
@@ -718,6 +736,19 @@ pub fn set_current_memory(
         }
     }
     guest.set("_currentMemory", val.map(crate::xmlbuilder::Value::Int))
+}
+
+/// `Guest.vcpus`'s setter: `vcpu_current` shrinks to fit, when set.
+pub fn set_vcpus(guest: &mut crate::xmlbuilder::XmlObject, val: Option<i64>) -> Result<(), String> {
+    if let Some(v) = val {
+        // Don't force set curvcpus unless already specified
+        if let Some(crate::xmlbuilder::Value::Int(cur)) = guest.get("vcpu_current") {
+            if cur > v {
+                guest.set("vcpu_current", Some(crate::xmlbuilder::Value::Int(v)))?;
+            }
+        }
+    }
+    guest.set("_vcpus", val.map(crate::xmlbuilder::Value::Int))
 }
 
 #[cfg(test)]

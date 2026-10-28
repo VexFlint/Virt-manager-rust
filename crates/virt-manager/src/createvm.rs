@@ -2506,7 +2506,11 @@ impl VmmCreateVM {
                     domcaps.domain.clone(),
                 );
                 let expanded = gio::spawn_blocking(move || {
-                    crate::domain::baseline_hypervisor_cpu(handle.connect(), params, &cpu_xml)
+                    virtinst_core::capabilities::domcaps::baseline_hypervisor_cpu(
+                        handle.connect(),
+                        params,
+                        &cpu_xml,
+                    )
                 })
                 .await
                 .ok()
