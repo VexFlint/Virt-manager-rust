@@ -62,3 +62,42 @@ pub struct DomainXmlnsQemu {
     #[xml(list)]
     pub envs: Vec<XmlnsQemuEnv>,
 }
+
+/// `_XMLNSQemuArg`, for the CLI parsers.
+pub static XMLNS_QEMU_ARG: crate::xmlbuilder::XmlClass = {
+    use crate::xmlbuilder::{prop, Kind, XmlClass};
+    XmlClass {
+        xml_name: "qemu:arg",
+        props: &[prop("value", "./@value", Kind::Str)],
+        children: &[],
+        prop_order: &[],
+    }
+};
+
+/// `_XMLNSQemuEnv`, for the CLI parsers.
+pub static XMLNS_QEMU_ENV: crate::xmlbuilder::XmlClass = {
+    use crate::xmlbuilder::{prop, Kind, XmlClass};
+    XmlClass {
+        xml_name: "qemu:env",
+        props: &[
+            prop("name", "./@name", Kind::Str),
+            prop("value", "./@value", Kind::Str),
+        ],
+        children: &[],
+        prop_order: &[],
+    }
+};
+
+/// `DomainXMLNSQemu`, for the CLI parsers.
+pub static DOMAIN_XMLNS_QEMU: crate::xmlbuilder::XmlClass = {
+    use crate::xmlbuilder::{child, XmlClass};
+    XmlClass {
+        xml_name: "qemu:commandline",
+        props: &[],
+        children: &[
+            child("args", &XMLNS_QEMU_ARG, ".", false),
+            child("envs", &XMLNS_QEMU_ENV, ".", false),
+        ],
+        prop_order: &["args", "envs"],
+    }
+};

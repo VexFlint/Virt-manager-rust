@@ -19,6 +19,15 @@ pub type Error = String;
 /// with `,` as the only whitespace, `whitespace_split` on and no
 /// comments, so `path="/a,b"` and `path=/a\,b` keep their comma.
 pub fn shlex_split_commas(optstr: &str) -> Vec<String> {
+    shlex_split_on(optstr, |c| c == ',')
+}
+
+/// `shlex.split(s)`: POSIX shell words.
+pub fn shlex_split(s: &str) -> Vec<String> {
+    shlex_split_on(s, |c| matches!(c, ' ' | '\t' | '\n' | '\r'))
+}
+
+fn shlex_split_on(optstr: &str, is_space: fn(char) -> bool) -> Vec<String> {
     let mut out = vec![];
     let mut token = String::new();
     // A quoted empty string still makes a token.
@@ -26,7 +35,7 @@ pub fn shlex_split_commas(optstr: &str) -> Vec<String> {
     let mut chars = optstr.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
-            ',' => {
+            c if is_space(c) => {
                 if have_token {
                     out.push(std::mem::take(&mut token));
                     have_token = false;
@@ -228,7 +237,11 @@ fn pattern_matches(pattern: &str, s: &str) -> bool {
 }
 
 /// One parser's custom `_parse` pre-processing of the option dict.
-pub type PreParse = fn(&mut OptDict) -> Result<(), Error>;
+pub type PreParse = fn(&str, &mut OptDict) -> Result<(), Error>;
+
+/// A parser's own pick of an existing guest object to parse into
+/// instead of a new one (`ParserSysinfo.parse`'s merge by type).
+pub type ExistingInst = fn(&XmlObject, &OptDict) -> Option<usize>;
 
 /// A parser's own `_parse` override, run before the generic one:
 /// `Some(objects)` replaces the generic parse with those (possibly no)
@@ -310,6 +323,10 @@ pub struct ParserDef {
     pub args: Vec<ArgDef>,
     pub pre_parse: Option<PreParse>,
     pub custom_parse: Option<CustomParse>,
+    pub existing_inst: Option<ExistingInst>,
+    /// `ParserXML`: each option string is a new `XMLManualAction`
+    /// appended to the guest's `xml_actions`.
+    pub is_xml_action: bool,
     /// The class of a new object, for list `guest_propname`s.
     pub class: Option<&'static XmlClass>,
 }
@@ -331,6 +348,8 @@ impl ParserDef {
             args: vec![],
             pre_parse: None,
             custom_parse: None,
+            existing_inst: None,
+            is_xml_action: false,
             class,
         };
         def.args
@@ -727,7 +746,8 @@ impl<'a> ParseCtx<'a> {
         if arg.def.propname.is_none() && arg.def.lookup_cb.is_none() {
             return Err(format!(
                 "Don't know how to match device type '{}' property '{}'",
-                inst.class.xml_name, arg.key
+                device_type(inst.class),
+                arg.key
             ));
         }
         let mut inst = inst;
@@ -750,6 +770,19 @@ impl<'a> ParseCtx<'a> {
     }
 }
 
+/// `getattr(inst, "DEVICE_TYPE", "")`.
+fn device_type(class: &XmlClass) -> &'static str {
+    let devices = &virtinst_core::guest::DOMAIN_DEVICES;
+    match devices
+        .children
+        .iter()
+        .find(|c| std::ptr::eq(c.class, class))
+    {
+        Some(c) => c.class.xml_name,
+        None => "",
+    }
+}
+
 /// `fail()`'s message for an exception inside a parser.
 fn raised(def: &ParserDef, optstr: &str, err: &str) -> Error {
     format!("Error: {} {optstr}: {err}", def.cli_flag_name())
@@ -767,14 +800,14 @@ fn to_fail(def: &ParserDef, optstr: &str, e: ParseError) -> Error {
 fn parse_into(ctx: &mut ParseCtx, inst: &mut XmlObject) -> Result<(), ParseError> {
     let mut optdict = ctx.optdict.clone();
     if let Some(pre) = ctx.def.pre_parse {
-        pre(&mut optdict).map_err(ParseError::Raised)?;
+        pre(&ctx.optstr, &mut optdict).map_err(ParseError::Raised)?;
     }
     for arg in ctx.param_list(&mut optdict)? {
         ctx.parse_param(inst, &arg).map_err(ParseError::Raised)?;
     }
     ctx.check_leftover(&optdict)?;
     for action in &inst.xml_actions {
-        action.validate().map_err(ParseError::Raised)?;
+        action.validate().map_err(ParseError::Fail)?;
     }
     Ok(())
 }
@@ -827,7 +860,12 @@ pub fn parse_new(
         .expect("only guest backed parsers create objects");
     let (_, _, is_single) = guest_list(guest, propname);
     let optdict = def.optdict(optstr);
-    if is_single {
+    let existing = match def.existing_inst {
+        Some(f) if !is_single => f(guest, &optdict),
+        _ => None,
+    };
+    if is_single || existing.is_some() {
+        let idx = existing.unwrap_or(0);
         // Edit the guest's one object in place, taken out of the guest
         // while the parser holds the guest too.
         let mut taken = {
@@ -844,12 +882,12 @@ pub fn parse_new(
                 boot_order: None,
                 post_edit: None,
             };
-            parse_into(&mut ctx, &mut taken[0])
+            parse_into(&mut ctx, &mut taken[idx])
         };
         let (parent, name, _) = guest_list(guest, propname);
         *parent.children_mut(name) = taken;
         r.map_err(|e| to_fail(def, optstr, e))?;
-        return Ok(vec![0]);
+        return Ok(vec![idx]);
     }
     let mut obj = XmlObject::new(def.class.expect("list parsers have a class"));
     let boot_order;
@@ -1190,15 +1228,28 @@ pub fn parse_guest_edit(def: &ParserDef, guest: &mut XmlObject, optstr: &str) ->
         return Ok(());
     }
     let mut stand_in = XmlObject::new(&EMPTY);
+    let mut optdict = def.optdict(optstr);
+    if def.is_xml_action && !optstr.starts_with("xpath.") {
+        // Default `--xml FOO` to `--xml xpath.set=FOO`
+        optdict = OptDict::default();
+        optdict.insert("xpath.set".into(), Some(optstr.to_string()));
+    }
     let mut ctx = ParseCtx {
         def,
         guest: &mut stand_in,
         optstr: optstr.to_string(),
-        optdict: def.optdict(optstr),
+        optdict,
         editing: true,
         boot_order: None,
         post_edit: None,
     };
+    if def.is_xml_action {
+        // The action is built on its own, then appended to the guest's.
+        let mut action = XmlObject::new(&EMPTY);
+        parse_into(&mut ctx, &mut action).map_err(|e| to_fail(def, optstr, e))?;
+        guest.xml_actions.append(&mut action.xml_actions);
+        return Ok(());
+    }
     parse_into(&mut ctx, guest).map_err(|e| to_fail(def, optstr, e))
 }
 

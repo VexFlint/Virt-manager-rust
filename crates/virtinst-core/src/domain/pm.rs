@@ -25,3 +25,17 @@ pub struct DomainPm {
     #[xml(path = "suspend-to-disk", attribute = "enabled")]
     pub suspend_to_disk: Option<bool>,
 }
+
+/// `DomainPm`, for the CLI parsers.
+pub static DOMAIN_PM: crate::xmlbuilder::XmlClass = {
+    use crate::xmlbuilder::{prop, Kind, XmlClass};
+    XmlClass {
+        xml_name: "pm",
+        props: &[
+            prop("suspend_to_mem", "./suspend-to-mem/@enabled", Kind::YesNo),
+            prop("suspend_to_disk", "./suspend-to-disk/@enabled", Kind::YesNo),
+        ],
+        children: &[],
+        prop_order: &[],
+    }
+};

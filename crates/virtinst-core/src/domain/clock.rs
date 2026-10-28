@@ -60,3 +60,35 @@ pub struct Clock {
     #[xml(list)]
     pub timers: Vec<ClockTimer>,
 }
+
+/// `_ClockTimer`, for the CLI parsers.
+pub static CLOCK_TIMER: crate::xmlbuilder::XmlClass = {
+    use crate::xmlbuilder::{prop, Kind, XmlClass};
+    XmlClass {
+        xml_name: "timer",
+        props: &[
+            prop("name", "./@name", Kind::Str),
+            prop("present", "./@present", Kind::YesNo),
+            prop("tickpolicy", "./@tickpolicy", Kind::Str),
+            prop("track", "./@track", Kind::Str),
+            prop("mode", "./@mode", Kind::Str),
+            prop("frequency", "./@frequency", Kind::Int),
+            prop("threshold", "./catchup/@threshold", Kind::Int),
+            prop("slew", "./catchup/@slew", Kind::Int),
+            prop("limit", "./catchup/@limit", Kind::Int),
+        ],
+        children: &[],
+        prop_order: &[],
+    }
+};
+
+/// `DomainClock`, for the CLI parsers.
+pub static DOMAIN_CLOCK: crate::xmlbuilder::XmlClass = {
+    use crate::xmlbuilder::{child, prop, Kind, XmlClass};
+    XmlClass {
+        xml_name: "clock",
+        props: &[prop("offset", "./@offset", Kind::Str)],
+        children: &[child("timers", &CLOCK_TIMER, ".", false)],
+        prop_order: &[],
+    }
+};

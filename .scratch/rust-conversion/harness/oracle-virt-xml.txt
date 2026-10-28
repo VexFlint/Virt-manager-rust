@@ -505,3 +505,114 @@
 --connect @SUITE@ --memorybacking help
 --connect @SUITE@ --numatune help
 --connect @SUITE@ --iothreads help
+#
+# --features / --clock / --pm / --events / --resource / --metadata /
+# --sysinfo / --qemu-commandline / --xml (ParserFeatures, ParserClock,
+# ParserPM, ParserEvents, ParserResource, ParserMetadata, ParserSysinfo,
+# ParserQemuCLI, ParserXML)
+--connect @SUITE@ test-for-virtxml --edit --features acpi=off,apic=on,apic.eoi=on,hyperv.relaxed.state=off --print-diff
+--connect @SUITE@ test-for-virtxml --edit --features eoi=off,hyperv_spinlocks_retries=5,kvm_hidden=on,gic_version=3 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --features pae=on,privnet=on,hap=off,viridian=on,pmu.state=off,vmport=on,smm=on,vmcoreinfo=on --print-diff
+--connect @SUITE@ test-for-virtxml --edit --features hyperv.vpindex.state=on,hyperv.runtime.state=on,hyperv.synic.state=on,hyperv.stimer.state=on,hyperv.stimer.direct.state=on,hyperv.reset.state=on,hyperv.frequencies.state=on --print-diff
+--connect @SUITE@ test-for-virtxml --edit --features hyperv.reenlightenment.state=on,hyperv.tlbflush.state=on,hyperv.tlbflush.direct.state=on,hyperv.tlbflush.extended.state=on,hyperv.ipi.state=on,hyperv.evmcs.state=off,hyperv.avic.state=on,hyperv.xmm_input.state=on,hyperv.emsr_bitmap.state=on --print-diff
+--connect @SUITE@ test-for-virtxml --edit --features kvm.hint-dedicated.state=on,kvm.poll-control.state=on,kvm.pv-ipi.state=off,pvspinlock.state=on,ioapic.driver=qemu,msrs.unknown=ignore --print-diff
+--connect @SUITE@ test-for-virtxml --edit --features hyperv_relaxed=off,hyperv_vapic=off,hyperv_spinlocks=off,hyperv_synic=on,hyperv_reset=on --print-diff
+--connect @SUITE@ test-for-virtxml --edit --features clearxml=yes,acpi=on --print-diff
+--connect @SUITE@ test-for-virtxml --edit --features xpath.set=./foo/@bar=baz --print-diff
+--connect @SUITE@ test-for-virtxml --edit --features foo=bar
+--connect @SUITE@ test-for-virtxml --edit 2 --features acpi=on
+--connect @SUITE@ test-for-virtxml --edit apic.eoi=off --features acpi=on --print-diff
+--connect @SUITE@ test-for-virtxml --edit acpi=on --features pae=on
+--connect @SUITE@ test-for-virtxml --add-device --features acpi=on
+--connect @SUITE@ test-for-virtxml --remove-device --features acpi=on
+--connect @SUITE@ --build-xml --features acpi=on,apic=off,pae=on,gic.version=2,hyperv.spinlocks.retries=10,hap=on
+--connect @SUITE@ --build-xml --features hyperv.synic.state=on,eoi=on,kvm.hidden.state=on
+--connect @SUITE@ --features help
+--connect @SUITE@ test-for-virtxml --edit --clock offset=localtime,rtc_tickpolicy=merge,hpet_present=on --print-diff
+--connect @SUITE@ test-for-virtxml --edit --clock pit_tickpolicy=catchup,platform_present=off,pit_present=on,rtc_present=no,tsc_present=on,kvmclock_present=on,hypervclock_present=on --print-diff
+--connect @SUITE@ test-for-virtxml --edit --clock platform_tickpolicy=x,hpet_tickpolicy=x,tsc_tickpolicy=x,kvmclock_tickpolicy=x,hypervclock_tickpolicy=x,offset=variable --print-diff
+--connect @SUITE@ test-for-virtxml --edit --clock timer0.track=wall,timer1.mode=auto,timer2.present=yes --print-diff
+--connect @SUITE@ test-for-virtxml --edit --clock timer4.name=tsc,timer4.frequency=1000,timer4.catchup.threshold=1,timer4.catchup.slew=2,timer4.catchup.limit=3 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --clock timer.name=x,timer.tickpolicy=discard --print-diff
+--connect @SUITE@ test-for-virtxml --edit offset=utc --clock offset=localtime --print-diff
+--connect @SUITE@ test-for-virtxml --edit offset=localtime --clock offset=utc
+--connect @SUITE@ test-for-virtxml --edit timer1.name=pit --clock offset=localtime --print-diff
+--connect @SUITE@ test-for-virtxml --edit rtc_tickpolicy=catchup --clock offset=localtime
+--connect @SUITE@ test-for-virtxml --edit --clock clearxml=yes,offset=utc --print-diff
+--connect @SUITE@ test-for-virtxml --edit --clock timer0.frequency=abc
+--connect @SUITE@ --build-xml --clock offset=utc,rtc_tickpolicy=catchup,pit_tickpolicy=delay,hpet_present=no
+--connect @SUITE@ --build-xml --clock timer2.name=tsc,timer2.mode=native,timer0.name=rtc
+--connect @SUITE@ --clock help
+--connect @SUITE@ test-for-virtxml --edit --pm suspend_to_mem=yes,suspend_to_disk=no --print-diff
+--connect @SUITE@ test-for-virtxml --edit --pm suspend_to_mem.enabled=off,suspend_to_disk.enabled=on --print-diff
+--connect @SUITE@ test-for-virtxml --edit --pm suspend_to_mem=foo
+--connect @SUITE@ --build-xml --pm suspend_to_disk=on
+--connect @SUITE@ --pm help
+--connect @SUITE@ test-for-virtxml --edit --events on_poweroff=preserve,on_reboot=destroy,on_crash=coredump-restart,on_lockfailure=pause --print-diff
+--connect @SUITE@ test-for-virtxml --edit 2 --events on_crash=restart
+--connect @SUITE@ test-for-virtxml --edit all --events on_crash=restart --print-diff
+--connect @SUITE@ test-for-virtxml --edit --events on_crash=restart,xpath.set=./title=hi --print-diff
+--connect @SUITE@ test-for-virtxml --edit --events clearxml=yes
+--connect @SUITE@ test-for-virtxml --add-device --events on_crash=restart
+--connect @SUITE@ test-for-virtxml --remove-device --events on_crash=restart
+--connect @SUITE@ --build-xml --events on_crash=restart
+--connect @SUITE@ --events help
+--connect @SUITE@ test-for-virtxml --edit --resource /virtualmachines/production,fibrechannel.appid=myapp --print-diff
+--connect @SUITE@ test-for-virtxml --edit --resource partition=/foo --print-diff
+--connect @SUITE@ --build-xml --resource /foo,fibrechannel.appid=a,b
+--connect @SUITE@ --resource help
+--connect @SUITE@ test-for-virtxml --edit --metadata name=foo-my-new-name,uuid=12345678-12F4-1234-1234-123456789AFA,description=hey,title=my-title --print-diff
+--connect @SUITE@ test-for-virtxml --edit --metadata genid=e9392370-2917-565e-692b-d057f46512d6,genid_enable=yes --print-diff
+--connect @SUITE@ test-for-virtxml --edit --metadata genid_enable=no --print-diff
+--connect @SUITE@ test-for-virtxml --edit --metadata os_name=fedora29 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --metadata os_full_id=http://fedoraproject.org/fedora/30 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --metadata os_name=nonexistent-os
+--connect @SUITE@ test-for-virtxml --edit --metadata os_full_id=http://example.com/foo
+--connect @SUITE@ test-for-virtxml --edit --metadata title=a,b,description=c,d --print-diff
+--connect @SUITE@ test-for-virtxml --edit --metadata xpath.set=./title=x
+--connect @SUITE@ test-for-virtxml --edit --metadata clearxml=yes
+--connect @SUITE@ test-for-virtxml --edit 1 --metadata title=x --print-diff
+--connect @SUITE@ test-for-virtxml --edit name=x --metadata title=x
+--connect @SUITE@ --build-xml --metadata title=hello
+--connect @SUITE@ --metadata help
+--connect @SUITE@ test-for-virtxml --edit --sysinfo host --print-diff
+--connect @SUITE@ test-for-virtxml --edit --sysinfo bios.vendor=x
+--connect @SUITE@ test-for-virtxml --add-device --sysinfo bios.vendor=x
+--connect @SUITE@ --build-xml --sysinfo bios.vendor=MyVendor,bios.version=1.2.3,bios.date=01/01/1970,bios.release=10.22
+--connect @SUITE@ --build-xml --sysinfo system.manufacturer=A,system.product=B,system.version=C,system.serial=D,system.uuid=00000000-1111-2222-3333-444444444444,system.sku=E,system.family=F
+--connect @SUITE@ --build-xml --sysinfo baseBoard.manufacturer=A,baseBoard.product=B,baseBoard.version=C,baseBoard.serial=D,baseBoard.asset=E,baseBoard.location=F
+--connect @SUITE@ --build-xml --sysinfo chassis.manufacturer=A,chassis.version=B,chassis.serial=C,chassis.asset=D,chassis.sku=E,oemStrings.entry0=foo,oemStrings.entry1=bar,baz
+--connect @SUITE@ --build-xml --sysinfo type=fwcfg,entry0.name=opt/com.foo/bar,entry0=hello,entry1.name=opt/x,entry1.file=/tmp/x
+--connect @SUITE@ --build-xml --sysinfo bios_vendor=a,system_uuid=b,baseBoard_asset=c
+--connect @SUITE@ --build-xml --sysinfo smbios,bios.vendor=x
+--connect @SUITE@ --build-xml --sysinfo emulate
+--connect @SUITE@ --build-xml --sysinfo host
+--connect @SUITE@ --build-xml --sysinfo foo=bar
+--connect @SUITE@ --sysinfo help
+--connect @SUITE@ test-for-virtxml --edit --qemu-commandline=-display --print-diff
+--connect @SUITE@ test-for-virtxml --edit --qemu-commandline env=DISPLAY=:0.1 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --qemu-commandline=args=-foo,'bar' --print-diff
+--connect @SUITE@ test-for-virtxml --edit --qemu-commandline clearxml=yes --print-diff
+--connect @SUITE@ test-for-virtxml --edit --qemu-commandline env=FOO
+--connect @SUITE@ --build-xml --qemu-commandline=-device
+--connect @SUITE@ --build-xml --qemu-commandline env=A=b=c
+--connect @SUITE@ --qemu-commandline help
+--connect @SUITE@ test-for-virtxml --edit --xml ./name=foo --print-diff
+--connect @SUITE@ test-for-virtxml --edit --xml xpath.delete=./clock --print-diff
+--connect @SUITE@ test-for-virtxml --edit --xml xpath.create=./features/foo --print-diff
+--connect @SUITE@ test-for-virtxml --edit --xml xpath.set=./title,xpath.value=a,b --print-diff
+--connect @SUITE@ test-for-virtxml --edit --xml ./devices/disk[2]/serial=new-serial --print-diff
+--connect @SUITE@ test-for-virtxml --edit --xml ./title= --print-diff
+--connect @SUITE@ test-for-virtxml --edit --xml xpath.value=foo
+--connect @SUITE@ test-for-virtxml --edit --xml nothing
+--connect @SUITE@ test-for-virtxml --edit 2 --xml ./name=foo
+--connect @SUITE@ test-for-virtxml --add-device --xml ./name=foo
+--connect @SUITE@ --build-xml --xml ./name=foo
+--connect @SUITE@ --xml help
+--connect @SUITE@ test-for-virtxml --edit --metadata os_name=generic --print-diff
+--connect @SUITE@ test-for-virtxml --edit --sysinfo host --sysinfo emulate
+--connect @SUITE@ test-for-virtxml --edit --xml ./title=a --xml ./name=b --print-diff
+--connect @SUITE@ test-for-virtxml --edit --input xpath.value=foo
+--connect @SUITE@ test-for-virtxml --edit --clock timer0.name=rtc,offset=localtime --features acpi=off
+--connect @SUITE@ test-for-virtxml --edit --pm none --print-diff
+--connect @SUITE@ test-for-virtxml --edit --qemu-commandline=args=-a,env=B=c --print-diff

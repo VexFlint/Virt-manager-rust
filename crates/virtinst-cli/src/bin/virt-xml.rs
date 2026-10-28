@@ -125,11 +125,24 @@ struct Args {
     #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     graphics: Vec<String>,
 
+    /// Configure guest metadata. Ex:
+    /// --metadata name=foo,title="My pretty title",uuid=...
+    /// --metadata description="My nice long description"
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    metadata: Vec<String>,
+
     /// Configure guest memory allocation. Ex:
     /// --memory 1024 (in MiB)
     /// --memory memory=1024,currentMemory=512
     #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     memory: Vec<String>,
+
+    /// Perform raw XML XPath options on the final XML. Example:
+    /// --xml ./cpu/@mode=host-passthrough
+    /// --xml ./devices/disk[2]/serial=new-serial
+    /// --xml xpath.delete=./clock
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    xml: Vec<String>,
 
     /// Set domain <iothreads> and <iothreadids> configuration.
     #[arg(long, help_heading = "XML options")]
@@ -151,6 +164,41 @@ struct Args {
     /// --memorybacking hugepages=on
     #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     memorybacking: Vec<String>,
+
+    /// Set domain <features> XML. Ex:
+    /// --features acpi=off
+    /// --features apic=on,apic.eoi=on
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    features: Vec<String>,
+
+    /// Set domain <clock> XML. Ex:
+    /// --clock offset=localtime,rtc_tickpolicy=catchup
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    clock: Vec<String>,
+
+    /// Configure VM power management features
+    #[arg(long, help_heading = "XML options")]
+    pm: Vec<String>,
+
+    /// Configure VM lifecycle management policy
+    #[arg(long, help_heading = "XML options")]
+    events: Vec<String>,
+
+    /// Configure VM resource partitioning (cgroups)
+    #[arg(long, help_heading = "XML options")]
+    resource: Vec<String>,
+
+    /// Configure SMBIOS System Information. Ex:
+    /// --sysinfo host
+    /// --sysinfo bios.vendor=MyVendor,bios.version=1.2.3,...
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    sysinfo: Vec<String>,
+
+    /// Pass arguments directly to the QEMU emulator. Ex:
+    /// --qemu-commandline='-display gtk,gl=on'
+    /// --qemu-commandline env=DISPLAY=:0.1
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    qemu_commandline: Vec<String>,
 
     /// Configure a guest controller device. Ex:
     /// --controller type=usb,model=qemu-xhci
@@ -292,12 +340,21 @@ fn xml_options(args: &Args) -> Vec<(Change, &Vec<String>)> {
         legacy("disk", &args.disk),
         engine("network", &args.network),
         engine("graphics", &args.graphics),
+        engine("metadata", &args.metadata),
         engine("memory", &args.memory),
+        engine("xml", &args.xml),
         engine("iothreads", &args.iothreads),
         engine("numatune", &args.numatune),
         engine("memtune", &args.memtune),
         engine("blkiotune", &args.blkiotune),
         engine("memorybacking", &args.memorybacking),
+        engine("features", &args.features),
+        engine("clock", &args.clock),
+        engine("pm", &args.pm),
+        engine("events", &args.events),
+        engine("resource", &args.resource),
+        engine("sysinfo", &args.sysinfo),
+        engine("qemu_commandline", &args.qemu_commandline),
         engine("controller", &args.controller),
         engine("input", &args.input),
         engine("serial", &args.serial),

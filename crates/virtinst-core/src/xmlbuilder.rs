@@ -317,12 +317,30 @@ fn make_stub(doc: &mut Document, anchor: Element, xpath: &XPath) -> Element {
         parent
             .push_child(doc, el)
             .expect("a fresh element always attaches");
+        // `_node_new`: declare a registered namespace on the new node
+        // unless a parent already does.
+        if let Some((ns, _)) = seg.name.split_once(':') {
+            if parent.namespace_for_prefix(doc, ns).is_none() {
+                if let Some(uri) = namespace_uri(ns) {
+                    el.set_namespace_decl(doc, ns.to_string(), uri.to_string());
+                }
+            }
+        }
         if let Some((p, v)) = &seg.cond_prop {
             el.set_attribute(doc, p.clone(), v.clone());
         }
         parent = el;
     }
     parent
+}
+
+/// `XMLBuilder.register_namespace`'s registry.
+fn namespace_uri(prefix: &str) -> Option<&'static str> {
+    match prefix {
+        "qemu" => Some("http://libvirt.org/schemas/domain/qemu/1.0"),
+        "libosinfo" => Some("http://libosinfo.org/xmlns/libvirt/domain/1.0"),
+        _ => None,
+    }
 }
 
 /// `_node_remove_empty`: walk back up the xpath removing elements left
@@ -572,32 +590,35 @@ impl XmlManualAction {
         }
     }
 
-    /// `_process_args`: `(xpath, value)`, `Bool(false)` deleting and
-    /// `Bool(true)` creating.
+    /// `_process_args` plus `perform`'s checks: `(xpath, value)`,
+    /// `Bool(false)` deleting and `Bool(true)` creating. Empty strings
+    /// count as unset, like Python's truthiness.
     fn process(&self) -> Result<Option<(String, Option<Value>)>, Error> {
-        if let Some(x) = &self.xpath_delete {
-            return Ok(Some((x.clone(), Some(Value::Bool(false)))));
+        let given = |o: &Option<String>| o.clone().filter(|s| !s.is_empty());
+        if let Some(x) = given(&self.xpath_delete) {
+            return Ok(Some((x, Some(Value::Bool(false)))));
         }
-        if let Some(x) = &self.xpath_create {
-            return Ok(Some((x.clone(), Some(Value::Bool(true)))));
+        if let Some(x) = given(&self.xpath_create) {
+            return Ok(Some((x, Some(Value::Bool(true)))));
         }
-        let Some(xpath) = &self.xpath_set else {
-            return match &self.xpath_value {
-                Some(_) => Err("None: Setting xpath must be in the form of XPATH=VALUE".into()),
-                None => Ok(None),
-            };
-        };
-        let (xpath, val) = match &self.xpath_value {
-            Some(v) => (xpath.clone(), v.clone()),
-            None => match xpath.rsplit_once('=') {
-                Some((x, v)) => (x.to_string(), v.to_string()),
-                None => {
-                    return Err(format!(
-                        "{xpath}: Setting xpath must be in the form of XPATH=VALUE"
-                    ))
+        if given(&self.xpath_value).is_none() && given(&self.xpath_set).is_none() {
+            return Ok(None);
+        }
+        let (xpath, val) = match given(&self.xpath_value) {
+            Some(v) => (self.xpath_set.clone(), v),
+            None => {
+                let xpath = self.xpath_set.clone().unwrap_or_default();
+                match xpath.rsplit_once('=') {
+                    Some((x, v)) => (Some(x.to_string()), v.to_string()),
+                    None => {
+                        return Err(format!(
+                            "{xpath}: Setting xpath must be in the form of XPATH=VALUE"
+                        ))
+                    }
                 }
-            },
+            }
         };
+        let xpath = xpath.ok_or("'NoneType' object has no attribute 'startswith'")?;
         let val = (!val.is_empty()).then_some(Value::Str(val));
         Ok(Some((xpath, val)))
     }
@@ -613,6 +634,14 @@ impl XmlObject {
     pub fn new(class: &'static XmlClass) -> XmlObject {
         let mut doc = Document::new();
         let root = Element::new(&mut doc, class.xml_name);
+        if let Some(uri) = class
+            .xml_name
+            .split_once(':')
+            .and_then(|(ns, _)| namespace_uri(ns))
+        {
+            let ns = class.xml_name.split_once(':').unwrap().0;
+            root.set_namespace_decl(&mut doc, ns.to_string(), uri.to_string());
+        }
         doc.push_root_node(root).expect("a single root attaches");
         let mut obj = XmlObject {
             class,
