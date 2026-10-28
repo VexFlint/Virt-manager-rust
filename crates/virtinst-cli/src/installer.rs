@@ -758,6 +758,9 @@ mod tests {
             make_testsuite_path("/tmp/virtinst-abc-vmlinuz"),
             "/VIRTINST-TESTSUITE/vmlinuz"
         );
-        assert_eq!(make_testsuite_path("initrd.img"), "/VIRTINST-TESTSUITE/initrd.img");
+        assert_eq!(
+            make_testsuite_path("initrd.img"),
+            "/VIRTINST-TESTSUITE/initrd.img"
+        );
     }
 }
