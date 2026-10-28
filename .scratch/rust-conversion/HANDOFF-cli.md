@@ -86,6 +86,15 @@ com cpio/xorriso, `volumeupload`, `cloudinit`, `unattended`). Os scripts do
 upload usa o `_MockStream` e os caminhos viram `/VIRTINST-TESTSUITE/...`, como
 no upstream.
 
+virt-xml (#15): `--osinfo`, `--convert-to-q35`/`--convert-to-vnc`
+(`parsers/convert.rs` guarda o pedido; `guest::convert_to_q35`/`convert_to_vnc`
+rodam com a conexão) e o `--help` no formato do argparse
+(`cli::argparse_help`, gerado do clap: use `verbatim_doc_comment` senão o clap
+corta o ponto final; metavar = `value_name` ou o nome do campo em maiúsculas).
+O `--update` reaproveita os dispositivos no define (`input_devs`), como o
+upstream. Oráculo do test_cli.py: `oracle-virt-xml-upstream.txt` (160 casos;
+`STDIN=`/`INPUT=` põem arquivo ou texto na entrada).
+
 ## Falta (prioridade)
 1. GUI (ver CLAUDE.md seção 7). Casos de instalação que precisam de rede
    (http/ftp, `--install OSNAME`, drivers do Windows) ficam fora do oráculo.

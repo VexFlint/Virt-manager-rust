@@ -1,0 +1,167 @@
+# virt-xml oracle corpus: upstream's tests/test_cli.py virt-xml commands
+# (v5.1.0), one per line, shell-quoted. run.sh runs upstream's ./virt-xml
+# and ours with the same arguments from the upstream checkout
+# (HOME=/tmp DISPLAY=:3.4 VIRTINST_TEST_SUITE=1, like the test suite) and
+# compares stdout, stderr and the exit code byte for byte. STDIN=path and
+# INPUT=text put a file or text on stdin (test_cli.py's input_file and
+# input_text); other leading NAME=value words are extra environment.
+--help --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+'--sound=?' '--tpm=?' --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+--os-variant list --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-state-shutoff --edit --update --boot menu=on --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-state-shutoff --edit --boot menu=on --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+INPUT=$'no\nno\n\n' test-for-virtxml --edit --graphics password=foo --update --confirm --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+INPUT=$'no\n' test-for-virtxml --edit --cpu host-passthrough --no-define --start --confirm --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --metadata name=test-for-virtxml --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+--print-diff test-for-virtxml --remove-device --disk boot.order=5 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test --edit 2 --events on_poweroff=destroy --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test --os-variant fedora26 --edit --cpu host-passthrough --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --os-variant fedora26 --remove-device --disk 1 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+--build-xml --os-variant fedora26 --disk path=foo --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+domain-idontexist --edit --cpu host-passthrough --start --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-state-shutoff --edit --update --boot menu=on --start --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test --edit --update --events on_poweroff=destroy --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+STDIN=@UP@/tests/data/cli/virtxml/virtxml-stdin-edit.xml --edit --cpu host-passthrough --confirm --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+STDIN=@UP@/tests/data/cli/virtxml/virtxml-stdin-edit.xml --edit --cpu host-passthrough --update --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+--edit --cpu host-passthrough --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+INPUT=$'yes\n' test-state-shutoff --cpu mode=idontexist --start --edit --no-define --confirm --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test --cpu host-passthrough --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test --edit --add-device --disk path=foo --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test --edit 0 --disk path= --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test --edit --hostdev driver_name=vfio --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test --edit --cpu host-passthrough --boot hd,network --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test --edit --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test --edit 2 --cpu host-passthrough --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit 5 --tpm /dev/tpm --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+INPUT=$'yes\n' test-for-virtxml --add-device --host-device 0x04b3:0x4485 --update --confirm --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+INPUT=$'foo\nyes\n\n' test-for-virtxml --remove-device --host-device 1 --update --confirm --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+INPUT=$'yes\n' test-for-virtxml --edit --graphics password=foo,keymap= --update --confirm --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+--build-xml --memory 10,maxmemory=20 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-state-shutoff --edit sparse=no --disk path=blah --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test --add-device --xml ./@foo=bar --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --boot refresh-machine-type=yes --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test --print-xml --edit --vcpus 7 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+STDIN=@UP@/tests/data/cli/virtxml/virtxml-stdin-edit.xml --edit --cpu host-passthrough --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+STDIN=@UP@/tests/data/cli/virtxml/virtxml-refresh-machine-in.xml --connect __virtinst_test__test://@UP@/tests/data/testdriver/testdriver.xml,predictable,fakeuri=qemu:///system,caps=@UP@/tests/data/capabilities/kvm-x86_64.xml,domcaps=@UP@/tests/data/capabilities/kvm-x86_64-domcaps-latest.xml --edit --print-diff --define --boot refresh-machine-type=yes
+--build-xml --cpu pentium3,+x2apic --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+--build-xml --tpm path=/dev/tpm --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+--build-xml --blkiotune weight=100,device0.path=/dev/sdf,device.weight=200,device0.read_bytes_sec=10000,device0.write_bytes_sec=10000,device0.read_iops_sec=20000,device0.write_iops_sec=20000 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+--build-xml --idmap clearxml=no,uid.start=0,uid.target=1000,uid.count=10,gid.start=0,gid.target=1000,gid.count=10 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+--build-xml --memdev nvdimm,source.path=/path/to/nvdimm,target.size=2,target.node=0,target.label_size=1,alias.name=mymemdev3,uuid=11111111-2222-aaaa-bbbb-ccccddddeeee --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+--connect __virtinst_test__test://@UP@/tests/data/testdriver/testdriver.xml,predictable,fakeuri=qemu:///system,caps=@UP@/tests/data/capabilities/kvm-x86_64.xml,domcaps=@UP@/tests/data/capabilities/kvm-x86_64-domcaps-latest.xml --build-xml --disk /pool-dir/testvol1.img
+--connect __virtinst_test__test://@UP@/tests/data/testdriver/testdriver.xml,predictable,fakeuri=qemu:///system,caps=@UP@/tests/data/capabilities/kvm-x86_64.xml,domcaps=@UP@/tests/data/capabilities/kvm-x86_64-domcaps-latest.xml test-many-devices --build-xml --disk /pool-dir/testvol1.img
+--build-xml --sound hda,audio.id=2 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+4a64cc71-19c4-2fd0-2323-3050941ea3c3 --edit --boot network,cdrom --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+INPUT=$'yes\n' --confirm 1 --edit --cpu host-passthrough --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+STDIN=@UP@/tests/data/cli/virtxml/virtxml-qemu-commandline-clear.xml --edit --print-diff --qemu-commandline clearxml=yes --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+STDIN=@UP@/tests/data/cli/virtxml/virtxml-console-dup.xml --print-diff --remove-device --serial 1 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+--print-diff --define --connect __virtinst_test__test://@UP@/tests/data/testdriver/testdriver.xml,predictable,fakeuri=qemu:///system,caps=@UP@/tests/data/capabilities/kvm-x86_64.xml,domcaps=@UP@/tests/data/capabilities/kvm-x86_64-domcaps-latest.xml test --edit --boot uefi
+--print-diff --define --connect __virtinst_test__test://@UP@/tests/data/testdriver/testdriver.xml,predictable,fakeuri=qemu:///system,caps=@UP@/tests/data/capabilities/kvm-x86_64.xml,domcaps=@UP@/tests/data/capabilities/kvm-x86_64-domcaps-latest.xml test-alternate-devs --edit --boot uefi=off
+--print-diff --define --connect __virtinst_test__test://@UP@/tests/data/testdriver/testdriver.xml,predictable,fakeuri=qemu:///system,caps=@UP@/tests/data/capabilities/kvm-x86_64.xml,domcaps=@UP@/tests/data/capabilities/kvm-x86_64-domcaps-latest.xml test-many-devices --edit --cpu host-copy
+--connect __virtinst_test__test://@UP@/tests/data/testdriver/testdriver.xml,predictable,fakeuri=qemu:///system,caps=@UP@/tests/data/capabilities/kvm-x86_64.xml,domcaps=@UP@/tests/data/capabilities/kvm-x86_64-domcaps-latest.xml test-many-devices --build-xml --disk source.pool=pool-disk,source.volume=sdfg1
+VIRTXML_TESTSUITE_UPDATE_IGNORE_FAIL=1 VIRTINST_TEST_SUITE_INCREMENT_MACADDR=1 INPUT=$'yes\nyes\n\n' test --add-device --network default --update --confirm --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+VIRTXML_TESTSUITE_UPDATE_IGNORE_FAIL=1 INPUT=$'yes\n\n' test --add-device --network default --update --confirm --no-define --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+STDIN=@UP@/tests/data/cli/virtxml/convert-to-q35-win10-in.xml --connect __virtinst_test__test://@UP@/tests/data/testdriver/testdriver.xml,predictable,fakeuri=qemu:///system,caps=@UP@/tests/data/capabilities/kvm-x86_64.xml,domcaps=@UP@/tests/data/capabilities/kvm-x86_64-domcaps-latest.xml --print-diff --define --edit --convert-to-q35
+STDIN=@UP@/tests/data/cli/virtxml/convert-to-q35-win10-in.xml --connect __virtinst_test__test://@UP@/tests/data/testdriver/testdriver.xml,predictable,fakeuri=qemu:///system,caps=@UP@/tests/data/capabilities/kvm-x86_64.xml,domcaps=@UP@/tests/data/capabilities/kvm-x86_64-domcaps-latest.xml --print-diff --define --edit --convert-to-q35 num_pcie_root_ports=7
+--connect __virtinst_test__test://@UP@/tests/data/testdriver/testdriver.xml,predictable,fakeuri=qemu:///system,caps=@UP@/tests/data/capabilities/kvm-x86_64.xml,domcaps=@UP@/tests/data/capabilities/kvm-x86_64-domcaps-latest.xml test --print-diff --define --edit --convert-to-vnc
+--connect __virtinst_test__test://@UP@/tests/data/testdriver/testdriver.xml,predictable,fakeuri=qemu:///system,caps=@UP@/tests/data/capabilities/kvm-x86_64.xml,domcaps=@UP@/tests/data/capabilities/kvm-x86_64-domcaps-latest.xml test --print-diff --define --edit --convert-to-vnc qemu-vdagent=on
+test --print-diff --define --edit --boot emulator=/foo --boot bootmenu.enable=yes --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit --network model=foo --network model=virtio --network boot.order=7 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test --print-diff --define --add-device --sound model=ich9 --sound model=ac97 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --remove-device --network type=network --network type=bridge --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test --print-diff --define --add-device --sound model=ac97 --video model=virtio --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --remove-device --sound model=ich6 --video model=vmvga --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit --sound model=ac97 --video model=virtio --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --xml ./@foo=bar --xml xpath.delete=./currentMemory --xml ./new/element/test=1 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --metadata $'name=foo-my-new-name,os_name=fedora13,uuid=12345678-12F4-1234-1234-123456789AFA,description=hey this is my\nnew\nvery,very=new desc\\\',title=This is my,funky=new title' --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --metadata os_full_id=http://fedoraproject.org/fedora/23 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --events on_poweroff=destroy,on_reboot=restart,on_crash=preserve --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define '--qemu-commandline=-foo bar,baz="wib wob"' --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --memory 500,maxmemory=1000,hugepages=off --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --memorybacking hugepages=on,access.mode=shared,source.type=file --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --vcpus 10,maxvcpus=20,cores=5,sockets=4,threads=1,placement=auto --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --cpu model=pentium2,+x2apic,forbid=pbe --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --numatune memory.nodeset=1-5,7,memory.mode=strict,memory.placement=auto --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --blkiotune weight=500,device_path=/dev/sdf,device_weight=600 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --idmap uid_start=0,uid_target=2000,uid_count=30,gid_start=0,gid_target=3000,gid_count=40 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --boot loader=foo.bar,useserial=on,init=/bin/bash,nvram=/test/nvram.img,os_type=hvm,domain_type=test,loader.readonly=on,loader.secure=no,machine=,smbios_mode=emulate --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --seclabel label=foo,bar,baz,UNKNOWN=val,relabel=on --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --features eoi=on,hyperv_relaxed=off,acpi= --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --clock offset=localtime,hpet_present=yes,kvmclock_present=no,kvmclock_tickpolicy=foo,rtc_tickpolicy=merge --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --pm suspend_to_mem.enabled=yes,suspend_to_disk.enabled=no --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --disk /dev/zero,perms=ro,source.startupPolicy=optional --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --disk path= --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --disk xpath1.delete=./source,xpath2.set=./boot/@order,xpath2.value=6,xpath3.create=./fakeelement --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --network source=br0,type=bridge,model=virtio,mac= --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --graphics tlsport=5902,keymap=ja --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --graphics listen=none --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --controller index=15,model=lsilogic --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --controller index=15,model=lsilogic --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --smartcard type=spicevmc --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --redirdev type=spicevmc,server=example.com:12345 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --tpm backend.device.path=,backend.type=emulator,backend.version=2.0 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --vsock model=virtio,cid.address=,cid.auto=on --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --rng rate_bytes=3333,rate_period=4444,backend.source.connect_host=,backend.source.connect_service=,backend.source.host=,backend.source.service=,backend.source.bind_host=,backend.source.bind_service=,backend.source.mode=,backend.type=unix,backend.source.mode=connect,backend.source.path=/tmp/unix,backend.source.seclabel.model=dac,backend.source.seclabel.label=foo,backend.source.seclabel.relabel=yes --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --watchdog action=reset --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --memballoon model=none --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --serial pty --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --parallel unix,path=/some/other/log --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --channel null --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --console name=foo.bar.baz --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --filesystem /1/2/3,/4/5/6,mode=mapped --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --video cirrus --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --sound pcspk --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --edit --print-diff --define --host-device 0x04b3:0x4485,driver_name=vfio,type=usb --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit target=vvv --disk /dev/null --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit seclabel2.model=dac --disk /dev/null --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit 3 --sound pcspk --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit -1 --video qxl --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit all --host-device driver.name=vfio --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit ich6 --sound pcspk --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit target=hda --disk /dev/null --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit /tmp/foobar2 --disk shareable=off,readonly=on --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit mac=00:11:7f:33:44:55 --network target=nic55 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit target=hda --disk boot_order=1 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit path=/dev/null --disk path=,target=fdb,boot_order=12 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit --memballoon none --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit address.devno=0x0002 --hostdev address.devno=0x0008 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-state-shutoff --print-diff --start --define --edit target=vda --disk boot_order=1 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-state-shutoff --print-diff --start --define --no-define --edit target=vda --disk boot_order=1 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-state-shutoff --print-diff --start --edit target=vda --disk boot_order=1 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-state-shutoff --print-diff --start --no-define --edit target=vda --disk boot_order=1 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-collide --print-diff --define --edit target=hda --disk boot_order=1 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit --memory 200,clearxml=yes --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit --disk path=/foo/bar,size=2,target=fda,bus=fdc,device=floppy,clearxml=yes --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit --cpu host-passthrough,clearxml=yes --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit --clock offset=utc,clearxml=yes --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit --video clearxml=yes,model=virtio,accel3d=yes --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --edit --graphics clearxml=yes,type=spice,gl=on,listen=none --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --add-device --seclabel model=dac --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --add-device --host-device usb_device_483_2016_noserial --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --add-device --sound pcspk --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --add-device --audio type=none,id=1 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --add-device --disk /pool-dir/testvol1.img,bus=virtio,target=vdf --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --add-device --disk /pool-dir/testvol1.img --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --add-device --disk /pool-dir/new1.img,size=.01 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --add-device --disk size=.01 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --remove-device --sound ich6 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --remove-device --disk 3 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --remove-device --disk /dev/null --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --remove-device --video all --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --remove-device --host-device 0x04b3:0x4485 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --remove-device --memballoon all --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --add-device --hostdev mdev_8e37ee90_2b51_45e3_9b25_bf8283c03110 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-for-virtxml --print-diff --define --remove-device --hostdev mdev_b1ae8bf6_38b0_4c81_9d44_78ce3f520496 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-spice --print-diff --define --edit --graphics type=vnc --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-spice --print-diff --define --remove-device --graphics type=spice --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-state-shutoff --print-diff --start --add-device --pm suspend_to_disk=yes --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-state-shutoff --print-diff --start --remove-device --clock utc --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-state-shutoff --print-diff --start --define --add-device --host-device usb_device_4b3_4485_noserial --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-state-shutoff --print-diff --start --add-device --disk /pool-dir/testvol1.img,bus=virtio,target=vdf --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-state-shutoff --print-diff --start --add-device --disk /pool-dir/new1.img,size=.01 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-state-shutoff --print-diff --start --remove-device --disk /dev/null --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+test-state-shutoff --print-diff --start --add-device --hostdev mdev_8e37ee90_2b51_45e3_9b25_bf8283c03110 --connect __virtinst_test__test://@UP@/tests/data/testdriver/testsuite.xml,predictable
+--connect __virtinst_test__test://@UP@/tests/data/testdriver/testdriver.xml,predictable,fakeuri=qemu:///system,caps=@UP@/tests/data/capabilities/kvm-x86_64.xml,domcaps=@UP@/tests/data/capabilities/kvm-x86_64-domcaps-latest.xml test --print-diff --define --add-device --disk /pool-dir/testvol1.img
+--connect __virtinst_test__test://@UP@/tests/data/testdriver/testdriver.xml,predictable,fakeuri=qemu:///system,caps=@UP@/tests/data/capabilities/kvm-x86_64.xml,domcaps=@UP@/tests/data/capabilities/kvm-x86_64-domcaps-latest.xml test --print-diff --define --add-device --disk /pool-dir/testvol1.img --os-variant fedora28
+--connect __virtinst_test__test://@UP@/tests/data/testdriver/testdriver.xml,predictable,fakeuri=qemu:///system,caps=@UP@/tests/data/capabilities/kvm-x86_64.xml,domcaps=@UP@/tests/data/capabilities/kvm-x86_64-domcaps-latest.xml test --print-diff --define --add-device --network default
+--connect __virtinst_test__test://@UP@/tests/data/testdriver/testdriver.xml,predictable,fakeuri=qemu:///system,caps=@UP@/tests/data/capabilities/kvm-x86_64.xml,domcaps=@UP@/tests/data/capabilities/kvm-x86_64-domcaps-latest.xml test --print-diff --define --add-device --network default --os-variant http://fedoraproject.org/fedora/28

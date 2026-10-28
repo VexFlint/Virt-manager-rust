@@ -5,7 +5,8 @@
 //! or only print the result (`--print-diff`, `--print-xml`).
 //!
 //! Every XML option goes through its ported `VirtCLIParser`
-//! (`virtinst_cli::parsers`).
+//! (`virtinst_cli::parsers`), the conversions (`--convert-to-q35`,
+//! `--convert-to-vnc`) too.
 
 use std::io::{BufRead, IsTerminal, Write};
 
@@ -18,6 +19,7 @@ use virtinst_cli::parser::{
     run_parser, ParserDef,
 };
 use virtinst_cli::parsers;
+use virtinst_cli::parsers::convert::Convert;
 use virtinst_cli::xmlutil;
 use virtinst_core::capabilities::caps::Capabilities;
 use virtinst_core::connection::Connection;
@@ -71,7 +73,7 @@ struct Args {
     add_device: bool,
 
     /// Output built device XML. Domain is optional but recommended to ensure optimal defaults.
-    #[arg(long, help_heading = "XML actions")]
+    #[arg(long, help_heading = "XML actions", verbatim_doc_comment)]
     build_xml: bool,
 
     /// Apply changes to the running VM.
@@ -82,15 +84,20 @@ struct Args {
     update: bool,
 
     /// Force defining the domain. Only required if a --print option was specified.
-    #[arg(long, help_heading = "Output options", conflicts_with = "no_define")]
+    #[arg(
+        long,
+        help_heading = "Output options",
+        conflicts_with = "no_define",
+        verbatim_doc_comment
+    )]
     define: bool,
 
     /// Force not defining the domain.
-    #[arg(long, help_heading = "Output options")]
+    #[arg(long, help_heading = "Output options", verbatim_doc_comment)]
     no_define: bool,
 
     /// Start the domain.
-    #[arg(long, help_heading = "Output options")]
+    #[arg(long, help_heading = "Output options", verbatim_doc_comment)]
     start: bool,
 
     /// Only print the requested change, in diff format
@@ -102,11 +109,46 @@ struct Args {
     print_xml: bool,
 
     /// Require confirmation before saving any results.
-    #[arg(long, help_heading = "Output options")]
+    #[arg(long, help_heading = "Output options", verbatim_doc_comment)]
     confirm: bool,
 
-    /// Configure a guest disk device.
-    #[arg(long, help_heading = "XML options")]
+    /// The OS installed in the guest.
+    /// This is used for deciding optimal defaults like VirtIO.
+    /// Example values: fedora29, rhel7.0, win10, ...
+    /// Use '--osinfo list' to see a full list.
+    #[arg(
+        long,
+        visible_alias = "os-variant",
+        help_heading = "OS options",
+        verbatim_doc_comment
+    )]
+    osinfo: Option<String>,
+
+    /// Convert an existing VM from PC/i440FX to Q35.
+    #[arg(
+        long,
+        num_args = 0..=1,
+        help_heading = "Conversion options",
+        verbatim_doc_comment
+    )]
+    convert_to_q35: Option<Option<String>>,
+
+    /// Convert an existing VM to use VNC graphics. This removes any remnants of Spice graphics.
+    #[arg(
+        long,
+        num_args = 0..=1,
+        help_heading = "Conversion options",
+        verbatim_doc_comment
+    )]
+    convert_to_vnc: Option<Option<String>>,
+
+    /// Specify storage with various options. Ex.
+    /// --disk size=10 (new 10GiB image in default location)
+    /// --disk /my/existing/disk,cache=none
+    /// --disk device=cdrom,bus=scsi
+    /// --disk=?
+    /// --disk cache=  (unset cache)
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     disk: Vec<String>,
 
     /// Configure a guest network interface. Ex:
@@ -159,31 +201,36 @@ struct Args {
     xml: Vec<String>,
 
     /// Set domain <iothreads> and <iothreadids> configuration.
-    #[arg(long, help_heading = "XML options")]
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     iothreads: Vec<String>,
 
     /// Set domain seclabel configuration.
-    #[arg(long, alias = "security", help_heading = "XML options")]
+    #[arg(
+        long,
+        visible_alias = "security",
+        help_heading = "XML options",
+        verbatim_doc_comment
+    )]
     seclabel: Vec<String>,
 
     /// Set guest to perform the S390 cryptographic key management operations.
-    #[arg(long, help_heading = "XML options")]
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     keywrap: Vec<String>,
 
     /// Tune CPU parameters for the domain process.
-    #[arg(long, help_heading = "XML options")]
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     cputune: Vec<String>,
 
     /// Tune NUMA policy for the domain process.
-    #[arg(long, help_heading = "XML options")]
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     numatune: Vec<String>,
 
     /// Tune memory policy for the domain process.
-    #[arg(long, help_heading = "XML options")]
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     memtune: Vec<String>,
 
     /// Tune blkio policy for the domain process.
-    #[arg(long, help_heading = "XML options")]
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     blkiotune: Vec<String>,
 
     /// Set memory backing policy for the domain process. Ex:
@@ -203,15 +250,15 @@ struct Args {
     clock: Vec<String>,
 
     /// Configure VM power management features
-    #[arg(long, help_heading = "XML options")]
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     pm: Vec<String>,
 
     /// Configure VM lifecycle management policy
-    #[arg(long, help_heading = "XML options")]
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     events: Vec<String>,
 
     /// Configure VM resource partitioning (cgroups)
-    #[arg(long, help_heading = "XML options")]
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     resource: Vec<String>,
 
     /// Configure SMBIOS System Information. Ex:
@@ -223,14 +270,19 @@ struct Args {
     /// Pass arguments directly to the QEMU emulator. Ex:
     /// --qemu-commandline='-display gtk,gl=on'
     /// --qemu-commandline env=DISPLAY=:0.1
-    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    #[arg(
+        long = "qemu-commandline",
+        help_heading = "XML options",
+        verbatim_doc_comment
+    )]
     qemu_commandline: Vec<String>,
 
     /// Configure VM launch security (e.g. SEV memory encryption). Ex:
     /// --launchSecurity sev
     #[arg(
         long = "launchSecurity",
-        alias = "launchsecurity",
+        value_name = "LAUNCHSECURITY",
+        visible_alias = "launchsecurity",
         help_heading = "XML options",
         verbatim_doc_comment
     )]
@@ -260,68 +312,83 @@ struct Args {
     input: Vec<String>,
 
     /// Configure a guest serial device
-    #[arg(long, help_heading = "XML options")]
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     serial: Vec<String>,
 
     /// Configure a guest parallel device
-    #[arg(long, help_heading = "XML options")]
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     parallel: Vec<String>,
 
     /// Configure a guest communication channel
-    #[arg(long, help_heading = "XML options")]
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     channel: Vec<String>,
 
     /// Configure a text console connection between the guest and host
-    #[arg(long, help_heading = "XML options")]
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     console: Vec<String>,
 
     /// Configure physical USB/PCI/etc host devices to be shared with the guest
-    #[arg(long, alias = "host-device", help_heading = "XML options")]
+    #[arg(
+        long,
+        alias = "host-device",
+        help_heading = "XML options",
+        verbatim_doc_comment
+    )]
     hostdev: Vec<String>,
 
-    /// Configure a guest filesystem device.
-    #[arg(long, help_heading = "XML options")]
+    #[arg(
+        long,
+        help_heading = "XML options",
+        help = "Pass host directory to the guest. Ex: \n\
+                --filesystem /my/source/dir,/dir/in/guest\n\
+                --filesystem template_name,/,type=template"
+    )]
     filesystem: Vec<String>,
 
-    /// Configure a guest smartcard device.
-    #[arg(long, help_heading = "XML options")]
-    smartcard: Vec<String>,
-
-    /// Configure a guest TPM device.
-    #[arg(long, help_heading = "XML options")]
-    tpm: Vec<String>,
-
     /// Configure guest sound device emulation
-    #[arg(long, help_heading = "XML options")]
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     sound: Vec<String>,
 
     /// Configure host audio backend for sound devices
-    #[arg(long, help_heading = "XML options")]
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     audio: Vec<String>,
 
+    /// Configure a guest watchdog device
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    watchdog: Vec<String>,
+
     /// Configure guest video hardware.
-    #[arg(long, help_heading = "XML options")]
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     video: Vec<String>,
 
-    /// Configure a guest redirection device.
-    #[arg(long, help_heading = "XML options")]
+    /// Configure a guest smartcard device. Ex:
+    /// --smartcard mode=passthrough
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    smartcard: Vec<String>,
+
+    /// Configure a guest redirection device. Ex:
+    /// --redirdev usb,type=tcp,server=192.168.1.1:4000
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     redirdev: Vec<String>,
+
+    /// Configure a guest memballoon device. Ex:
+    /// --memballoon model=virtio
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    memballoon: Vec<String>,
+
+    /// Configure a guest TPM device. Ex:
+    /// --tpm /dev/tpm
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    tpm: Vec<String>,
 
     /// Configure a guest RNG device. Ex:
     /// --rng /dev/urandom
     #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     rng: Vec<String>,
 
-    /// Configure a guest watchdog device.
-    #[arg(long, help_heading = "XML options")]
-    watchdog: Vec<String>,
-
-    /// Configure a guest memballoon device.
-    #[arg(long, help_heading = "XML options")]
-    memballoon: Vec<String>,
-
-    /// Configure a guest panic device.
-    #[arg(long, help_heading = "XML options")]
+    /// Configure a guest panic device. Ex:
+    /// --panic default
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     panic: Vec<String>,
 
     /// Configure a guest shared memory device. Ex:
@@ -334,8 +401,10 @@ struct Args {
     #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     memdev: Vec<String>,
 
-    /// Configure guest vsock sockets.
-    #[arg(long, help_heading = "XML options")]
+    /// Configure guest vsock sockets. Ex:
+    /// --vsock cid.auto=yes
+    /// --vsock cid.address=7
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     vsock: Vec<String>,
 
     /// Configure an IOMMU device. Ex:
@@ -358,10 +427,21 @@ struct Args {
     debug: bool,
 }
 
-/// Upstream's `VIRT_PARSERS` order for the options this binary has.
-fn xml_options(args: &Args) -> Vec<(&'static ParserDef, &Vec<String>)> {
-    let engine = |name: &str, v| (parsers::by_name(name).expect("ported parser"), v);
+/// Upstream's `VIRT_PARSERS` order for the options this binary has:
+/// the conversions register first, in `parse_args`.
+fn xml_options(args: &Args) -> Vec<(&'static ParserDef, Vec<String>)> {
+    let engine =
+        |name: &str, v: &Vec<String>| (parsers::by_name(name).expect("ported parser"), v.clone());
+    // `nargs="?"` with `const=OPTSTR_EMPTY`: a bare flag parses as "".
+    let convert = |def, v: &Option<Option<String>>| {
+        (
+            def,
+            v.iter().map(|o| o.clone().unwrap_or_default()).collect(),
+        )
+    };
     vec![
+        convert(parsers::convert::convert_to_q35(), &args.convert_to_q35),
+        convert(parsers::convert::convert_to_vnc(), &args.convert_to_vnc),
         engine("disk", &args.disk),
         engine("network", &args.network),
         engine("graphics", &args.graphics),
@@ -443,7 +523,7 @@ struct Action {
 
 /// `check_xmlopt_collision`.
 fn check_xmlopt_collision(args: &Args) -> (&'static ParserDef, Vec<String>) {
-    let collisions: Vec<(&'static ParserDef, &Vec<String>)> = xml_options(args)
+    let collisions: Vec<(&'static ParserDef, Vec<String>)> = xml_options(args)
         .into_iter()
         .filter(|(_, v)| !v.is_empty())
         .collect();
@@ -460,8 +540,7 @@ fn check_xmlopt_collision(args: &Args) -> (&'static ParserDef, Vec<String>) {
             names.join(", ")
         ));
     }
-    let (change, values) = collisions.into_iter().next().unwrap();
-    (change, values.clone())
+    collisions.into_iter().next().unwrap()
 }
 
 /// `check_action_collision`.
@@ -494,6 +573,16 @@ fn check_action_collision(args: &Args) -> (ActionName, Option<String>) {
 
 /// `validate_action`.
 fn validate_action(action: &Action, args: &Args) {
+    if args.osinfo.is_some() {
+        match action.name {
+            ActionName::Edit => fail("--osinfo/--os-variant is not supported with --edit"),
+            ActionName::RemoveDevice => {
+                fail("--osinfo/--os-variant is not supported with --remove-device")
+            }
+            ActionName::BuildXml => fail("--osinfo/--os-variant is not supported with --build-xml"),
+            ActionName::AddDevice => {}
+        }
+    }
     let def = action.change;
     if def.guest_propname.is_none() && action.name == ActionName::BuildXml {
         fail(format!(
@@ -579,8 +668,84 @@ fn read_dev_xml(devs: &mut [TouchedDev], guest: &mut XmlObject) {
 
 /// `_find_objects_to_edit` + `run_parser` for each, and the other
 /// actions, on `guest`.
-fn perform_action(action: &Action, guest: &mut XmlObject, conn: &Connection) -> Vec<TouchedDev> {
-    perform_engine(action, action.change, guest, conn)
+fn perform_action(
+    action: &Action,
+    guest: &mut XmlObject,
+    osinfo: Option<&str>,
+    input_devs: Option<Vec<TouchedDev>>,
+    conn: &Connection,
+) -> Vec<TouchedDev> {
+    if action.name != ActionName::AddDevice {
+        return perform_engine(action, action.change, guest, conn);
+    }
+    // `action_add_device`
+    set_osinfo(guest, osinfo);
+    let Some(input_devs) = input_devs else {
+        return perform_engine(action, action.change, guest, conn);
+    };
+    // The devices just hotplugged go into the inactive XML as they are.
+    let def = action.change;
+    input_devs
+        .into_iter()
+        .map(|dev| {
+            add_input_dev(guest, def, &dev.xml);
+            TouchedDev {
+                xml: String::new(),
+                pending: Some((def, lookup_prop(guest, def).len() - 1)),
+                vol_install: dev.vol_install,
+            }
+        })
+        .collect()
+}
+
+/// `guest.add_device(dev)` for a device given as XML.
+fn add_input_dev(guest: &mut XmlObject, def: &ParserDef, xml: &str) {
+    let class = def.class.expect("a device parser");
+    let obj = XmlObject::parse(class, xml).unwrap_or_else(|e| fail(e));
+    let propname = def.guest_propname.expect("a device parser");
+    let mut parent = guest;
+    if let Some((parents, _)) = propname.rsplit_once('.') {
+        for name in parents.split('.') {
+            parent = parent.child_mut(name);
+        }
+    }
+    parent.add_child(obj);
+}
+
+/// `dev.get_xml()` of a device in a domain's `<devices>`: indented as
+/// in the document.
+fn indent_device_xml(xml: &str) -> String {
+    if xml.starts_with(' ') {
+        return xml.to_string();
+    }
+    let mut ret: String = xml
+        .lines()
+        .map(|l| {
+            if l.is_empty() {
+                String::new()
+            } else {
+                format!("    {l}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if xml.ends_with('\n') {
+        ret.push('\n');
+    }
+    ret
+}
+
+/// `set_osinfo`.
+fn set_osinfo(guest: &mut XmlObject, osinfo: Option<&str>) {
+    let Some(osinfo) = osinfo else {
+        return;
+    };
+    let osdata = cli::parse_osinfo(Some(osinfo));
+    if let Some(name) = osdata.name {
+        guest::set_os_name(guest, &name).unwrap_or_else(|e| fail(e));
+        // The new device's defaults read the OS from the XML.
+        guest.sync();
+    }
 }
 
 fn perform_engine(
@@ -612,6 +777,19 @@ fn perform_engine(
             }
             for optstr in &action.values {
                 parse_guest_edit(def, guest, optstr).unwrap_or_else(|e| fail(e));
+                for convert in parsers::convert::take_pending() {
+                    let res = match convert {
+                        Convert::Q35 {
+                            num_pcie_root_ports,
+                        } => guest::convert_to_q35(guest, num_pcie_root_ports.as_deref()),
+                        Convert::Vnc { qemu_vdagent } => {
+                            guest::convert_to_vnc(guest, qemu_vdagent, conn)
+                        }
+                    };
+                    res.unwrap_or_else(|e| {
+                        fail(format!("Error: {} {optstr}: {e}", def.cli_flag_name()))
+                    });
+                }
             }
             vec![]
         }
@@ -723,11 +901,18 @@ fn prepare_changes(
     orig: &XmlObject,
     args: &Args,
     action: &Action,
+    input_devs: Option<Vec<TouchedDev>>,
     conn: &Connection,
 ) -> (Vec<TouchedDev>, XmlObject) {
     let origxml = orig.get_document_xml();
     let mut xmlobj = XmlObject::parse(&GUEST, &origxml).unwrap_or_else(|e| fail(e));
-    let mut devs = perform_action(action, &mut xmlobj, conn);
+    let mut devs = perform_action(
+        action,
+        &mut xmlobj,
+        args.osinfo.as_deref(),
+        input_devs,
+        conn,
+    );
     let newxml = xmlobj.get_document_xml();
     read_dev_xml(&mut devs, &mut xmlobj);
     let diff = xmlutil::diff(&origxml, &newxml, "Original XML", "Altered XML");
@@ -783,7 +968,8 @@ fn update_changes(
     };
     let name = domain.get_name().unwrap_or_default();
     for dev in devs {
-        if confirm && !prompt_yes_or_no(&format!("{}\n\n{confirm_msg} '{name}'?", dev.xml)) {
+        let shown = indent_device_xml(&dev.xml);
+        if confirm && !prompt_yes_or_no(&format!("{shown}\n\n{confirm_msg} '{name}'?")) {
             continue;
         }
         if action.name == ActionName::AddDevice {
@@ -818,7 +1004,7 @@ fn defined_xml_is_unchanged(domain: &Domain, original_xml: &str) -> bool {
 
 fn main() {
     cli::handle_version_flag();
-    let mut args = Args::parse();
+    let mut args: Args = cli::argparse_parse("virt-xml", "[options]");
 
     let quiet =
         args.quiet && !(args.confirm || args.print_xml || args.print_diff || args.build_xml);
@@ -833,6 +1019,9 @@ fn main() {
         }
     }
     if introspected {
+        return;
+    }
+    if cli::check_osinfo_list(args.osinfo.as_deref()) {
         return;
     }
 
@@ -866,7 +1055,7 @@ fn main() {
         None
     };
     if !args.print_xml && !args.print_diff {
-        if stdinxml.is_some() {
+        if stdinxml.as_deref().is_some_and(|x| !x.is_empty()) {
             if define != Some(true) {
                 args.print_xml = true;
             }
@@ -944,6 +1133,7 @@ fn main() {
         return;
     }
 
+    let mut input_devs = None;
     let mut performed_update = false;
     if args.update {
         if args.start {
@@ -951,8 +1141,9 @@ fn main() {
         }
         match (&active, &domain) {
             (Some(active), Some(domain)) => {
-                let (devs, _) = prepare_changes(active, &args, &action, &conn);
+                let (devs, _) = prepare_changes(active, &args, &action, None, &conn);
                 update_changes(domain, &devs, &action, args.confirm, &conn);
+                input_devs = Some(devs);
                 performed_update = true;
             }
             _ => log::warn!("The VM is not running, --update is inapplicable."),
@@ -964,7 +1155,7 @@ fn main() {
     }
 
     let original_xml = inactive.get_document_xml();
-    let (devs, xmlobj) = prepare_changes(&inactive, &args, &action, &conn);
+    let (devs, xmlobj) = prepare_changes(&inactive, &args, &action, input_devs, &conn);
     let name = guest_name(&xmlobj);
     if !define {
         if args.start {

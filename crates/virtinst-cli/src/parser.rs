@@ -405,6 +405,9 @@ pub struct ParserDef {
     pub is_xml_action: bool,
     /// The class of a new object, for list `guest_propname`s.
     pub class: Option<&'static XmlClass>,
+    /// A parser with its own `parse` (`ParserConvertToQ35`): an empty
+    /// or `none` option string is parsed too.
+    pub parse_empty: bool,
 }
 
 impl ParserDef {
@@ -429,6 +432,7 @@ impl ParserDef {
             inst_pre_parse: None,
             is_xml_action: false,
             class,
+            parse_empty: false,
         };
         def.args
             .push(ArgDef::cb_only("clearxml", clearxml_cb).onoff().no_lookup());
@@ -1379,7 +1383,7 @@ fn parse_guest(
     optstr: &str,
     editing: bool,
 ) -> Result<(), Error> {
-    if optstr.is_empty() || (def.stub_none && optstr == "none") {
+    if !def.parse_empty && (optstr.is_empty() || (def.stub_none && optstr == "none")) {
         return Ok(());
     }
     let mut stand_in = XmlObject::new(&EMPTY);
