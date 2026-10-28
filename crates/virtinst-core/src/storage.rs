@@ -215,6 +215,31 @@ pub fn lookup_default_pool(conn: &Connect, is_session: bool) -> Option<Pool> {
     pools.into_iter().nth(idx)
 }
 
+/// `StoragePool.build_default_pool`: the default pool, defined (and
+/// built, started, autostarted) at the preferred path when missing.
+pub fn build_default_pool(conn: &Connect, is_session: bool) -> Result<Pool, String> {
+    if let Some(pool) = lookup_default_pool(conn, is_session) {
+        return Ok(pool);
+    }
+    let path = preferred_default_pool_path(is_session);
+    log::debug!("Attempting to build default pool with target '{path}'");
+    let defpool = NewPool {
+        name: "default".into(),
+        pool_type: "dir".into(),
+        target_path: Some(path.clone()),
+        ..Default::default()
+    };
+    defpool
+        .install(conn, true)
+        .and_then(|()| {
+            fetch_all_pools(conn)
+                .into_iter()
+                .find(|p| p.xml.name == "default")
+                .ok_or_else(|| "pool 'default' not found".to_string())
+        })
+        .map_err(|e| format!("Couldn't create default storage pool '{path}': {e}"))
+}
+
 /// `StoragePool.lookup_pool_by_path`.
 pub fn lookup_pool_by_path(conn: &Connect, path: &str) -> Option<Pool> {
     fetch_all_pools(conn)
@@ -531,7 +556,10 @@ impl VolInstall {
         if vol.format.is_none() && vol.supports_format() {
             vol.format = Some("raw".into());
         }
-        if pool.pool_type == "logical" {
+        if pool.pool_type == "logical" && vol.allocation != vol.capacity {
+            log::warn!(
+                "Sparse logical volumes are not supported, setting allocation equal to capacity"
+            );
             vol.allocation = vol.capacity;
         }
         Ok(vol)
@@ -592,7 +620,7 @@ impl VolInstall {
             ));
         }
         if self.capacity > avail {
-            eprintln!(
+            log::warn!(
                 "The requested volume capacity will exceed the available pool space when \
                  the volume is fully allocated. ({} M requested capacity > {} M available)",
                 self.capacity / MIB,
@@ -631,11 +659,14 @@ impl VolInstall {
             vol.backing_format = vol.detect_backing_store_format(conn);
         }
         let pool = StoragePool::lookup_by_name(conn, &self.pool_name).map_err(|e| e.to_string())?;
-        let flags = if vol.format.as_deref() == Some("qcow2") && vol.backing_store.is_none() {
-            sys::VIR_STORAGE_VOL_CREATE_PREALLOC_METADATA
-        } else {
-            0
-        };
+        // `is_really_test`: the test driver takes no flags.
+        let is_test = conn.get_uri().is_ok_and(|u| u.starts_with("test:"));
+        let flags =
+            if !is_test && vol.format.as_deref() == Some("qcow2") && vol.backing_store.is_none() {
+                sys::VIR_STORAGE_VOL_CREATE_PREALLOC_METADATA
+            } else {
+                0
+            };
         StorageVol::create_xml(&pool, &vol.to_xml(), flags)
             .map_err(|e| format!("Couldn't create storage volume '{}': '{e}'", self.name))
     }

@@ -20,6 +20,7 @@ use virtinst_cli::parsers;
 use virtinst_cli::xmlutil;
 use virtinst_core::connection::Connection;
 use virtinst_core::guest::GUEST;
+use virtinst_core::storage::VolInstall;
 use virtinst_core::xmlbuilder::XmlObject;
 
 #[derive(Parser)]
@@ -516,6 +517,8 @@ struct TouchedDev {
     /// only after the guest's: like upstream, pending sets are written
     /// once, by the guest's `get_xml`.
     pending: Option<(&'static ParserDef, usize)>,
+    /// A new disk's storage to create (`build_storage`).
+    vol_install: Option<VolInstall>,
 }
 
 /// Fill in the XML of the devices still in `guest`.
@@ -542,10 +545,12 @@ fn perform_engine(
     let dev_xml = |guest: &mut XmlObject, idx: usize| TouchedDev {
         xml: lookup_prop(guest, def)[idx].get_xml(),
         pending: None,
+        vol_install: None,
     };
     let pending = |idx: usize| TouchedDev {
         xml: String::new(),
         pending: Some((def, idx)),
+        vol_install: None,
     };
     match action.name {
         ActionName::Edit if def.guest_propname.is_none() => {
@@ -590,7 +595,11 @@ fn perform_engine(
             for optstr in &action.values {
                 for idx in parse_new(def, guest, optstr).unwrap_or_else(|e| fail(e)) {
                     parsers::set_defaults(def, guest, idx, Some(conn)).unwrap_or_else(|e| fail(e));
-                    devs.push(pending(idx));
+                    let mut dev = pending(idx);
+                    if def.cli_arg_name == "disk" {
+                        dev.vol_install = parsers::disk::vol_install();
+                    }
+                    devs.push(dev);
                 }
             }
             devs
@@ -676,8 +685,22 @@ fn prepare_changes(
     (devs, xmlobj)
 }
 
+/// `setup_device`: a new disk's `build_storage`.
+fn setup_device(dev: &TouchedDev, conn: &Connection) {
+    if let Some(vi) = &dev.vol_install {
+        log::debug!("Doing setup for disk={}", dev.xml.trim_end());
+        parsers::disk::build_storage(vi, conn.as_connect()).unwrap_or_else(|e| fail(e));
+    }
+}
+
 /// `update_changes`: hotplug, hotunplug or update each device.
-fn update_changes(domain: &Domain, devs: &[TouchedDev], action: &Action, confirm: bool) {
+fn update_changes(
+    domain: &Domain,
+    devs: &[TouchedDev],
+    action: &Action,
+    confirm: bool,
+    conn: &Connection,
+) {
     let (confirm_msg, success, failure) = match action.name {
         ActionName::AddDevice => (
             "Hotplug this device to the guest",
@@ -700,6 +723,9 @@ fn update_changes(domain: &Domain, devs: &[TouchedDev], action: &Action, confirm
     for dev in devs {
         if confirm && !prompt_yes_or_no(&format!("{}\n\n{confirm_msg} '{name}'?", dev.xml)) {
             continue;
+        }
+        if action.name == ActionName::AddDevice {
+            setup_device(dev, conn);
         }
         let flags = virt::sys::VIR_DOMAIN_AFFECT_LIVE;
         let res = match action.name {
@@ -886,7 +912,7 @@ fn main() {
         match (&active, &domain) {
             (Some(active), Some(domain)) => {
                 let (devs, _) = prepare_changes(active, &args, &action, &conn);
-                update_changes(domain, &devs, &action, args.confirm);
+                update_changes(domain, &devs, &action, args.confirm, &conn);
                 performed_update = true;
             }
             _ => log::warn!("The VM is not running, --update is inapplicable."),
@@ -898,12 +924,15 @@ fn main() {
     }
 
     let original_xml = inactive.get_document_xml();
-    let (_devs, xmlobj) = prepare_changes(&inactive, &args, &action, &conn);
+    let (devs, xmlobj) = prepare_changes(&inactive, &args, &action, &conn);
     let name = guest_name(&xmlobj);
     if !define {
         if args.start {
             if args.confirm && !prompt_yes_or_no(&format!("Start '{name}' with the changed XML?")) {
                 return;
+            }
+            if action.name == ActionName::AddDevice {
+                devs.iter().for_each(|d| setup_device(d, &conn));
             }
             match Domain::create_xml(conn.as_connect(), &xmlobj.get_document_xml(), 0) {
                 Ok(_) => print_stdout(&format!("Domain '{name}' started successfully."), false),
@@ -916,6 +945,9 @@ fn main() {
     // `define_changes`
     if args.confirm && !prompt_yes_or_no(&format!("Define '{name}' with the changed XML?")) {
         return;
+    }
+    if action.name == ActionName::AddDevice {
+        devs.iter().for_each(|d| setup_device(d, &conn));
     }
     let dom = Domain::define_xml(conn.as_connect(), &xmlobj.get_document_xml())
         .unwrap_or_else(|e| fail(e.message()));

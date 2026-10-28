@@ -1,8 +1,4 @@
 //! `--disk` (`ParserDisk`).
-//!
-//! Storage creation (`size=`, `pool=`, `format=`, `backing_store=`, and
-//! new paths that don't exist yet) is not ported yet: those options
-//! fail explicitly instead of defining a guest whose disk is missing.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -10,6 +6,7 @@ use std::sync::OnceLock;
 
 use virtinst_core::devices::disk as dd;
 use virtinst_core::diskbackend::StorageBackend;
+use virtinst_core::storage::{self, VolInstall};
 use virtinst_core::xmlbuilder::{Value, XmlObject};
 
 use super::charsrc::add_device_seclabel_args;
@@ -18,7 +15,46 @@ use crate::parser::{
     Error, ParseCtx, ParserDef,
 };
 
-const STORAGE_NOT_PORTED: &str = "Storage creation for --disk is not implemented yet";
+/// `_get_default_image_format`: qcow2 (`conn_default_qcow2`) for a
+/// pool that makes files.
+fn default_image_format(pool: &storage::PoolXml) -> Option<String> {
+    if pool.get_disk_type() != "file" {
+        return None;
+    }
+    // `_default_image_file_format`
+    Some(
+        if conn_support().default_qcow2 {
+            "qcow2"
+        } else {
+            "raw"
+        }
+        .into(),
+    )
+}
+
+/// `_generate_new_volume_name`: the guest's name (or `disk`) with the
+/// format's extension, free in the pool and among the guest's disks.
+fn generate_new_volume_name(
+    guest: &XmlObject,
+    pool: Option<&storage::Pool>,
+    fmt: Option<&str>,
+) -> Result<String, Error> {
+    let ext = storage::file_extension_for_format(fmt);
+    let base = guest
+        .get_str("name")
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "disk".into());
+    let Some(pool) = pool else {
+        return Ok(format!("{base}{ext}"));
+    };
+    let collide: Vec<String> = guest
+        .child("devices")
+        .children("disk")
+        .iter()
+        .filter_map(dd::xmlpath)
+        .collect();
+    storage::find_free_name(pool, &base, &ext, &collide)
+}
 
 fn noset_cb(
     _ctx: &mut ParseCtx,
@@ -48,6 +84,24 @@ pub fn backend() -> Option<Rc<StorageBackend>> {
 
 fn set_backend(b: Option<StorageBackend>) {
     BACKEND.with(|cur| *cur.borrow_mut() = b.map(Rc::new));
+}
+
+/// The volume the last parsed `--disk` will create.
+pub fn vol_install() -> Option<VolInstall> {
+    backend().and_then(|b| b.vol_install().cloned())
+}
+
+/// `DeviceDisk.build_storage`: create the volume, with the
+/// `Allocating '...'` meter.
+pub fn build_storage(vi: &VolInstall, conn: &virt::connect::Connect) -> Result<(), Error> {
+    use virtinst_core::progress::Meter;
+    let mut meter = crate::cli::get_meter();
+    meter.start(&format!("Allocating '{}'", vi.name), Some(vi.capacity));
+    vi.install(conn)?;
+    meter.update(vi.capacity);
+    meter.end();
+    log::debug!("Storage volume '{}' install complete.", vi.name);
+    Ok(())
 }
 
 /// `get_source_path()`. A stub knows the path the disk was parsed
@@ -177,10 +231,11 @@ fn disk_parse(ctx: &mut ParseCtx) -> Result<Option<Vec<XmlObject>>, Error> {
 fn disk_post_parse(ctx: &mut ParseCtx, inst: &mut XmlObject) -> Result<(), Error> {
     let stash = |k: &str| ctx.stash.get(k).cloned().flatten();
     let backing_store = stash("backing_store").filter(|s| !s.is_empty());
+    let backing_format = stash("backing_format").filter(|s| !s.is_empty());
     let mut poolname = stash("pool").filter(|s| !s.is_empty());
     let mut volname = stash("vol").filter(|s| !s.is_empty());
     let size = stash("size").and_then(|s| s.trim().parse::<f64>().ok());
-    let fmt = stash("format").filter(|s| !s.is_empty());
+    let mut fmt = stash("format").filter(|s| !s.is_empty());
     let sparse = stash("sparse").map_or(true, |s| crate::cli::raw_on_off_convert(&s) == Some(true));
 
     if let Some((p, v)) = volname.clone().as_deref().and_then(|v| v.split_once('/')) {
@@ -202,24 +257,20 @@ fn disk_post_parse(ctx: &mut ParseCtx, inst: &mut XmlObject) -> Result<(), Error
 
     // Generate and fill in the disk source info
     let conn = conn()?;
+    let cs = conn_support();
     let mut pool = None;
-    if let Some(name) = &poolname {
+    if let Some(mut name) = poolname {
         if name == "default" {
-            // `StoragePool.build_default_pool` creates the pool when
-            // it's missing: storage creation.
-            return Err(STORAGE_NOT_PORTED.into());
+            name = storage::build_default_pool(&conn, cs.is_session)?.xml.name;
         }
-        let p = virt::storage_pool::StoragePool::lookup_by_name(&conn, name)
+        let p = virt::storage_pool::StoragePool::lookup_by_name(&conn, &name)
             .map_err(|e| e.message().to_string())?;
-        // `StoragePool.ensure_pool_is_running`
-        if !p.is_active().unwrap_or(true) {
-            log::debug!("starting pool={name}");
-            p.create(0).map_err(|e| e.message().to_string())?;
-        }
+        storage::ensure_pool_is_running(&p, false)?;
         pool = Some(p);
     }
 
-    if let (Some(name), Some(p)) = (&volname, pool.take()) {
+    if let Some(name) = &volname {
+        let p = pool.take().expect("vol= always names its pool");
         let vol = virt::storage_vol::StorageVol::lookup_by_name(&p, name)
             .map_err(|e| e.message().to_string())?;
         // `set_vol_object`
@@ -227,7 +278,7 @@ fn disk_post_parse(ctx: &mut ParseCtx, inst: &mut XmlObject) -> Result<(), Error
             None,
             Some(vol),
             virtinst_core::diskbackend::pool_of(&p),
-            conn_support().is_remote,
+            cs.is_remote,
         );
         dd::set_xmlpath(inst, backend.get_path(), &backend)?;
         set_backend(Some(backend));
@@ -237,8 +288,57 @@ fn disk_post_parse(ctx: &mut ParseCtx, inst: &mut XmlObject) -> Result<(), Error
     if (pool.is_some() || wants_creation)
         && (fmt.is_some() || has_size || sparse || backing_store.is_some())
     {
-        // `DeviceDisk.build_vol_install` + `set_vol_install`.
-        return Err(STORAGE_NOT_PORTED.into());
+        let mut newvolname = None;
+        let poolobj = match pool {
+            Some(p) => virtinst_core::diskbackend::pool_of(&p),
+            None => {
+                let b = backend().expect("wants_creation has a backend");
+                let path = b.get_path().unwrap_or_default();
+                newvolname = Some(path.rsplit('/').next().unwrap_or_default().to_string());
+                b.pool
+                    .as_ref()
+                    .and_then(|p| virtinst_core::diskbackend::pool_of(&p.pool))
+            }
+        };
+        if let Some(p) = &poolobj {
+            if fmt.is_none() {
+                fmt = default_image_format(&p.xml);
+            }
+        }
+        let newvolname = match newvolname {
+            Some(n) => n,
+            None => generate_new_volume_name(ctx.guest, poolobj.as_ref(), fmt.as_deref())?,
+        };
+        // `DeviceDisk.build_vol_install`
+        let Some(size) = size else {
+            return Err(format!(
+                "Size must be specified for non existent volume '{newvolname}'"
+            ));
+        };
+        let Some(poolobj) = poolobj else {
+            // This catches --disk /dev/idontexist,size=1 if /dev is unmanaged
+            return Err(format!(
+                "Don't know how to create storage for path '{newvolname}'. Use libvirt \
+                 APIs to manage the parent directory as a pool first."
+            ));
+        };
+        log::debug!(
+            "Creating volume '{newvolname}' on pool '{}'",
+            poolobj.xml.name
+        );
+        let mut vol_install = VolInstall::new(
+            &newvolname,
+            Some(&poolobj.xml),
+            size,
+            sparse,
+            fmt.as_deref(),
+        )?;
+        vol_install.backing_store = backing_store;
+        vol_install.backing_format = backing_format;
+        // `set_vol_install`
+        let backend = StorageBackend::for_vol_install(vol_install, poolobj, cs.is_remote);
+        dd::set_xmlpath(inst, backend.get_path(), &backend)?;
+        set_backend(Some(backend));
     }
 
     if !ctx.editing {
@@ -264,13 +364,20 @@ fn validate(inst: &XmlObject) -> Result<(), Error> {
         }
         return Ok(());
     };
-    // A stub always exists; storage creation was refused above.
-    if b.is_some_and(|b| !b.exists()) {
+    let Some(b) = b else {
+        // A stub always exists.
+        return Ok(());
+    };
+    if !b.exists() && !b.will_create_storage() {
         return Err(format!(
             "Must specify storage creation parameters for non-existent path '{path}'."
         ));
     }
-    Ok(())
+    // `_storage_backend.validate()`
+    match b.vol_install() {
+        Some(vi) => vi.validate(&conn()?),
+        None => Ok(()),
+    }
 }
 
 /// `ParserDisk`.
