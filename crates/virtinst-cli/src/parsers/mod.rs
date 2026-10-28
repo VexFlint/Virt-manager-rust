@@ -94,6 +94,13 @@ pub fn by_name(cli_arg_name: &str) -> Option<&'static ParserDef> {
 /// first: that would put a new device's XML in the document before its
 /// defaults are set, out of upstream's attribute order.
 pub fn guest_info(guest: &XmlObject) -> GuestInfo {
+    if guest.is_build() {
+        // A built guest's values only live in its propstore: read them
+        // from its rendered XML.
+        if let Ok(parsed) = XmlObject::parse(&virtinst_core::guest::GUEST, &guest.get_xml()) {
+            return guest_info(&parsed);
+        }
+    }
     guest
         .with_doc_unsynced(|doc, root| {
             let g = Guest::from_element(doc, root);

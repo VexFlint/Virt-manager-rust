@@ -64,9 +64,14 @@ as security features só são calculadas quando um modo precisa delas. As
 (o `_convert_boot_order`). `uefi` liga/desliga como `enable_uefi`/`disable_uefi`
 lendo domcaps direto do `parser::connect()`. `XmlObject.clear` agora remove os
 filhos de lista (como o upstream), não só limpa.
+`Guest.set_defaults` está em `guest.rs` (`GuestOpts` guarda os
+`skip_default_*`, `uefi_requested` e `num_pcie_root_ports`); o virt-xml usa
+em `--build-xml --iothreads`. MagicURI (`__virtinst_test__...`) em
+`cli::get_connection` vira as variáveis `VIRTINST_TEST_*`; no oráculo,
+`@MAGIC@` e `@CAPS@` montam as URIs de teste do upstream.
 
 ## Falta (prioridade)
-1. O resto do virt-install (`--os-variant` etc.).
+1. Reescrever o virt-install sobre o motor + `guest.rs` (parte 2 do #5).
 2. Só depois: GUI (ver CLAUDE.md seção 7).
 
 ## Bugs conhecidos

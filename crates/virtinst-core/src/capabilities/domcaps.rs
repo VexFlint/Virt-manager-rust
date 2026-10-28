@@ -333,6 +333,24 @@ pub struct DomainCapabilities {
     pub sev_max_es_guests: Option<String>,
 }
 
+/// `re.sub("arch>.+</arch", "arch>%s</arch" % arch, xml)`.
+fn substitute_arch(xml: &str, arch: &str) -> String {
+    let mut out = String::with_capacity(xml.len());
+    for line in xml.split_inclusive('\n') {
+        // `.+` is greedy but stops at a newline: the last `</arch` of
+        // the line closes the match.
+        match (line.find("arch>"), line.rfind("</arch")) {
+            (Some(start), Some(end)) if end > start + "arch>".len() => {
+                out.push_str(&line[..start]);
+                out.push_str(&format!("arch>{arch}</arch"));
+                out.push_str(&line[end + "</arch".len()..]);
+            }
+            _ => out.push_str(line),
+        }
+    }
+    out
+}
+
 /// `<domainCapabilities><features><sev>`.
 fn sev(doc: &Document, root: Element) -> Option<Element> {
     root.find(doc, "features")?.find(doc, "sev")
@@ -428,8 +446,19 @@ impl DomainCapabilities {
         machine: Option<&str>,
         virttype: Option<&str>,
     ) -> Result<DomainCapabilities, CapabilitiesError> {
+        if std::env::var_os("VIRTINST_TEST_DOMCAPS_NOSUPPORT").is_some() {
+            // `MagicURI` without `domcaps=`: no domcaps at all.
+            return Err(CapabilitiesError::Io(std::io::Error::other(
+                "virtinst test driver fake domcaps nosupport",
+            )));
+        }
         if let Some(path) = std::env::var_os("VIRTINST_TEST_DOMCAPS_FILE") {
-            let xml = std::fs::read_to_string(&path)?;
+            let mut xml = std::fs::read_to_string(&path)?;
+            // `MagicURI`'s fake_domcaps: the file's arch becomes the
+            // requested one.
+            if let Some(arch) = arch {
+                xml = substitute_arch(&xml, arch);
+            }
             return Ok(DomainCapabilities::parse(&xml)?);
         }
         let xml = conn.get_domain_capabilities(emulator, arch, machine, virttype, 0)?;
