@@ -2,9 +2,8 @@
 //! parser engine's guest object: the install media/bootdev choice, the
 //! install-time XML changes, and creating the domain.
 //!
-//! `--location`, kernel/initrd installs, `--unattended` and
-//! `--cloud-init` (`InstallerTreeMedia`, the scratch dir uploads) are
-//! the next step of the port and aren't here yet.
+//! `--unattended` and `--cloud-init` are the next steps of the port
+//! and aren't here yet.
 
 use std::rc::Rc;
 
@@ -16,7 +15,20 @@ use virtinst_core::osinfo::OsDb;
 use virtinst_core::xmlbuilder::{Value, XmlObject};
 
 use crate::guest::{self, GuestOpts};
+use crate::installertreemedia::{self as treemedia, TreeMedia};
 use crate::parsers;
+
+/// `_make_testsuite_path`.
+fn make_testsuite_path(path: &str) -> String {
+    let base = path.rsplit('/').next().unwrap_or(path);
+    let tail = base.splitn(3, '-').last().unwrap_or(base);
+    format!("/VIRTINST-TESTSUITE/{tail}")
+}
+
+/// `conn.in_testsuite()`.
+fn in_testsuite() -> bool {
+    std::env::var_os("VIRTINST_TEST_SUITE").is_some()
+}
 
 /// `DeviceDisk.device` of a `<disk>`.
 fn disk_device(disk: &XmlObject) -> String {
@@ -47,7 +59,7 @@ fn make_cdrom_device(
 
 /// `InstallerTreeMedia.validate_path`: the install media as a CDROM
 /// source path.
-fn validate_path(conn: &Connection, path: &str) -> Result<String, String> {
+pub fn validate_path(conn: &Connection, path: &str) -> Result<String, String> {
     match make_cdrom_device(conn, Some(path)) {
         Ok((_, backend)) => Ok(backend.get_path().unwrap_or_default()),
         Err(e) => {
@@ -75,10 +87,30 @@ pub struct Installer {
     cdrom: Option<String>,
     install_bootdev: Option<String>,
     no_install: bool,
+    is_reinstall: bool,
+    pre_reinstall_xml: Option<String>,
+    treemedia: Option<TreeMedia>,
+    treemedia_bootconfig: Option<(String, String, String)>,
     install_cdrom_device_added: bool,
     defaults_are_set: bool,
+    tmpvols: Vec<virt::storage_vol::StorageVol>,
     /// Entry point for virt-manager 'Customize' wizard to change autostart
     pub autostart: bool,
+}
+
+/// What `Installer::new` takes: upstream's keyword arguments.
+#[derive(Default)]
+pub struct InstallerArgs {
+    pub cdrom: Option<String>,
+    pub location: Option<String>,
+    pub install_bootdev: Option<String>,
+    pub location_kernel: Option<String>,
+    pub location_initrd: Option<String>,
+    pub install_kernel: Option<String>,
+    pub install_initrd: Option<String>,
+    pub install_kernel_args: Option<String>,
+    pub no_install: bool,
+    pub is_reinstall: bool,
 }
 
 impl Installer {
@@ -88,35 +120,52 @@ impl Installer {
             cdrom: None,
             install_bootdev: None,
             no_install: false,
+            is_reinstall: false,
+            pre_reinstall_xml: None,
+            treemedia: None,
+            treemedia_bootconfig: None,
             install_cdrom_device_added: false,
             defaults_are_set: false,
+            tmpvols: vec![],
             autostart: false,
         }
     }
 
-    pub fn new(
-        conn: &Connection,
-        cdrom: Option<&str>,
-        install_bootdev: Option<String>,
-        no_install: bool,
-    ) -> Result<Installer, String> {
+    pub fn new(conn: &Connection, a: InstallerArgs) -> Result<Installer, String> {
         let mut inst = Installer {
-            cdrom: None,
-            install_bootdev,
-            no_install,
-            install_cdrom_device_added: false,
-            defaults_are_set: false,
-            autostart: false,
+            install_bootdev: a.install_bootdev,
+            no_install: a.no_install,
+            is_reinstall: a.is_reinstall,
+            ..Installer::empty()
         };
-        if let Some(cdrom) = cdrom {
-            inst.cdrom = Some(validate_path(conn, cdrom)?);
+        if let Some(cdrom) = a.cdrom {
+            inst.cdrom = Some(validate_path(conn, &cdrom)?);
             inst.install_bootdev = Some("cdrom".into());
+        } else if a.location.is_some()
+            || a.location_kernel.is_some()
+            || a.location_initrd.is_some()
+            || a.install_kernel.is_some()
+            || a.install_initrd.is_some()
+        {
+            inst.treemedia = Some(TreeMedia::new(
+                conn,
+                a.location,
+                a.location_kernel,
+                a.location_initrd,
+                a.install_kernel,
+                a.install_initrd,
+                a.install_kernel_args,
+            )?);
         }
         Ok(inst)
     }
 
+    /// `_cdrom_path`.
     fn cdrom_path(&self) -> Option<&str> {
-        self.cdrom.as_deref()
+        match &self.treemedia {
+            Some(t) => t.cdrom_path(),
+            None => self.cdrom.as_deref(),
+        }
     }
 
     /// `_add_install_cdrom_device`.
@@ -134,8 +183,20 @@ impl Installer {
         };
         self.install_cdrom_device_added = true;
 
+        if self.is_reinstall {
+            let remote = conn.uri().is_remote();
+            if let Some(dev) = guest
+                .child_mut("devices")
+                .children_mut("disk")
+                .iter_mut()
+                .find(|d| disk_device(d) == "cdrom")
+            {
+                dd::set_source_path_obj(dev, Some(&path), conn.as_connect(), remote)?;
+                return Ok(());
+            }
+        }
+
         let (dev, backend) = make_cdrom_device(conn, Some(&path))?;
-        let backend = Some(backend);
 
         // Insert the CDROM before any other CDROM, so boot=cdrom picks
         // it as the priority
@@ -145,10 +206,14 @@ impl Installer {
             .position(|d| disk_device(d) == "cdrom")
             .unwrap_or(disks.len());
         guest.child_mut("devices").add_child_at(dev, idx);
+        if self.is_reinstall {
+            parsers::disk::set_backend_rc(Some(backend.clone()));
+            guest::device_set_defaults(guest, "devices.disk", idx, conn)?;
+        }
         while opts.disk_backends.len() < idx {
             opts.disk_backends.push(None);
         }
-        opts.disk_backends.insert(idx, backend);
+        opts.disk_backends.insert(idx, Some(backend));
         Ok(())
     }
 
@@ -228,9 +293,38 @@ impl Installer {
         virtinst_core::domain::os::set_bootorder(guest.child_mut("os"), order)
     }
 
+    /// `_alter_treemedia_bootconfig`.
+    fn alter_treemedia_bootconfig(&self, guest: &mut XmlObject) -> Result<(), String> {
+        if self.treemedia.is_none() {
+            return Ok(());
+        }
+        let Some((kernel, initrd, kernel_args)) = &self.treemedia_bootconfig else {
+            return Ok(());
+        };
+        let testpath = |p: &str| {
+            if in_testsuite() {
+                make_testsuite_path(p)
+            } else {
+                p.to_string()
+            }
+        };
+        let os = guest.child_mut("os");
+        if !kernel.is_empty() {
+            os.set("kernel", Some(Value::Str(testpath(kernel))))?;
+        }
+        if !initrd.is_empty() {
+            os.set("initrd", Some(Value::Str(testpath(initrd))))?;
+        }
+        if !kernel_args.is_empty() {
+            os.set("kernel_args", Some(Value::Str(kernel_args.clone())))?;
+        }
+        Ok(())
+    }
+
     /// `_alter_bootconfig`.
     fn alter_bootconfig(&self, guest: &mut XmlObject) -> Result<(), String> {
         guest.set("on_reboot", Some(Value::Str("destroy".into())))?;
+        self.alter_treemedia_bootconfig(guest)?;
         match &self.install_bootdev {
             Some(bootdev) if Self::can_set_guest_bootorder(guest) => {
                 let order = Self::build_boot_order(guest, bootdev);
@@ -263,6 +357,124 @@ impl Installer {
         self.cdrom.as_deref()
     }
 
+    /// `location`.
+    pub fn location(&self) -> Option<&str> {
+        self.treemedia.as_ref().and_then(|t| t.location.as_deref())
+    }
+
+    /// `_should_upload_media`: whether to upload media to the
+    /// connection scratchdir, if there is any.
+    fn should_upload_media(conn: &Connection) -> Result<bool, String> {
+        let scratchdir = treemedia::make_scratchdir(conn)?;
+        let system_scratchdir = treemedia::get_system_scratchdir(conn);
+        if conn.uri().is_remote() {
+            return Ok(true);
+        }
+        if treemedia::is_unprivileged(conn) {
+            return Ok(false);
+        }
+        Ok(scratchdir != system_scratchdir)
+    }
+
+    /// `support_remote_url_install`.
+    fn support_remote_url_install(conn: &Connection) -> bool {
+        let is_test = conn
+            .as_connect()
+            .get_uri()
+            .is_ok_and(|u| u.starts_with("test:"));
+        let ret = !is_test && virt::stream::Stream::new(conn.as_connect(), 0).is_ok();
+        in_testsuite() || ret
+    }
+
+    /// `_upload_media`.
+    fn upload_media(
+        &mut self,
+        conn: &Connection,
+        meter: &mut dyn virtinst_core::progress::Meter,
+        paths: Vec<String>,
+    ) -> Result<Vec<String>, String> {
+        let system_scratchdir = treemedia::get_system_scratchdir(conn);
+        if !Self::should_upload_media(conn)? && !in_testsuite() {
+            // We have access to system scratchdir, don't jump through hoops
+            log::debug!("Have access to preferred scratchdir so nothing to upload");
+            return Ok(paths);
+        }
+        if !Self::support_remote_url_install(conn) {
+            // Needed for the test_urls suite
+            log::debug!("Media upload not supported");
+            return Ok(paths);
+        }
+        let (newpaths, tmpvols) = virtinst_core::install::volumeupload::upload_paths(
+            conn.as_connect(),
+            &system_scratchdir,
+            meter,
+            &paths,
+            in_testsuite(),
+        )?;
+        self.tmpvols.extend(tmpvols);
+        Ok(newpaths)
+    }
+
+    /// `_prepare_treemedia`.
+    fn prepare_treemedia(
+        &mut self,
+        conn: &Connection,
+        meter: &mut dyn virtinst_core::progress::Meter,
+    ) -> Result<(), String> {
+        let tm = self.treemedia.as_mut().expect("checked by the caller");
+        let (kernel, initrd, kernel_args) = tm.prepare(conn, meter)?;
+        let paths = self.upload_media(conn, meter, vec![kernel, initrd])?;
+        self.treemedia_bootconfig = Some((paths[0].clone(), paths[1].clone(), kernel_args));
+        Ok(())
+    }
+
+    /// `_prepare`.
+    fn prepare(
+        &mut self,
+        guest: &XmlObject,
+        conn: &Connection,
+        meter: &mut dyn virtinst_core::progress::Meter,
+    ) -> Result<(), String> {
+        if self.is_reinstall {
+            self.pre_reinstall_xml = Some(guest.get_xml());
+        }
+        if self.treemedia.is_some() {
+            self.prepare_treemedia(conn, meter)?;
+        }
+        Ok(())
+    }
+
+    /// `_cleanup`.
+    fn cleanup(&mut self) {
+        if let Some(tm) = &mut self.treemedia {
+            tm.cleanup();
+        }
+        for vol in self.tmpvols.drain(..) {
+            log::debug!("Removing volume '{}'", vol.get_name().unwrap_or_default());
+            let _ = vol.delete(0);
+        }
+    }
+
+    /// `set_initrd_injections`.
+    pub fn set_initrd_injections(&mut self, injections: Vec<String>) -> Result<(), String> {
+        let Some(tm) = &mut self.treemedia else {
+            return Err("Install method does not support initrd injections.".into());
+        };
+        tm.set_initrd_injections(injections);
+        Ok(())
+    }
+
+    /// `set_extra_args`.
+    pub fn set_extra_args(&mut self, extra_args: Vec<String>) -> Result<(), String> {
+        let Some(tm) = &mut self.treemedia else {
+            return Err(
+                "Kernel arguments are only supported with location or kernel installs.".into(),
+            );
+        };
+        tm.set_extra_args(extra_args);
+        Ok(())
+    }
+
     /// `set_install_defaults`.
     pub fn set_install_defaults(
         &mut self,
@@ -273,6 +485,9 @@ impl Installer {
         if self.defaults_are_set {
             return Ok(());
         }
+        if self.is_reinstall {
+            self.pre_reinstall_xml = Some(guest.get_xml());
+        }
         self.add_install_cdrom_device(guest, opts, conn)?;
 
         if Self::bootorder(guest).is_empty() && Self::can_set_guest_bootorder(guest) {
@@ -281,15 +496,24 @@ impl Installer {
             Self::set_bootorder(guest, &order)?;
         }
 
-        guest::set_defaults(guest, opts, conn)?;
+        if !self.is_reinstall {
+            guest::set_defaults(guest, opts, conn)?;
+        }
         self.defaults_are_set = true;
         Ok(())
     }
 
     /// `get_search_paths`: the paths the hypervisor will need search
     /// access for to perform this install.
-    pub fn get_search_paths(&self) -> Vec<String> {
-        self.cdrom_path().map(str::to_string).into_iter().collect()
+    pub fn get_search_paths(&self, conn: &Connection) -> Result<Vec<String>, String> {
+        let mut search_paths = vec![];
+        if self.treemedia.is_some() && !Self::should_upload_media(conn)? {
+            search_paths.push(treemedia::make_scratchdir(conn)?);
+        }
+        if let Some(p) = self.cdrom_path() {
+            search_paths.push(p.to_string());
+        }
+        Ok(search_paths)
     }
 
     /// `requires_postboot_xml_changes`: whether the install has 2 XML
@@ -299,7 +523,7 @@ impl Installer {
         if self.no_install {
             return false;
         }
-        self.cdrom.is_some() || self.install_bootdev.is_some()
+        self.cdrom.is_some() || self.install_bootdev.is_some() || self.treemedia.is_some()
     }
 
     /// `options_specified`: whether some explicit install option was
@@ -313,9 +537,11 @@ impl Installer {
 
     /// `detect_distro`: the OS short id libosinfo detects from the
     /// install media, if any.
-    pub fn detect_distro(&self, conn: &Connection) -> Option<String> {
+    pub fn detect_distro(&mut self, conn: &Connection) -> Result<Option<String>, String> {
         let mut ret = None;
-        if let Some(cdrom) = &self.cdrom {
+        if let Some(tm) = &mut self.treemedia {
+            ret = tm.detect_distro(conn)?;
+        } else if let Some(cdrom) = &self.cdrom {
             if conn.uri().is_remote() {
                 log::debug!("Can't detect distro for cdrom remote connection.");
             } else {
@@ -331,7 +557,7 @@ impl Installer {
             "installer.detect_distro returned={}",
             ret.as_deref().unwrap_or("None")
         );
-        ret
+        Ok(ret)
     }
 
     /// `_build_postboot_xml`.
@@ -361,6 +587,9 @@ impl Installer {
             let (i, f) = self.build_postboot_xml(&final_xml, conn)?;
             initial_xml = Some(i);
             final_xml = f;
+        }
+        if let Some(x) = &self.pre_reinstall_xml {
+            final_xml = x.clone();
         }
         log::debug!(
             "Generated initial_xml: {}",
@@ -403,6 +632,7 @@ impl Installer {
 
     /// `_create_guest`.
     fn create_guest(
+        &self,
         guest: &XmlObject,
         conn: &Connection,
         initial_xml: Option<&str>,
@@ -415,7 +645,7 @@ impl Installer {
         meter.start("Creating domain...", None);
         let needs_boot = doboot || initial_xml.is_some();
 
-        let domain = if guest.get_str("type").as_deref() == Some("vz") {
+        let domain = if guest.get_str("type").as_deref() == Some("vz") && !self.is_reinstall {
             if transient {
                 return Err("Domain type 'vz' doesn't support transient installs.".into());
             }
@@ -473,7 +703,7 @@ impl Installer {
         transient: bool,
         build_storage: &dyn Fn() -> Result<(), String>,
     ) -> Result<Started, String> {
-        if !return_xml {
+        if !self.is_reinstall && !return_xml {
             guest::validate_name(conn, &user_guest.get_str("name").unwrap_or_default())?;
         }
         self.set_install_defaults(user_guest, opts, conn)?;
@@ -483,26 +713,54 @@ impl Installer {
         user_guest.check_xml_actions()?;
         let guest = XmlObject::parse(&GUEST, &user_guest.get_xml()).map_err(|e| e.to_string())?;
 
-        if !dry {
-            build_storage()?;
-        }
+        let res = (|| {
+            let mut meter = crate::cli::get_meter();
+            self.prepare(&guest, conn, &mut meter)?;
 
-        let (initial_xml, final_xml) = self.build_xml(&guest, conn)?;
-        if dry || return_xml {
-            return Ok(Started::Xml(initial_xml, final_xml));
-        }
+            if !dry && !self.is_reinstall {
+                build_storage()?;
+            }
 
-        let domain = Self::create_guest(
-            &guest,
-            conn,
-            initial_xml.as_deref(),
-            &final_xml,
-            doboot,
-            transient,
-        )?;
-        if self.autostart {
-            Self::flag_autostart(&domain)?;
-        }
-        Ok(Started::Domain(domain))
+            let (initial_xml, final_xml) = self.build_xml(&guest, conn)?;
+            if dry || return_xml {
+                return Ok(Started::Xml(initial_xml, final_xml));
+            }
+
+            let domain = self.create_guest(
+                &guest,
+                conn,
+                initial_xml.as_deref(),
+                &final_xml,
+                doboot,
+                transient,
+            )?;
+            if self.autostart {
+                Self::flag_autostart(&domain)?;
+            }
+            Ok(Started::Domain(domain))
+        })();
+        self.cleanup();
+        res
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::make_testsuite_path;
+
+    #[test]
+    fn testsuite_path_keeps_the_tail_after_two_dashes() {
+        assert_eq!(
+            make_testsuite_path("/var/lib/libvirt/boot/fake-win7.iso"),
+            "/VIRTINST-TESTSUITE/win7.iso"
+        );
+        assert_eq!(
+            make_testsuite_path("/tmp/virtinst-abc-vmlinuz"),
+            "/VIRTINST-TESTSUITE/vmlinuz"
+        );
+        assert_eq!(
+            make_testsuite_path("initrd.img"),
+            "/VIRTINST-TESTSUITE/initrd.img"
+        );
     }
 }

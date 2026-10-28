@@ -10,6 +10,7 @@ use std::sync::Mutex;
 
 use virtinst_core::connection::Connection;
 use virtinst_core::diskbackend::oserror_str;
+use virtinst_core::xmlbuilder::XmlObject;
 
 /// `BuildConfig.version`: the upstream virt-manager release these tools
 /// are a port of, which is what upstream's `--version` prints.
@@ -221,7 +222,7 @@ impl log::Log for Logger {
 }
 
 /// `VirtinstConnection.get_app_cache_dir`.
-fn app_cache_dir() -> String {
+pub fn app_cache_dir() -> String {
     let base = std::env::var("XDG_CACHE_HOME")
         .ok()
         .filter(|s| !s.is_empty())
@@ -916,6 +917,55 @@ pub fn autocomplete(cmd: clap::Command, parsers: &[(&str, &[&str])]) {
         let _ = f.write_all(out.as_bytes());
     }
     std::process::exit(0);
+}
+
+/// `get_xmldesc`.
+pub fn get_xmldesc(domain: &virt::domain::Domain, inactive: bool) -> String {
+    let mut flags = virt::sys::VIR_DOMAIN_XML_SECURE;
+    if inactive {
+        flags |= virt::sys::VIR_DOMAIN_XML_INACTIVE;
+    }
+    domain
+        .get_xml_desc(flags)
+        .unwrap_or_else(|e| fail(e.message()))
+}
+
+/// `get_domain_and_guest`: by name, else by ID or UUID.
+pub fn get_domain_and_guest(
+    conn: &Connection,
+    domstr: &str,
+) -> (virt::domain::Domain, XmlObject, Option<XmlObject>) {
+    let isint = domstr.parse::<u32>().is_ok();
+    let isuuid = {
+        let parts: Vec<&str> = domstr.split('-').collect();
+        let lens = [8, 4, 4, 4, 12];
+        parts.len() == 5
+            && parts
+                .iter()
+                .zip(lens)
+                .all(|(p, l)| p.len() == l && p.chars().all(|c| c.is_ascii_hexdigit()))
+    };
+    let lookup = virt::domain::Domain::lookup_by_name(conn.as_connect(), domstr).or_else(|e| {
+        if isint {
+            virt::domain::Domain::lookup_by_id(conn.as_connect(), domstr.parse().unwrap())
+        } else if isuuid {
+            virt::domain::Domain::lookup_by_uuid_string(conn.as_connect(), domstr)
+        } else {
+            Err(e)
+        }
+    });
+    let domain = lookup
+        .unwrap_or_else(|e| fail(format!("Could not find domain '{domstr}': {}", e.message())));
+    let state = domain.get_state().unwrap_or_else(|e| fail(e.message())).0;
+    let parse =
+        |xml: &str| XmlObject::parse(&virtinst_core::guest::GUEST, xml).unwrap_or_else(|e| fail(e));
+    let mut inactive = parse(&get_xmldesc(&domain, false));
+    let mut active = None;
+    if state != virt::sys::VIR_DOMAIN_SHUTOFF {
+        active = Some(inactive);
+        inactive = parse(&get_xmldesc(&domain, true));
+    }
+    (domain, inactive, active)
 }
 
 #[cfg(test)]
