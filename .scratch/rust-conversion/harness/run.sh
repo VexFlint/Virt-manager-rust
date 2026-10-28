@@ -50,8 +50,8 @@
 # check tests/test_cli.py for a real fixture using that device first
 # (grep the device name near "--add-device"/"--remove-device") — only
 # fall back to a self-verified case, clearly labeled, if none exists.
-# Extending this to virt-install needs the capability-injection layer
-# ticket 19 scoped as follow-up work first.
+# virt-install is covered by its own oracle section at the end
+# (oracle-virt-install.txt), run with upstream's MagicURIs.
 #
 # Usage: .scratch/rust-conversion/harness/run.sh
 # Env:   UPSTREAM_REF — path to the upstream virt-manager checkout
@@ -665,6 +665,54 @@ else
             fail=$((fail + 1))
         fi
     done <"$REPO_ROOT/.scratch/rust-conversion/harness/oracle-virt-xml.txt"
+    rm -rf "$ORACLE_TMP"
+fi
+
+# ---------------------------------------------------------------------
+# Oracle: upstream's own virt-install against ours
+# (oracle-virt-install.txt), from $UPSTREAM_REF with the test suite's
+# environment, since the corpus uses its MagicURIs and relative paths.
+# ---------------------------------------------------------------------
+
+echo
+echo "=== oracle: upstream virt-install, byte for byte ==="
+if [[ -z "$ORACLE_PY" ]]; then
+    if [[ -n "${CI:-}" ]]; then
+        echo "  FAIL: no Python with libvirt/libxml2/requests bindings for the oracle"
+        fail=$((fail + 1))
+    else
+        echo "  SKIP: no Python with libvirt/libxml2/requests bindings"
+    fi
+else
+    ORACLE_TMP="$(mktemp -d)"
+    # The paths test_cli.py creates before running the corpus.
+    touch /tmp/__virtinst_cli_exist1.img /tmp/__virtinst_cli_exist2.img \
+        /tmp/__virtinst_cli_serial-exists-clone.file
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        line="${line//@UP@/$UPSTREAM_REF}"
+        eval "oargs=($line)"
+        up_rc=0
+        (cd "$UPSTREAM_REF" && HOME=/tmp DISPLAY=:3.4 VIRTINST_TEST_SUITE=1 \
+            "$ORACLE_PY" ./virt-install "${oargs[@]}") \
+            >"$ORACLE_TMP/up.out" 2>"$ORACLE_TMP/up.err" </dev/null || up_rc=$?
+        me_rc=0
+        (cd "$UPSTREAM_REF" && HOME=/tmp DISPLAY=:3.4 VIRTINST_TEST_SUITE=1 \
+            "$REPO_ROOT/target/debug/virt-install" "${oargs[@]}") \
+            >"$ORACLE_TMP/me.out" 2>"$ORACLE_TMP/me.err" </dev/null || me_rc=$?
+        short="${line//$UPSTREAM_REF/@UP@}"
+        if [[ "$up_rc" == "$me_rc" ]] && cmp -s "$ORACLE_TMP/up.out" "$ORACLE_TMP/me.out" \
+            && cmp -s "$ORACLE_TMP/up.err" "$ORACLE_TMP/me.err"; then
+            echo "  PASS: virt-install ${short:0:200}"
+            pass=$((pass + 1))
+        else
+            echo "  FAIL: virt-install $short"
+            echo "        exit code: upstream $up_rc, ours $me_rc"
+            diff "$ORACLE_TMP/up.out" "$ORACLE_TMP/me.out" | head -10 | sed 's/^/        stdout /' || true
+            diff "$ORACLE_TMP/up.err" "$ORACLE_TMP/me.err" | head -10 | sed 's/^/        stderr /' || true
+            fail=$((fail + 1))
+        fi
+    done <"$REPO_ROOT/.scratch/rust-conversion/harness/oracle-virt-install.txt"
     rm -rf "$ORACLE_TMP"
 fi
 

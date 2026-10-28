@@ -25,8 +25,7 @@ pub fn set_domcaps(domcaps: Option<DomainCapabilities>) {
 /// `ParserGraphics._parse`.
 fn graphics_parse(ctx: &mut ParseCtx) -> Result<Option<Vec<XmlObject>>, Error> {
     if ctx.optstr == "none" {
-        // `self.guest.skip_default_graphics = True`: only virt-install's
-        // default graphics read it.
+        crate::parser::update_guest_flags(|f| f.skip_default_graphics = true);
         return Ok(Some(vec![]));
     }
     Ok(None)

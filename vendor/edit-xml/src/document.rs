@@ -4,6 +4,8 @@ use crate::parser::{DocumentParser, ReadOptions};
 use crate::types::StandaloneValue;
 use crate::ElementBuilder;
 use quick_xml::events::{BytesCData, BytesDecl, BytesEnd, BytesPI, BytesStart, BytesText, Event};
+use quick_xml::events::attributes::Attribute;
+use quick_xml::name::QName;
 use quick_xml::Writer;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -253,7 +255,10 @@ impl Document {
                 // `<devices>\n  </devices>`) writes nothing, so the
                 // indentation around it stays libxml2-like.
                 Node::Text(text) if text.is_empty() => {}
-                Node::Text(text) => writer.write_event(Event::Text(BytesText::new(text)))?,
+                // libxml2 escapes only `<`, `>`, `&` and CR in text.
+                Node::Text(text) => {
+                    writer.write_event(Event::Text(BytesText::from_escaped(libxml2_escape(text, false))))?
+                }
                 Node::DocType(text) => writer.write_event(Event::DocType(
                     BytesText::new(&format!(" {}", text)), // add a whitespace before text
                 ))?,
@@ -275,9 +280,14 @@ impl Document {
     fn write_element(&self, writer: &mut Writer<impl Write>, element: Element) -> Result<()> {
         let name_bytes = element.full_name(self);
         let mut start = BytesStart::new(name_bytes);
+        // Escape like libxml2 and push the raw bytes: the `(&str, &str)`
+        // conversion would escape the value a second time.
         for (key, val) in element.attributes(self) {
-            let val = quick_xml::escape::escape(val.as_str());
-            start.push_attribute((key.as_str(), val.as_ref()));
+            let val = libxml2_escape(val, true);
+            start.push_attribute(Attribute {
+                key: QName(key.as_bytes()),
+                value: val.as_bytes().into(),
+            });
         }
         for (prefix, val) in element.namespace_decls(self) {
             let attr_name = if prefix.is_empty() {
@@ -286,8 +296,11 @@ impl Document {
                 format!("xmlns:{}", prefix)
             };
 
-            let val = quick_xml::escape::escape(val.as_str());
-            start.push_attribute((attr_name.as_str(), val.as_ref()));
+            let val = libxml2_escape(val, true);
+            start.push_attribute(Attribute {
+                key: QName(attr_name.as_bytes()),
+                value: val.as_bytes().into(),
+            });
         }
         if element.has_children(self) {
             writer.write_event(Event::Start(start))?;
@@ -330,4 +343,24 @@ mod tests {
             basic.children(&doc).last().unwrap().as_element().unwrap()
         )
     }
+}
+
+/// Escapes `text` the way libxml2's serializer does. Attribute values also
+/// escape `"` and the whitespace characters that attribute normalization
+/// would otherwise eat.
+fn libxml2_escape(text: &str, attr: bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '&' => out.push_str("&amp;"),
+            '\r' => out.push_str("&#13;"),
+            '"' if attr => out.push_str("&quot;"),
+            '\n' if attr => out.push_str("&#10;"),
+            '\t' if attr => out.push_str("&#9;"),
+            c => out.push(c),
+        }
+    }
+    out
 }

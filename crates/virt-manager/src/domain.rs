@@ -432,17 +432,7 @@ pub(crate) fn path_in_use_by(
     shareable: bool,
     read_only: bool,
 ) -> Result<Vec<String>, String> {
-    let doms = conn
-        .list_all_domains(0)
-        .map_err(|e| e.message().to_string())?;
-    let vms: Vec<(String, String)> = doms
-        .iter()
-        .filter_map(|dom| Some((dom.get_name().ok()?, dom.get_xml_desc(0).ok()?)))
-        .collect();
-    let volmap = virtinst_core::storage::get_volmap(conn);
-    Ok(virtinst_core::storage::path_in_use_by(
-        path, &volmap, &vms, shareable, read_only,
-    ))
+    virtinst_core::storage::path_in_use_by_conn(conn, path, shareable, read_only)
 }
 
 /// `vmmDomain.delete(force=True)`, blocking: undefine along with

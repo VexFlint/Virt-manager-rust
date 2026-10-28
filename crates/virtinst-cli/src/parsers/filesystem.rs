@@ -99,8 +99,34 @@ pub fn filesystem() -> &'static ParserDef {
         }
 
         def.alias("accessmode", &["mode"]);
+        def.post_parse = Some(validate_post_parse);
         def
     })
+}
+
+/// `DeviceFilesystem.validate`, which `parse` runs on each new object.
+fn validate_post_parse(ctx: &mut ParseCtx, inst: &mut XmlObject) -> Result<(), Error> {
+    if ctx.editing {
+        return Ok(());
+    }
+    let Some(target) = inst.get_str("target_dir").filter(|t| !t.is_empty()) else {
+        return Ok(());
+    };
+    // `validate_target`: in case of qemu for default fs type (mount)
+    // target is not actually a directory, it is merely a arbitrary
+    // string tag that is exported to the guest as a hint for where to
+    // mount
+    let cs = crate::parser::conn_support();
+    let typ = inst.get_str("_type_prop");
+    if (cs.is_qemu || cs.is_test) && typ.as_deref().map_or(true, |t| t == filesystem::TYPE_MOUNT) {
+        return Ok(());
+    }
+    if !target.starts_with('/') {
+        return Err(format!(
+            "Filesystem target '{target}' must be an absolute path"
+        ));
+    }
+    Ok(())
 }
 
 /// `ParserVsock`.

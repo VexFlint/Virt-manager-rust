@@ -13,8 +13,13 @@ use crate::parser::{add_common_device_args, ArgDef, ArgInst, Error, ParseCtx, Pa
 fn char_parse(ctx: &mut ParseCtx) -> Result<Option<Vec<XmlObject>>, Error> {
     let name = ctx.def.cli_arg_name;
     if ctx.optstr == "none" && (name == "console" || name == "channel") {
-        // `self.guest.skip_default_console/channel = True`: only
-        // virt-install's default devices read it.
+        crate::parser::update_guest_flags(|f| {
+            if name == "console" {
+                f.skip_default_console = true;
+            } else {
+                f.skip_default_channel = true;
+            }
+        });
         return Ok(Some(vec![]));
     }
     // These are essentially aliases for new style options, but we still

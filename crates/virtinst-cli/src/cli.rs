@@ -26,6 +26,83 @@ pub fn handle_version_flag() {
     }
 }
 
+/// Parses the command line like argparse does for the upstream tools:
+/// unambiguous prefixes of long options are accepted (`--dry` for
+/// `--dry-run`) and errors use argparse's `usage:`/`prog: error:` format
+/// with exit code 2.
+pub fn argparse_parse<T: clap::Parser + clap::CommandFactory>(prog: &str, usage: &str) -> T {
+    let cmd = T::command();
+    let longs: Vec<String> = cmd
+        .get_arguments()
+        .flat_map(|a| {
+            a.get_long()
+                .into_iter()
+                .chain(a.get_all_aliases().unwrap_or_default())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .chain(["help".to_string(), "version".to_string()])
+        .collect();
+    let argparse_fail = |msg: String| -> ! {
+        eprintln!("usage: {prog} {usage}");
+        eprintln!("{prog}: error: {msg}");
+        std::process::exit(2);
+    };
+
+    let mut argv: Vec<String> = Vec::new();
+    let mut rest = false;
+    for arg in std::env::args() {
+        if rest || argv.is_empty() || !arg.starts_with("--") || arg == "--" {
+            rest |= arg == "--";
+            argv.push(arg);
+            continue;
+        }
+        let (name, value) = match arg[2..].split_once('=') {
+            Some((n, v)) => (n.to_string(), Some(v.to_string())),
+            None => (arg[2..].to_string(), None),
+        };
+        let full = if longs.contains(&name) {
+            name
+        } else {
+            let matches: Vec<&String> = longs.iter().filter(|l| l.starts_with(&name)).collect();
+            match matches.as_slice() {
+                [one] => one.to_string(),
+                [] => name,
+                many => {
+                    let list: Vec<String> = many.iter().map(|m| format!("--{m}")).collect();
+                    argparse_fail(format!(
+                        "ambiguous option: --{name} could match {}",
+                        list.join(", ")
+                    ))
+                }
+            }
+        };
+        argv.push(match value {
+            Some(v) => format!("--{full}={v}"),
+            None => format!("--{full}"),
+        });
+    }
+
+    T::try_parse_from(argv).unwrap_or_else(|e| {
+        use clap::error::{ContextKind, ContextValue, ErrorKind};
+        match e.kind() {
+            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => e.exit(),
+            ErrorKind::UnknownArgument => {
+                let arg = match e.get(ContextKind::InvalidArg) {
+                    Some(ContextValue::String(s)) => s.clone(),
+                    _ => String::new(),
+                };
+                argparse_fail(format!("unrecognized arguments: {arg}"))
+            }
+            _ => {
+                let msg = e.to_string();
+                let first = msg.lines().next().unwrap_or_default();
+                argparse_fail(first.trim_start_matches("error: ").to_string())
+            }
+        }
+    })
+}
+
 /// `_GlobalState`.
 struct GlobalState {
     quiet: bool,
@@ -565,9 +642,8 @@ pub fn validate_disk(conn: &Connection, dev: &DiskCheck, warn_overwrite: bool) {
 
     // Check if disk is inuse by another guest
     if let Some(p) = path {
-        let volmap = storage::get_volmap(vconn);
-        let vms = virtinst_core::cloner::all_domain_xmls(conn);
-        let names = storage::path_in_use_by(p, &volmap, &vms, dev.shareable, dev.read_only);
+        let names = storage::path_in_use_by_conn(vconn, p, dev.shareable, dev.read_only)
+            .unwrap_or_default();
         if !names.is_empty() {
             let names: Vec<String> = names.iter().map(|n| format!("'{n}'")).collect();
             optional_fail(
@@ -586,8 +662,17 @@ pub fn validate_disk(conn: &Connection, dev: &DiskCheck, warn_overwrite: bool) {
         optional_fail(msg, "disk_size", false);
     }
 
-    // `check_path_search`
-    let search = virtinst_core::diskbackend::check_path_search(vconn, conn.uri(), path);
+    check_path_search_opt(conn, path);
+}
+
+/// `check_path_search`: warn when the hypervisor user can't reach
+/// `path`.
+pub fn check_path_search(conn: &Connection, path: &str) {
+    check_path_search_opt(conn, Some(path));
+}
+
+fn check_path_search_opt(conn: &Connection, path: Option<&str>) {
+    let search = virtinst_core::diskbackend::check_path_search(conn.as_connect(), conn.uri(), path);
     if !search.fixlist.is_empty() {
         let dirs: Vec<String> = search.fixlist.iter().map(|d| format!("'{d}'")).collect();
         log::warn!(

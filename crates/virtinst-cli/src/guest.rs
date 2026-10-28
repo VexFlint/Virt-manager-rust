@@ -13,12 +13,16 @@ use virtinst_core::install::newguest::OsFacts;
 use virtinst_core::osinfo::OsDb;
 use virtinst_core::xmlbuilder::{Value, XmlClass, XmlObject};
 
-use crate::parser::{conn_support, lookup_prop, ConnSupport};
+use std::rc::Rc;
+
+use virtinst_core::diskbackend::StorageBackend;
+
+use crate::parser::{conn_support, lookup_prop, ConnSupport, GuestFlags};
 use crate::parsers;
 
 /// The `Guest` attributes that aren't XML (`skip_default_*`,
 /// `uefi_requested`, ...), as virt-install sets them.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct GuestOpts {
     pub skip_default_console: bool,
     pub skip_default_channel: bool,
@@ -37,6 +41,32 @@ pub struct GuestOpts {
     pub cpu_special_mode_was_set: bool,
     /// Set by `_add_default_tpm`.
     pub have_default_tpm: bool,
+    /// Each `<disk>`'s storage backend, in the guest's disk order
+    /// (`None`: a stub), for `DeviceDisk.set_defaults`.
+    pub disk_backends: Vec<Option<Rc<StorageBackend>>>,
+}
+
+impl GuestOpts {
+    /// The defaults with what the parsers set ([`GuestFlags`]).
+    pub fn from_flags(f: &GuestFlags) -> GuestOpts {
+        let mut o = GuestOpts {
+            skip_default_console: f.skip_default_console,
+            skip_default_channel: f.skip_default_channel,
+            skip_default_sound: f.skip_default_sound,
+            skip_default_usbredir: f.skip_default_usbredir,
+            skip_default_graphics: f.skip_default_graphics,
+            skip_default_rng: f.skip_default_rng,
+            skip_default_tpm: f.skip_default_tpm,
+            skip_default_input: f.skip_default_input,
+            uefi_requested: f.uefi_requested,
+            cpu_special_mode_was_set: f.cpu_special_mode_was_set,
+            ..GuestOpts::default()
+        };
+        if let Some(n) = f.num_pcie_root_ports {
+            o.num_pcie_root_ports = n;
+        }
+        o
+    }
 }
 
 impl Default for GuestOpts {
@@ -58,6 +88,7 @@ impl Default for GuestOpts {
             num_pcie_root_ports: 14,
             cpu_special_mode_was_set: false,
             have_default_tpm: false,
+            disk_backends: vec![],
         }
     }
 }
@@ -160,7 +191,7 @@ fn is_full_os_container(guest: &XmlObject) -> bool {
         .child("devices")
         .children("filesystem")
         .iter()
-        .any(|fs| fs.get_str("target").as_deref() == Some("/"))
+        .any(|fs| fs.get_str("target_dir").as_deref() == Some("/"))
 }
 
 /// `guest.osinfo`: the libosinfo OS the metadata names, else generic.
@@ -169,6 +200,72 @@ fn osinfo(guest: &XmlObject) -> OsFacts {
     id.and_then(|id| OsDb::load_default().ok()?.os(&id))
         .map(|os| OsFacts::from_osinfo(&os, &arch(guest)))
         .unwrap_or_default()
+}
+
+/// `guest.osinfo.is_windows()`.
+pub fn osinfo_is_windows(guest: &XmlObject) -> bool {
+    osinfo(guest).is_windows
+}
+
+/// The guest's libosinfo OS (`guest.osinfo`), `None` for generic.
+pub fn osinfo_obj(guest: &XmlObject) -> Option<virtinst_core::osinfo::OsInfo> {
+    let id = guest
+        .child("_metadata")
+        .child("libosinfo")
+        .get_str("os_id")?;
+    OsDb::load_default().ok()?.os(&id)
+}
+
+/// `guest.osinfo.name`.
+pub fn osinfo_name(guest: &XmlObject) -> String {
+    osinfo_obj(guest).map_or("generic".into(), |o| o.short_id())
+}
+
+/// `Guest.set_os_name`.
+pub fn set_os_name(guest: &mut XmlObject, name: &str) -> Result<(), String> {
+    let full_id = if name == "generic" {
+        None
+    } else {
+        let db = OsDb::load_default().map_err(|e| e.to_string())?;
+        let os = db.lookup_os(name).ok_or_else(|| {
+            format!("Unknown OS name '{name}'. See `--osinfo list` for valid values.")
+        })?;
+        log::debug!("Setting Guest osinfo name {}", os.short_id());
+        Some(os.id())
+    };
+    if full_id.is_none() {
+        log::debug!("Setting Guest osinfo name generic");
+    }
+    guest.set_path("_metadata.libosinfo.os_id", full_id.map(Value::Str))
+}
+
+/// `Guest.validate_name`.
+pub fn validate_name(conn: &Connection, name: &str) -> Result<(), String> {
+    // `XMLBuilder.validate_generic_name`: only character that shouldn't
+    // work is '/', matching QEMU
+    if name.is_empty() {
+        return Err("A name must be specified for the Guest".into());
+    }
+    if name.contains('/') {
+        return Err(format!(
+            "Guest name '{name}' can not contain '/' character."
+        ));
+    }
+    if virt::domain::Domain::lookup_by_name(conn.as_connect(), name).is_ok() {
+        return Err(format!("Guest name '{name}' is already in use."));
+    }
+    Ok(())
+}
+
+/// `Guest.generate_name`.
+pub fn generate_name(guest: &XmlObject, conn: &Connection, caps: &Capabilities) -> String {
+    virtinst_core::guest::generate_name(
+        &osinfo_name(guest),
+        is_container(guest),
+        &arch(guest),
+        caps.host.cpu.arch.as_deref(),
+        |n| virt::domain::Domain::lookup_by_name(conn.as_connect(), n).is_ok(),
+    )
 }
 
 /// `Guest._supports_virtio`.
@@ -989,12 +1086,16 @@ fn parser_for(guest_propname: &str) -> Option<&'static crate::parser::ParserDef>
 fn objects_set_defaults(
     guest: &mut XmlObject,
     guest_propname: &str,
+    opts: &GuestOpts,
     conn: &Connection,
 ) -> Result<(), String> {
     let Some(def) = parser_for(guest_propname) else {
         return Ok(());
     };
     for idx in 0..lookup_prop(guest, def).len() {
+        if guest_propname == "devices.disk" {
+            parsers::disk::set_backend_rc(opts.disk_backends.get(idx).cloned().flatten());
+        }
         parsers::set_defaults(def, guest, idx, Some(conn))?;
     }
     Ok(())
@@ -1166,13 +1267,13 @@ pub fn set_defaults(
     clock_set_defaults(guest, &support, &os)?;
     cpu_set_defaults(guest, opts, &support, &caps, conn)?;
     features_set_defaults(guest, &caps, conn, &os)?;
-    objects_set_defaults(guest, "seclabels", conn)?;
+    objects_set_defaults(guest, "seclabels", opts, conn)?;
     pm_set_defaults(guest, &support)?;
     os_set_defaults(guest)?;
-    objects_set_defaults(guest, "launchSecurity", conn)?;
+    objects_set_defaults(guest, "launchSecurity", opts, conn)?;
 
     for name in virtinst_core::guest::DOMAIN_DEVICES.prop_order {
-        objects_set_defaults(guest, &format!("devices.{name}"), conn)?;
+        objects_set_defaults(guest, &format!("devices.{name}"), opts, conn)?;
     }
 
     add_virtioscsi_controller(guest, &support, &os)?;

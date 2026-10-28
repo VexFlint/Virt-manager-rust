@@ -26,12 +26,12 @@ fn controller_parse(ctx: &mut ParseCtx) -> Result<Option<Vec<XmlObject>>, Error>
         )]));
     }
     if let Some(val) = ctx.optdict.remove("num_pcie_root_ports") {
-        // `self.guest.num_pcie_root_ports = int(...)`: only virt-install's
-        // q35 setup reads it.
         let val = val.unwrap_or_default();
-        val.trim()
+        let n = val
+            .trim()
             .parse::<i64>()
             .map_err(|_| format!("invalid literal for int() with base 10: '{val}'"))?;
+        crate::parser::update_guest_flags(|f| f.num_pcie_root_ports = Some(n));
         return Ok(Some(vec![]));
     }
     Ok(None)
@@ -119,8 +119,14 @@ pub fn controller() -> &'static ParserDef {
 /// off the default device.
 fn none_skips_default(ctx: &mut ParseCtx) -> Result<Option<Vec<XmlObject>>, Error> {
     if ctx.optstr == "none" {
-        // `self.guest.skip_default_input/sound = True`: only
-        // virt-install's default devices read it.
+        let sound = ctx.def.cli_arg_name == "sound";
+        crate::parser::update_guest_flags(|f| {
+            if sound {
+                f.skip_default_sound = true;
+            } else {
+                f.skip_default_input = true;
+            }
+        });
         return Ok(Some(vec![]));
     }
     Ok(None)
@@ -243,8 +249,7 @@ pub fn smartcard() -> &'static ParserDef {
 /// `ParserTPM._parse`.
 fn tpm_parse(ctx: &mut ParseCtx) -> Result<Option<Vec<XmlObject>>, Error> {
     if ctx.optstr == "none" {
-        // `self.guest.skip_default_tpm = True`: only virt-install's
-        // default devices read it.
+        crate::parser::update_guest_flags(|f| f.skip_default_tpm = true);
         return Ok(Some(vec![]));
     }
     // Handle --tpm /dev/tpm0
@@ -311,8 +316,7 @@ pub fn tpm() -> &'static ParserDef {
 /// `ParserRNG._parse`, with `_add_advertised_aliases`.
 fn rng_parse(ctx: &mut ParseCtx) -> Result<Option<Vec<XmlObject>>, Error> {
     if ctx.optstr == "none" {
-        // `self.guest.skip_default_rng = True`: only virt-install's
-        // default devices read it.
+        crate::parser::update_guest_flags(|f| f.skip_default_rng = true);
         return Ok(Some(vec![]));
     }
     // These are essentially aliases for new style options, but we still

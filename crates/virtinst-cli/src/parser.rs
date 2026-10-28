@@ -260,6 +260,40 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// The `Guest` attributes parsers set that aren't XML
+/// (`skip_default_*`, `uefi_requested`, `num_pcie_root_ports`): only
+/// virt-install's `Guest.set_defaults` reads them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GuestFlags {
+    pub skip_default_console: bool,
+    pub skip_default_channel: bool,
+    pub skip_default_sound: bool,
+    pub skip_default_usbredir: bool,
+    pub skip_default_graphics: bool,
+    pub skip_default_rng: bool,
+    pub skip_default_tpm: bool,
+    pub skip_default_input: bool,
+    pub uefi_requested: Option<bool>,
+    pub num_pcie_root_ports: Option<i64>,
+    /// `cpu.special_mode_was_set`, set by `--cpu` with a special mode.
+    pub cpu_special_mode_was_set: bool,
+}
+
+thread_local! {
+    static GUEST_FLAGS: std::cell::RefCell<GuestFlags> =
+        std::cell::RefCell::new(GuestFlags::default());
+}
+
+/// See [`GuestFlags`].
+pub fn guest_flags() -> GuestFlags {
+    GUEST_FLAGS.with(|f| f.borrow().clone())
+}
+
+/// Changes the [`GuestFlags`] parsers set.
+pub fn update_guest_flags(f: impl FnOnce(&mut GuestFlags)) {
+    GUEST_FLAGS.with(|g| f(&mut g.borrow_mut()));
+}
+
 /// The libvirt connection parsers that look up storage use
 /// (`self.guest.conn`).
 pub fn set_connect(conn: Option<virt::connect::Connect>) {
@@ -871,10 +905,22 @@ fn parse_into(ctx: &mut ParseCtx, inst: &mut XmlObject) -> Result<(), ParseError
     if let Some(post) = ctx.def.post_parse {
         post(ctx, inst).map_err(ParseError::Raised)?;
     }
-    for action in &inst.xml_actions {
-        action.validate().map_err(ParseError::Fail)?;
+    if !DEFER_XML_ACTION_CHECKS.with(|d| d.get()) {
+        for action in &inst.xml_actions {
+            action.validate().map_err(ParseError::Fail)?;
+        }
     }
     Ok(())
+}
+
+thread_local! {
+    static DEFER_XML_ACTION_CHECKS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Leaves `xpath.*` errors to `get_xml` time (`XMLManualAction.perform`),
+/// as virt-install reports them, instead of failing the parse.
+pub fn defer_xml_action_checks() {
+    DEFER_XML_ACTION_CHECKS.with(|d| d.set(true));
 }
 
 /// Where a parser's objects live under the guest: the list name and
@@ -1298,6 +1344,41 @@ pub fn parse_scalar_edit(
 /// parser with no `guest_propname` (`--memory`): the guest itself is
 /// the object edited.
 pub fn parse_guest_edit(def: &ParserDef, guest: &mut XmlObject, optstr: &str) -> Result<(), Error> {
+    parse_guest(def, guest, optstr, true)
+}
+
+/// `run_parser(guest, parserclass, optstr)` without `editinst`, the way
+/// virt-install runs every parser: a new object for a list parser, the
+/// guest's one object for a single one, and the guest itself for a
+/// parser with no `guest_propname` (or a plain guest property that has
+/// no value yet). Returns the new objects' indexes.
+pub fn run_parser(
+    def: &ParserDef,
+    guest: &mut XmlObject,
+    optstr: &str,
+) -> Result<Vec<usize>, Error> {
+    match def.guest_propname {
+        None => parse_guest(def, guest, optstr, false).map(|_| vec![]),
+        Some(p) if guest.has_prop(p) => {
+            // Once the property has a value, upstream hands that value
+            // to the parser as the object to edit.
+            if guest.get(p).is_some() {
+                parse_scalar_edit(def, guest, optstr)?;
+            } else {
+                parse_guest(def, guest, optstr, false)?;
+            }
+            Ok(vec![])
+        }
+        Some(_) => parse_new(def, guest, optstr),
+    }
+}
+
+fn parse_guest(
+    def: &ParserDef,
+    guest: &mut XmlObject,
+    optstr: &str,
+    editing: bool,
+) -> Result<(), Error> {
     if optstr.is_empty() || (def.stub_none && optstr == "none") {
         return Ok(());
     }
@@ -1313,7 +1394,7 @@ pub fn parse_guest_edit(def: &ParserDef, guest: &mut XmlObject, optstr: &str) ->
         guest: &mut stand_in,
         optstr: optstr.to_string(),
         optdict,
-        editing: true,
+        editing,
         boot_order: None,
         post_edit: None,
         stash: OptDict::default(),

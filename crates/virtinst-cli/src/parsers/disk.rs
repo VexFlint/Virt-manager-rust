@@ -83,7 +83,12 @@ pub fn backend() -> Option<Rc<StorageBackend>> {
 }
 
 fn set_backend(b: Option<StorageBackend>) {
-    BACKEND.with(|cur| *cur.borrow_mut() = b.map(Rc::new));
+    set_backend_rc(b.map(Rc::new));
+}
+
+/// Makes `b` the disk's storage for the next `set_defaults`.
+pub fn set_backend_rc(b: Option<Rc<StorageBackend>>) {
+    BACKEND.with(|cur| *cur.borrow_mut() = b);
 }
 
 /// The volume the last parsed `--disk` will create.
@@ -96,9 +101,12 @@ pub fn vol_install() -> Option<VolInstall> {
 pub fn build_storage(vi: &VolInstall, conn: &virt::connect::Connect) -> Result<(), Error> {
     use virtinst_core::progress::Meter;
     let mut meter = crate::cli::get_meter();
-    meter.start(&format!("Allocating '{}'", vi.name), Some(vi.capacity));
+    meter.start(
+        &format!("Allocating '{}'", vi.name),
+        Some(vi.capacity as u64),
+    );
     vi.install(conn)?;
-    meter.update(vi.capacity);
+    meter.update(vi.capacity as u64);
     meter.end();
     log::debug!("Storage volume '{}' install complete.", vi.name);
     Ok(())
@@ -348,10 +356,25 @@ fn disk_post_parse(ctx: &mut ParseCtx, inst: &mut XmlObject) -> Result<(), Error
 }
 
 /// `DeviceDisk.validate`.
-fn validate(inst: &XmlObject) -> Result<(), Error> {
+pub fn validate(inst: &XmlObject) -> Result<(), Error> {
     let path = source_path(inst, false)?;
     let b = backend();
     let Some(path) = path else {
+        // `_source_volume_err`
+        if dd::default_type(inst, None) == "volume" {
+            let source = inst.child("source");
+            let c = conn()?;
+            let pool = virt::storage_pool::StoragePool::lookup_by_name(
+                &c,
+                &source.get_str("pool").unwrap_or_default(),
+            )
+            .map_err(|e| e.message().to_string())?;
+            virt::storage_vol::StorageVol::lookup_by_name(
+                &pool,
+                &source.get_str("volume").unwrap_or_default(),
+            )
+            .map_err(|e| e.message().to_string())?;
+        }
         let device = dd::disk_device(inst);
         let can_be_empty = device == "floppy"
             || device == "cdrom"

@@ -20,6 +20,16 @@ pub struct PoolXml {
     pub capacity: u64,
     pub allocation: u64,
     pub available: u64,
+    /// `source_name`.
+    pub source_name: Option<String>,
+    /// `source_path`: the source property the pool type uses.
+    pub source_path: Option<String>,
+    /// `auth_type`, `auth_username`, `auth_secret_uuid`.
+    pub auth_type: Option<String>,
+    pub auth_username: Option<String>,
+    pub auth_secret_uuid: Option<String>,
+    /// `hosts`: `(name, port)` of each `<source><host>`.
+    pub hosts: Vec<(Option<String>, Option<String>)>,
 }
 
 impl PoolXml {
@@ -37,6 +47,36 @@ impl PoolXml {
             capacity: num("capacity").unwrap_or(0),
             allocation: num("allocation").unwrap_or(0),
             available: num("available").unwrap_or(0),
+            source_name: text(&["source", "name"]),
+            source_path: {
+                let pool_type = root.attribute(&doc, "type").unwrap_or_default();
+                let (tag, attr) = match pool_type {
+                    "netfs" | "gluster" => ("dir", "path"),
+                    "scsi" => ("adapter", "name"),
+                    _ => ("device", "path"),
+                };
+                virtinst_xml::resolve_path(&doc, root, &["source", tag])
+                    .and_then(|e| e.attribute(&doc, attr).map(str::to_string))
+            },
+            auth_type: virtinst_xml::resolve_path(&doc, root, &["source", "auth"])
+                .and_then(|e| e.attribute(&doc, "type").map(str::to_string)),
+            auth_username: virtinst_xml::resolve_path(&doc, root, &["source", "auth"])
+                .and_then(|e| e.attribute(&doc, "username").map(str::to_string)),
+            auth_secret_uuid: virtinst_xml::resolve_path(&doc, root, &["source", "auth", "secret"])
+                .and_then(|e| e.attribute(&doc, "uuid").map(str::to_string)),
+            hosts: virtinst_xml::resolve_path(&doc, root, &["source"])
+                .map(|src| {
+                    src.find_all(&doc, "host")
+                        .into_iter()
+                        .map(|h| {
+                            (
+                                h.attribute(&doc, "name").map(str::to_string),
+                                h.attribute(&doc, "port").map(str::to_string),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 
@@ -509,8 +549,8 @@ pub struct VolInstall {
     pub pool_name: String,
     pub name: String,
     /// Bytes.
-    pub capacity: u64,
-    pub allocation: u64,
+    pub capacity: u128,
+    pub allocation: u128,
     pub format: Option<String>,
     /// `file_type`: what the pool makes, `file` for a directory.
     pub file_type: String,
@@ -535,7 +575,7 @@ impl VolInstall {
                  APIs to manage the parent directory as a pool first."
             )
         })?;
-        let capacity = (size * 1024.0 * 1024.0 * 1024.0) as u64;
+        let capacity = (size * 1024.0 * 1024.0 * 1024.0) as u128;
         let file_type = pool.get_disk_type().to_string();
         let mut vol = VolInstall {
             pool_name: pool.name.clone(),
@@ -609,8 +649,8 @@ impl VolInstall {
                 self.name
             ));
         }
-        let avail = pool.get_info().map(|i| i.available).unwrap_or(u64::MAX);
-        const MIB: u64 = 1024 * 1024;
+        let avail = pool.get_info().map(|i| i.available).unwrap_or(u64::MAX) as u128;
+        const MIB: u128 = 1024 * 1024;
         if self.allocation > avail {
             return Err(format!(
                 "There is not enough free space on the storage pool to create the volume. \
@@ -628,6 +668,39 @@ impl VolInstall {
             );
         }
         Ok(())
+    }
+
+    /// `is_size_conflict`: whether the requested size exceeds the
+    /// pool's available space, `(fatal, message)`.
+    pub fn is_size_conflict(&self, conn: &Connect) -> (bool, Option<String>) {
+        let Ok(pool) = StoragePool::lookup_by_name(conn, &self.pool_name) else {
+            return (false, None);
+        };
+        let avail = pool.get_info().map(|i| i.available).unwrap_or(u64::MAX) as u128;
+        const MIB: u128 = 1024 * 1024;
+        if self.allocation > avail {
+            return (
+                true,
+                Some(format!(
+                    "There is not enough free space on the storage pool to create the volume. \
+                     ({} M requested allocation > {} M available)",
+                    self.allocation / MIB,
+                    avail / MIB
+                )),
+            );
+        }
+        if self.capacity > avail {
+            return (
+                false,
+                Some(format!(
+                    "The requested volume capacity will exceed the available pool space when \
+                     the volume is fully allocated. ({} M requested capacity > {} M available)",
+                    self.capacity / MIB,
+                    avail / MIB
+                )),
+            );
+        }
+        (false, None)
     }
 
     /// `_detect_backing_store_format`: the format of the volume at
@@ -947,6 +1020,44 @@ pub fn path_in_use_by(
     shareable: bool,
     read_only: bool,
 ) -> Vec<String> {
+    path_in_use_by_resolving(path, volmap, vms, shareable, read_only, &|_, _| None)
+}
+
+/// [`path_in_use_by`] against everything on `conn`, with disks on a
+/// `<source pool= volume=>` checked by their volume's path, as
+/// `disk.get_source_path()` resolves them.
+pub fn path_in_use_by_conn(
+    conn: &Connect,
+    path: &str,
+    shareable: bool,
+    read_only: bool,
+) -> Result<Vec<String>, String> {
+    let doms = conn
+        .list_all_domains(0)
+        .map_err(|e| e.message().to_string())?;
+    let vms: Vec<(String, String)> = doms
+        .iter()
+        .filter_map(|dom| Some((dom.get_name().ok()?, dom.get_xml_desc(0).ok()?)))
+        .collect();
+    let volmap = get_volmap(conn);
+    let resolve = |pool: &str, vol: &str| {
+        let pool = virt::storage_pool::StoragePool::lookup_by_name(conn, pool).ok()?;
+        let vol = virt::storage_vol::StorageVol::lookup_by_name(&pool, vol).ok()?;
+        vol.get_path().ok()
+    };
+    Ok(path_in_use_by_resolving(
+        path, &volmap, &vms, shareable, read_only, &resolve,
+    ))
+}
+
+fn path_in_use_by_resolving(
+    path: &str,
+    volmap: &[(String, String)],
+    vms: &[(String, String)],
+    shareable: bool,
+    read_only: bool,
+    resolve_volume: &dyn Fn(&str, &str) -> Option<String>,
+) -> Vec<String> {
     if path.is_empty() {
         return vec![];
     }
@@ -985,7 +1096,10 @@ pub fn path_in_use_by(
             .map(|d| d.find_all(&doc, "disk"))
             .unwrap_or_default();
         for disk in disks {
-            let checkpath = crate::devices::disk::source_path(&doc, disk);
+            let checkpath = crate::devices::disk::source_path(&doc, disk).or_else(|| {
+                let (pool, vol) = crate::devices::disk::source_volume(&doc, disk)?;
+                resolve_volume(&pool, &vol)
+            });
             if checkpath.as_ref().is_some_and(|c| vols.contains(c)) && !ret.contains(name) {
                 // VM uses the path indirectly via backing store
                 ret.push(name.clone());

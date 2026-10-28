@@ -410,7 +410,7 @@ pub static DEVICE_DISK: XmlClass = XmlClass {
 };
 
 use crate::diskbackend::StorageBackend;
-use crate::xmlbuilder::Value;
+use crate::xmlbuilder::{py_int, Value};
 
 fn str_val(s: impl Into<String>) -> Option<Value> {
     Some(Value::Str(s.into()))
@@ -550,8 +550,24 @@ pub fn set_xmlpath(
 ) -> Result<(), String> {
     clear_source(disk)?;
     if backend.get_dev_type() == "network" {
-        if let Some(path) = backend.get_path() {
-            set_from_url(disk, &path)?;
+        // `_set_network_source_from_backend`
+        let volname = backend
+            .vol_install()
+            .map(|vi| (vi.name.clone(), None))
+            .or_else(|| {
+                backend
+                    .vol_xml()
+                    .map(|v| (v.name.clone(), v.target_path.clone()))
+            });
+        match (volname, backend.pool_xml()) {
+            (Some((name, target_path)), Some(pool)) => {
+                set_network_from_storage(disk, &name, target_path.as_deref(), pool)?
+            }
+            _ => {
+                if let Some(path) = backend.get_path() {
+                    set_from_url(disk, &path)?;
+                }
+            }
         }
         return Ok(());
     }
@@ -562,6 +578,71 @@ pub fn set_xmlpath(
         _ => return Ok(()),
     };
     disk.child_mut("source").set(propname, val.map(Value::Str))
+}
+
+/// `_set_source_network_from_storage` plus the source's
+/// `set_network_from_storage`: a network volume's `<source>` and auth
+/// from its pool.
+fn set_network_from_storage(
+    disk: &mut XmlObject,
+    volname: &str,
+    vol_target_path: Option<&str>,
+    pool: &crate::storage::PoolXml,
+) -> Result<(), String> {
+    disk.set("_xmltype", str_val("network"))?;
+    if pool.auth_type.is_some() {
+        disk.set("auth_username", pool.auth_username.clone().map(Value::Str))?;
+        disk.set("auth_secret_type", pool.auth_type.clone().map(Value::Str))?;
+        disk.set(
+            "auth_secret_uuid",
+            pool.auth_secret_uuid.clone().map(Value::Str),
+        )?;
+    }
+    let is_iscsi_direct = pool.pool_type == "iscsi-direct";
+    let protocol = if is_iscsi_direct {
+        "iscsi"
+    } else {
+        pool.pool_type.as_str()
+    };
+    let source = disk.child_mut("source");
+    source.set("protocol", str_val(protocol))?;
+    for (idx, (name, port)) in pool.hosts.iter().enumerate() {
+        if source.children("hosts").len() < idx + 1 {
+            source.add_child(XmlObject::new(&DISK_HOST));
+        }
+        let host = &mut source.children_mut("hosts")[idx];
+        host.set("name", name.clone().map(Value::Str))?;
+        let port = match port {
+            Some(p) => Some(Value::Int(py_int(p)?)),
+            None => None,
+        };
+        host.set("port", port)?;
+    }
+    let mut path = String::new();
+    if is_iscsi_direct {
+        // Vol path is like this:
+        // ip-10.66.144.87:3260-iscsi-iqn.2017-12.com.virttest:emulated-iscsi-noauth.target2-lun-1
+        // Always seems to have -iscsi- embedded in it
+        if let Some(tp) = vol_target_path.filter(|t| t.contains("-iscsi-iqn.")) {
+            path = tp
+                .split_once("-iscsi-")
+                .map(|(_, r)| r)
+                .unwrap_or(tp)
+                .to_string();
+        }
+    } else {
+        if let Some(sn) = pool.source_name.as_deref().filter(|s| !s.is_empty()) {
+            path += sn;
+            if let Some(sp) = pool.source_path.as_deref() {
+                path += sp;
+            }
+            if !path.ends_with('/') {
+                path.push('/');
+            }
+        }
+        path += volname;
+    }
+    source.set("name", (!path.is_empty()).then_some(Value::Str(path)))
 }
 
 /// `_resolve_storage_backend`: the storage the XML source points at.
@@ -620,6 +701,40 @@ pub fn set_source_path_obj(
     let backend = StorageBackend::for_path(conn, newpath, remote)?;
     set_xmlpath(disk, backend.get_path(), &backend)?;
     Ok(backend)
+}
+
+/// `sync_path_props`: refills type, driver_name and driver_type from the
+/// backing storage, needed after changing an existing disk's media.
+pub fn sync_path_props(
+    disk: &mut XmlObject,
+    backend: &StorageBackend,
+    driver_name_qemu: bool,
+    is_xen: bool,
+) -> Result<(), String> {
+    let path = xmlpath(disk);
+    disk.set("_xmltype", str_val(default_type(disk, Some(backend))))?;
+    let typ = disk_type(disk, Some(backend));
+    // `_get_default_driver_name`
+    let name = if backend.get_path().is_none() {
+        None
+    } else if is_xen && typ == "block" {
+        Some("phy")
+    } else if driver_name_qemu {
+        Some("qemu")
+    } else {
+        None
+    };
+    disk.set("driver_name", name.map(|n| Value::Str(n.into())))?;
+    // `_get_default_driver_type`
+    let drvtype = name
+        .filter(|n| *n == "qemu")
+        .and_then(|_| qemu_sanitize_drvtype(&typ, backend.get_driver_type().as_deref()));
+    disk.set("driver_type", drvtype.map(Value::Str))?;
+    // Need to retrigger this if the type changed
+    if path.is_some() {
+        set_xmlpath(disk, path, backend)?;
+    }
+    Ok(())
 }
 
 /// What `DeviceDisk.set_defaults` reads from the guest and connection.
