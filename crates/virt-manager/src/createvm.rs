@@ -613,6 +613,7 @@ struct FailedGuest {
 }
 
 /// What `_start_install` needs: the guest's XML and its storage.
+#[derive(Clone)]
 struct InstallPlan {
     name: String,
     uuid: String,
@@ -627,9 +628,13 @@ struct InstallPlan {
     vol_install: Option<virtinst_core::storage::VolInstall>,
     disk_path: Option<String>,
     bootstrap: Option<BootstrapArgs>,
+    /// The customize dialog's edits: the guest's XML, which replaces
+    /// `guest`'s, and the installer's autostart.
+    customized: Option<(String, bool)>,
 }
 
 /// A `location` install: the tree media to fetch the kernel from.
+#[derive(Clone)]
 struct TreeInstall {
     location: String,
     extra_args: Option<String>,
@@ -719,12 +724,18 @@ fn create_domain(
     guest: &virtinst_core::install::newguest::NewGuest,
     installer: &virtinst_core::install::newguest::Installer,
     cf: &virtinst_core::install::newguest::ConnFacts,
+    customized: Option<&(String, bool)>,
     is_vz: bool,
-    vol_install: &Option<virtinst_core::storage::VolInstall>,
+    vol_install: Option<&virtinst_core::storage::VolInstall>,
     created: &AtomicBool,
     meter: &mut asyncjob::Meter,
 ) -> Result<(), (String, String)> {
-    let xml = installer.build_xml(guest, cf);
+    let xml = match customized {
+        Some((xml, _)) => installer
+            .build_xml_from_xml(xml, guest.os.is_windows)
+            .map_err(|e| (e.clone(), e))?,
+        None => installer.build_xml(guest, cf),
+    };
     eprintln!(
         "Generated initial_xml: {}",
         xml.initial
@@ -744,7 +755,7 @@ fn create_domain(
         let msg = e.message().to_string();
         (msg.clone(), msg)
     };
-    if is_vz {
+    let dom = if is_vz {
         // `_manual_transient_create`
         let dom = virt::domain::Domain::define_xml(
             conn,
@@ -756,12 +767,18 @@ fn create_domain(
             return Err(verr(e));
         }
         if xml.initial.as_ref().is_some_and(|x| *x != xml.final_xml) {
-            virt::domain::Domain::define_xml(conn, &xml.final_xml).map_err(verr)?;
+            virt::domain::Domain::define_xml(conn, &xml.final_xml).map_err(verr)?
+        } else {
+            dom
         }
     } else {
         virt::domain::Domain::create_xml(conn, xml.initial.as_deref().unwrap_or(&xml.final_xml), 0)
             .map_err(verr)?;
-        virt::domain::Domain::define_xml(conn, &xml.final_xml).map_err(verr)?;
+        virt::domain::Domain::define_xml(conn, &xml.final_xml).map_err(verr)?
+    };
+    if customized.is_some_and(|(_, autostart)| *autostart) {
+        eprintln!("Setting autostart");
+        dom.set_autostart(true).map_err(verr)?;
     }
     meter.end();
     eprintln!("Install completed");
@@ -780,7 +797,25 @@ fn create_domain(
     Ok(())
 }
 
+/// Whether a disk of the guest `xml` has its source at `path`.
+fn guest_xml_has_disk_path(xml: &str, path: &str) -> bool {
+    let Ok(doc) = virtinst_xml::parse_libvirt_xml(xml) else {
+        return false;
+    };
+    let Some(devices) = doc.root_element().and_then(|r| r.find(&doc, "devices")) else {
+        return false;
+    };
+    devices.find_all(&doc, "disk").iter().any(|disk| {
+        disk.find(&doc, "source").is_some_and(|src| {
+            ["file", "dev", "dir"]
+                .iter()
+                .any(|a| src.attribute(&doc, a) == Some(path))
+        })
+    })
+}
+
 /// The `virtBootstrap.bootstrap` arguments for an OS container.
+#[derive(Clone)]
 struct BootstrapArgs {
     src: String,
     dest: String,
@@ -929,6 +964,8 @@ pub struct Inner {
 
     gdata: RefCell<GuestData>,
     storage_browser: RefCell<Option<StorageBrowser>>,
+    /// `_customize_window`.
+    customize_window: RefCell<Option<crate::vmwindow::VmmVMWindow>>,
     detect_os_in_progress: Cell<bool>,
     os_already_detected_for_media: Cell<bool>,
     /// Bumped per detection run, so a timed out one is ignored.
@@ -1179,6 +1216,7 @@ impl VmmCreateVM {
             netlist: RefCell::default(),
             gdata: RefCell::default(),
             storage_browser: RefCell::default(),
+            customize_window: RefCell::default(),
             detect_os_in_progress: Cell::new(false),
             os_already_detected_for_media: Cell::new(false),
             detect_seq: Cell::new(0),
@@ -1330,8 +1368,61 @@ impl VmmCreateVM {
         if let Some(b) = self.0.storage_browser.borrow().as_ref() {
             b.close();
         }
+        self.cleanup_customize_window();
         self.set_conn(None);
         self.0.gdata.replace(GuestData::default());
+    }
+
+    /// `_cleanup_customize_window`. Taken out first: cleaning it up can
+    /// re-enter here through its `closed` handler.
+    fn cleanup_customize_window(&self) {
+        let window = self.0.customize_window.take();
+        if let Some(window) = window {
+            window.cleanup();
+        }
+    }
+
+    /// `_show_customize_dialog`.
+    fn show_customize_dialog(&self, plan: InstallPlan) -> Result<(), String> {
+        let conn = self.0.conn.borrow().clone().ok_or("Not connected")?;
+        let xml = plan.guest.to_xml(&plan.conn_facts);
+        let vdomain = crate::domain::VmmDomain::new_virtinst(&conn, xml)?;
+
+        let weak = Rc::downgrade(&self.0);
+        let finished = move |vdomain: &crate::domain::VmmDomain| {
+            let Some(inner) = weak.upgrade() else { return };
+            let this = VmmCreateVM(inner);
+            if !this.0.window.is_visible() {
+                return;
+            }
+            eprintln!("User finished customize dialog, starting install");
+            this.0.gdata.borrow_mut().failed_guest = None;
+            let mut plan = plan.clone();
+            plan.name = vdomain.get_name();
+            plan.customized = vdomain.virtinst_backend();
+            glib::spawn_future_local(async move { this.start_install(plan).await });
+        };
+        let weak = Rc::downgrade(&self.0);
+        let closed = move || {
+            let Some(inner) = weak.upgrade() else { return };
+            eprintln!("User closed customize window, closing wizard");
+            VmmCreateVM(inner).close_requested();
+        };
+
+        // We specifically don't use vmmVMWindow.get_instance here since
+        // it's not a top level VM window
+        self.cleanup_customize_window();
+        let window = crate::vmwindow::VmmVMWindow::new_customize(
+            &vdomain,
+            self.0.window.upcast_ref(),
+            crate::vmwindow::CustomizeHandlers {
+                finished: Rc::new(finished),
+                closed: Rc::new(closed),
+            },
+        );
+        window.show();
+        self.0.customize_window.replace(Some(window));
+        Ok(())
     }
 
     /// `_close_requested`: removes the disk a failed install created
@@ -1464,10 +1555,6 @@ impl VmmCreateVM {
         // Final page
         i.fin.name.set_text("");
         i.fin.customize.set_active(false);
-        // `Customize configuration before install` needs the details
-        // window on a guest that isn't defined yet, not ported.
-        i.fin.customize.set_sensitive(false);
-        i.fin.customize.set_tooltip_text(Some("Not supported yet"));
     }
 
     /// `_set_caps_state`: the install methods this guest type allows.
@@ -2457,8 +2544,19 @@ impl VmmCreateVM {
 
             this.0.window.set_cursor_from_name(Some("progress"));
             // `build_guest` + `build_installer` + `set_install_defaults`
-            match this.build_install().await {
-                Ok(plan) => this.start_install(plan).await,
+            let res = match this.build_install().await {
+                Ok(plan) if this.0.fin.customize.is_active() => {
+                    eprintln!("User requested 'customize', launching dialog");
+                    this.show_customize_dialog(plan)
+                }
+                Ok(plan) => {
+                    this.start_install(plan).await;
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            };
+            match res {
+                Ok(()) => {}
                 Err(e) => {
                     this.0.window.set_cursor_from_name(None);
                     error::show_err(
@@ -2653,6 +2751,7 @@ impl VmmCreateVM {
             vol_install,
             disk_path,
             bootstrap,
+            customized: None,
         })
     }
 
@@ -2726,9 +2825,23 @@ impl VmmCreateVM {
             vol_install,
             disk_path,
             bootstrap,
+            customized,
         } = plan;
+        // `_sync_disk_storage_params`: the new storage goes with the
+        // customized guest only while a disk still uses its path.
+        let vol_install = vol_install.filter(|_| match &customized {
+            Some((xml, _)) => disk_path
+                .as_deref()
+                .is_some_and(|path| guest_xml_has_disk_path(xml, path)),
+            None => true,
+        });
+        // parentobj = self._customize_window or self
+        let parent: gtk::Window = match i.customize_window.borrow().as_ref() {
+            Some(w) => w.window(),
+            None => i.window.clone().upcast(),
+        };
         let err = asyncjob::run(
-            Some(&i.window),
+            Some(&parent),
             "Creating Virtual Machine",
             "The virtual machine is now being created. Allocation of disk storage and \
              retrieval of the installation images may take a few minutes to complete.",
@@ -2773,8 +2886,9 @@ impl VmmCreateVM {
                     &guest,
                     &installer,
                     &conn_facts,
+                    customized.as_ref(),
                     is_vz,
-                    &vol_install,
+                    vol_install.as_ref(),
                     &created,
                     &mut meter,
                 );
@@ -2808,7 +2922,7 @@ impl VmmCreateVM {
             (error, _) => {
                 let (e, details) = error.unwrap_or_default();
                 error::show_err(
-                    Some(&i.window),
+                    Some(&parent),
                     &format!("Unable to complete install: '{e}'"),
                     Some(&details),
                     "",

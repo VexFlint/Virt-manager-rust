@@ -4,8 +4,9 @@
 //! toolbar (Console/Details toggles, Run, Pause, Shut Down, Snapshots,
 //! Fullscreen).
 //!
-//! One window per VM, keyed by `uri+uuid` like upstream. The
-//! "customize before install" mode arrives with the Create VM wizard.
+//! One window per VM, keyed by `uri+uuid` like upstream. The Create VM
+//! wizard also opens one, outside that map, as its "customize before
+//! install" dialog ([`VmmVMWindow::new_customize`]).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -60,6 +61,19 @@ struct Inner {
     window_size: Cell<Option<(i32, i32)>>,
     handlers: RefCell<Vec<(glib::Object, glib::SignalHandlerId)>>,
     settings_handlers: RefCell<Vec<(gio::Settings, glib::SignalHandlerId)>>,
+    /// `is_customize_dialog`.
+    is_customize_dialog: bool,
+    /// The `customize-finished` and `closed` handlers of the customize
+    /// dialog; taken on cleanup so closing it then reports nothing.
+    customize: RefCell<Option<CustomizeHandlers>>,
+}
+
+/// What the Create VM wizard hears back from its customize dialog.
+pub struct CustomizeHandlers {
+    /// `customize-finished`: Begin Installation, with the edited VM.
+    pub finished: Rc<dyn Fn(&VmmDomain)>,
+    /// `closed`: the dialog went away without installing.
+    pub closed: Rc<dyn Fn()>,
 }
 
 #[derive(Clone)]
@@ -211,13 +225,24 @@ impl VmmVMWindow {
         let this = INSTANCES.with(|i| {
             i.borrow_mut()
                 .entry(key)
-                .or_insert_with(|| VmmVMWindow::new(vm))
+                .or_insert_with(|| VmmVMWindow::new(vm, None))
                 .clone()
         });
         this.show();
     }
 
-    fn new(vm: &VmmDomain) -> VmmVMWindow {
+    /// `vmmVMWindow(vm, parent)`: the details window abused as a
+    /// "configure before install" dialog.
+    pub fn new_customize(
+        vm: &VmmDomain,
+        parent: &gtk::Window,
+        handlers: CustomizeHandlers,
+    ) -> VmmVMWindow {
+        VmmVMWindow::new(vm, Some((parent, handlers)))
+    }
+
+    fn new(vm: &VmmDomain, customize: Option<(&gtk::Window, CustomizeHandlers)>) -> VmmVMWindow {
+        let is_customize_dialog = customize.is_some();
         let app = engine::get().app();
         let window = gtk::ApplicationWindow::builder()
             .application(&app)
@@ -227,7 +252,7 @@ impl VmmVMWindow {
         app.set_accels_for_action("vmwin.quit", &["<Control><Shift>q"]);
 
         let console = VmmConsolePages::new(vm, &window);
-        let details = VmmDetails::new(vm, false);
+        let details = VmmDetails::new(vm, is_customize_dialog);
 
         let menubar = gtk::PopoverMenuBar::from_model(Some(&build_menubar(vm, &console)));
 
@@ -283,6 +308,19 @@ impl VmmVMWindow {
         let toolbar_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         toolbar_box.append(&toolbar);
 
+        // customize-toolbar
+        let customize_toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        customize_toolbar.add_css_class("toolbar");
+        let finish_customize = gtk::Button::with_mnemonic("_Begin Installation");
+        finish_customize.set_tooltip_text(Some("Begin Installation"));
+        finish_customize.add_css_class("flat");
+        let cancel_customize = gtk::Button::with_mnemonic("_Cancel Installation");
+        cancel_customize.add_css_class("flat");
+        customize_toolbar.append(&finish_customize);
+        customize_toolbar.append(&cancel_customize);
+        customize_toolbar.set_visible(false);
+        toolbar_box.append(&customize_toolbar);
+
         let snapshots = gtk::Label::new(Some(
             "Snapshot management is not available yet in this version.",
         ));
@@ -297,6 +335,19 @@ impl VmmVMWindow {
         vbox.append(&toolbar_box);
         vbox.append(&pages);
         window.set_child(Some(&vbox));
+
+        let mut customize_handlers = None;
+        if let Some((parent, handlers)) = customize {
+            // Details window is being abused as a 'configure before install'
+            // dialog, set things as appropriate
+            window.set_transient_for(Some(parent));
+            window.set_deletable(false);
+            toolbar_box.set_visible(true);
+            customize_toolbar.set_visible(true);
+            toolbar.set_visible(false);
+            menubar.set_visible(false);
+            customize_handlers = Some(handlers);
+        }
 
         let (w, h) = vm.get_details_window_size();
         if w <= 0 || h <= 0 {
@@ -414,9 +465,23 @@ impl VmmVMWindow {
                 window_size: Cell::new(None),
                 handlers: RefCell::default(),
                 settings_handlers: RefCell::default(),
+                is_customize_dialog,
+                customize: RefCell::new(customize_handlers),
             }
         });
         let this = VmmVMWindow(inner);
+        let weak = Rc::downgrade(&this.0);
+        finish_customize.connect_clicked(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                VmmVMWindow(inner).customize_finish();
+            }
+        });
+        let weak = Rc::downgrade(&this.0);
+        cancel_customize.connect_clicked(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                VmmVMWindow(inner).customize_cancel();
+            }
+        });
         this.connect_signals();
         this.init_menus();
         this.sync_console_page_menu_state();
@@ -515,7 +580,7 @@ impl VmmVMWindow {
             None
         });
         i.handlers.borrow_mut().push((vm.clone().upcast(), id));
-        if let Some(conn) = vm.conn() {
+        if let Some(conn) = vm.conn().filter(|_| !i.is_customize_dialog) {
             let weak = Rc::downgrade(&self.0);
             let id = conn.connect_local("vm-removed", false, move |args| {
                 let removed = args[1].get::<VmmDomain>().ok();
@@ -588,6 +653,50 @@ impl VmmVMWindow {
         self.close_inner();
     }
 
+    /// `customize_finish`.
+    fn customize_finish(&self) {
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            if this.0.details.vmwindow_has_unapplied_changes().await {
+                return;
+            }
+            let finished = this
+                .0
+                .customize
+                .borrow()
+                .as_ref()
+                .map(|h| h.finished.clone());
+            if let Some(finished) = finished {
+                finished(&this.0.vm);
+            }
+        });
+    }
+
+    /// `_customize_cancel`.
+    fn customize_cancel(&self) {
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            eprintln!("Asking to cancel customization");
+            let result = error::yes_no(
+                Some(this.0.window.upcast_ref()),
+                "This will abort the installation. Are you sure?",
+                None,
+            )
+            .await;
+            if !result {
+                eprintln!("Customize cancel aborted");
+                return;
+            }
+            eprintln!("Canceling customization");
+            this.close_inner();
+        });
+    }
+
+    /// The customize dialog's window, for its error dialogs.
+    pub fn window(&self) -> gtk::Window {
+        self.0.window.clone().upcast()
+    }
+
     /// `_close`.
     fn close_inner(&self) {
         let i = &self.0;
@@ -605,10 +714,17 @@ impl VmmVMWindow {
         i.console.vmwindow_close();
         i.details.vmwindow_close();
         engine::get().decrement_window_counter();
+        // vmmGObjectUI "closed"
+        let closed = i.customize.borrow().as_ref().map(|h| h.closed.clone());
+        if let Some(closed) = closed {
+            closed();
+        }
     }
 
-    /// `_cleanup` on `vm-removed`: close and forget this window.
-    fn cleanup(&self) {
+    /// `_cleanup` on `vm-removed`, or the wizard done with its
+    /// customize dialog: close and forget this window.
+    pub fn cleanup(&self) {
+        drop(self.0.customize.take());
         self.close_inner();
         let i = &self.0;
         i.console.vmwindow_cleanup();
@@ -619,7 +735,7 @@ impl VmmVMWindow {
         for (settings, id) in i.settings_handlers.take() {
             settings.disconnect(id);
         }
-        if let Some(conn) = i.vm.conn() {
+        if let Some(conn) = i.vm.conn().filter(|_| !i.is_customize_dialog) {
             let key = format!("{}+{}", conn.get_uri(), i.vm.get_uuid());
             INSTANCES.with(|m| m.borrow_mut().remove(&key));
         }
@@ -629,6 +745,9 @@ impl VmmVMWindow {
     // Window state listeners
 
     fn toggle_toolbar(&self, active: bool) {
+        if self.0.is_customize_dialog {
+            return;
+        }
         engine::get().config().set_details_show_toolbar(active);
         let fsactive = action(&self.0.win_actions, "fullscreen")
             .state()
@@ -794,6 +913,11 @@ impl VmmVMWindow {
     }
 
     fn activate_default_page(&self) {
+        if self.0.is_customize_dialog {
+            self.0.pages.set_visible_child_name(PAGE_DETAILS);
+            self.sync_toolbar_page_buttons(PAGE_DETAILS);
+            return;
+        }
         self.0.pages.set_visible_child_name(PAGE_CONSOLE);
         self.sync_toolbar_page_buttons(PAGE_CONSOLE);
         self.0.console.vmwindow_activate_default_console_page();

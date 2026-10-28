@@ -232,6 +232,8 @@ pub struct DiskEdits {
     pub cache: Option<Option<String>>,
     pub discard: Option<Option<String>>,
     pub serial: Option<Option<String>>,
+    /// `change_bus`, from the customize dialog.
+    pub bus: Option<String>,
 }
 
 /// `define_network`'s arguments; `None` leaves a part alone.
@@ -241,6 +243,8 @@ pub struct NetworkEdits {
     pub source: Option<crate::netlist::NetSelection>,
     pub model: Option<Option<String>>,
     pub linkstate: Option<bool>,
+    /// The customize dialog's MAC address.
+    pub macaddr: Option<String>,
 }
 
 /// Which NIC to edit: `compare_device` matches by MAC and index.
@@ -272,6 +276,49 @@ fn edit_network(
     if let Some(up) = edits.linkstate {
         n::set_link_state(doc, iface, up);
     }
+    if let Some(mac) = &edits.macaddr {
+        let el = virtinst_xml::resolve_or_create_path(doc, iface, &["mac"]);
+        el.set_attribute(doc, "address", mac.as_str());
+    }
+}
+
+/// `DeviceDisk.change_bus`: a new bus drops the address, and a new
+/// target prefix picks a new target.
+fn change_disk_bus(
+    doc: &mut virtinst_xml::Document,
+    root: virtinst_xml::Element,
+    disk: virtinst_xml::Element,
+    newbus: &str,
+) -> Result<(), String> {
+    use virtinst_core::devices::build::{generate_target, target_prefix};
+    let device = disk.attribute(doc, "device").unwrap_or("disk").to_string();
+    let target = virtinst_xml::resolve_or_create_path(doc, disk, &["target"]);
+    let oldbus = target.attribute(doc, "bus").unwrap_or_default().to_string();
+    if oldbus == newbus {
+        return Ok(());
+    }
+    let oldprefix = target_prefix(&oldbus, &device).0;
+    target.set_attribute(doc, "bus", newbus);
+    virtinst_xml::remove_path_if_present(doc, disk, &["address"]).map_err(|e| e.to_string())?;
+    if oldprefix == target_prefix(newbus, &device).0 {
+        return Ok(());
+    }
+    let mut used: Vec<String> = root
+        .find(doc, "devices")
+        .map(|d| d.find_all(doc, "disk"))
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|d| d.find(doc, "target"))
+        .filter_map(|t| t.attribute(doc, "dev").map(str::to_string))
+        .collect();
+    if let Some(cur) = target.attribute(doc, "dev").map(str::to_string) {
+        if let Some(pos) = used.iter().position(|t| *t == cur) {
+            used.remove(pos);
+        }
+    }
+    let newtarget = generate_target(newbus, &device, &used)?;
+    target.set_attribute(doc, "dev", newtarget);
+    Ok(())
 }
 
 /// `virNetworkGetDHCPLeases`, which the virt crate doesn't wrap:
@@ -668,6 +715,9 @@ mod imp {
         /// `_install_abort`: the user stopped the VM themselves, so a
         /// finished install doesn't restart it.
         pub install_abort: Cell<bool>,
+        /// `vmmDomainVirtinst`: set for the guest the Create VM wizard
+        /// is customizing, which isn't defined in libvirt yet.
+        pub virtinst: RefCell<Option<super::VirtinstGuest>>,
     }
 
     #[glib::object_subclass]
@@ -693,12 +743,78 @@ glib::wrapper! {
     pub struct VmmDomain(ObjectSubclass<imp::VmmDomain>);
 }
 
+/// `vmmDomainVirtinst`'s backend: the guest's XML, which edits replace
+/// instead of being defined, and the installer's autostart flag.
+#[derive(Default)]
+pub struct VirtinstGuest {
+    xml: String,
+    autostart: bool,
+}
+
 impl VmmDomain {
     pub fn new(conn: &VmmConnection, snapshot: DomainSnapshot) -> VmmDomain {
         let obj: VmmDomain = glib::Object::new();
         obj.imp().conn.set(Some(conn));
         obj.imp().snapshot.replace(snapshot);
         obj
+    }
+
+    /// `vmmDomainVirtinst`: a domain backed by the guest XML the Create
+    /// VM wizard built, for its "customize before install" window.
+    pub fn new_virtinst(conn: &VmmConnection, xml: String) -> Result<VmmDomain, String> {
+        let parsed = DomainXml::parse(xml.clone())?;
+        let snapshot = DomainSnapshot {
+            uuid: parsed.guest.uuid.clone().unwrap_or_default(),
+            name: parsed.guest.name.clone().unwrap_or_default(),
+            state: sys::VIR_DOMAIN_SHUTOFF,
+            ..Default::default()
+        };
+        eprintln!("vmmDomainVirtinst initialized with XML=\n{xml}");
+        let obj = VmmDomain::new(conn, snapshot);
+        obj.imp().xmlobj.replace(Some(Rc::new(parsed)));
+        obj.imp().virtinst.replace(Some(VirtinstGuest {
+            xml,
+            autostart: false,
+        }));
+        Ok(obj)
+    }
+
+    pub fn is_virtinst(&self) -> bool {
+        self.imp().virtinst.borrow().is_some()
+    }
+
+    /// `get_backend()` of a [`Self::new_virtinst`] domain: its XML
+    /// with the user's edits, and the autostart flag.
+    pub fn virtinst_backend(&self) -> Option<(String, bool)> {
+        self.imp()
+            .virtinst
+            .borrow()
+            .as_ref()
+            .map(|v| (v.xml.clone(), v.autostart))
+    }
+
+    /// `_replace_domain_xml` + `_define`: the edited XML becomes the
+    /// guest, and the name and title follow it.
+    async fn virtinst_define(&self, xml: String) -> Result<(), String> {
+        // `Guest.get_xml()` has no XML declaration.
+        let xml = match xml.strip_prefix("<?xml") {
+            Some(rest) => rest
+                .split_once("?>")
+                .map_or(xml.clone(), |(_, body)| body.trim_start().to_string()),
+            None => xml,
+        };
+        let parsed = DomainXml::parse(xml.clone())?;
+        if let Some(v) = self.imp().virtinst.borrow_mut().as_mut() {
+            v.xml = xml;
+        }
+        {
+            let mut snap = self.imp().snapshot.borrow_mut();
+            snap.name = parsed.guest.name.clone().unwrap_or_default();
+            snap.title = parsed.guest.title.clone();
+            snap.description = parsed.guest.description.clone();
+        }
+        self.ensure_latest_xml().await;
+        Ok(())
     }
 
     /// Applies a fresh poll; emits `state-changed` only on a real change.
@@ -817,6 +933,15 @@ impl VmmDomain {
     /// (`recache_from_event_loop`), when the VM window shows, and when
     /// the state changes. Returns whether it changed.
     pub async fn refresh_xml(&self) -> Result<bool, String> {
+        let virtinst_xml = self.virtinst_backend().map(|(xml, _)| xml);
+        if let Some(xml) = virtinst_xml {
+            if self.xmlobj().is_some_and(|x| x.xml == xml) {
+                return Ok(false);
+            }
+            let parsed = DomainXml::parse(xml)?;
+            self.imp().xmlobj.replace(Some(Rc::new(parsed)));
+            return Ok(true);
+        }
         let conn = self.conn().ok_or("Connection closed")?;
         let handle = conn.handle().ok_or("Not connected")?;
         let uuid = self.get_uuid();
@@ -898,11 +1023,25 @@ impl VmmDomain {
         conn.handle().ok_or_else(|| "Not connected".to_string())
     }
 
+    /// Runs `f` on the connection, on a worker thread.
+    async fn with_conn<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&Connect) -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
+        let handle = self.handle()?;
+        gio::spawn_blocking(move || f(handle.connect()))
+            .await
+            .map_err(|_| "Worker thread panicked".to_string())?
+    }
+
     /// Runs `f` on the domain, looked up by UUID, on a worker thread.
     async fn with_domain<T: Send + 'static>(
         &self,
         f: impl FnOnce(&Connect, &Domain) -> Result<T, String> + Send + 'static,
     ) -> Result<T, String> {
+        if self.is_virtinst() {
+            return Err("The virtual machine isn't defined yet".into());
+        }
         let handle = self.handle()?;
         let uuid = self.get_uuid();
         gio::spawn_blocking(move || {
@@ -917,6 +1056,9 @@ impl VmmDomain {
 
     /// `_make_xmlobj_to_define`: the inactive XML, for editing.
     pub async fn make_xmlobj_to_define(&self) -> Result<XmlToDefine, String> {
+        if let Some((xml, _)) = self.virtinst_backend() {
+            return XmlToDefine::parse(xml);
+        }
         let xml = self
             .with_domain(|_, dom| {
                 dom.get_xml_desc(sys::VIR_DOMAIN_XML_INACTIVE | sys::VIR_DOMAIN_XML_SECURE)
@@ -935,6 +1077,9 @@ impl VmmDomain {
                 "Redefine requested for {}, but XML didn't change!",
                 self.get_name()
             );
+        }
+        if self.is_virtinst() {
+            return self.virtinst_define(newxml).await;
         }
         let handle = self.handle()?;
         gio::spawn_blocking(move || {
@@ -1155,6 +1300,9 @@ impl VmmDomain {
 
     /// `get_autostart`; `None` when libvirt can't say.
     pub async fn get_autostart(&self) -> Option<bool> {
+        if let Some((_, autostart)) = self.virtinst_backend() {
+            return Some(autostart);
+        }
         self.with_domain(|_, dom| dom.get_autostart().map_err(|e| e.message().to_string()))
             .await
             .ok()
@@ -1162,6 +1310,13 @@ impl VmmDomain {
 
     /// `set_autostart`.
     pub async fn set_autostart(&self, val: bool) -> Result<(), String> {
+        if let Some(v) = self.imp().virtinst.borrow_mut().as_mut() {
+            v.autostart = val;
+        }
+        if self.is_virtinst() {
+            self.emit_state_changed();
+            return Ok(());
+        }
         self.with_domain(move |_, dom| {
             dom.set_autostart(val)
                 .map(|_| ())
@@ -1251,7 +1406,7 @@ impl VmmDomain {
         shareable: bool,
         read_only: bool,
     ) -> Result<Vec<String>, String> {
-        self.with_domain(move |conn, _| path_in_use_by(conn, &path, shareable, read_only))
+        self.with_conn(move |conn| path_in_use_by(conn, &path, shareable, read_only))
             .await
     }
 
@@ -1262,7 +1417,7 @@ impl VmmDomain {
         path: Option<String>,
         volume: Option<(String, String)>,
     ) -> Option<(String, u64)> {
-        self.with_domain(move |conn, _| {
+        self.with_conn(move |conn| {
             let vol = match (&volume, &path) {
                 (Some((pool, vol)), _) => {
                     virt::storage_pool::StoragePool::lookup_by_name(conn, pool)
@@ -1326,6 +1481,9 @@ impl VmmDomain {
 
     /// `define_xml`: the XML editor's edit of the whole domain.
     pub async fn define_xml(&self, xml: String) -> Result<(), String> {
+        if self.is_virtinst() {
+            return self.virtinst_define(xml).await;
+        }
         let handle = self.handle()?;
         gio::spawn_blocking(move || {
             Domain::define_xml(handle.connect(), &xml)
@@ -1340,6 +1498,9 @@ impl VmmDomain {
 
     /// `get_xml_to_define`: the inactive XML, as the XML editor shows it.
     pub async fn get_xml_to_define(&self) -> Result<String, String> {
+        if let Some((xml, _)) = self.virtinst_backend() {
+            return Ok(xml);
+        }
         self.with_domain(|_, dom| {
             dom.get_xml_desc(sys::VIR_DOMAIN_XML_INACTIVE | sys::VIR_DOMAIN_XML_SECURE)
                 .map_err(|e| e.message().to_string())
@@ -1565,12 +1726,15 @@ impl VmmDomain {
             id.bus.as_deref(),
         )
         .ok_or("Could not find specified device in the inactive VM configuration")?;
+        if let Some(bus) = &edits.bus {
+            change_disk_bus(&mut guest.doc, root, disk, bus)?;
+        }
         let sync = match &edits.path {
             Some(Some(path)) => {
                 let path = path.clone();
                 let is_local = self.is_local_conn();
                 Some(
-                    self.with_domain(move |conn, _| Ok(path_props(conn, &path, is_local)))
+                    self.with_conn(move |conn| Ok(path_props(conn, &path, is_local)))
                         .await?,
                 )
             }
@@ -1626,16 +1790,121 @@ impl VmmDomain {
         title: Option<Option<String>>,
         nvram: Option<String>,
     ) -> Result<(), String> {
+        self.define_overview_full(description, title, nvram, None, None)
+            .await
+    }
+
+    /// `define_overview` with the customize dialog's `machine` and
+    /// `(loader, firmware)` edits.
+    pub async fn define_overview_full(
+        &self,
+        description: Option<Option<String>>,
+        title: Option<Option<String>>,
+        nvram: Option<String>,
+        machine: Option<String>,
+        firmware: Option<(Option<String>, Option<String>)>,
+    ) -> Result<(), String> {
         let mut guest = self.make_xmlobj_to_define().await?;
+        let mut old_machine = None;
+        if let Some(machine) = machine {
+            old_machine = guest.guest.os.machine.replace(machine);
+            self.imp().domcaps.replace(None);
+            guest.write_os();
+        }
         if let Some(description) = description {
             guest.guest.description = description.filter(|s| !s.is_empty());
         }
         if let Some(title) = title {
             guest.guest.title = title.filter(|s| !s.is_empty());
         }
+        if let Some((loader, firmware)) = firmware {
+            let root = guest.root();
+            let os_el = virtinst_xml::resolve_or_create_path(&mut guest.doc, root, &["os"]);
+            guest.guest.os.firmware = firmware.clone();
+            if firmware.is_none() {
+                os_el.mut_attributes(&mut guest.doc).remove("firmware");
+            }
+            match loader {
+                None => {
+                    guest.guest.os.loader = None;
+                    // But if switching to firmware=efi we may need to
+                    // preserve NVRAM paths, so skip clearing all the properties
+                    // and let libvirt do it for us.
+                    if firmware.is_none() {
+                        // `disable_uefi`
+                        let os = &mut guest.guest.os;
+                        os.loader_ro = None;
+                        os.loader_type = None;
+                        os.loader_secure = None;
+                        os.nvram = None;
+                        os.nvram_template = None;
+                        os.firmware_features.clear();
+                        for tag in ["firmware", "nvram", "loader"] {
+                            virtinst_xml::remove_path_if_present(&mut guest.doc, os_el, &[tag])
+                                .map_err(|e| e.to_string())?;
+                        }
+                    }
+                }
+                // Implies UEFI
+                Some(path) => {
+                    // `set_uefi_path`
+                    let os = &mut guest.guest.os;
+                    os.loader_ro = Some(true);
+                    os.loader_type = Some("pflash".into());
+                    let secboot = path.contains("secboot");
+                    os.loader = Some(path);
+                    let is_x86 = matches!(os.arch.as_deref(), Some("i686" | "x86_64"));
+                    if is_x86 && secboot {
+                        guest.guest.features.smm = Some(virtinst_xml::OnOff(true));
+                        let os = &mut guest.guest.os;
+                        os.loader_secure = Some(true);
+                        if !os.machine.as_deref().is_some_and(|m| m.contains("q35")) {
+                            eprintln!(
+                                "Changing machine type from '{}' to 'q35' which is required \
+                                 for UEFI secure boot.",
+                                os.machine.as_deref().unwrap_or("None")
+                            );
+                            os.machine = Some("q35".into());
+                        }
+                    }
+                }
+            }
+            guest.write_os();
+        }
         if let Some(nvram) = nvram {
             guest.guest.os.nvram = Some(nvram);
             guest.write_os();
+        }
+
+        let new_machine = guest.guest.os.machine.clone();
+        let root = guest.root();
+        let devices = virtinst_xml::resolve_or_create_path(&mut guest.doc, root, &["devices"]);
+        let pci: Vec<virtinst_xml::Element> = devices
+            .find_all(&guest.doc, "controller")
+            .into_iter()
+            .filter(|c| c.attribute(&guest.doc, "type") == Some("pci"))
+            .collect();
+        match (old_machine.as_deref(), new_machine.as_deref()) {
+            (Some("pc"), Some("q35")) if pci.is_empty() => {
+                // `add_q35_pcie_controllers`
+                for model in std::iter::once("pcie-root").chain(["pcie-root-port"; 14]) {
+                    let ctrl = virtinst_xml::Element::new(&mut guest.doc, "controller");
+                    ctrl.set_attribute(&mut guest.doc, "type", "pci");
+                    ctrl.set_attribute(&mut guest.doc, "model", model);
+                    devices
+                        .push_child(&mut guest.doc, ctrl)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+            (Some("q35"), Some("pc")) => {
+                for ctrl in pci {
+                    let model = ctrl.attribute(&guest.doc, "model");
+                    if matches!(model, Some("pcie-root" | "pcie-root-port")) {
+                        ctrl.detach(&mut guest.doc).map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+            _ => {}
         }
         self.redefine_xmlobj(guest).await
     }
@@ -1677,11 +1946,17 @@ impl VmmDomain {
         }
         validate_generic_name("Guest", new_name)?;
         let name = new_name.to_string();
-        self.with_domain(move |conn, _| match Domain::lookup_by_name(conn, &name) {
+        self.with_conn(move |conn| match Domain::lookup_by_name(conn, &name) {
             Ok(_) => Err(format!("Guest name '{name}' is already in use.")),
             Err(_) => Ok(()),
         })
         .await?;
+        if self.is_virtinst() {
+            // vmmDomainVirtinst.define_name
+            let mut xmlobj = self.make_xmlobj_to_define().await?;
+            xmlobj.guest.name = Some(new_name.to_string());
+            return self.redefine_xmlobj(xmlobj).await;
+        }
 
         let xmlobj = self.make_xmlobj_to_define().await?;
         let has_nvram = xmlobj.is_uefi() || xmlobj.guest.os.nvram.is_some();

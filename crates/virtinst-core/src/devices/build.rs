@@ -669,7 +669,7 @@ pub fn num_to_target(num: usize) -> String {
 
 /// `DeviceDisk.get_target_prefix`: the prefix and how many disks it
 /// numbers.
-fn target_prefix(bus: &str, device: &str) -> (&'static str, usize) {
+pub fn target_prefix(bus: &str, device: &str) -> (&'static str, usize) {
     match bus {
         "virtio" => ("vd", 1024),
         "xen" => ("xvd", 1024),
