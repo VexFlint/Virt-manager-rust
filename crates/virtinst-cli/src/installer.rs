@@ -12,9 +12,9 @@ use virtinst_core::osinfo::OsDb;
 use virtinst_core::xmlbuilder::{Value, XmlObject};
 
 use crate::guest::{self, GuestOpts};
-use crate::installertreemedia::{self as treemedia, GuestInfo, TreeMedia};
 use crate::parsers;
 use virtinst_core::install::cloudinit::CloudInitData;
+use virtinst_core::install::installertreemedia::{self as treemedia, GuestInfo, TreeMedia};
 use virtinst_core::install::unattended::{self, OSInstallScript, ScriptGuest, UnattendedData};
 
 /// `_make_testsuite_path`.
@@ -165,15 +165,19 @@ impl Installer {
             || a.install_kernel.is_some()
             || a.install_initrd.is_some()
         {
-            inst.treemedia = Some(TreeMedia::new(
-                conn,
+            let tm = TreeMedia::new(
+                conn.uri(),
                 a.location,
                 a.location_kernel,
                 a.location_initrd,
                 a.install_kernel,
                 a.install_initrd,
                 a.install_kernel_args,
-            )?);
+            )?;
+            if let Some(iso) = tm.cdrom_path() {
+                validate_path(conn, iso)?;
+            }
+            inst.treemedia = Some(tm);
         }
         Ok(inst)
     }
@@ -380,30 +384,6 @@ impl Installer {
         self.treemedia.as_ref().and_then(|t| t.location.as_deref())
     }
 
-    /// `_should_upload_media`: whether to upload media to the
-    /// connection scratchdir, if there is any.
-    fn should_upload_media(conn: &Connection) -> Result<bool, String> {
-        let scratchdir = treemedia::make_scratchdir(conn)?;
-        let system_scratchdir = treemedia::get_system_scratchdir(conn);
-        if conn.uri().is_remote() {
-            return Ok(true);
-        }
-        if treemedia::is_unprivileged(conn) {
-            return Ok(false);
-        }
-        Ok(scratchdir != system_scratchdir)
-    }
-
-    /// `support_remote_url_install`.
-    fn support_remote_url_install(conn: &Connection) -> bool {
-        let is_test = conn
-            .as_connect()
-            .get_uri()
-            .is_ok_and(|u| u.starts_with("test:"));
-        let ret = !is_test && virt::stream::Stream::new(conn.as_connect(), 0).is_ok();
-        in_testsuite() || ret
-    }
-
     /// `_upload_media`.
     fn upload_media(
         &mut self,
@@ -411,24 +391,8 @@ impl Installer {
         meter: &mut dyn virtinst_core::progress::Meter,
         paths: Vec<String>,
     ) -> Result<Vec<String>, String> {
-        let system_scratchdir = treemedia::get_system_scratchdir(conn);
-        if !Self::should_upload_media(conn)? && !in_testsuite() {
-            // We have access to system scratchdir, don't jump through hoops
-            log::debug!("Have access to preferred scratchdir so nothing to upload");
-            return Ok(paths);
-        }
-        if !Self::support_remote_url_install(conn) {
-            // Needed for the test_urls suite
-            log::debug!("Media upload not supported");
-            return Ok(paths);
-        }
-        let (newpaths, tmpvols) = virtinst_core::install::volumeupload::upload_paths(
-            conn.as_connect(),
-            &system_scratchdir,
-            meter,
-            &paths,
-            in_testsuite(),
-        )?;
+        let (newpaths, tmpvols) =
+            treemedia::upload_media(conn.as_connect(), conn.uri(), meter, paths)?;
         self.tmpvols.extend(tmpvols);
         Ok(newpaths)
     }
@@ -441,7 +405,7 @@ impl Installer {
         meter: &mut dyn virtinst_core::progress::Meter,
         scripts: &[OSInstallScript],
     ) -> Result<(), String> {
-        let scratchdir = treemedia::make_scratchdir(conn)?;
+        let scratchdir = treemedia::make_scratchdir(conn.uri())?;
         let mut injections = vec![];
         for script in scripts {
             let expected_filename = script.get_expected_filename();
@@ -488,8 +452,8 @@ impl Installer {
         if let Some(tm) = &mut self.treemedia {
             url = tm.is_network_url().map(str::to_string);
             let info = guest_info(guest);
-            os_media = tm.get_os_media(conn, &info)?;
-            os_tree = tm.get_os_tree(conn, &info)?;
+            os_media = tm.get_os_media(conn.uri(), &info)?;
+            os_tree = tm.get_os_tree(conn.uri(), &info)?;
             injection_method = "initrd";
         } else {
             if !osinfo.is_windows() {
@@ -536,7 +500,7 @@ impl Installer {
     ) -> Result<(), String> {
         let tm = self.treemedia.as_mut().expect("checked by the caller");
         let (kernel, initrd, kernel_args) =
-            tm.prepare(conn, &guest_info(guest), meter, unattended_scripts)?;
+            tm.prepare(conn.uri(), &guest_info(guest), meter, unattended_scripts)?;
         let paths = self.upload_media(conn, meter, vec![kernel, initrd])?;
         self.treemedia_bootconfig = Some((paths[0].clone(), paths[1].clone(), kernel_args));
         Ok(())
@@ -576,7 +540,7 @@ impl Installer {
         conn: &Connection,
         meter: &mut dyn virtinst_core::progress::Meter,
     ) -> Result<(), String> {
-        let scratchdir = treemedia::make_scratchdir(conn)?;
+        let scratchdir = treemedia::make_scratchdir(conn.uri())?;
         let data = self.cloudinit_data.as_mut().expect("checked by the caller");
         let filepairs = data.create_files(&scratchdir)?;
         for (f, _) in &filepairs {
@@ -748,9 +712,9 @@ impl Installer {
         if (self.treemedia.is_some()
             || self.cloudinit_data.is_some()
             || self.unattended_data.is_some())
-            && !Self::should_upload_media(conn)?
+            && !treemedia::should_upload_media(conn.uri())?
         {
-            search_paths.push(treemedia::make_scratchdir(conn)?);
+            search_paths.push(treemedia::make_scratchdir(conn.uri())?);
         }
         if let Some(p) = self.cdrom_path() {
             search_paths.push(p.to_string());
@@ -789,7 +753,7 @@ impl Installer {
     ) -> Result<Option<String>, String> {
         let mut ret = None;
         if let Some(tm) = &mut self.treemedia {
-            ret = tm.detect_distro(conn, &guest_info(guest))?;
+            ret = tm.detect_distro(conn.uri(), &guest_info(guest))?;
         } else if let Some(cdrom) = &self.cdrom {
             if conn.uri().is_remote() {
                 log::debug!("Can't detect distro for cdrom remote connection.");
@@ -867,7 +831,7 @@ impl Installer {
         let Some(tm) = &mut self.treemedia else {
             return Ok(());
         };
-        if !tm.requires_internet(conn, &guest_info(guest))? {
+        if !tm.requires_internet(conn.uri(), &guest_info(guest))? {
             return Ok(());
         }
         let Some(os) = guest::osinfo_obj(guest) else {

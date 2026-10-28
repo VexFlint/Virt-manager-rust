@@ -110,6 +110,23 @@ impl Meter {
     }
 }
 
+/// virtinst's meter interface, for the downloads and uploads it does
+/// (`installer.start_install(guest, meter=meter)`).
+impl virtinst_core::progress::Meter for Meter {
+    fn start(&mut self, text: &str, size: Option<u64>) {
+        Meter::start(self, text, size);
+    }
+
+    fn update(&mut self, new_total: u64) {
+        self.total_read = new_total;
+        self.write();
+    }
+
+    fn end(&mut self) {
+        Meter::end(self);
+    }
+}
+
 /// The worker's side of the job.
 pub struct JobHandle {
     tx: mpsc::Sender<Msg>,

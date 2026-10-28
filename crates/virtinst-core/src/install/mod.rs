@@ -12,6 +12,7 @@ pub mod container;
 pub(crate) mod domain_skeleton;
 pub mod import;
 pub mod installerinject;
+pub mod installertreemedia;
 pub mod iso;
 pub mod manual;
 pub mod newguest;

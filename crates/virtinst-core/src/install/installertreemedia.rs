@@ -1,14 +1,14 @@
 //! `InstallerTreeMedia` from upstream's
 //! `virtinst/install/installertreemedia.py`: `--location` trees and
-//! kernel/initrd installs.
+//! kernel/initrd installs. virt-install and the New VM wizard share it.
 
-use virtinst_core::connection::Connection;
-use virtinst_core::install::installerinject::perform_initrd_injections;
-use virtinst_core::install::unattended::OSInstallScript;
-use virtinst_core::install::urldetect::{self, GuestFacts};
-use virtinst_core::install::urlfetcher::{self, Fetcher};
-use virtinst_core::osinfo::{OsDb, OsMedia, OsTree};
-use virtinst_core::progress::Meter;
+use crate::connection::Uri;
+use crate::install::installerinject::perform_initrd_injections;
+use crate::install::unattended::OSInstallScript;
+use crate::install::urldetect::{self, GuestFacts};
+use crate::install::urlfetcher::{self, Fetcher};
+use crate::osinfo::{OsDb, OsMedia, OsTree};
+use crate::progress::Meter;
 
 /// The kind of install media.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,16 +44,16 @@ fn in_testsuite() -> bool {
 
 /// `get_system_scratchdir`: the tmpdir that's accessible by VMs on
 /// system libvirt URIs.
-pub fn get_system_scratchdir(conn: &Connection) -> String {
-    if conn.uri().is_xen() {
+pub fn get_system_scratchdir(uri: &Uri) -> String {
+    if uri.is_xen() {
         return "/var/lib/xen".into();
     }
     "/var/lib/libvirt/boot".into()
 }
 
 /// `is_unprivileged`.
-pub fn is_unprivileged(conn: &Connection) -> bool {
-    match conn.uri().path.as_str() {
+pub fn is_unprivileged(uri: &Uri) -> bool {
+    match uri.path.as_str() {
         "/session" => true,
         // SAFETY: getuid has no preconditions.
         "/embed" => (unsafe { libc::getuid() }) != 0,
@@ -69,15 +69,73 @@ fn writable(path: &str) -> bool {
     unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
 }
 
+/// The app's cache directory, `~/.cache/virt-manager`.
+pub fn app_cache_dir() -> String {
+    let base = std::env::var("XDG_CACHE_HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("{}/.cache", std::env::var("HOME").unwrap_or_default()));
+    format!("{base}/virt-manager")
+}
+
+/// `_should_upload_media`: whether to upload media to the connection
+/// scratchdir, if there is any.
+pub fn should_upload_media(uri: &Uri) -> Result<bool, String> {
+    let scratchdir = make_scratchdir(uri)?;
+    let system_scratchdir = get_system_scratchdir(uri);
+    if uri.is_remote() {
+        return Ok(true);
+    }
+    if is_unprivileged(uri) {
+        return Ok(false);
+    }
+    Ok(scratchdir != system_scratchdir)
+}
+
+/// `support_remote_url_install`.
+pub fn support_remote_url_install(conn: &virt::connect::Connect) -> bool {
+    let is_test = conn.get_uri().is_ok_and(|u| u.starts_with("test:"));
+    let ret = !is_test && virt::stream::Stream::new(conn, 0).is_ok();
+    in_testsuite() || ret
+}
+
+/// `_upload_media`: the paths as the hypervisor sees them, and the
+/// volumes uploaded for them (to delete once the install started).
+pub fn upload_media(
+    conn: &virt::connect::Connect,
+    uri: &Uri,
+    meter: &mut dyn Meter,
+    paths: Vec<String>,
+) -> Result<(Vec<String>, Vec<virt::storage_vol::StorageVol>), String> {
+    let system_scratchdir = get_system_scratchdir(uri);
+    if !should_upload_media(uri)? && !in_testsuite() {
+        // We have access to system scratchdir, don't jump through hoops
+        log::debug!("Have access to preferred scratchdir so nothing to upload");
+        return Ok((paths, vec![]));
+    }
+    if !support_remote_url_install(conn) {
+        // Needed for the test_urls suite
+        log::debug!("Media upload not supported");
+        return Ok((paths, vec![]));
+    }
+    crate::install::volumeupload::upload_paths(
+        conn,
+        &system_scratchdir,
+        meter,
+        &paths,
+        in_testsuite(),
+    )
+}
+
 /// `make_scratchdir`: the directory that's accessible by VMs for this
 /// URI, created if necessary.
-pub fn make_scratchdir(conn: &Connection) -> Result<String, String> {
-    let user_scratchdir = format!("{}/boot", crate::cli::app_cache_dir());
-    let system_scratchdir = get_system_scratchdir(conn);
+pub fn make_scratchdir(uri: &Uri) -> Result<String, String> {
+    let user_scratchdir = format!("{}/boot", app_cache_dir());
+    let system_scratchdir = get_system_scratchdir(uri);
 
     // If we are a session URI, or we don't have access to the system
     // scratchdir, make sure the session scratchdir exists and use that.
-    if is_unprivileged(conn)
+    if is_unprivileged(uri)
         || !std::path::Path::new(&system_scratchdir).exists()
         || !writable(&system_scratchdir)
     {
@@ -86,7 +144,7 @@ pub fn make_scratchdir(conn: &Connection) -> Result<String, String> {
             .recursive(true)
             .mode(0o751)
             .create(&user_scratchdir)
-            .map_err(|e| virtinst_core::diskbackend::oserror_str(&e, Some(&user_scratchdir)))?;
+            .map_err(|e| crate::diskbackend::oserror_str(&e, Some(&user_scratchdir)))?;
         return Ok(user_scratchdir);
     }
     Ok(system_scratchdir)
@@ -109,8 +167,10 @@ pub struct TreeMedia {
 }
 
 impl TreeMedia {
+    /// An ISO `location` still needs checking as a CD-ROM path
+    /// (`validate_path`), which needs the connection's storage.
     pub fn new(
-        conn: &Connection,
+        uri: &Uri,
         location: Option<String>,
         location_kernel: Option<String>,
         location_initrd: Option<String>,
@@ -129,13 +189,13 @@ impl TreeMedia {
             }
         }
 
-        let remote = conn.uri().is_remote();
+        let remote = uri.is_remote();
         let mut location = location;
         let loc = location.clone().unwrap_or_default();
         let media_type = if install_kernel.is_some() || install_initrd.is_some() {
             MediaType::Kernel
         } else if !remote && std::path::Path::new(&loc).is_dir() {
-            location = Some(virtinst_core::storage::abspath(&loc));
+            location = Some(crate::storage::abspath(&loc));
             MediaType::Dir
         } else if is_url(&loc) {
             MediaType::Url
@@ -147,10 +207,6 @@ impl TreeMedia {
             return Err(format!(
                 "Cannot access install tree on remote connection: {loc}"
             ));
-        }
-
-        if media_type == MediaType::Iso {
-            crate::installer::validate_path(conn, &loc)?;
         }
 
         Ok(TreeMedia {
@@ -170,9 +226,9 @@ impl TreeMedia {
     }
 
     /// `_get_fetcher`.
-    fn fetcher(&mut self, conn: &Connection) -> Result<&mut Fetcher, String> {
+    fn fetcher(&mut self, uri: &Uri) -> Result<&mut Fetcher, String> {
         if self.cached_fetcher.is_none() {
-            let scratchdir = make_scratchdir(conn)?;
+            let scratchdir = make_scratchdir(uri)?;
             self.cached_fetcher = Some(if self.media_type == MediaType::Kernel {
                 urlfetcher::direct_fetcher(&scratchdir)
             } else {
@@ -187,11 +243,7 @@ impl TreeMedia {
     }
 
     /// `_get_cached_data`.
-    fn cached_data(
-        &mut self,
-        conn: &Connection,
-        guest: &GuestInfo,
-    ) -> Result<&LocationData, String> {
+    fn cached_data(&mut self, uri: &Uri, guest: &GuestInfo) -> Result<&LocationData, String> {
         if self.cached_data.is_none() {
             let has_location_kernel =
                 self.location_kernel.is_some() && self.location_initrd.is_some();
@@ -212,7 +264,7 @@ impl TreeMedia {
                     os_type: &guest.os_type,
                     os_name: &guest.os_name,
                 };
-                let fetcher = self.fetcher(conn)?;
+                let fetcher = self.fetcher(uri)?;
                 if let Some(store) = urldetect::get_distro_store(
                     &facts,
                     fetcher,
@@ -239,24 +291,24 @@ impl TreeMedia {
     /// `_prepare_kernel_url`.
     fn prepare_kernel_url(
         &mut self,
-        conn: &Connection,
+        uri: &Uri,
         guest: &GuestInfo,
         meter: &mut dyn Meter,
     ) -> Result<(String, String), String> {
-        let pairs = self.cached_data(conn, guest)?.kernel_pairs.clone();
-        let fetcher = self.fetcher(conn)?;
+        let pairs = self.cached_data(uri, guest)?.kernel_pairs.clone();
+        let fetcher = self.fetcher(uri)?;
         let (kernelpath, initrdpath) = pairs
             .into_iter()
             .find(|(k, i)| fetcher.has_file(k) && fetcher.has_file(i))
             .ok_or("Couldn't find kernel for install tree.")?;
-        let fetcher = self.fetcher(conn)?;
+        let fetcher = self.fetcher(uri)?;
         let kernel = fetcher.acquire_file(&kernelpath, None, meter)?;
         self.tmpfiles.push(kernel.clone());
-        let fetcher = self.fetcher(conn)?;
+        let fetcher = self.fetcher(uri)?;
         let initrd = fetcher.acquire_file(&initrdpath, None, meter)?;
         self.tmpfiles.push(initrd.clone());
 
-        let scratchdir = self.fetcher(conn)?.scratchdir.clone();
+        let scratchdir = self.fetcher(uri)?.scratchdir.clone();
         perform_initrd_injections(&initrd, &self.initrd_injections, &scratchdir)?;
 
         Ok((kernel, initrd))
@@ -326,15 +378,15 @@ impl TreeMedia {
     /// kernel args.
     pub fn prepare(
         &mut self,
-        conn: &Connection,
+        uri: &Uri,
         guest: &GuestInfo,
         meter: &mut dyn Meter,
         unattended_scripts: Option<&[OSInstallScript]>,
     ) -> Result<(String, String, String), String> {
-        self.cached_data(conn, guest)?;
+        self.cached_data(uri, guest)?;
         self.prepare_unattended_data(unattended_scripts.unwrap_or_default())?;
         let kernel_args = self.prepare_kernel_args(guest, unattended_scripts);
-        let (kernel, initrd) = self.prepare_kernel_url(conn, guest, meter)?;
+        let (kernel, initrd) = self.prepare_kernel_url(uri, guest, meter)?;
         Ok((kernel, initrd, kernel_args))
     }
 
@@ -349,26 +401,22 @@ impl TreeMedia {
     pub fn set_initrd_injections(&mut self, injections: Vec<String>) {
         self.initrd_injections = injections
             .iter()
-            .map(|f| virtinst_core::install::installerinject::injection_pair(f))
+            .map(|f| crate::install::installerinject::injection_pair(f))
             .collect();
     }
 
     /// `get_os_media`.
     pub fn get_os_media(
         &mut self,
-        conn: &Connection,
+        uri: &Uri,
         guest: &GuestInfo,
     ) -> Result<Option<OsMedia>, String> {
-        Ok(self.cached_data(conn, guest)?.os_media.clone())
+        Ok(self.cached_data(uri, guest)?.os_media.clone())
     }
 
     /// `get_os_tree`.
-    pub fn get_os_tree(
-        &mut self,
-        conn: &Connection,
-        guest: &GuestInfo,
-    ) -> Result<Option<OsTree>, String> {
-        Ok(self.cached_data(conn, guest)?.os_tree.clone())
+    pub fn get_os_tree(&mut self, uri: &Uri, guest: &GuestInfo) -> Result<Option<OsTree>, String> {
+        Ok(self.cached_data(uri, guest)?.os_tree.clone())
     }
 
     pub fn set_extra_args(&mut self, extra_args: Vec<String>) {
@@ -394,23 +442,19 @@ impl TreeMedia {
     /// `detect_distro`.
     pub fn detect_distro(
         &mut self,
-        conn: &Connection,
+        uri: &Uri,
         guest: &GuestInfo,
     ) -> Result<Option<String>, String> {
-        Ok(self.cached_data(conn, guest)?.osinfo.clone())
+        Ok(self.cached_data(uri, guest)?.osinfo.clone())
     }
 
     /// `requires_internet`.
-    pub fn requires_internet(
-        &mut self,
-        conn: &Connection,
-        guest: &GuestInfo,
-    ) -> Result<bool, String> {
+    pub fn requires_internet(&mut self, uri: &Uri, guest: &GuestInfo) -> Result<bool, String> {
         if matches!(self.media_type, MediaType::Url | MediaType::Dir) {
             return Ok(true);
         }
         Ok(self
-            .cached_data(conn, guest)?
+            .cached_data(uri, guest)?
             .os_media
             .as_ref()
             .is_some_and(|m| m.is_netinst()))
