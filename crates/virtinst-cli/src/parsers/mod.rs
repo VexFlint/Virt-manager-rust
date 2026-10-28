@@ -16,6 +16,7 @@ use crate::parser::{lookup_prop, ParserDef};
 
 pub mod chardev;
 pub mod charsrc;
+pub mod cpu;
 pub mod devices;
 pub mod disk;
 pub mod filesystem;
@@ -35,8 +36,11 @@ pub fn all() -> Vec<&'static ParserDef> {
         graphics::graphics(),
         guest::metadata(),
         memory::memory(),
+        cpu::cpu(),
+        cpu::vcpus(),
         guest::xml(),
         memory::iothreads(),
+        cpu::cputune(),
         memory::numatune(),
         memory::memtune(),
         memory::blkiotune(),

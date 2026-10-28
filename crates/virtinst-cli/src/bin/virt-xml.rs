@@ -18,6 +18,7 @@ use virtinst_cli::parser::{
 };
 use virtinst_cli::parsers;
 use virtinst_cli::xmlutil;
+use virtinst_core::capabilities::caps::Capabilities;
 use virtinst_core::connection::Connection;
 use virtinst_core::guest::GUEST;
 use virtinst_core::storage::VolInstall;
@@ -135,6 +136,20 @@ struct Args {
     #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
     memory: Vec<String>,
 
+    /// Number of vCPUs to configure for your guest. Ex:
+    /// --vcpus 5
+    /// --vcpus 5,maxvcpus=10,cpuset=1-4,6,8
+    /// --vcpus sockets=2,cores=4,threads=2
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    vcpus: Vec<String>,
+
+    /// CPU model and features. Ex:
+    /// --cpu coreduo,+x2apic
+    /// --cpu host-passthrough
+    /// --cpu host-model,clearxml=yes
+    #[arg(long, help_heading = "XML options", verbatim_doc_comment)]
+    cpu: Vec<String>,
+
     /// Perform raw XML XPath options on the final XML. Example:
     /// --xml ./cpu/@mode=host-passthrough
     /// --xml ./devices/disk[2]/serial=new-serial
@@ -145,6 +160,10 @@ struct Args {
     /// Set domain <iothreads> and <iothreadids> configuration.
     #[arg(long, help_heading = "XML options")]
     iothreads: Vec<String>,
+
+    /// Tune CPU parameters for the domain process.
+    #[arg(long, help_heading = "XML options")]
+    cputune: Vec<String>,
 
     /// Tune NUMA policy for the domain process.
     #[arg(long, help_heading = "XML options")]
@@ -318,8 +337,11 @@ fn xml_options(args: &Args) -> Vec<(&'static ParserDef, &Vec<String>)> {
         engine("graphics", &args.graphics),
         engine("metadata", &args.metadata),
         engine("memory", &args.memory),
+        engine("cpu", &args.cpu),
+        engine("vcpus", &args.vcpus),
         engine("xml", &args.xml),
         engine("iothreads", &args.iothreads),
+        engine("cputune", &args.cputune),
         engine("numatune", &args.numatune),
         engine("memtune", &args.memtune),
         engine("blkiotune", &args.blkiotune),
@@ -892,6 +914,14 @@ fn main() {
         // edits add.
         let info = parsers::guest_info(&inactive);
         parsers::graphics::set_domcaps(parsers::lookup_domcaps(&info, Some(&conn)));
+    }
+    if !args.cpu.is_empty() {
+        // `guest.lookup_domcaps()` and the host CPU, for `--cpu` modes.
+        let info = parsers::guest_info(&inactive);
+        let host_cpu_model = Capabilities::fetch(&conn)
+            .ok()
+            .and_then(|c| c.host.cpu.model.clone());
+        parsers::cpu::set_cpu_conn(parsers::lookup_domcaps(&info, Some(&conn)), host_cpu_model);
     }
 
     if action.name == ActionName::BuildXml {

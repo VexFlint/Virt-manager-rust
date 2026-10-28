@@ -699,3 +699,44 @@
 --connect @SUITE@ test-for-virtxml --add-device --disk /pool-dir/new1.img,size=100000 --print-diff
 --connect @SUITE@ test-for-virtxml --add-device --disk size=.01,device=cdrom --print-diff
 --connect @SUITE@ test-for-virtxml --add-device --disk /pool-dir/testvol1.img,size=.01 --print-diff
+
+# --cpu / --vcpus / --cputune (ParserCPU, ParserVCPU, ParserCputune)
+--connect @SUITE@ test-for-virtxml --edit --cpu foobar,+x2apic,+x2apicagain,-distest,forbid=foo,forbid=bar,disable=distest2,optional=opttest,require=reqtest,match=strict,vendor=meee,mode=custom,check=partial,topology.sockets=1,topology.dies=1,topology.cores=3,topology.threads=3,model.fallback=allow,model.vendor_id=GenuineIntel,cell.id=0,cell.cpus=1,2,3,cell.memory=1024,cell1.id=1,cell1.memory=256,cell1.cpus=5-8,numa.cell2.id=2,numa.cell2.memory=256,numa.cell2.unit=KiB,numa.cell2.cpus=4,numa.cell2.memAccess=shared,numa.cell2.discard=no,cell0.distances.sibling0.id=0,cell0.distances.sibling0.value=10,cell0.distances.sibling1.id=1,cell0.distances.sibling1.value=21,numa.cell1.distances.sibling0.id=0,numa.cell1.distances.sibling0.value=21,numa.cell2.cache0.level=1,numa.cell2.cache0.associativity=direct,numa.cell2.cache0.policy=writeback,numa.cell2.cache0.size.value=256,numa.cell2.cache0.size.unit=KiB,numa.cell2.cache0.line.value=256,numa.cell2.cache0.line.unit=KiB,cell1.distances.sibling1.id=1,cell1.distances.sibling1.value=10,numa.interconnects.latency0.initiator=0,numa.interconnects.latency0.target=0,numa.interconnects.latency0.type=access,numa.interconnects.latency0.value=5,numa.interconnects.latency1.initiator=0,numa.interconnects.latency1.target=2,numa.interconnects.latency1.cache=1,numa.interconnects.latency1.type=access,numa.interconnects.latency1.value=10,numa.interconnects.latency1.unit=ns,numa.interconnects.bandwidth0.initiator=0,numa.interconnects.bandwidth0.target=0,numa.interconnects.bandwidth0.type=access,numa.interconnects.bandwidth0.value=204800,numa.interconnects.bandwidth1.initiator=0,numa.interconnects.bandwidth1.target=2,numa.interconnects.bandwidth1.cache=1,numa.interconnects.bandwidth1.type=access,numa.interconnects.bandwidth1.value=409600,numa.interconnects.bandwidth1.unit=KiB,cache.mode=emulate,cache.level=3,maxphysaddr.mode=emulate,maxphysaddr.bits=46 --print-diff
+--connect @SUITE@ --build-xml --cpu foobar,+x2apic,+x2apicagain,-distest,forbid=foo,forbid=bar,disable=distest2,optional=opttest,require=reqtest,match=strict,vendor=meee,mode=custom,check=partial,topology.sockets=1,topology.dies=1,topology.cores=3,topology.threads=3,model.fallback=allow,model.vendor_id=GenuineIntel,cell.id=0,cell.cpus=1,2,3,cell.memory=1024,cell1.id=1,cell1.memory=256,cell1.cpus=5-8,numa.cell2.id=2,numa.cell2.memory=256,numa.cell2.unit=KiB,numa.cell2.cpus=4,numa.cell2.memAccess=shared,numa.cell2.discard=no,cell0.distances.sibling0.id=0,cell0.distances.sibling0.value=10,cell0.distances.sibling1.id=1,cell0.distances.sibling1.value=21,numa.cell1.distances.sibling0.id=0,numa.cell1.distances.sibling0.value=21,numa.cell2.cache0.level=1,numa.cell2.cache0.associativity=direct,numa.cell2.cache0.policy=writeback,numa.cell2.cache0.size.value=256,numa.cell2.cache0.size.unit=KiB,numa.cell2.cache0.line.value=256,numa.cell2.cache0.line.unit=KiB,cell1.distances.sibling1.id=1,cell1.distances.sibling1.value=10,numa.interconnects.latency0.initiator=0,numa.interconnects.latency0.target=0,numa.interconnects.latency0.type=access,numa.interconnects.latency0.value=5,numa.interconnects.latency1.initiator=0,numa.interconnects.latency1.target=2,numa.interconnects.latency1.cache=1,numa.interconnects.latency1.type=access,numa.interconnects.latency1.value=10,numa.interconnects.latency1.unit=ns,numa.interconnects.bandwidth0.initiator=0,numa.interconnects.bandwidth0.target=0,numa.interconnects.bandwidth0.type=access,numa.interconnects.bandwidth0.value=204800,numa.interconnects.bandwidth1.initiator=0,numa.interconnects.bandwidth1.target=2,numa.interconnects.bandwidth1.cache=1,numa.interconnects.bandwidth1.type=access,numa.interconnects.bandwidth1.value=409600,numa.interconnects.bandwidth1.unit=KiB,cache.mode=emulate,cache.level=3,maxphysaddr.mode=emulate,maxphysaddr.bits=46
+--connect @SUITE@ test-for-virtxml --edit --cputune shares=2048,period=1000000,quota=-1,global_period=1000000,global_quota=-1,emulator_period=1000000,emulator_quota=-1,iothread_period=1000000,iothread_quota=-1,vcpupin0.vcpu=0,vcpupin0.cpuset=0-3,emulatorpin.cpuset=1,7,iothreadpin0.iothread=1,iothreadpin0.cpuset=1,7,emulatorsched.scheduler=rr,emulatorsched.priority=99,vcpusched0.vcpus=0-3,^2,vcpusched0.scheduler=fifo,vcpusched0.priority=95,iothreadsched0.iothreads=1,2,iothreadsched0.scheduler=fifo,iothreadsched0.priority=90,cachetune0.vcpus=0-3,cachetune0.cache0.level=3,cachetune0.cache0.id=0,cachetune0.cache0.type=both,cachetune0.cache0.size=3,cachetune0.cache0.unit=MiB,cachetune0.cache1.level=3,cachetune0.cache1.id=1,cachetune0.cache1.type=both,cachetune0.cache1.size=3,cachetune0.cache1.unit=MiB,cachetune0.monitor0.level=3,cachetune0.monitor0.vcpus=2,cachetune0.monitor1.level=3,cachetune0.monitor1.vcpus=0-3,^2,cachetune1.vcpus=4-5,cachetune1.monitor0.level=3,cachetune1.monitor0.vcpus=4,cachetune1.monitor1.level=3,cachetune1.monitor1.vcpus=5,memorytune0.vcpus=0-3,memorytune0.node0.id=0,memorytune0.node0.bandwidth=60 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --vcpus vcpus=9,vcpu.placement=static,vcpus.vcpu2.id=0,vcpus.vcpu2.enabled=no,vcpus.vcpu3.id=1,vcpus.vcpu3.hotpluggable=no,vcpus.vcpu3.enabled=yes,vcpus.vcpu.id=3,vcpus.vcpu0.enabled=yes,vcpus.vcpu0.order=3,vcpus.vcpu1.id=2,vcpus.vcpu1.enabled=yes --print-diff
+--connect @SUITE@ test-for-virtxml --edit --vcpus 10,maxvcpus=20,cores=5,sockets=4,threads=1,placement=auto --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cpu model=pentium2,+x2apic,forbid=pbe --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cpu host-passthrough,clearxml=yes --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cpu host-passthrough --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cpu host-passthrough,migratable=on,maxphysaddr.mode=passthrough --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cpu host-model --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cpu host --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cpu host-copy --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cpu none --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cpu clear --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cpu hv-default --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cpu default --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cpu maximum --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cpu qemu64,secure=off --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cpu qemu64 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cpu mode=idontexist --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cpu cell0.cpus=0,cell0.memory=1048576 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cpu force=x2apic,disable=vmx,+pbe --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cpu +x2apic,-lahf_lm --print-diff
+--connect @SUITE@ --build-xml --cpu pentium3,+x2apic
+--connect @SUITE@ test-for-virtxml --edit --vcpus 7 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --vcpus vcpu.current=2,maxvcpus=4 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --vcpus 2,cpuset=auto --print-diff
+--connect @SUITE@ test-for-virtxml --edit --vcpus 2,cpuset=1,3-5 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --vcpus sockets=2,threads=2,dies=1 --print-diff
+--connect @SUITE@ test-for-virtxml --edit --vcpus foo --print-diff
+--connect @SUITE@ test-for-virtxml --edit --vcpus clearxml=yes --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cputune clearxml=yes --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cputune vcpupin0.vcpu=1,vcpupin0.cpuset=2 --print-diff
+--connect @FULL@ test-many-devices --edit --cpu host-passthrough --print-diff
+--connect @FULL@ test-many-devices --edit --vcpus 3 --print-diff
+--connect @FULL@ test-many-devices --edit --cpu clearxml=yes --print-diff
+--connect @SUITE@ test-for-virtxml --edit --cpu help
+--connect @SUITE@ test-for-virtxml --edit --vcpus help
+--connect @SUITE@ test-for-virtxml --edit --cputune help

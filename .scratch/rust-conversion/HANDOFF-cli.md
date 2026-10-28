@@ -55,9 +55,13 @@ Erros `fail()` de dentro de callbacks usam `parser::fail` (sem o prefixo `Error:
 defaults e a ordem dos atributos muda).
 O `--hostdev` lê os nodedevs de `parser::set_nodedevs` (o `virt-xml` busca
 quando a opção é usada). No oráculo, `@FULL@` é o testdriver.xml.
+`--cpu`/`--vcpus`/`--cputune` em `parsers/cpu.rs`. O `--cpu` lê domcaps e o modelo
+da CPU do host de `cpu::set_cpu_conn` (o virt-xml busca quando a opção é usada);
+as security features só são calculadas quando um modo precisa delas. As
+`force=a,force=b` viram uma lista separada por `\u{1f}` no `pre_parse`.
 
 ## Falta (prioridade)
-1. Opções de guest (vcpus, cpu, cputune, boot, seclabel, idmap, keywrap, launchSecurity)
+1. Opções de guest (boot, seclabel, idmap, keywrap, launchSecurity)
    e o resto do virt-install (`--os-variant` etc.).
 2. Só depois: GUI (ver CLAUDE.md seção 7).
 

@@ -486,6 +486,296 @@ pub fn edit_set_special_mode(
     Ok(())
 }
 
+// ---------------------------------------------------------------------
+// `DomainCpu` as an XML backed object, for the CLI parsers.
+// ---------------------------------------------------------------------
+
+use crate::xmlbuilder::{child, prop, Kind, XmlClass, XmlObject};
+
+/// `_CPUTopology`.
+pub static CPU_TOPOLOGY: XmlClass = XmlClass {
+    xml_name: "topology",
+    props: &[
+        prop("sockets", "./@sockets", Kind::Int),
+        prop("dies", "./@dies", Kind::Int),
+        prop("cores", "./@cores", Kind::Int),
+        prop("threads", "./@threads", Kind::Int),
+    ],
+    children: &[],
+    prop_order: &["sockets", "dies", "cores", "threads"],
+};
+
+/// `_CPUCache`.
+pub static CPU_CACHE: XmlClass = XmlClass {
+    xml_name: "cache",
+    props: &[
+        prop("level", "./@level", Kind::Int),
+        prop("mode", "./@mode", Kind::Str),
+    ],
+    children: &[],
+    prop_order: &["level", "mode"],
+};
+
+/// `_CPUFeature`.
+pub static CPU_FEATURE: XmlClass = XmlClass {
+    xml_name: "feature",
+    props: &[
+        prop("name", "./@name", Kind::Str),
+        prop("policy", "./@policy", Kind::Str),
+    ],
+    children: &[],
+    prop_order: &["policy", "name"],
+};
+
+/// `_CPUMaxphysaddr`.
+pub static CPU_MAXPHYSADDR: XmlClass = XmlClass {
+    xml_name: "maxphysaddr",
+    props: &[
+        prop("mode", "./@mode", Kind::Str),
+        prop("bits", "./@bits", Kind::Int),
+    ],
+    children: &[],
+    prop_order: &["mode", "bits"],
+};
+
+/// `_NUMACellSibling`.
+pub static NUMA_CELL_SIBLING: XmlClass = XmlClass {
+    xml_name: "sibling",
+    props: &[
+        prop("id", "./@id", Kind::Int),
+        prop("value", "./@value", Kind::Int),
+    ],
+    children: &[],
+    prop_order: &["id", "value"],
+};
+
+/// `_NUMACellCache`.
+pub static NUMA_CELL_CACHE: XmlClass = XmlClass {
+    xml_name: "cache",
+    props: &[
+        prop("level", "./@level", Kind::Int),
+        prop("associativity", "./@associativity", Kind::Str),
+        prop("policy", "./@policy", Kind::Str),
+        prop("size_value", "./size/@value", Kind::Int),
+        prop("size_unit", "./size/@unit", Kind::Str),
+        prop("line_value", "./line/@value", Kind::Int),
+        prop("line_unit", "./line/@unit", Kind::Str),
+    ],
+    children: &[],
+    prop_order: &[
+        "level",
+        "associativity",
+        "policy",
+        "size_value",
+        "size_unit",
+        "line_value",
+        "line_unit",
+    ],
+};
+
+/// `_NUMACell`.
+pub static NUMA_CELL: XmlClass = XmlClass {
+    xml_name: "cell",
+    props: &[
+        prop("id", "./@id", Kind::Int),
+        prop("cpus", "./@cpus", Kind::Str),
+        prop("memory", "./@memory", Kind::Int),
+        prop("unit", "./@unit", Kind::Str),
+        prop("memAccess", "./@memAccess", Kind::Str),
+        prop("discard", "./@discard", Kind::YesNo),
+    ],
+    children: &[
+        child("siblings", &NUMA_CELL_SIBLING, "./distances", false),
+        child("caches", &NUMA_CELL_CACHE, ".", false),
+    ],
+    prop_order: &[
+        "id",
+        "cpus",
+        "memory",
+        "unit",
+        "memAccess",
+        "discard",
+        "siblings",
+        "caches",
+    ],
+};
+
+const NUMA_INTERCONNECT_PROPS: &[crate::xmlbuilder::XmlProp] = &[
+    prop("initiator", "./@initiator", Kind::Int),
+    prop("target", "./@target", Kind::Int),
+    prop("cache", "./@cache", Kind::Int),
+    prop("type", "./@type", Kind::Str),
+    prop("value", "./@value", Kind::Int),
+    prop("unit", "./@unit", Kind::Str),
+];
+const NUMA_INTERCONNECT_ORDER: &[&str] = &["initiator", "target", "cache", "type", "value", "unit"];
+
+/// `_NUMALatency`.
+pub static NUMA_LATENCY: XmlClass = XmlClass {
+    xml_name: "latency",
+    props: NUMA_INTERCONNECT_PROPS,
+    children: &[],
+    prop_order: NUMA_INTERCONNECT_ORDER,
+};
+
+/// `_NUMABandwidth`.
+pub static NUMA_BANDWIDTH: XmlClass = XmlClass {
+    xml_name: "bandwidth",
+    props: NUMA_INTERCONNECT_PROPS,
+    children: &[],
+    prop_order: NUMA_INTERCONNECT_ORDER,
+};
+
+/// `DomainCpu`.
+pub static DOMAIN_CPU: XmlClass = XmlClass {
+    xml_name: "cpu",
+    props: &[
+        prop("mode", "./@mode", Kind::Str),
+        prop("match", "./@match", Kind::Str),
+        prop("check", "./@check", Kind::Str),
+        prop("migratable", "./@migratable", Kind::OnOff),
+        prop("model", "./model", Kind::Str),
+        prop("model_fallback", "./model/@fallback", Kind::Str),
+        prop("model_vendor_id", "./model/@vendor_id", Kind::Str),
+        prop("vendor", "./vendor", Kind::Str),
+    ],
+    children: &[
+        child("topology", &CPU_TOPOLOGY, ".", true),
+        child("cache", &CPU_CACHE, ".", true),
+        child("features", &CPU_FEATURE, ".", false),
+        child("cells", &NUMA_CELL, "./numa", false),
+        child("latencies", &NUMA_LATENCY, "./numa/interconnects", false),
+        child("bandwidths", &NUMA_BANDWIDTH, "./numa/interconnects", false),
+        child("maxphysaddr", &CPU_MAXPHYSADDR, ".", true),
+    ],
+    prop_order: &[
+        "mode",
+        "match",
+        "check",
+        "migratable",
+        "model",
+        "model_fallback",
+        "model_vendor_id",
+        "vendor",
+        "topology",
+        "cache",
+        "features",
+        "cells",
+        "latencies",
+        "bandwidths",
+        "maxphysaddr",
+    ],
+};
+
+fn str_val(s: &str) -> Option<crate::xmlbuilder::Value> {
+    Some(crate::xmlbuilder::Value::Str(s.into()))
+}
+
+/// `add_feature`.
+pub fn add_feature(cpu: &mut XmlObject, name: &str, policy: &str) -> Result<(), String> {
+    let mut f = XmlObject::new(&CPU_FEATURE);
+    f.set("name", str_val(name))?;
+    f.set("policy", str_val(policy))?;
+    cpu.add_child(f);
+    Ok(())
+}
+
+/// `_add_security_features`.
+fn obj_add_security_features(cpu: &mut XmlObject, ctx: &CpuEditContext) -> Result<(), String> {
+    for feature in &ctx.security_features {
+        let exists = cpu
+            .children("features")
+            .iter()
+            .any(|f| f.get_str("name").as_deref() == Some(feature));
+        if !exists {
+            add_feature(cpu, feature, "require")?;
+        }
+    }
+    Ok(())
+}
+
+/// `_remove_security_features`.
+fn obj_remove_security_features(cpu: &mut XmlObject, ctx: &CpuEditContext) {
+    for feature in &ctx.security_features {
+        let idx = cpu.children("features").iter().position(|f| {
+            f.get_str("name").as_deref() == Some(feature)
+                && f.get_str("policy").as_deref() == Some("require")
+        });
+        if let Some(i) = idx {
+            cpu.remove_child("features", i);
+        }
+    }
+}
+
+/// `DomainCpu.set_model`.
+pub fn set_model(
+    cpu: &mut XmlObject,
+    ctx: &CpuEditContext,
+    val: Option<&str>,
+    secure: bool,
+) -> Result<(), String> {
+    log::debug!("setting cpu model {}", val.unwrap_or("None"));
+    cpu.set("migratable", None)?;
+    if val.is_some_and(|v| !v.is_empty()) {
+        cpu.set("mode", str_val("custom"))?;
+        if cpu.get_str("match").map_or(true, |m| m.is_empty()) {
+            cpu.set("match", str_val("exact"))?;
+        }
+        if secure {
+            obj_add_security_features(cpu, ctx)?;
+        } else {
+            obj_remove_security_features(cpu, ctx);
+        }
+    }
+    cpu.set(
+        "model",
+        val.map(|v| crate::xmlbuilder::Value::Str(v.into())),
+    )
+}
+
+/// `DomainCpu.set_special_mode`. `ctx.app_default_mode` stands for
+/// `_get_app_default_mode`.
+pub fn set_special_mode(
+    cpu: &mut XmlObject,
+    ctx: &CpuEditContext,
+    val: &str,
+    secure: bool,
+) -> Result<(), String> {
+    let mut val = val;
+    if val == SPECIAL_MODE_APP_DEFAULT {
+        val = ctx.app_default_mode.as_str();
+        log::debug!("Using default cpu mode={val}");
+    }
+    match val {
+        SPECIAL_MODE_HOST_MODEL | SPECIAL_MODE_HOST_PASSTHROUGH | SPECIAL_MODE_MAXIMUM => {
+            for p in ["model", "vendor", "model_fallback", "migratable", "check"] {
+                cpu.set(p, None)?;
+            }
+            while !cpu.children("features").is_empty() {
+                cpu.remove_child("features", 0);
+            }
+            cpu.set("mode", str_val(val))
+        }
+        SPECIAL_MODE_HV_DEFAULT | SPECIAL_MODE_CLEAR => {
+            cpu.clear(false);
+            Ok(())
+        }
+        SPECIAL_MODE_HOST_MODEL_ONLY | SPECIAL_MODE_HOST_COPY => {
+            if val == SPECIAL_MODE_HOST_COPY {
+                log::warn!(
+                    "CPU mode={val} no longer supported, using mode={SPECIAL_MODE_HOST_MODEL_ONLY}"
+                );
+            }
+            if let Some(model) = &ctx.host_cpu_model {
+                cpu.clear(false);
+                set_model(cpu, ctx, Some(model), secure)?;
+            }
+            Ok(())
+        }
+        _ => Err(format!("unknown special cpu mode '{val}'")),
+    }
+}
+
 #[cfg(test)]
 mod edit_tests {
     use super::*;
