@@ -85,6 +85,10 @@ enum Edit {
     VsockCid,
     Fs,
     Xml,
+    Machtype,
+    Firmware,
+    DiskBus,
+    NetMac,
 }
 
 impl HwType {
@@ -648,6 +652,9 @@ fn frame(title: &str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
     vbox
 }
 
+/// An `overview-firmware` row: `[label, loader path, ./os/@firmware]`.
+type FirmwareRow = (String, Option<String>, Option<String>);
+
 /// The Overview page's widgets (`overview-*`, `machine-type*`).
 struct Overview {
     page: gtk::Box,
@@ -666,10 +673,24 @@ struct Overview {
     chipset_label: gtk::Label,
     firmware_title: gtk::Label,
     firmware_label: gtk::Label,
+    /// The value cells: the label, or in the customize dialog the
+    /// `machine-type`, `overview-chipset` and `overview-firmware`
+    /// combos (plus `overview-firmware-warn`).
+    machine_value: gtk::Box,
+    chipset_value: gtk::Box,
+    firmware_value: gtk::Box,
+    machine_combo: crate::devpages::SimpleCombo,
+    chipset_combo: crate::devpages::SimpleCombo,
+    firmware_combo: gtk::DropDown,
+    /// `overview-firmware`'s `[label, loader path, ./os/@firmware]`.
+    firmware_rows: RefCell<Vec<FirmwareRow>>,
+    firmware_warn: gtk::Image,
+    /// Whether the combos were filled (needs the XML and domcaps).
+    combos_loaded: Cell<bool>,
 }
 
 impl Overview {
-    fn new() -> Overview {
+    fn new(is_customize_dialog: bool) -> Overview {
         let name = gtk::Entry::new();
         name.set_hexpand(true);
         let uuid = value_label();
@@ -718,6 +739,27 @@ impl Overview {
         let chipset_label = value_label();
         let firmware_title = grid_label("Firm_ware:");
         let firmware_label = value_label();
+        let machine_combo = crate::devpages::SimpleCombo::unsorted(vec![], str::to_string);
+        let chipset_combo = crate::devpages::SimpleCombo::unsorted(vec![], str::to_string);
+        let firmware_combo = gtk::DropDown::from_strings(&[]);
+        firmware_combo.set_halign(gtk::Align::Start);
+        let firmware_warn = gtk::Image::from_icon_name("dialog-warning");
+        firmware_warn.set_visible(false);
+        machine_title.set_mnemonic_widget(Some(&machine_combo.widget));
+        chipset_title.set_mnemonic_widget(Some(&chipset_combo.widget));
+        firmware_title.set_mnemonic_widget(Some(&firmware_combo));
+        let value_box = |label: &gtk::Label, combo: &gtk::DropDown| {
+            let b = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            b.append(label);
+            b.append(combo);
+            label.set_visible(!is_customize_dialog);
+            combo.set_visible(is_customize_dialog);
+            b
+        };
+        let machine_value = value_box(&machine_label, &machine_combo.widget);
+        let chipset_value = value_box(&chipset_label, &chipset_combo.widget);
+        let firmware_value = value_box(&firmware_label, &firmware_combo);
+        firmware_value.append(&firmware_warn);
         let hvgrid = gtk::Grid::builder()
             .row_spacing(6)
             .column_spacing(12)
@@ -729,11 +771,11 @@ impl Overview {
         hvgrid.attach(&grid_label("Emulator:"), 0, 2, 1, 1);
         hvgrid.attach(&emulator, 1, 2, 1, 1);
         hvgrid.attach(&machine_title, 0, 3, 1, 1);
-        hvgrid.attach(&machine_label, 1, 3, 1, 1);
+        hvgrid.attach(&machine_value, 1, 3, 1, 1);
         hvgrid.attach(&chipset_title, 0, 4, 1, 1);
-        hvgrid.attach(&chipset_label, 1, 4, 1, 1);
+        hvgrid.attach(&chipset_value, 1, 4, 1, 1);
         hvgrid.attach(&firmware_title, 0, 5, 1, 1);
-        hvgrid.attach(&firmware_label, 1, 5, 1, 1);
+        hvgrid.attach(&firmware_value, 1, 5, 1, 1);
 
         let page = gtk::Box::new(gtk::Orientation::Vertical, 18);
         page.append(&frame("Basic Details", &basic));
@@ -756,11 +798,41 @@ impl Overview {
             chipset_label,
             firmware_title,
             firmware_label,
+            machine_value,
+            chipset_value,
+            firmware_value,
+            machine_combo,
+            chipset_combo,
+            firmware_combo,
+            firmware_rows: RefCell::default(),
+            firmware_warn,
+            combos_loaded: Cell::new(false),
+        }
+    }
+
+    /// The `overview-firmware` row's `(loader, firmware)`.
+    fn firmware_selection(&self) -> Option<(Option<String>, Option<String>)> {
+        let idx = self.firmware_combo.selected() as usize;
+        self.firmware_rows
+            .borrow()
+            .get(idx)
+            .map(|(_, loader, fw)| (loader.clone(), fw.clone()))
+    }
+
+    /// `uiutil.set_list_selection(overview-firmware, label)`.
+    fn select_firmware(&self, label: &str) {
+        let idx = self
+            .firmware_rows
+            .borrow()
+            .iter()
+            .position(|(l, _, _)| l == label);
+        if let Some(idx) = idx {
+            self.firmware_combo.set_selected(idx as u32);
         }
     }
 
     /// `uiutil.set_grid_row_visible` for one title/value pair.
-    fn set_row_visible(title: &gtk::Label, value: &gtk::Label, visible: bool) {
+    fn set_row_visible(title: &gtk::Label, value: &impl IsA<gtk::Widget>, visible: bool) {
         title.set_visible(visible);
         value.set_visible(visible);
     }
@@ -1191,12 +1263,14 @@ struct DiskPage {
     mediacombo: Rc<crate::mediacombo::MediaCombo>,
     target_type: gtk::Label,
     bus_label: gtk::Label,
+    /// `disk-bus`, the customize dialog's editable bus.
+    bus_combo: crate::devpages::SimpleCombo,
     size: gtk::Label,
     addstorage: Rc<crate::addstorage::AddStorage>,
 }
 
 impl DiskPage {
-    fn new(conn: Option<crate::connection::VmmConnection>) -> DiskPage {
+    fn new(conn: Option<crate::connection::VmmConnection>, is_customize_dialog: bool) -> DiskPage {
         let right = |text: &str| {
             let l = gtk::Label::with_mnemonic(text);
             l.set_halign(gtk::Align::End);
@@ -1225,6 +1299,12 @@ impl DiskPage {
         source.append(&source_box);
         let target_type = value();
         let bus_label = left_label("");
+        let bus_combo = crate::devpages::SimpleCombo::unsorted(vec![], disk_pretty_bus);
+        bus_label.set_visible(!is_customize_dialog);
+        bus_combo.widget.set_visible(is_customize_dialog);
+        let bus_value = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        bus_value.append(&bus_label);
+        bus_value.append(&bus_combo.widget);
         let size = left_label("");
 
         let grid = gtk::Grid::builder()
@@ -1236,8 +1316,15 @@ impl DiskPage {
         grid.attach(&right("Device type:"), 0, 1, 1, 1);
         grid.attach(&target_type, 1, 1, 1, 1);
         // The bus is only editable in the customize dialog.
-        grid.attach(&right("Disk bus:"), 0, 2, 1, 1);
-        grid.attach(&bus_label, 1, 2, 1, 1);
+        let bus_labeller = if is_customize_dialog {
+            let l = right("Disk b_us:");
+            l.set_mnemonic_widget(Some(&bus_combo.widget));
+            l
+        } else {
+            right("Disk bus:")
+        };
+        grid.attach(&bus_labeller, 0, 2, 1, 1);
+        grid.attach(&bus_value, 1, 2, 1, 1);
         grid.attach(&right("Storage size:"), 0, 3, 1, 1);
         grid.attach(&size, 1, 3, 1, 1);
 
@@ -1256,6 +1343,7 @@ impl DiskPage {
             mediacombo,
             target_type,
             bus_label,
+            bus_combo,
             size,
             addstorage,
         }
@@ -1279,13 +1367,18 @@ struct NetworkPage {
     netlist: Rc<crate::netlist::NetList>,
     model: ModeCombo,
     mac: gtk::Label,
+    /// `network-mac-entry`, the customize dialog's editable MAC.
+    mac_entry: gtk::Entry,
     ip: gtk::Label,
     refresh_ip: gtk::Button,
     link_state: gtk::CheckButton,
 }
 
 impl NetworkPage {
-    fn new(conn: Option<crate::connection::VmmConnection>) -> NetworkPage {
+    fn new(
+        conn: Option<crate::connection::VmmConnection>,
+        is_customize_dialog: bool,
+    ) -> NetworkPage {
         let right = |text: &str| {
             let l = gtk::Label::with_mnemonic(text);
             l.set_halign(gtk::Align::End);
@@ -1295,6 +1388,12 @@ impl NetworkPage {
         let model = ModeCombo::new(&[]);
         let mac = left_label("");
         mac.set_selectable(true);
+        let mac_entry = gtk::Entry::new();
+        mac.set_visible(!is_customize_dialog);
+        mac_entry.set_visible(is_customize_dialog);
+        let mac_value = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        mac_value.append(&mac);
+        mac_value.append(&mac_entry);
         let ip = left_label("");
         ip.set_selectable(true);
         let refresh_ip = gtk::Button::from_icon_name("view-refresh");
@@ -1319,7 +1418,7 @@ impl NetworkPage {
         grid.attach(&model.widget, 1, 1, 1, 1);
         // The MAC is only editable in the customize dialog.
         grid.attach(&right("MAC address:"), 0, 2, 1, 1);
-        grid.attach(&mac, 1, 2, 1, 1);
+        grid.attach(&mac_value, 1, 2, 1, 1);
         let ip_label = right("I_P address:");
         ip_label.set_mnemonic_widget(Some(&refresh_ip));
         grid.attach(&ip_label, 0, 3, 1, 1);
@@ -1336,6 +1435,7 @@ impl NetworkPage {
             netlist,
             model,
             mac,
+            mac_entry,
             ip,
             refresh_ip,
             link_state,
@@ -1601,13 +1701,13 @@ impl VmmDetails {
         left.append(&hw_scroll);
         left.append(&add_hardware);
 
-        let overview = Overview::new();
+        let overview = Overview::new(is_customize_dialog);
         let cpu = CpuPage::new();
         let memory = MemoryPage::new();
         let boot = BootPage::new();
         let os = OsPage::new();
-        let disk = DiskPage::new(vm.conn());
-        let network = NetworkPage::new(vm.conn());
+        let disk = DiskPage::new(vm.conn(), is_customize_dialog);
+        let network = NetworkPage::new(vm.conn(), is_customize_dialog);
         use crate::devpages as dp;
         let input = dp::InputPage::new();
         let sound = dp::SoundPage::new();
@@ -1756,6 +1856,7 @@ impl VmmDetails {
         this.connect_edits();
         this.connect_xmleditor();
         this.init_cpu_models();
+        this.init_overview_combos();
         this.repopulate_hw_list();
         this
     }
@@ -1781,6 +1882,27 @@ impl VmmDetails {
             .description
             .buffer()
             .connect_changed(move |_| cb());
+        let cb = enable(Edit::Machtype);
+        i.overview
+            .machine_combo
+            .widget
+            .connect_selected_notify(move |_| cb());
+        let cb = enable(Edit::Machtype);
+        i.overview
+            .chipset_combo
+            .widget
+            .connect_selected_notify(move |_| cb());
+        let cb = enable(Edit::Firmware);
+        i.overview
+            .firmware_combo
+            .connect_selected_notify(move |_| cb());
+        let cb = enable(Edit::DiskBus);
+        i.disk
+            .bus_combo
+            .widget
+            .connect_selected_notify(move |_| cb());
+        let cb = enable(Edit::NetMac);
+        i.network.mac_entry.connect_changed(move |_| cb());
 
         let cb = enable(Edit::Cpu);
         i.cpu.model.entry.connect_changed(move |_| cb());
@@ -2414,8 +2536,20 @@ impl VmmDetails {
         let o = &self.0.overview;
         let mut title = None;
         let mut description = None;
+        let mut firmware = None;
+        let mut machine = None;
         if self.edited(Edit::Title) {
             title = Some(o.title.text().to_string());
+        }
+        if self.edited(Edit::Firmware) {
+            firmware = o.firmware_selection();
+        }
+        if self.edited(Edit::Machtype) {
+            machine = if o.chipset_value.is_visible() {
+                o.chipset_combo.get()
+            } else {
+                o.machine_combo.get()
+            };
         }
         if self.edited(Edit::Desc) {
             let buffer = o.description.buffer();
@@ -2427,7 +2561,7 @@ impl VmmDetails {
         if self.edited(Edit::Name) {
             // Renaming is pretty convoluted, so do it here synchronously
             self.0.vm.rename_domain(&o.name.text()).await?;
-            if title.is_none() && description.is_none() {
+            if title.is_none() && description.is_none() && firmware.is_none() && machine.is_none() {
                 // Saves some useless redefine attempts
                 return Ok(true);
             }
@@ -2441,7 +2575,10 @@ impl VmmDetails {
         });
         Ok(self
             .change_config(
-                async move { vm.define_overview(d.map(Some), t.map(Some), None).await },
+                async move {
+                    vm.define_overview_full(d.map(Some), t.map(Some), None, machine, firmware)
+                        .await
+                },
                 hotplug,
             )
             .await)
@@ -3038,6 +3175,9 @@ impl VmmDetails {
         if self.edited(Edit::NetLinkstate) {
             edits.linkstate = Some(n.link_state.is_active());
         }
+        if self.edited(Edit::NetMac) {
+            edits.macaddr = Some(n.mac_entry.text().to_string());
+        }
         let vm = self.0.vm.clone();
         let hotplug_vm = vm.clone();
         let (hid, hedits) = (id.clone(), edits.clone());
@@ -3094,6 +3234,9 @@ impl VmmDetails {
         }
         if self.edited(Edit::Disk) {
             d.get_values(&mut edits);
+        }
+        if self.edited(Edit::DiskBus) {
+            edits.bus = d.bus_combo.get();
         }
 
         let vm = self.0.vm.clone();
@@ -3705,8 +3848,12 @@ impl VmmDetails {
             ));
         n.model
             .set(child_attr(doc, el, &["model"], "type").as_deref());
-        n.mac
-            .set_text(&child_attr(doc, el, &["mac"], "address").unwrap_or_default());
+        let macaddr = child_attr(doc, el, &["mac"], "address").unwrap_or_default();
+        if n.mac.is_visible() {
+            n.mac.set_text(&macaddr);
+        } else {
+            n.mac_entry.set_text(&macaddr);
+        }
         let state = child_attr(doc, el, &["link"], "state");
         n.link_state
             .set_active(state.is_none() || state.as_deref() == Some("up"));
@@ -3743,6 +3890,24 @@ impl VmmDetails {
                 .filter(|b| !b.is_empty())
                 .unwrap_or_else(|| "-".into()),
         );
+        if self.0.is_customize_dialog {
+            // `populate_disk_bus_combo`: domcaps is async.
+            let this = self.clone();
+            let (devtype, bus) = (devtype.clone(), bus.clone());
+            glib::spawn_future_local(async move {
+                let buses = crate::addhardware::disk_bus_list(&this.0.vm, &devtype).await;
+                let d = &this.0.disk;
+                this.quietly(|| {
+                    d.bus_combo.set_values(
+                        buses
+                            .iter()
+                            .map(|b| (Some(b.clone()), disk_pretty_bus(b)))
+                            .collect(),
+                    );
+                    d.bus_combo.set(bus.as_deref());
+                });
+            });
+        }
 
         let is_cdrom = devtype == "cdrom";
         let is_removable = is_cdrom || devtype == "floppy";
@@ -3823,12 +3988,22 @@ impl VmmDetails {
         // `_init_details`' row visibility.
         let arch = os.arch.as_deref();
         let is_x86 = matches!(arch, Some("i686" | "x86_64"));
-        Overview::set_row_visible(&o.machine_title, &o.machine_label, !is_x86);
+        Overview::set_row_visible(&o.machine_title, &o.machine_value, !is_x86);
         let uri = vm.conn().map(|c| c.get_uri()).unwrap_or_default();
         let qemu_or_test = uri.starts_with("qemu") || uri.starts_with("test");
-        Overview::set_row_visible(&o.chipset_title, &o.chipset_label, qemu_or_test && is_x86);
+        Overview::set_row_visible(&o.chipset_title, &o.chipset_value, qemu_or_test && is_x86);
         let is_hvm = os.os_type.as_deref() == Some("hvm");
-        Overview::set_row_visible(&o.firmware_title, &o.firmware_label, false);
+        Overview::set_row_visible(&o.firmware_title, &o.firmware_value, false);
+        if i.is_customize_dialog {
+            o.machine_combo.set(Some(&machtype));
+            o.chipset_combo.set(Some(if machtype.contains("q35") {
+                "q35"
+            } else {
+                "pc"
+            }));
+            o.select_firmware(&firmware);
+        }
+        self.init_overview_combos();
         let this = self.clone();
         let arch = arch.map(str::to_string);
         glib::spawn_future_local(async move {
@@ -3841,7 +4016,7 @@ impl VmmDetails {
             let o = &this.0.overview;
             Overview::set_row_visible(
                 &o.firmware_title,
-                &o.firmware_label,
+                &o.firmware_value,
                 is_hvm && (efi || arch_can_uefi(arch.as_deref())),
             );
         });
@@ -3951,6 +4126,100 @@ impl VmmDetails {
             this.quietly(|| shared.set_active(shared_mem));
             shared.set_sensitive(shared_mem_err.is_none());
             shared.set_tooltip_text(shared_mem_err.as_deref());
+        });
+    }
+
+    /// `_init_details`' customize-only machine, chipset and firmware
+    /// combos, from the capabilities and domcaps (which need the XML,
+    /// so this is retried until that has arrived).
+    fn init_overview_combos(&self) {
+        let i = &self.0;
+        if !i.is_customize_dialog || i.overview.combos_loaded.get() {
+            return;
+        }
+        let Some(x) = i.vm.xmlobj() else {
+            return;
+        };
+        i.overview.combos_loaded.set(true);
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let i = &this.0;
+            let os = x.guest.os.clone();
+            let mut machines = vec![];
+            if let Some(conn) = i.vm.conn() {
+                match conn.fetch_caps().await.and_then(|caps| {
+                    caps.guest_lookup(
+                        os.os_type.as_deref(),
+                        os.arch.as_deref(),
+                        x.guest.domain_type.as_deref(),
+                        os.machine.as_deref(),
+                    )
+                }) {
+                    Ok(capsinfo) => machines = capsinfo.machines,
+                    Err(e) => eprintln!("Error determining machine list: {e}"),
+                }
+            }
+            let o = &i.overview;
+            let show_machine = !matches!(os.arch.as_deref(), Some("i686" | "x86_64"));
+            if show_machine {
+                o.machine_combo.set_values(
+                    machines
+                        .iter()
+                        .map(|m| (Some(m.clone()), m.clone()))
+                        .collect(),
+                );
+            }
+
+            // Firmware
+            let domcaps = i.vm.get_domain_capabilities().await;
+            let arch = domcaps.as_ref().and_then(|c| c.arch.clone());
+            let mut uefirows = vec![];
+            let (efi, uefi_loader) = domcaps.as_ref().map_or((false, false), |c| {
+                (c.supports_firmware_efi(), c.supports_uefi_loader())
+            });
+            if efi {
+                uefirows.push(("UEFI".to_string(), None, Some("efi".to_string())));
+            }
+            for path in domcaps.iter().flat_map(|c| c.loader.values.iter()) {
+                uefirows.push((
+                    label_for_firmware_path(arch.as_deref(), Some(path)),
+                    Some(path.clone()),
+                    None,
+                ));
+            }
+            let firmware_warn = if !(uefi_loader || efi) {
+                Some("Libvirt or hypervisor does not support UEFI.")
+            } else if uefirows.is_empty() {
+                Some("Libvirt did not detect any UEFI/OVMF firmware image installed on the host.")
+            } else {
+                None
+            };
+            // Put the default entry first in the list
+            let mut rows = vec![(label_for_firmware_path(arch.as_deref(), None), None, None)];
+            rows.extend(uefirows);
+            let labels: Vec<&str> = rows.iter().map(|(l, _, _)| l.as_str()).collect();
+            this.quietly(|| {
+                o.firmware_combo
+                    .set_model(Some(&gtk::StringList::new(&labels)));
+                o.firmware_combo.set_selected(0);
+            });
+            o.firmware_rows.replace(rows);
+            o.firmware_warn.set_visible(firmware_warn.is_some());
+            o.firmware_warn.set_tooltip_text(firmware_warn);
+
+            // Chipset
+            let mut chipsets = vec![(
+                Some("pc".to_string()),
+                chipset_label_from_machine(Some("pc")).to_string(),
+            )];
+            if machines.iter().any(|m| m == "q35") {
+                chipsets.push((
+                    Some("q35".to_string()),
+                    chipset_label_from_machine(Some("q35")).to_string(),
+                ));
+            }
+            this.quietly(|| o.chipset_combo.set_values(chipsets));
+            this.quietly(|| this.refresh_overview_page());
         });
     }
 

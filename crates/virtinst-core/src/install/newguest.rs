@@ -1402,6 +1402,121 @@ impl Installer {
     }
 }
 
+impl Installer {
+    /// `_build_xml` for a guest the "customize before install" dialog
+    /// edited, so only its XML is left: the same alterations as
+    /// [`Installer::build_xml`], made on that XML.
+    pub fn build_xml_from_xml(&self, xml: &str, is_windows: bool) -> Result<InstallXml, String> {
+        if !self.requires_postboot_xml_changes() {
+            return Ok(InstallXml {
+                initial: None,
+                final_xml: xml.to_string(),
+            });
+        }
+        let parse = |x: &str| virtinst_xml::parse_libvirt_xml(x).map_err(|e| e.to_string());
+        let write = |doc: &virtinst_xml::Document| doc.write_str().map_err(|e| e.to_string());
+
+        // `_alter_bootconfig`
+        let mut doc = parse(xml)?;
+        let root = doc.root_element().ok_or("Empty domain XML")?;
+        let on_reboot = virtinst_xml::resolve_or_create_path(&mut doc, root, &["on_reboot"]);
+        on_reboot.set_text_content(&mut doc, "destroy");
+        let os = virtinst_xml::resolve_or_create_path(&mut doc, root, &["os"]);
+        // `_alter_treemedia_bootconfig`
+        if let Some((kernel, initrd, kernel_args)) = &self.treemedia_bootconfig {
+            for (tag, val) in [
+                ("kernel", kernel),
+                ("initrd", initrd),
+                ("cmdline", kernel_args),
+            ] {
+                if !val.is_empty() {
+                    let el = virtinst_xml::resolve_or_create_path(&mut doc, os, &[tag]);
+                    el.set_text_content(&mut doc, val.as_str());
+                }
+            }
+        }
+        let devices = root.find(&doc, "devices");
+        let disk_devices: Vec<String> = devices
+            .map(|d| {
+                d.find_all(&doc, "disk")
+                    .iter()
+                    .map(|disk| disk.attribute(&doc, "device").unwrap_or("disk").to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        // `_can_set_guest_bootorder`
+        let is_container = os
+            .find(&doc, "type")
+            .is_some_and(|t| t.text_content(&doc) == "exe");
+        let has_device_boot = devices.is_some_and(|d| {
+            d.child_elements(&doc).iter().any(|dev| {
+                dev.find(&doc, "boot")
+                    .is_some_and(|b| b.attribute(&doc, "order").is_some())
+            })
+        });
+        let can_set = !is_container && os.find(&doc, "kernel").is_none() && !has_device_boot;
+        let bootorder = match &self.install_bootdev {
+            Some(dev) if can_set => {
+                // `_build_boot_order`
+                let mut order = vec![dev.clone()];
+                if disk_devices.iter().any(|d| d == "disk") && !order.iter().any(|d| d == "hd") {
+                    order.push("hd".into());
+                }
+                order
+            }
+            _ => vec![],
+        };
+        for boot in os.find_all(&doc, "boot") {
+            boot.detach(&mut doc).map_err(|e| e.to_string())?;
+        }
+        for dev in bootorder {
+            let boot = Element::new(&mut doc, "boot");
+            boot.set_attribute(&mut doc, "dev", dev);
+            os.push_child(&mut doc, boot).map_err(|e| e.to_string())?;
+        }
+        // `_alter_install_resources`
+        if let Some(mem) = self.install_memory {
+            let el = virtinst_xml::resolve_or_create_path(&mut doc, root, &["currentMemory"]);
+            el.set_text_content(&mut doc, mem.to_string());
+        }
+        let initial = write(&doc)?;
+
+        // `_remove_install_cdrom_media`: Windows installs reboot into
+        // the media again, so it stays.
+        let mut doc = parse(xml)?;
+        let root = doc.root_element().ok_or("Empty domain XML")?;
+        let cdrom_path = self.cdrom.as_ref().and_then(|c| c.path.clone());
+        if let (Some(path), false) = (cdrom_path, is_windows) {
+            let disks = root
+                .find(&doc, "devices")
+                .map(|d| d.find_all(&doc, "disk"))
+                .unwrap_or_default();
+            for disk in disks {
+                if disk.attribute(&doc, "device") != Some("cdrom") {
+                    continue;
+                }
+                let Some(source) = disk.find(&doc, "source") else {
+                    continue;
+                };
+                let src_path = ["file", "dev", "dir"]
+                    .iter()
+                    .find_map(|a| source.attribute(&doc, a));
+                if src_path != Some(path.as_str()) {
+                    continue;
+                }
+                source.detach(&mut doc).map_err(|e| e.to_string())?;
+                // `sync_path_props` with no path.
+                disk.set_attribute(&mut doc, "type", "file");
+                break;
+            }
+        }
+        Ok(InstallXml {
+            initial: Some(initial),
+            final_xml: write(&doc)?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1516,6 +1631,46 @@ mod tests {
         assert_eq!(boot_devs(&x.final_xml), ["hd"]);
         assert!(!x.final_xml.contains("on_reboot"));
         assert!(!x.final_xml.contains(ISO));
+    }
+
+    /// The customize dialog's path: the same install XML, built from
+    /// the guest's XML.
+    fn install_from_xml(mut g: NewGuest, inst: Installer) -> InstallXml {
+        let domcaps = DomainCapabilities::parse(DOMCAPS).unwrap();
+        inst.set_install_defaults(&mut g, &conn(), &caps(), &domcaps)
+            .unwrap();
+        inst.build_xml_from_xml(&g.to_xml(&conn()), g.os.is_windows)
+            .unwrap()
+    }
+
+    #[test]
+    fn customized_cdrom_install_is_two_phase() {
+        let x = install_from_xml(guest(os("fedora41"), true), cdrom());
+        let initial = x.initial.expect("a CD-ROM install boots the media first");
+        assert_eq!(boot_devs(&initial), ["cdrom", "hd"]);
+        assert!(initial.contains("<on_reboot>destroy</on_reboot>"));
+        assert!(initial.contains(ISO));
+        assert_eq!(boot_devs(&x.final_xml), ["hd"]);
+        assert!(!x.final_xml.contains("on_reboot"));
+        assert!(!x.final_xml.contains(ISO));
+    }
+
+    #[test]
+    fn customized_tree_install_boots_the_kernel() {
+        let mut inst = Installer::for_location(None);
+        inst.treemedia_bootconfig = Some(("/k".into(), "/i".into(), "console=ttyS0".into()));
+        inst.install_memory = Some(2097152);
+        let x = install_from_xml(guest(os("fedora41"), true), inst.clone());
+        let initial = x.initial.unwrap();
+        assert!(initial.contains("<kernel>/k</kernel>"));
+        assert!(initial.contains("<initrd>/i</initrd>"));
+        assert!(initial.contains("<cmdline>console=ttyS0</cmdline>"));
+        assert!(initial.contains("<currentMemory>2097152</currentMemory>"));
+        assert!(boot_devs(&initial).is_empty());
+        assert!(!x.final_xml.contains("<kernel>"));
+        // Same as the wizard's own path.
+        let y = install(guest(os("fedora41"), true), inst);
+        assert_eq!(boot_devs(&y.final_xml), boot_devs(&x.final_xml));
     }
 
     #[test]

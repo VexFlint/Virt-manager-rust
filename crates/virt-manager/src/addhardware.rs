@@ -153,6 +153,24 @@ const CONTROLLER_TYPES: [(&str, &str); 4] = [
     ("ccid", "CCID"),
 ];
 
+/// `disk_recommended_buses` for `vm` (`populate_disk_bus_combo`'s
+/// rows): the domcaps buses, or the old guessed list without them.
+pub async fn disk_bus_list(vm: &VmmDomain, devtype: &str) -> Vec<String> {
+    let caps = vm.get_domain_capabilities().await;
+    let guest = guest_info(vm);
+    let conn = vm.conn();
+    let is_test = conn.as_ref().is_some_and(|c| c.is_test());
+    let is_xen = conn.as_ref().is_some_and(|c| c.is_xen());
+    let buses: Vec<String> = match caps.as_deref().and_then(|c| c.devices.disk.get_enum("bus")) {
+        Some(e) => e.values.clone(),
+        None => disk_old_recommended_buses(&guest, is_test, is_xen)
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+    };
+    disk_recommended_buses(&buses, devtype)
+}
+
 /// `_build_input_combo`'s devices, keyed `type:bus`.
 const INPUT_DEVICES: [(&str, &str); 5] = [
     ("tablet", "usb"),
@@ -987,23 +1005,10 @@ impl AddHardware {
         let this = self.clone();
         glib::spawn_future_local(async move {
             let i = &this.0;
-            let caps = i.vm.get_domain_capabilities().await;
-            let guest = guest_info(&i.vm);
-            let conn = i.vm.conn();
-            let is_test = conn.as_ref().is_some_and(|c| c.is_test());
-            let is_xen = conn.as_ref().is_some_and(|c| c.is_xen());
-            let buses: Vec<String> =
-                match caps.as_deref().and_then(|c| c.devices.disk.get_enum("bus")) {
-                    Some(e) => e.values.clone(),
-                    None => disk_old_recommended_buses(&guest, is_test, is_xen)
-                        .into_iter()
-                        .map(str::to_string)
-                        .collect(),
-                };
+            let buses = disk_bus_list(&i.vm, devtype).await;
             if this.storage_devtype() != devtype {
                 return;
             }
-            let buses = disk_recommended_buses(&buses, devtype);
             i.storage_bustype.set_values(
                 buses
                     .iter()
