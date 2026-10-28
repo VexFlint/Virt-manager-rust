@@ -33,3 +33,28 @@ pub struct DomainKeyWrap {
     #[xml(list)]
     pub cipher: Vec<KeyWrapCipher>,
 }
+
+/// `_KeyWrap`.
+pub static KEYWRAP_CIPHER: crate::xmlbuilder::XmlClass = {
+    use crate::xmlbuilder::{prop, Kind, XmlClass};
+    XmlClass {
+        xml_name: "cipher",
+        props: &[
+            prop("name", "./@name", Kind::Str),
+            prop("state", "./@state", Kind::OnOff),
+        ],
+        children: &[],
+        prop_order: &["name", "state"],
+    }
+};
+
+/// `DomainKeyWrap`.
+pub static DOMAIN_KEYWRAP: crate::xmlbuilder::XmlClass = {
+    use crate::xmlbuilder::{child, XmlClass};
+    XmlClass {
+        xml_name: "keywrap",
+        props: &[],
+        children: &[child("cipher", &KEYWRAP_CIPHER, ".", false)],
+        prop_order: &[],
+    }
+};

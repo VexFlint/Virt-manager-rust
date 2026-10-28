@@ -199,3 +199,161 @@ pub struct DomainOs {
     #[xml(path = "initgroup", text)]
     pub initgroup: Option<String>,
 }
+
+use crate::xmlbuilder::{child, prop, Kind, XmlClass, XmlObject};
+
+/// `_InitArg`.
+pub static INIT_ARG: XmlClass = XmlClass {
+    xml_name: "initarg",
+    props: &[prop("val", ".", Kind::Str)],
+    children: &[],
+    prop_order: &[],
+};
+
+/// `_InitEnv`.
+pub static INIT_ENV: XmlClass = XmlClass {
+    xml_name: "initenv",
+    props: &[
+        prop("name", "./@name", Kind::Str),
+        prop("value", ".", Kind::Str),
+    ],
+    children: &[],
+    prop_order: &[],
+};
+
+/// `_BootDevice`.
+pub static BOOT_DEVICE: XmlClass = XmlClass {
+    xml_name: "boot",
+    props: &[prop("dev", "./@dev", Kind::Str)],
+    children: &[],
+    prop_order: &[],
+};
+
+/// `_FirmwareFeature`.
+pub static FIRMWARE_FEATURE: XmlClass = XmlClass {
+    xml_name: "feature",
+    props: &[
+        prop("enabled", "./@enabled", Kind::YesNo),
+        prop("name", "./@name", Kind::Str),
+    ],
+    children: &[],
+    prop_order: &["enabled", "name"],
+};
+
+/// `DomainOs.BOOT_DEVICES`.
+pub const BOOT_DEVICES: [&str; 4] = ["hd", "cdrom", "fd", "network"];
+
+/// `DomainOs`.
+pub static DOMAIN_OS: XmlClass = XmlClass {
+    xml_name: "os",
+    props: &[
+        // Shared/Generic boot options
+        prop("os_type", "./type", Kind::Str),
+        prop("arch", "./type/@arch", Kind::Str),
+        prop("machine", "./type/@machine", Kind::Str),
+        prop("loader", "./loader", Kind::Str),
+        prop("loader_ro", "./loader/@readonly", Kind::YesNo),
+        prop("loader_type", "./loader/@type", Kind::Str),
+        prop("loader_secure", "./loader/@secure", Kind::YesNo),
+        prop("loader_stateless", "./loader/@stateless", Kind::YesNo),
+        // BIOS bootloader options
+        prop("firmware", "./@firmware", Kind::Str),
+        prop("nvram", "./nvram", Kind::AbsPath),
+        prop("nvram_template", "./nvram/@template", Kind::Str),
+        prop("bootmenu_enable", "./bootmenu/@enable", Kind::YesNo),
+        prop("bootmenu_timeout", "./bootmenu/@timeout", Kind::Int),
+        prop("bios_useserial", "./bios/@useserial", Kind::YesNo),
+        prop("bios_rebootTimeout", "./bios/@rebootTimeout", Kind::Int),
+        prop("smbios_mode", "./smbios/@mode", Kind::Str),
+        prop("nvram_templateFormat", "./nvram/@templateFormat", Kind::Str),
+        // Direct kernel boot options
+        prop("kernel", "./kernel", Kind::AbsPath),
+        prop("initrd", "./initrd", Kind::AbsPath),
+        prop("kernel_args", "./cmdline", Kind::Str),
+        prop("dtb", "./dtb", Kind::AbsPath),
+        prop("acpi_tb", "./acpi/table", Kind::AbsPath),
+        prop("acpi_tb_type", "./acpi/table/@type", Kind::Str),
+        // Container boot options
+        prop("init", "./init", Kind::Str),
+        prop("initdir", "./initdir", Kind::Str),
+        prop("inituser", "./inituser", Kind::Str),
+        prop("initgroup", "./initgroup", Kind::Str),
+    ],
+    children: &[
+        child("bootdevs", &BOOT_DEVICE, ".", false),
+        child("firmware_features", &FIRMWARE_FEATURE, "./firmware", false),
+        child("initargs", &INIT_ARG, ".", false),
+        child("initenvs", &INIT_ENV, ".", false),
+    ],
+    prop_order: &[
+        "firmware",
+        "os_type",
+        "arch",
+        "machine",
+        "firmware_features",
+        "loader",
+        "loader_ro",
+        "loader_secure",
+        "loader_type",
+        "loader_stateless",
+        "nvram",
+        "nvram_template",
+        "init",
+        "initargs",
+        "initenvs",
+        "initdir",
+        "inituser",
+        "initgroup",
+        "kernel",
+        "initrd",
+        "kernel_args",
+        "dtb",
+        "acpi_tb",
+        "acpi_tb_type",
+        "bootdevs",
+        "bootmenu_enable",
+        "bootmenu_timeout",
+        "bios_useserial",
+        "bios_rebootTimeout",
+        "smbios_mode",
+    ],
+};
+
+/// `DomainOs.bootorder`'s setter.
+pub fn set_bootorder(os: &mut XmlObject, newdevs: &[String]) -> Result<(), String> {
+    while !os.children("bootdevs").is_empty() {
+        let n = os.children("bootdevs").len();
+        os.remove_child("bootdevs", n - 1);
+    }
+    for d in newdevs {
+        let mut dev = XmlObject::new(&BOOT_DEVICE);
+        dev.set("dev", Some(crate::xmlbuilder::Value::Str(d.clone())))?;
+        os.add_child(dev);
+    }
+    Ok(())
+}
+
+/// `DomainOs.set_initargs_string`.
+pub fn set_initargs_string(os: &mut XmlObject, argstring: &str) -> Result<(), String> {
+    while !os.children("initargs").is_empty() {
+        let n = os.children("initargs").len();
+        os.remove_child("initargs", n - 1);
+    }
+    let vals = shlex::split(argstring).ok_or("No closing quotation")?;
+    for val in vals {
+        let mut obj = XmlObject::new(&INIT_ARG);
+        obj.set("val", Some(crate::xmlbuilder::Value::Str(val)))?;
+        os.add_child(obj);
+    }
+    Ok(())
+}
+
+/// `DomainOs.is_x86`.
+pub fn is_x86(os: &XmlObject) -> bool {
+    matches!(os.get_str("arch").as_deref(), Some("x86_64" | "i686"))
+}
+
+/// `DomainOs.is_q35`.
+pub fn is_q35(os: &XmlObject) -> bool {
+    is_x86(os) && os.get_str("machine").is_some_and(|m| m.contains("q35"))
+}

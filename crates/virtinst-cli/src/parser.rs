@@ -244,6 +244,10 @@ pub type PreParse = fn(&str, &mut OptDict) -> Result<(), Error>;
 /// See `ParserDef::post_parse`.
 pub type PostParse = fn(&mut ParseCtx, &mut XmlObject) -> Result<(), Error>;
 
+/// The start of a custom `_parse` that needs the object: runs after
+/// `pre_parse`, before the options are applied, and may edit the dict.
+pub type InstPreParse = fn(&mut ParseCtx, &mut XmlObject, &mut OptDict) -> Result<(), Error>;
+
 pub type ExistingInst = fn(&XmlObject, &OptDict) -> Option<usize>;
 
 /// A parser's own `_parse` override, run before the generic one:
@@ -360,6 +364,8 @@ pub struct ParserDef {
     pub existing_inst: Option<ExistingInst>,
     /// The rest of a custom `_parse`, after the options are applied.
     pub post_parse: Option<PostParse>,
+    /// See [`InstPreParse`].
+    pub inst_pre_parse: Option<InstPreParse>,
     /// `ParserXML`: each option string is a new `XMLManualAction`
     /// appended to the guest's `xml_actions`.
     pub is_xml_action: bool,
@@ -386,6 +392,7 @@ impl ParserDef {
             custom_parse: None,
             existing_inst: None,
             post_parse: None,
+            inst_pre_parse: None,
             is_xml_action: false,
             class,
         };
@@ -853,6 +860,9 @@ fn parse_into(ctx: &mut ParseCtx, inst: &mut XmlObject) -> Result<(), ParseError
     let mut optdict = ctx.optdict.clone();
     if let Some(pre) = ctx.def.pre_parse {
         pre(&ctx.optstr, &mut optdict).map_err(ParseError::Raised)?;
+    }
+    if let Some(pre) = ctx.def.inst_pre_parse {
+        pre(ctx, inst, &mut optdict).map_err(ParseError::Raised)?;
     }
     for arg in ctx.param_list(&mut optdict)? {
         ctx.parse_param(inst, &arg).map_err(ParseError::Raised)?;

@@ -59,10 +59,14 @@ quando a opção é usada). No oráculo, `@FULL@` é o testdriver.xml.
 da CPU do host de `cpu::set_cpu_conn` (o virt-xml busca quando a opção é usada);
 as security features só são calculadas quando um modo precisa delas. As
 `force=a,force=b` viram uma lista separada por `\u{1f}` no `pre_parse`.
+`--boot`/`--idmap`/`--seclabel`/`--keywrap`/`--launchSecurity` em `parsers/boot.rs`.
+`ParserDef.inst_pre_parse` é o começo de um `_parse` que precisa do objeto
+(o `_convert_boot_order`). `uefi` liga/desliga como `enable_uefi`/`disable_uefi`
+lendo domcaps direto do `parser::connect()`. `XmlObject.clear` agora remove os
+filhos de lista (como o upstream), não só limpa.
 
 ## Falta (prioridade)
-1. Opções de guest (boot, seclabel, idmap, keywrap, launchSecurity)
-   e o resto do virt-install (`--os-variant` etc.).
+1. O resto do virt-install (`--os-variant` etc.).
 2. Só depois: GUI (ver CLAUDE.md seção 7).
 
 ## Bugs conhecidos

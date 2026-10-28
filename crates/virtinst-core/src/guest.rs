@@ -551,14 +551,7 @@ pub static DOMAIN_DEVICES: XmlClass = XmlClass {
     ],
 };
 
-/// `DomainOs`, for now only what the guest options touch (the rest
-/// comes with `--boot`).
-pub static DOMAIN_OS: XmlClass = XmlClass {
-    xml_name: "os",
-    props: &[prop("smbios_mode", "./smbios/@mode", Kind::Str)],
-    children: &[],
-    prop_order: &[],
-};
+pub use crate::domain::os::DOMAIN_OS;
 
 /// `_IOThreadID`.
 pub static IOTHREAD_ID: XmlClass = XmlClass {
@@ -611,6 +604,9 @@ pub static GUEST: XmlClass = XmlClass {
         prop("vcpu_current", "./vcpu/@current", Kind::Int),
         prop("vcpu_placement", "./vcpu/@placement", Kind::Str),
         prop("vcpu_cpuset", "./vcpu/@cpuset", Kind::Str),
+        prop("bootloader", "./bootloader", Kind::Str),
+        prop("bootloader_args", "./bootloader_args", Kind::Str),
+        prop("emulator", "./devices/emulator", Kind::Str),
     ],
     children: &[
         child(
@@ -659,6 +655,7 @@ pub static GUEST: XmlClass = XmlClass {
             false,
         ),
         child("os", &DOMAIN_OS, ".", true),
+        child("idmap", &crate::domain::idmap::DOMAIN_IDMAP, ".", true),
         child(
             "features",
             &crate::domain::features::DOMAIN_FEATURES,
@@ -675,6 +672,24 @@ pub static GUEST: XmlClass = XmlClass {
         child("clock", &crate::domain::clock::DOMAIN_CLOCK, ".", true),
         child("pm", &crate::domain::pm::DOMAIN_PM, ".", true),
         child("devices", &DOMAIN_DEVICES, ".", true),
+        child(
+            "launchSecurity",
+            &crate::domain::launch_security::DOMAIN_LAUNCH_SECURITY,
+            ".",
+            true,
+        ),
+        child(
+            "seclabels",
+            &crate::domain::seclabel::DOMAIN_SECLABEL,
+            ".",
+            false,
+        ),
+        child(
+            "keywrap",
+            &crate::domain::keywrap::DOMAIN_KEYWRAP,
+            ".",
+            true,
+        ),
         child(
             "xmlns_qemu",
             &crate::domain::xmlnsqemu::DOMAIN_XMLNS_QEMU,
@@ -709,7 +724,10 @@ pub static GUEST: XmlClass = XmlClass {
         "numatune",
         "resource",
         "sysinfo",
+        "bootloader",
+        "bootloader_args",
         "os",
+        "idmap",
         "features",
         "cpu",
         "clock",
@@ -717,7 +735,11 @@ pub static GUEST: XmlClass = XmlClass {
         "on_reboot",
         "on_crash",
         "pm",
+        "emulator",
         "devices",
+        "launchSecurity",
+        "seclabels",
+        "keywrap",
     ],
 };
 

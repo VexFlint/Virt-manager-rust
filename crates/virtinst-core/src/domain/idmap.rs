@@ -32,3 +32,28 @@ pub struct DomainIdmap {
     #[xml(path = "gid", attribute = "count")]
     pub gid_count: Option<u32>,
 }
+
+/// `DomainIdmap`.
+pub static DOMAIN_IDMAP: crate::xmlbuilder::XmlClass = {
+    use crate::xmlbuilder::{prop, Kind, XmlClass};
+    XmlClass {
+        xml_name: "idmap",
+        props: &[
+            prop("uid_start", "./uid/@start", Kind::Int),
+            prop("uid_target", "./uid/@target", Kind::Int),
+            prop("uid_count", "./uid/@count", Kind::Int),
+            prop("gid_start", "./gid/@start", Kind::Int),
+            prop("gid_target", "./gid/@target", Kind::Int),
+            prop("gid_count", "./gid/@count", Kind::Int),
+        ],
+        children: &[],
+        prop_order: &[
+            "uid_start",
+            "uid_target",
+            "uid_count",
+            "gid_start",
+            "gid_target",
+            "gid_count",
+        ],
+    }
+};
