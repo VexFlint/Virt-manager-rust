@@ -216,6 +216,11 @@ pub struct NewGuest {
     /// the default.
     pub uefi_requested: Option<bool>,
     pub init: Option<String>,
+    /// Direct kernel boot (`<kernel>`, `<initrd>`, `<cmdline>`), set
+    /// on the install XML of a tree install.
+    pub kernel: Option<String>,
+    pub initrd: Option<String>,
+    pub kernel_args: Option<String>,
     pub devices: Vec<Device>,
 
     // Filled in by `set_defaults` and the installer.
@@ -1005,6 +1010,15 @@ impl NewGuest {
         if let Some(init) = &self.init {
             text(&mut doc, os, "init", init);
         }
+        for (name, val) in [
+            ("kernel", &self.kernel),
+            ("initrd", &self.initrd),
+            ("cmdline", &self.kernel_args),
+        ] {
+            if let Some(v) = val {
+                text(&mut doc, os, name, v);
+            }
+        }
         for dev in &self.bootorder {
             Element::build("boot")
                 .attribute("dev", dev)
@@ -1228,6 +1242,15 @@ pub struct Installer {
     pub cdrom: Option<NewDisk>,
     /// `_install_bootdev`: `cdrom` for a CD install.
     pub install_bootdev: Option<String>,
+    /// A tree install (`_treemedia`): it boots the installer's
+    /// kernel and initrd.
+    pub treemedia: bool,
+    /// `_treemedia_bootconfig`: the fetched kernel, initrd and kernel
+    /// args, once `prepare` ran.
+    pub treemedia_bootconfig: Option<(String, String, String)>,
+    /// `_alter_install_resources`: the raised install `currentMemory`
+    /// (KiB) a network install needs.
+    pub install_memory: Option<u64>,
 }
 
 /// The two XML phases of `Installer._build_xml`: `initial` boots the
@@ -1249,6 +1272,17 @@ impl Installer {
                 ..Default::default()
             }),
             install_bootdev: Some("cdrom".into()),
+            ..Default::default()
+        }
+    }
+
+    /// For a tree install from `location`; `cdrom` is the location
+    /// when it is an ISO, attached like an install CD-ROM.
+    pub fn for_location(cdrom: Option<NewDisk>) -> Installer {
+        Installer {
+            cdrom,
+            treemedia: true,
+            ..Default::default()
         }
     }
 
@@ -1316,7 +1350,7 @@ impl Installer {
 
     /// `requires_postboot_xml_changes`.
     pub fn requires_postboot_xml_changes(&self) -> bool {
-        self.cdrom.is_some() || self.install_bootdev.is_some()
+        self.cdrom.is_some() || self.install_bootdev.is_some() || self.treemedia
     }
 
     /// `_build_xml`, for a guest `set_install_defaults` already ran on.
@@ -1334,6 +1368,16 @@ impl Installer {
             Some(dev) if Self::can_set_bootorder(guest) => Self::build_boot_order(guest, dev),
             _ => vec![],
         };
+        // `_alter_treemedia_bootconfig`
+        if let Some((kernel, initrd, kernel_args)) = &self.treemedia_bootconfig {
+            initial.kernel = Some(kernel.clone());
+            initial.initrd = Some(initrd.clone());
+            initial.kernel_args = Some(kernel_args.clone()).filter(|a| !a.is_empty());
+        }
+        // `_alter_install_resources`
+        if let Some(mem) = self.install_memory {
+            initial.current_memory = mem;
+        }
 
         // `_remove_install_cdrom_media`: Windows installs reboot into
         // the media again, so it stays.

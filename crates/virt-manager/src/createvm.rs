@@ -618,10 +618,166 @@ struct InstallPlan {
     uuid: String,
     is_vz: bool,
     needs_postboot: bool,
-    xml: virtinst_core::install::newguest::InstallXml,
+    /// The guest with its install defaults, and the installer that
+    /// builds its XML (after a tree install fetched its kernel).
+    guest: virtinst_core::install::newguest::NewGuest,
+    installer: virtinst_core::install::newguest::Installer,
+    conn_facts: virtinst_core::install::newguest::ConnFacts,
+    tree: Option<TreeInstall>,
     vol_install: Option<virtinst_core::storage::VolInstall>,
     disk_path: Option<String>,
     bootstrap: Option<BootstrapArgs>,
+}
+
+/// A `location` install: the tree media to fetch the kernel from.
+struct TreeInstall {
+    location: String,
+    extra_args: Option<String>,
+    uri: String,
+    os_name: String,
+}
+
+/// `Installer._prepare` for a tree install: fetch (and, on a remote
+/// connection, upload) the kernel and initrd and set the install XML to
+/// boot them, raising its memory for a network install
+/// (`_alter_install_resources`). Returns the media's temporary files
+/// and uploaded volumes, for `_cleanup`.
+fn prepare_tree_install(
+    tree: &TreeInstall,
+    conn: &virt::connect::Connect,
+    guest: &mut virtinst_core::install::newguest::NewGuest,
+    installer: &mut virtinst_core::install::newguest::Installer,
+    meter: &mut asyncjob::Meter,
+) -> Result<
+    (
+        virtinst_core::install::installertreemedia::TreeMedia,
+        Vec<virt::storage_vol::StorageVol>,
+    ),
+    String,
+> {
+    use virtinst_core::install::installertreemedia::{self as treemedia, GuestInfo, TreeMedia};
+    let uri = virtinst_core::connection::Uri::parse(&tree.uri);
+    let info = GuestInfo {
+        arch: guest.arch.clone(),
+        os_type: guest.os_type.clone(),
+        os_name: tree.os_name.clone(),
+    };
+    let mut tm = TreeMedia::new(
+        &uri,
+        Some(tree.location.clone()),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )?;
+    tm.set_extra_args(tree.extra_args.iter().cloned().collect());
+    let (kernel, initrd, kernel_args) = match tm.prepare(&uri, &info, meter, None) {
+        Ok(r) => r,
+        Err(e) => {
+            tm.cleanup();
+            return Err(e);
+        }
+    };
+    let (paths, tmpvols) = match treemedia::upload_media(conn, &uri, meter, vec![kernel, initrd]) {
+        Ok(r) => r,
+        Err(e) => {
+            tm.cleanup();
+            return Err(e);
+        }
+    };
+    installer.treemedia_bootconfig = Some((paths[0].clone(), paths[1].clone(), kernel_args));
+
+    // `_alter_install_resources`
+    if tm.requires_internet(&uri, &info).unwrap_or(false) {
+        let os = virtinst_core::osinfo::OsDb::load_default()
+            .ok()
+            .and_then(|db| db.lookup_os(&tree.os_name));
+        if let Some(os) = os {
+            let ram = os
+                .get_network_install_required_ram(&guest.arch)
+                .unwrap_or(0)
+                / 1024;
+            let ram = u64::try_from(ram).unwrap_or(0);
+            if ram > guest.current_memory {
+                eprintln!(
+                    "Overriding memory to {} MiB needed for {} network install.",
+                    ram / 1024,
+                    os.short_id()
+                );
+                installer.install_memory = Some(ram);
+            }
+        }
+    }
+    Ok((tm, tmpvols))
+}
+
+/// `Installer._build_xml`, the install storage and `_create_guest`.
+#[allow(clippy::too_many_arguments)]
+fn create_domain(
+    conn: &virt::connect::Connect,
+    guest: &virtinst_core::install::newguest::NewGuest,
+    installer: &virtinst_core::install::newguest::Installer,
+    cf: &virtinst_core::install::newguest::ConnFacts,
+    is_vz: bool,
+    vol_install: &Option<virtinst_core::storage::VolInstall>,
+    created: &AtomicBool,
+    meter: &mut asyncjob::Meter,
+) -> Result<(), (String, String)> {
+    let xml = installer.build_xml(guest, cf);
+    eprintln!(
+        "Generated initial_xml: {}",
+        xml.initial
+            .as_ref()
+            .map_or("None required".to_string(), |x| format!("\n{x}"))
+    );
+    eprintln!("Generated final_xml: \n{}", xml.final_xml);
+    if let Some(vol) = &vol_install {
+        meter.start(&format!("Allocating '{}'", vol.name), None);
+        vol.install(conn).map_err(|e| (e.clone(), e))?;
+        created.store(true, Ordering::SeqCst);
+        meter.end();
+    }
+    // `_create_guest`
+    meter.start("Creating domain...", None);
+    let verr = |e: virt::error::Error| {
+        let msg = e.message().to_string();
+        (msg.clone(), msg)
+    };
+    if is_vz {
+        // `_manual_transient_create`
+        let dom = virt::domain::Domain::define_xml(
+            conn,
+            xml.initial.as_deref().unwrap_or(&xml.final_xml),
+        )
+        .map_err(verr)?;
+        if let Err(e) = dom.create() {
+            let _ = dom.undefine();
+            return Err(verr(e));
+        }
+        if xml.initial.as_ref().is_some_and(|x| *x != xml.final_xml) {
+            virt::domain::Domain::define_xml(conn, &xml.final_xml).map_err(verr)?;
+        }
+    } else {
+        virt::domain::Domain::create_xml(conn, xml.initial.as_deref().unwrap_or(&xml.final_xml), 0)
+            .map_err(verr)?;
+        virt::domain::Domain::define_xml(conn, &xml.final_xml).map_err(verr)?;
+    }
+    meter.end();
+    eprintln!("Install completed");
+    // Kick off pool updates
+    if let Some(vol) = &vol_install {
+        match virt::storage_pool::StoragePool::lookup_by_name(conn, &vol.pool_name) {
+            Ok(pool) => {
+                let _ = pool.refresh(0);
+            }
+            Err(_) => eprintln!(
+                "Error looking up pool={} for refresh after VM creation.",
+                vol.pool_name
+            ),
+        }
+    }
+    Ok(())
 }
 
 /// The `virtBootstrap.bootstrap` arguments for an OS container.
@@ -2327,9 +2483,6 @@ impl VmmCreateVM {
         let caps = i.caps.borrow().clone().ok_or("No capabilities")?;
         let capsinfo = i.capsinfo.borrow().clone().ok_or("No capabilities")?;
         let gdata = i.gdata.borrow().clone();
-        if gdata.location.is_some() {
-            return Err("Installing from a URL isn't supported yet.".into());
-        }
 
         let cf = ng::ConnFacts {
             uri: virtinst_core::connection::Uri::parse(&conn.get_uri()),
@@ -2418,8 +2571,21 @@ impl VmmCreateVM {
             ));
         }
 
+        // A tree install: an ISO location is attached like an install
+        // CD-ROM, and the kernel and initrd are fetched at install time.
+        let uri = virtinst_core::connection::Uri::parse(&conn.get_uri());
+        let tree_iso = match &gdata.location {
+            Some(loc) => {
+                use virtinst_core::install::installertreemedia::TreeMedia;
+                TreeMedia::new(&uri, Some(loc.clone()), None, None, None, None, None)?
+                    .cdrom_path()
+                    .map(str::to_string)
+            }
+            None => None,
+        };
+
         // The installer's CD-ROM storage, `manage_path` style.
-        let installer = match gdata.cdrom.clone() {
+        let installer = match gdata.cdrom.clone().or(tree_iso) {
             Some(path) => {
                 let is_local = !conn.is_remote();
                 let h = handle.clone();
@@ -2432,8 +2598,16 @@ impl VmmCreateVM {
                 })
                 .await
                 .map_err(|_| "Worker thread panicked".to_string())?;
-                ng::Installer::for_cdrom(&path, Some(props))
+                match gdata.location {
+                    Some(_) => ng::Installer::for_location(Some(
+                        ng::Installer::for_cdrom(&path, Some(props))
+                            .cdrom
+                            .expect("a cdrom"),
+                    )),
+                    None => ng::Installer::for_cdrom(&path, Some(props)),
+                }
             }
+            None if gdata.location.is_some() => ng::Installer::for_location(None),
             None => ng::Installer::default(),
         };
 
@@ -2449,14 +2623,6 @@ impl VmmCreateVM {
             .unwrap_or_default();
         guest.cpu_ctx = self.cpu_context(&conn, &guest, &domcaps).await;
         installer.set_install_defaults(&mut guest, &cf, &capsf, &domcaps)?;
-        let xml = installer.build_xml(&guest, &cf);
-        eprintln!(
-            "Generated initial_xml: {}",
-            xml.initial
-                .as_ref()
-                .map_or("None required".to_string(), |x| format!("\n{x}"))
-        );
-        eprintln!("Generated final_xml: \n{}", xml.final_xml);
 
         let bootstrap = (gdata.filesystem.as_ref().is_some_and(|f| f.0.is_none())
             && i.inst.oscontainer_bootstrap.is_active())
@@ -2469,12 +2635,21 @@ impl VmmCreateVM {
             root_password: i.inst.oscontainer_rootpw.text().to_string(),
         });
 
+        let tree = gdata.location.clone().map(|location| TreeInstall {
+            location,
+            extra_args: gdata.extra_args.clone(),
+            uri: conn.get_uri(),
+            os_name: gdata.osinfo.clone().unwrap_or_else(|| "generic".into()),
+        });
         Ok(InstallPlan {
             name: guest.name.clone(),
             uuid: guest.uuid.clone(),
             is_vz: guest.domain_type == "vz",
             needs_postboot: installer.requires_postboot_xml_changes(),
-            xml,
+            guest,
+            installer,
+            conn_facts: cf,
+            tree,
             vol_install,
             disk_path,
             bootstrap,
@@ -2544,7 +2719,10 @@ impl VmmCreateVM {
             uuid,
             is_vz,
             needs_postboot,
-            xml,
+            mut guest,
+            mut installer,
+            conn_facts,
+            tree,
             vol_install,
             disk_path,
             bootstrap,
@@ -2569,57 +2747,39 @@ impl VmmCreateVM {
                 }
                 let conn = handle.connect();
                 eprintln!("Starting background install process");
-                // `build_storage`
-                if let Some(vol) = &vol_install {
-                    meter.start(&format!("Allocating '{}'", vol.name), None);
-                    vol.install(conn).map_err(|e| (e.clone(), e))?;
-                    created.store(true, Ordering::SeqCst);
-                    meter.end();
+                // `installer.start_install`: `_prepare`
+                let mut tree_media = None;
+                if let Some(tree) = &tree {
+                    let (tm, tmpvols) =
+                        prepare_tree_install(tree, conn, &mut guest, &mut installer, &mut meter)
+                            .map_err(|e| (e.clone(), e))?;
+                    tree_media = Some((tm, tmpvols));
                 }
-                // `_create_guest`
-                meter.start("Creating domain...", None);
-                let verr = |e: virt::error::Error| {
-                    let msg = e.message().to_string();
-                    (msg.clone(), msg)
-                };
-                if is_vz {
-                    // `_manual_transient_create`
-                    let dom = virt::domain::Domain::define_xml(
-                        conn,
-                        xml.initial.as_deref().unwrap_or(&xml.final_xml),
-                    )
-                    .map_err(verr)?;
-                    if let Err(e) = dom.create() {
-                        let _ = dom.undefine();
-                        return Err(verr(e));
-                    }
-                    if xml.initial.as_ref().is_some_and(|x| *x != xml.final_xml) {
-                        virt::domain::Domain::define_xml(conn, &xml.final_xml).map_err(verr)?;
-                    }
-                } else {
-                    virt::domain::Domain::create_xml(
-                        conn,
-                        xml.initial.as_deref().unwrap_or(&xml.final_xml),
-                        0,
-                    )
-                    .map_err(verr)?;
-                    virt::domain::Domain::define_xml(conn, &xml.final_xml).map_err(verr)?;
-                }
-                meter.end();
-                eprintln!("Install completed");
-                // Kick off pool updates
-                if let Some(vol) = &vol_install {
-                    match virt::storage_pool::StoragePool::lookup_by_name(conn, &vol.pool_name) {
-                        Ok(pool) => {
-                            let _ = pool.refresh(0);
+                // `_cleanup`, however the install goes.
+                let cleanup = |tree_media: Option<(
+                    virtinst_core::install::installertreemedia::TreeMedia,
+                    Vec<virt::storage_vol::StorageVol>,
+                )>| {
+                    if let Some((mut tm, tmpvols)) = tree_media {
+                        tm.cleanup();
+                        for vol in tmpvols {
+                            eprintln!("Removing volume '{}'", vol.get_name().unwrap_or_default());
+                            let _ = vol.delete(0);
                         }
-                        Err(_) => eprintln!(
-                            "Error looking up pool={} for refresh after VM creation.",
-                            vol.pool_name
-                        ),
                     }
-                }
-                Ok(())
+                };
+                let res = create_domain(
+                    conn,
+                    &guest,
+                    &installer,
+                    &conn_facts,
+                    is_vz,
+                    &vol_install,
+                    &created,
+                    &mut meter,
+                );
+                cleanup(tree_media);
+                res
             },
         )
         .await;
@@ -3026,13 +3186,43 @@ impl VmmCreateVM {
         i.detect_seq.set(seq);
 
         let is_remote = i.conn.borrow().as_ref().is_some_and(|c| c.is_remote());
+        let uri = i
+            .conn
+            .borrow()
+            .as_ref()
+            .map(|c| c.get_uri())
+            .unwrap_or_default();
+        // `self._gdata.build_guest()`: the guest facts the tree lookup reads.
+        let capsinfo = i.capsinfo.borrow().clone();
+        let guest = virtinst_core::install::installertreemedia::GuestInfo {
+            arch: capsinfo
+                .as_ref()
+                .and_then(|c| c.arch.clone())
+                .unwrap_or_default(),
+            os_type: capsinfo
+                .as_ref()
+                .and_then(|c| c.os_type.clone())
+                .unwrap_or_default(),
+            os_name: "generic".into(),
+        };
         let this = self.clone();
         glib::spawn_future_local(async move {
             let detect = gio::spawn_blocking(move || {
                 // `installer.detect_distro`
                 let db = virtinst_core::osinfo::OsDb::load_default().ok()?;
                 let os = if let Some(location) = location {
-                    db.guess_os_by_tree(&location)
+                    use virtinst_core::install::installertreemedia::TreeMedia;
+                    let uri = virtinst_core::connection::Uri::parse(&uri);
+                    let detected =
+                        TreeMedia::new(&uri, Some(location), None, None, None, None, None)
+                            .and_then(|mut tm| tm.detect_distro(&uri, &guest));
+                    match detected {
+                        Ok(distro) => return distro,
+                        Err(e) => {
+                            eprintln!("Error detecting distro: {e}");
+                            None
+                        }
+                    }
                 } else if let Some(cdrom) = cdrom {
                     if is_remote {
                         eprintln!("Can't detect distro for cdrom remote connection.");
@@ -3279,6 +3469,16 @@ impl VmmCreateVM {
             error::val_err(parent, &format!("Error setting default name.\n\n{e}")).await;
             return false;
         }
+        // `build_installer`: the tree media checks its location.
+        if let Some(loc) = &location {
+            let uri = virtinst_core::connection::Uri::parse(&conn.get_uri());
+            use virtinst_core::install::installertreemedia::TreeMedia;
+            if let Err(e) = TreeMedia::new(&uri, Some(loc.clone()), None, None, None, None, None) {
+                error::val_err_text2(parent, "Error setting installer parameters.", Some(&e)).await;
+                return false;
+            }
+        }
+
         {
             let mut gdata = i.gdata.borrow_mut();
             gdata.init = init;

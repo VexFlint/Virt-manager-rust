@@ -10,7 +10,6 @@
 pub mod cli;
 pub mod guest;
 pub mod installer;
-pub mod installertreemedia;
 pub mod parser;
 pub mod parsers;
 pub mod xmlutil;

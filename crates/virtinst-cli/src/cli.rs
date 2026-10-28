@@ -450,11 +450,7 @@ impl log::Log for Logger {
 
 /// `VirtinstConnection.get_app_cache_dir`.
 pub fn app_cache_dir() -> String {
-    let base = std::env::var("XDG_CACHE_HOME")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| format!("{}/.cache", std::env::var("HOME").unwrap_or_default()));
-    format!("{base}/virt-manager")
+    virtinst_core::install::installertreemedia::app_cache_dir()
 }
 
 /// `RotatingFileHandler(logfile, "ae", 1024 * 1024, 5)`: rotate a full
