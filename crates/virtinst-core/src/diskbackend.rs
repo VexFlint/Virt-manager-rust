@@ -702,7 +702,11 @@ pub fn path_is_network_vol(conn: &Connect, path: &str) -> bool {
 /// `capabilities.host.get_qemu_baselabel`: the user and uid of the
 /// DAC `qemu`/`kvm` base label.
 fn qemu_baselabel(conn: &Connect) -> Option<(String, u32)> {
-    let xml = conn.get_capabilities().ok()?;
+    // `conn.caps`: a magic URI's `caps=` file stands in for libvirt.
+    let xml = match std::env::var_os("VIRTINST_TEST_CAPS_FILE") {
+        Some(path) => std::fs::read_to_string(path).ok()?,
+        None => conn.get_capabilities().ok()?,
+    };
     let doc = virtinst_xml::parse_libvirt_xml(&xml).ok()?;
     let host = doc.root_element()?.find(&doc, "host")?;
     for secmodel in host.find_all(&doc, "secmodel") {
@@ -799,6 +803,10 @@ pub fn check_path_search(
     path: Option<&str>,
 ) -> SearchData {
     let mut data = SearchData::default();
+    log::debug!(
+        "DeviceDisk.check_path_search path={}",
+        path.unwrap_or("None")
+    );
     let Some(path) = path else {
         return data;
     };
@@ -813,7 +821,7 @@ pub fn check_path_search(
     let Some((user, uid)) = qemu_baselabel(conn) else {
         return data;
     };
-    if uid == 0 {
+    if uid == 0 && std::env::var_os("VIRTINST_TEST_SUITE").is_none() {
         return data;
     }
     // `is_path_searchable`
