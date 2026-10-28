@@ -3,14 +3,11 @@
 //! `install/*.py`: cloud-init, unattended-install answer files, URL
 //! install-tree detection/fetching.
 //!
-//! `--unattended`/`--cloud-init` are orthogonal modifiers threaded
-//! through as extra fields on whichever `InstallMethod` variants
-//! support them (ticket 16) — not separate variants of their own. Not
-//! added yet: no real consumer (`virt-install`'s CLI parsing) to
-//! ground which variants actually need them against yet, same "wait
-//! for a second/real consumer" rule this project has followed since
-//! `#[xml(nested)]`.
+//! `--unattended`/`--cloud-init` are orthogonal modifiers, not
+//! `InstallMethod` variants: `unattended.rs` and `cloudinit.rs` hold
+//! their data, and virt-install's `Installer` applies them.
 
+pub mod cloudinit;
 pub mod container;
 pub(crate) mod domain_skeleton;
 pub mod import;
@@ -18,6 +15,7 @@ pub mod installerinject;
 pub mod iso;
 pub mod manual;
 pub mod newguest;
+pub mod unattended;
 pub mod urldetect;
 pub mod urlfetcher;
 pub mod volumeupload;
@@ -161,9 +159,6 @@ impl InstallMethod {
         )
     }
 }
-
-// TODO: pub struct CloudInit { ... }
-// TODO: pub struct Unattended { ... }
 
 #[cfg(test)]
 mod tests {

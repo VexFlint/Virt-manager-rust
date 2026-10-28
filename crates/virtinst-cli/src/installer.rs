@@ -1,9 +1,6 @@
 //! `Installer` from upstream's `virtinst/install/installer.py`, on the
 //! parser engine's guest object: the install media/bootdev choice, the
 //! install-time XML changes, and creating the domain.
-//!
-//! `--unattended` and `--cloud-init` are the next steps of the port
-//! and aren't here yet.
 
 use std::rc::Rc;
 
@@ -17,6 +14,8 @@ use virtinst_core::xmlbuilder::{Value, XmlObject};
 use crate::guest::{self, GuestOpts};
 use crate::installertreemedia::{self as treemedia, GuestInfo, TreeMedia};
 use crate::parsers;
+use virtinst_core::install::cloudinit::CloudInitData;
+use virtinst_core::install::unattended::{self, OSInstallScript, ScriptGuest, UnattendedData};
 
 /// `_make_testsuite_path`.
 fn make_testsuite_path(path: &str) -> String {
@@ -103,6 +102,11 @@ pub struct Installer {
     install_cdrom_device_added: bool,
     defaults_are_set: bool,
     tmpvols: Vec<virt::storage_vol::StorageVol>,
+    tmpfiles: Vec<String>,
+    cloudinit_data: Option<CloudInitData>,
+    unattended_data: Option<UnattendedData>,
+    unattended_install_cdrom_device: Option<String>,
+    have_default_tpm: bool,
     /// Entry point for virt-manager 'Customize' wizard to change autostart
     pub autostart: bool,
 }
@@ -136,6 +140,11 @@ impl Installer {
             install_cdrom_device_added: false,
             defaults_are_set: false,
             tmpvols: vec![],
+            tmpfiles: vec![],
+            cloudinit_data: None,
+            unattended_data: None,
+            unattended_install_cdrom_device: None,
+            have_default_tpm: false,
             autostart: false,
         }
     }
@@ -424,15 +433,110 @@ impl Installer {
         Ok(newpaths)
     }
 
+    /// `_prepare_unattended_data`.
+    fn prepare_unattended_data(
+        &mut self,
+        guest: &mut XmlObject,
+        conn: &Connection,
+        meter: &mut dyn virtinst_core::progress::Meter,
+        scripts: &[OSInstallScript],
+    ) -> Result<(), String> {
+        let scratchdir = treemedia::make_scratchdir(conn)?;
+        let mut injections = vec![];
+        for script in scripts {
+            let expected_filename = script.get_expected_filename();
+            let cmdline = script.generate_cmdline();
+            log::debug!(
+                "Generated unattended cmdline: {}",
+                cmdline.as_deref().unwrap_or("None")
+            );
+            let scriptpath = script.write()?;
+            self.tmpfiles.push(scriptpath.clone());
+            injections.push((scriptpath, expected_filename));
+        }
+
+        let arch = guest.child("os").get_str("arch").unwrap_or_default();
+        let locations = guest::osinfo_obj(guest)
+            .map(|o| o.get_pre_installable_drivers_location(&arch))
+            .unwrap_or_default();
+        let drivers = unattended::download_drivers(&locations, &scratchdir, meter)?;
+        self.tmpfiles.extend(drivers.iter().map(|(f, _)| f.clone()));
+        injections.extend(drivers);
+
+        let iso = virtinst_core::install::installerinject::perform_cdrom_injections(
+            &injections,
+            &scratchdir,
+            false,
+        )?;
+        self.tmpfiles.push(iso.clone());
+        let iso = self.upload_media(conn, meter, vec![iso])?.remove(0);
+        self.add_unattended_install_cdrom_device(guest, conn, &iso)
+    }
+
+    /// `_prepare_unattended_scripts`.
+    fn prepare_unattended_scripts(
+        &mut self,
+        guest: &XmlObject,
+        conn: &Connection,
+    ) -> Result<Vec<OSInstallScript>, String> {
+        let osinfo = guest::osinfo_obj(guest)
+            .ok_or("OS 'generic' does not support unattended installation.")?;
+        let mut url = None;
+        let mut os_tree = None;
+        let os_media;
+        let injection_method;
+        if let Some(tm) = &mut self.treemedia {
+            url = tm.is_network_url().map(str::to_string);
+            let info = guest_info(guest);
+            os_media = tm.get_os_media(conn, &info)?;
+            os_tree = tm.get_os_tree(conn, &info)?;
+            injection_method = "initrd";
+        } else {
+            if !osinfo.is_windows() {
+                log::warn!(
+                    "Attempting unattended method=cdrom injection for a non-windows OS. If \
+                     this doesn't work, try passing install media to --location"
+                );
+            }
+            os_media = self.cdrom.as_deref().and_then(|c| {
+                OsDb::load_default()
+                    .ok()
+                    .and_then(|db| db.guess_media_by_iso(c))
+                    .map(|(_, m)| m)
+            });
+            injection_method = "cdrom";
+        }
+
+        let arch = guest.child("os").get_str("arch").unwrap_or_default();
+        let name = guest.get_str("name").unwrap_or_default();
+        let sg = ScriptGuest {
+            osinfo: &osinfo,
+            arch: &arch,
+            name: &name,
+        };
+        unattended::prepare_install_scripts(
+            &sg,
+            self.unattended_data
+                .as_ref()
+                .expect("checked by the caller"),
+            url.as_deref(),
+            os_media.as_ref(),
+            os_tree.as_ref(),
+            injection_method,
+        )
+    }
+
     /// `_prepare_treemedia`.
     fn prepare_treemedia(
         &mut self,
         guest: &XmlObject,
         conn: &Connection,
         meter: &mut dyn virtinst_core::progress::Meter,
+        unattended_scripts: Option<&[OSInstallScript]>,
     ) -> Result<(), String> {
         let tm = self.treemedia.as_mut().expect("checked by the caller");
-        let (kernel, initrd, kernel_args) = tm.prepare(conn, &guest_info(guest), meter)?;
+        let (kernel, initrd, kernel_args) =
+            tm.prepare(conn, &guest_info(guest), meter, unattended_scripts)?;
         let paths = self.upload_media(conn, meter, vec![kernel, initrd])?;
         self.treemedia_bootconfig = Some((paths[0].clone(), paths[1].clone(), kernel_args));
         Ok(())
@@ -441,17 +545,137 @@ impl Installer {
     /// `_prepare`.
     fn prepare(
         &mut self,
-        guest: &XmlObject,
+        guest: &mut XmlObject,
         conn: &Connection,
         meter: &mut dyn virtinst_core::progress::Meter,
     ) -> Result<(), String> {
         if self.is_reinstall {
             self.pre_reinstall_xml = Some(guest.get_xml());
         }
+        let mut unattended_scripts = None;
+        if self.unattended_data.is_some() {
+            unattended_scripts = Some(self.prepare_unattended_scripts(guest, conn)?);
+        }
+
         if self.treemedia.is_some() {
-            self.prepare_treemedia(guest, conn, meter)?;
+            self.prepare_treemedia(guest, conn, meter, unattended_scripts.as_deref())?;
+        } else if let Some(scripts) = &unattended_scripts {
+            self.prepare_unattended_data(guest, conn, meter, scripts)?;
+        }
+
+        if self.cloudinit_data.is_some() {
+            self.prepare_cloudinit(guest, conn, meter)?;
         }
         Ok(())
+    }
+
+    /// `_prepare_cloudinit`.
+    fn prepare_cloudinit(
+        &mut self,
+        guest: &mut XmlObject,
+        conn: &Connection,
+        meter: &mut dyn virtinst_core::progress::Meter,
+    ) -> Result<(), String> {
+        let scratchdir = treemedia::make_scratchdir(conn)?;
+        let data = self.cloudinit_data.as_mut().expect("checked by the caller");
+        let filepairs = data.create_files(&scratchdir)?;
+        for (f, _) in &filepairs {
+            self.tmpfiles.push(f.clone());
+        }
+        let iso = virtinst_core::install::installerinject::perform_cdrom_injections(
+            &filepairs,
+            &scratchdir,
+            true,
+        )?;
+        self.tmpfiles.push(iso.clone());
+        let iso = self.upload_media(conn, meter, vec![iso])?.remove(0);
+        self.add_unattended_install_cdrom_device(guest, conn, &iso)
+    }
+
+    /// `_add_unattended_install_cdrom_device`.
+    fn add_unattended_install_cdrom_device(
+        &mut self,
+        guest: &mut XmlObject,
+        conn: &Connection,
+        location: &str,
+    ) -> Result<(), String> {
+        if self.unattended_install_cdrom_device.is_some() {
+            return Ok(());
+        }
+        let (dev, backend) = make_cdrom_device(conn, Some(location))?;
+        guest.child_mut("devices").add_child(dev);
+        let idx = guest.child("devices").children("disk").len() - 1;
+        parsers::disk::set_backend_rc(Some(backend));
+        guest::device_set_defaults(guest, "devices.disk", idx, conn)?;
+        self.unattended_install_cdrom_device =
+            guest.child("devices").children("disk")[idx].get_str("target");
+
+        // The CDROM we just added might be a SCSI one. If that's the case,
+        // libvirt will automatically add the necessary controller for us, but
+        // depending on the architecture its choice of model might not be
+        // usable by the guest OS. Try to add a virtio-scsi controller, if
+        // supported, for the best chance of the CDROM actually being picked up
+        guest::ensure_virtioscsi_controller(guest)?;
+
+        if in_testsuite() {
+            // Hack to set just the XML path differently for the test suite.
+            // Setting this via regular 'path' will error that it doesn't exist
+            guest.child_mut("devices").children_mut("disk")[idx]
+                .child_mut("source")
+                .set("file", Some(Value::Str(make_testsuite_path(location))))?;
+        }
+        Ok(())
+    }
+
+    /// `_remove_unattended_install_cdrom_device`.
+    fn remove_unattended_install_cdrom_device(&self, guest: &mut XmlObject, conn: &Connection) {
+        let Some(target) = &self.unattended_install_cdrom_device else {
+            return;
+        };
+        let remote = conn.uri().is_remote();
+        if let Some(disk) = guest
+            .child_mut("devices")
+            .children_mut("disk")
+            .iter_mut()
+            .find(|d| d.get_str("target").as_deref() == Some(target.as_str()))
+        {
+            if let Ok(backend) = dd::set_source_path_obj(disk, None, conn.as_connect(), remote) {
+                let support = crate::cli::conn_support(conn);
+                let _ = dd::sync_path_props(
+                    disk,
+                    &backend,
+                    support.disk_driver_name_qemu,
+                    support.is_xen,
+                );
+            }
+        }
+    }
+
+    /// `set_cloudinit_data`.
+    pub fn set_cloudinit_data(&mut self, data: CloudInitData) {
+        self.cloudinit_data = Some(data);
+    }
+
+    /// `has_cloudinit`.
+    pub fn has_cloudinit(&self) -> bool {
+        self.cloudinit_data.is_some()
+    }
+
+    /// `set_unattended_data`.
+    pub fn set_unattended_data(&mut self, data: UnattendedData) {
+        self.unattended_data = Some(data);
+    }
+
+    /// `has_unattended`.
+    pub fn has_unattended(&self) -> bool {
+        self.unattended_data.is_some()
+    }
+
+    /// `get_generated_password`.
+    pub fn get_generated_password(&mut self) -> Option<String> {
+        self.cloudinit_data
+            .as_mut()
+            .and_then(|d| d.get_password_if_generated())
     }
 
     /// `_cleanup`.
@@ -462,6 +686,10 @@ impl Installer {
         for vol in self.tmpvols.drain(..) {
             log::debug!("Removing volume '{}'", vol.get_name().unwrap_or_default());
             let _ = vol.delete(0);
+        }
+        for f in self.tmpfiles.drain(..) {
+            log::debug!("Removing {f}");
+            let _ = std::fs::remove_file(&f);
         }
     }
 
@@ -517,7 +745,11 @@ impl Installer {
     /// access for to perform this install.
     pub fn get_search_paths(&self, conn: &Connection) -> Result<Vec<String>, String> {
         let mut search_paths = vec![];
-        if self.treemedia.is_some() && !Self::should_upload_media(conn)? {
+        if (self.treemedia.is_some()
+            || self.cloudinit_data.is_some()
+            || self.unattended_data.is_some())
+            && !Self::should_upload_media(conn)?
+        {
             search_paths.push(treemedia::make_scratchdir(conn)?);
         }
         if let Some(p) = self.cdrom_path() {
@@ -530,6 +762,9 @@ impl Installer {
     /// phases, and requires a hard VM poweroff to ensure the second
     /// stage is used for subsequent boots.
     pub fn requires_postboot_xml_changes(&self) -> bool {
+        if self.has_cloudinit() || self.has_unattended() {
+            return true;
+        }
         if self.no_install {
             return false;
         }
@@ -583,9 +818,41 @@ impl Installer {
         let mut initial_guest = XmlObject::parse(&GUEST, final_xml).map_err(|e| e.to_string())?;
         self.alter_bootconfig(&mut initial_guest)?;
         self.alter_install_resources(&mut initial_guest, conn)?;
+        if self.has_cloudinit() {
+            guest::set_smbios_serial_cloudinit(&mut initial_guest)?;
+
+            // When shim in the guest sees unpopulated EFI NVRAM, like when
+            // we create a new UEFI VM, it invokes fallback.efi to populate
+            // initial NVRAM boot entries. When the guest also has a TPM device,
+            // shim will do a one time VM reset. This reset throws off the
+            // reboot detection that is central to virt-install's install
+            // process.
+            //
+            // The main install case that this will usually be relevant is
+            // the combo of UEFI and --cloud-init. The latter usually implies
+            // use of a distro cloud image, which will be using shim, and the
+            // --cloud-init process requires a multi stage install compared
+            // to just a plain import install.
+            //
+            // For that case, we disable the default TPM device for the first
+            // boot.
+            let guest_ro = XmlObject::parse(&GUEST, final_xml).map_err(|e| e.to_string())?;
+            if self.have_default_tpm
+                && guest::guest_is_uefi(&guest_ro)
+                && !initial_guest.child("devices").children("tpm").is_empty()
+            {
+                log::debug!(
+                    "combo of default TPM, UEFI, and cloudinit is used. assuming this VM is \
+                     using a linux distro cloud image with shim in the boot path. disabling \
+                     TPM for the first boot"
+                );
+                initial_guest.child_mut("devices").remove_child("tpm", 0);
+            }
+        }
 
         let mut final_guest = XmlObject::parse(&GUEST, final_xml).map_err(|e| e.to_string())?;
         self.remove_install_cdrom_media(&mut final_guest, conn);
+        self.remove_unattended_install_cdrom_device(&mut final_guest, conn);
 
         Ok((initial_guest.get_xml(), final_guest.get_xml()))
     }
@@ -759,11 +1026,13 @@ impl Installer {
         // All installer XML alterations are made on this guest instance,
         // so the user_guest instance is left intact
         user_guest.check_xml_actions()?;
-        let guest = XmlObject::parse(&GUEST, &user_guest.get_xml()).map_err(|e| e.to_string())?;
+        let mut guest =
+            XmlObject::parse(&GUEST, &user_guest.get_xml()).map_err(|e| e.to_string())?;
+        self.have_default_tpm = opts.have_default_tpm;
 
         let res = (|| {
             let mut meter = crate::cli::get_meter();
-            self.prepare(&guest, conn, &mut meter)?;
+            self.prepare(&mut guest, conn, &mut meter)?;
 
             if !dry && !self.is_reinstall {
                 build_storage()?;

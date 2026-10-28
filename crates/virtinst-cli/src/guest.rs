@@ -1247,6 +1247,56 @@ fn add_spice_devices(
     Ok(())
 }
 
+/// `Guest.add_virtioscsi_controller`, for callers outside
+/// `set_defaults`.
+pub fn ensure_virtioscsi_controller(guest: &mut XmlObject) -> Result<(), String> {
+    let support = conn_support();
+    let os = osinfo(guest);
+    add_virtioscsi_controller(guest, &support, &os)
+}
+
+/// `Guest.is_uefi`.
+pub fn guest_is_uefi(guest: &XmlObject) -> bool {
+    is_uefi(guest)
+}
+
+/// `Guest.set_smbios_serial_cloudinit`.
+pub fn set_smbios_serial_cloudinit(guest: &mut XmlObject) -> Result<(), String> {
+    let support = conn_support();
+    if !support.is_qemu && !support.is_test {
+        return Ok(());
+    }
+    if !is_x86(guest) && !is_arm_machvirt(guest) {
+        return Ok(());
+    }
+    if !matches!(
+        guest.child("os").get_str("smbios_mode").as_deref(),
+        None | Some("sysinfo")
+    ) {
+        return Ok(());
+    }
+    let idx = match guest
+        .children("sysinfo")
+        .iter()
+        .position(|s| s.get_str("type").as_deref() == Some("smbios"))
+    {
+        Some(i) => i,
+        None => {
+            guest.add_child(XmlObject::new(
+                &virtinst_core::domain::sysinfo::DOMAIN_SYSINFO,
+            ));
+            guest.children("sysinfo").len() - 1
+        }
+    };
+    if !falsy(guest.children("sysinfo")[idx].get_str("system_serial")) {
+        return Ok(());
+    }
+    guest.child_mut("os").set("smbios_mode", s("sysinfo"))?;
+    let sysinfo = &mut guest.children_mut("sysinfo")[idx];
+    sysinfo.set("type", s("smbios"))?;
+    sysinfo.set("system_serial", s("ds=nocloud"))
+}
+
 /// `Guest.set_defaults`.
 pub fn set_defaults(
     guest: &mut XmlObject,

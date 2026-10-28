@@ -4,6 +4,7 @@
 
 use virtinst_core::connection::Connection;
 use virtinst_core::install::installerinject::perform_initrd_injections;
+use virtinst_core::install::unattended::OSInstallScript;
 use virtinst_core::install::urldetect::{self, GuestFacts};
 use virtinst_core::install::urlfetcher::{self, Fetcher};
 use virtinst_core::osinfo::{OsDb, OsMedia, OsTree};
@@ -27,7 +28,6 @@ struct LocationData {
     osinfo: Option<String>,
     kernel_pairs: Vec<(String, String)>,
     os_media: Option<OsMedia>,
-    #[allow(dead_code)]
     os_tree: Option<OsTree>,
 }
 
@@ -100,7 +100,7 @@ pub struct TreeMedia {
     install_kernel: Option<String>,
     install_initrd: Option<String>,
     install_kernel_args: Option<String>,
-    initrd_injections: Vec<String>,
+    initrd_injections: Vec<(String, String)>,
     extra_args: Vec<String>,
     media_type: MediaType,
     cached_fetcher: Option<Fetcher>,
@@ -257,12 +257,7 @@ impl TreeMedia {
         self.tmpfiles.push(initrd.clone());
 
         let scratchdir = self.fetcher(conn)?.scratchdir.clone();
-        let injections: Vec<(String, String)> = self
-            .initrd_injections
-            .iter()
-            .map(|f| virtinst_core::install::installerinject::injection_pair(f))
-            .collect();
-        perform_initrd_injections(&initrd, &injections, &scratchdir)?;
+        perform_initrd_injections(&initrd, &self.initrd_injections, &scratchdir)?;
 
         Ok((kernel, initrd))
     }
@@ -278,15 +273,39 @@ impl TreeMedia {
         db.lookup_os(&osinfo)?.get_kernel_url_arg()
     }
 
+    /// `_prepare_unattended_data`.
+    fn prepare_unattended_data(&mut self, scripts: &[OSInstallScript]) -> Result<(), String> {
+        for script in scripts {
+            let expected_filename = script.get_expected_filename();
+            let scriptpath = script.write()?;
+            self.tmpfiles.push(scriptpath.clone());
+            self.initrd_injections.push((scriptpath, expected_filename));
+        }
+        Ok(())
+    }
+
     /// `_prepare_kernel_args`.
-    fn prepare_kernel_args(&mut self, guest: &GuestInfo) -> String {
+    fn prepare_kernel_args(
+        &mut self,
+        guest: &GuestInfo,
+        unattended_scripts: Option<&[OSInstallScript]>,
+    ) -> String {
         let mut install_args = None;
-        if let Some(location) = self.is_network_url().map(str::to_string) {
+        if let Some(scripts) = unattended_scripts {
+            let args: Vec<String> = scripts
+                .iter()
+                .filter_map(|s| s.generate_cmdline())
+                .filter(|c| !c.is_empty())
+                .collect();
+            let a = args.join(" ");
+            log::debug!("Generated unattended cmdline: {a}");
+            install_args = Some(a);
+        } else if let Some(location) = self.is_network_url().map(str::to_string) {
             if let Some(kernel_url_arg) = self.prepare_kernel_url_arg(guest) {
                 install_args = Some(format!("{kernel_url_arg}={location}"));
             }
         }
-        if let Some(a) = install_args {
+        if let Some(a) = install_args.filter(|a| !a.is_empty()) {
             self.extra_args.push(a);
         }
 
@@ -310,9 +329,11 @@ impl TreeMedia {
         conn: &Connection,
         guest: &GuestInfo,
         meter: &mut dyn Meter,
+        unattended_scripts: Option<&[OSInstallScript]>,
     ) -> Result<(String, String, String), String> {
         self.cached_data(conn, guest)?;
-        let kernel_args = self.prepare_kernel_args(guest);
+        self.prepare_unattended_data(unattended_scripts.unwrap_or_default())?;
+        let kernel_args = self.prepare_kernel_args(guest, unattended_scripts);
         let (kernel, initrd) = self.prepare_kernel_url(conn, guest, meter)?;
         Ok((kernel, initrd, kernel_args))
     }
@@ -326,7 +347,28 @@ impl TreeMedia {
     }
 
     pub fn set_initrd_injections(&mut self, injections: Vec<String>) {
-        self.initrd_injections = injections;
+        self.initrd_injections = injections
+            .iter()
+            .map(|f| virtinst_core::install::installerinject::injection_pair(f))
+            .collect();
+    }
+
+    /// `get_os_media`.
+    pub fn get_os_media(
+        &mut self,
+        conn: &Connection,
+        guest: &GuestInfo,
+    ) -> Result<Option<OsMedia>, String> {
+        Ok(self.cached_data(conn, guest)?.os_media.clone())
+    }
+
+    /// `get_os_tree`.
+    pub fn get_os_tree(
+        &mut self,
+        conn: &Connection,
+        guest: &GuestInfo,
+    ) -> Result<Option<OsTree>, String> {
+        Ok(self.cached_data(conn, guest)?.os_tree.clone())
     }
 
     pub fn set_extra_args(&mut self, extra_args: Vec<String>) {
