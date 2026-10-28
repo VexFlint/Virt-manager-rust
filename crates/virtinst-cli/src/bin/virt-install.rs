@@ -34,16 +34,16 @@ const INSTALL_METHODS: &str =
 )]
 struct Args {
     /// show program's version number and exit
-    #[arg(long = "version")]
+    #[arg(long = "version", verbatim_doc_comment)]
     _version: bool,
 
     /// Connect to hypervisor with libvirt URI
-    #[arg(long, value_name = "URI")]
+    #[arg(long, value_name = "URI", verbatim_doc_comment)]
     connect: Option<String>,
 
     // General Options
     /// Name of the guest instance
-    #[arg(short, long, help_heading = "General Options")]
+    #[arg(short, long, help_heading = "General Options", verbatim_doc_comment)]
     name: Option<String>,
 
     /// Configure guest memory allocation. Ex:
@@ -99,53 +99,81 @@ struct Args {
     cdrom_short: Option<String>,
 
     /// CD-ROM installation media
-    #[arg(long, help_heading = "Installation Method Options")]
+    #[arg(
+        long,
+        help_heading = "Installation Method Options",
+        verbatim_doc_comment
+    )]
     cdrom: Option<String>,
 
-    /// Distro install URL, eg. https://host/path. See man page for
-    /// specific distro examples.
-    #[arg(short, long, help_heading = "Installation Method Options")]
+    /// Distro install URL, eg. https://host/path. See man page for specific distro examples.
+    #[arg(
+        short,
+        long,
+        help_heading = "Installation Method Options",
+        verbatim_doc_comment
+    )]
     location: Option<String>,
 
     /// Boot from the network using the PXE protocol
-    #[arg(long, help_heading = "Installation Method Options")]
+    #[arg(
+        long,
+        help_heading = "Installation Method Options",
+        verbatim_doc_comment
+    )]
     pxe: bool,
 
     /// Build guest around an existing disk image
-    #[arg(long = "import", help_heading = "Installation Method Options")]
+    #[arg(
+        long = "import",
+        help_heading = "Installation Method Options",
+        verbatim_doc_comment
+    )]
     import_install: bool,
 
     #[arg(long, hide = true)]
     livecd: bool,
 
-    /// Additional arguments to pass to the install kernel booted from
-    /// --location
-    #[arg(short = 'x', long, help_heading = "Installation Method Options")]
+    /// Additional arguments to pass to the install kernel booted from --location
+    #[arg(
+        short = 'x',
+        long,
+        help_heading = "Installation Method Options",
+        verbatim_doc_comment
+    )]
     extra_args: Vec<String>,
 
     /// Add given file to root of initrd from --location
-    #[arg(long, help_heading = "Installation Method Options")]
+    #[arg(
+        long,
+        help_heading = "Installation Method Options",
+        verbatim_doc_comment
+    )]
     initrd_inject: Vec<String>,
 
     /// Perform an unattended installation
-    #[arg(long, num_args = 0..=1, default_missing_value = "1", help_heading = "Installation Method Options")]
+    #[arg(long, num_args = 0..=1, default_missing_value = "1", help_heading = "Installation Method Options", verbatim_doc_comment)]
     unattended: Option<String>,
 
     /// Specify fine grained install options
-    #[arg(long, help_heading = "Installation Method Options")]
+    #[arg(
+        long,
+        help_heading = "Installation Method Options",
+        verbatim_doc_comment
+    )]
     install: Option<String>,
 
-    /// Reinstall existing VM. Only install options are applied, all
-    /// other VM configuration options are ignored.
+    /// Reinstall existing VM. Only install options are applied, all other VM configuration options are ignored.
     #[arg(
         long,
         value_name = "DOMAIN",
-        help_heading = "Installation Method Options"
+        help_heading = "Installation Method Options",
+        verbatim_doc_comment
     )]
     reinstall: Option<String>,
 
     /// Perform a cloud image installation, configuring cloud-init
-    #[arg(long, num_args = 0..=1, default_missing_value = "1", help_heading = "Installation Method Options")]
+    #[arg(long, num_args = 0..=1, default_missing_value = "1", help_heading = "Installation Method Options", verbatim_doc_comment)]
     cloud_init: Option<String>,
 
     #[arg(long, hide = true)]
@@ -235,30 +263,37 @@ struct Args {
     input: Vec<String>,
 
     /// Configure a guest serial device
-    #[arg(long, help_heading = "Device Options")]
+    #[arg(long, help_heading = "Device Options", verbatim_doc_comment)]
     serial: Vec<String>,
 
     /// Configure a guest parallel device
-    #[arg(long, help_heading = "Device Options")]
+    #[arg(long, help_heading = "Device Options", verbatim_doc_comment)]
     parallel: Vec<String>,
 
     /// Configure a guest communication channel
-    #[arg(long, help_heading = "Device Options")]
+    #[arg(long, help_heading = "Device Options", verbatim_doc_comment)]
     channel: Vec<String>,
 
     /// Configure a text console connection between the guest and host
-    #[arg(long, help_heading = "Device Options")]
+    #[arg(long, help_heading = "Device Options", verbatim_doc_comment)]
     console: Vec<String>,
 
-    /// Configure physical USB/PCI/etc host devices to be shared with the
-    /// guest
-    #[arg(long, alias = "host-device", help_heading = "Device Options")]
+    /// Configure physical USB/PCI/etc host devices to be shared with the guest
+    #[arg(
+        long,
+        alias = "host-device",
+        help_heading = "Device Options",
+        verbatim_doc_comment
+    )]
     hostdev: Vec<String>,
 
-    /// Pass host directory to the guest. Ex:
-    /// --filesystem /my/source/dir,/dir/in/guest
-    /// --filesystem template_name,/,type=template
-    #[arg(long, help_heading = "Device Options", verbatim_doc_comment)]
+    #[arg(
+        long,
+        help_heading = "Device Options",
+        help = "Pass host directory to the guest. Ex: \n\
+                --filesystem /my/source/dir,/dir/in/guest\n\
+                --filesystem template_name,/,type=template"
+    )]
     filesystem: Vec<String>,
 
     /// Configure guest sound device emulation
@@ -268,20 +303,21 @@ struct Args {
         num_args = 0..=1,
         default_missing_value = "default",
         action = ArgAction::Append,
-        help_heading = "Device Options"
+        help_heading = "Device Options",
+        verbatim_doc_comment
     )]
     sound: Vec<String>,
 
     /// Configure host audio backend for sound devices
-    #[arg(long, help_heading = "Device Options")]
+    #[arg(long, help_heading = "Device Options", verbatim_doc_comment)]
     audio: Vec<String>,
 
     /// Configure a guest watchdog device
-    #[arg(long, help_heading = "Device Options")]
+    #[arg(long, help_heading = "Device Options", verbatim_doc_comment)]
     watchdog: Vec<String>,
 
     /// Configure guest video hardware.
-    #[arg(long, help_heading = "Device Options")]
+    #[arg(long, help_heading = "Device Options", verbatim_doc_comment)]
     video: Vec<String>,
 
     /// Configure a guest smartcard device. Ex:
@@ -383,36 +419,60 @@ struct Args {
 
     // Guest Configuration Options
     /// Set domain <iothreads> and <iothreadids> configuration.
-    #[arg(long, help_heading = "Guest Configuration Options")]
+    #[arg(
+        long,
+        help_heading = "Guest Configuration Options",
+        verbatim_doc_comment
+    )]
     iothreads: Vec<String>,
 
     /// Set domain seclabel configuration.
     #[arg(
         long,
         visible_alias = "security",
-        help_heading = "Guest Configuration Options"
+        help_heading = "Guest Configuration Options",
+        verbatim_doc_comment
     )]
     seclabel: Vec<String>,
 
-    /// Set guest to perform the S390 cryptographic key management
-    /// operations.
-    #[arg(long, help_heading = "Guest Configuration Options")]
+    /// Set guest to perform the S390 cryptographic key management operations.
+    #[arg(
+        long,
+        help_heading = "Guest Configuration Options",
+        verbatim_doc_comment
+    )]
     keywrap: Vec<String>,
 
     /// Tune CPU parameters for the domain process.
-    #[arg(long, help_heading = "Guest Configuration Options")]
+    #[arg(
+        long,
+        help_heading = "Guest Configuration Options",
+        verbatim_doc_comment
+    )]
     cputune: Vec<String>,
 
     /// Tune NUMA policy for the domain process.
-    #[arg(long, help_heading = "Guest Configuration Options")]
+    #[arg(
+        long,
+        help_heading = "Guest Configuration Options",
+        verbatim_doc_comment
+    )]
     numatune: Vec<String>,
 
     /// Tune memory policy for the domain process.
-    #[arg(long, help_heading = "Guest Configuration Options")]
+    #[arg(
+        long,
+        help_heading = "Guest Configuration Options",
+        verbatim_doc_comment
+    )]
     memtune: Vec<String>,
 
     /// Tune blkio policy for the domain process.
-    #[arg(long, help_heading = "Guest Configuration Options")]
+    #[arg(
+        long,
+        help_heading = "Guest Configuration Options",
+        verbatim_doc_comment
+    )]
     blkiotune: Vec<String>,
 
     /// Set memory backing policy for the domain process. Ex:
@@ -444,15 +504,27 @@ struct Args {
     clock: Vec<String>,
 
     /// Configure VM power management features
-    #[arg(long, help_heading = "Guest Configuration Options")]
+    #[arg(
+        long,
+        help_heading = "Guest Configuration Options",
+        verbatim_doc_comment
+    )]
     pm: Vec<String>,
 
     /// Configure VM lifecycle management policy
-    #[arg(long, help_heading = "Guest Configuration Options")]
+    #[arg(
+        long,
+        help_heading = "Guest Configuration Options",
+        verbatim_doc_comment
+    )]
     events: Vec<String>,
 
     /// Configure VM resource partitioning (cgroups)
-    #[arg(long, help_heading = "Guest Configuration Options")]
+    #[arg(
+        long,
+        help_heading = "Guest Configuration Options",
+        verbatim_doc_comment
+    )]
     resource: Vec<String>,
 
     /// Configure SMBIOS System Information. Ex:
@@ -479,6 +551,7 @@ struct Args {
     /// --launchSecurity sev
     #[arg(
         long = "launchSecurity",
+        value_name = "LAUNCHSECURITY",
         visible_alias = "launchsecurity",
         help_heading = "Guest Configuration Options",
         verbatim_doc_comment
@@ -487,7 +560,7 @@ struct Args {
 
     // Virtualization Platform Options
     /// This guest should be a fully virtualized guest
-    #[arg(short = 'v', long, help_heading = "Virtualization Platform Options", conflicts_with_all = ["paravirt", "container"])]
+    #[arg(short = 'v', long, help_heading = "Virtualization Platform Options", conflicts_with_all = ["paravirt", "container"], verbatim_doc_comment)]
     hvm: bool,
 
     /// This guest should be a paravirtualized guest
@@ -495,24 +568,41 @@ struct Args {
         short = 'p',
         long,
         help_heading = "Virtualization Platform Options",
-        conflicts_with = "container"
+        conflicts_with = "container",
+        verbatim_doc_comment
     )]
     paravirt: bool,
 
     /// This guest should be a container guest
-    #[arg(long, help_heading = "Virtualization Platform Options")]
+    #[arg(
+        long,
+        help_heading = "Virtualization Platform Options",
+        verbatim_doc_comment
+    )]
     container: bool,
 
     /// Hypervisor name to use (kvm, qemu, xen, ...)
-    #[arg(long, help_heading = "Virtualization Platform Options")]
+    #[arg(
+        long,
+        help_heading = "Virtualization Platform Options",
+        verbatim_doc_comment
+    )]
     virt_type: Option<String>,
 
     /// The CPU architecture to simulate
-    #[arg(long, help_heading = "Virtualization Platform Options")]
+    #[arg(
+        long,
+        help_heading = "Virtualization Platform Options",
+        verbatim_doc_comment
+    )]
     arch: Option<String>,
 
     /// The machine type to emulate
-    #[arg(long, help_heading = "Virtualization Platform Options")]
+    #[arg(
+        long,
+        help_heading = "Virtualization Platform Options",
+        verbatim_doc_comment
+    )]
     machine: Option<String>,
 
     #[arg(long, hide = true)]
@@ -526,15 +616,15 @@ struct Args {
 
     // Miscellaneous Options
     /// Have domain autostart on host boot up.
-    #[arg(long, help_heading = "Miscellaneous Options")]
+    #[arg(long, help_heading = "Miscellaneous Options", verbatim_doc_comment)]
     autostart: bool,
 
     /// Create a transient domain.
-    #[arg(long, help_heading = "Miscellaneous Options")]
+    #[arg(long, help_heading = "Miscellaneous Options", verbatim_doc_comment)]
     transient: bool,
 
     /// Force power off the domain when the console viewer is closed.
-    #[arg(long, help_heading = "Miscellaneous Options")]
+    #[arg(long, help_heading = "Miscellaneous Options", verbatim_doc_comment)]
     destroy_on_exit: bool,
 
     /// Minutes to wait for install to complete.
@@ -543,7 +633,8 @@ struct Args {
         num_args = 0..=1,
         default_missing_value = "-1",
         allow_negative_numbers = true,
-        help_heading = "Miscellaneous Options"
+        help_heading = "Miscellaneous Options",
+        verbatim_doc_comment
     )]
     wait: Option<i64>,
 
@@ -561,11 +652,11 @@ struct Args {
     autoconsole: Option<String>,
 
     /// Don't automatically try to connect to the guest console
-    #[arg(long, help_heading = "Miscellaneous Options")]
+    #[arg(long, help_heading = "Miscellaneous Options", verbatim_doc_comment)]
     noautoconsole: bool,
 
     /// Don't boot guest after completing install.
-    #[arg(long, help_heading = "Miscellaneous Options")]
+    #[arg(long, help_heading = "Miscellaneous Options", verbatim_doc_comment)]
     noreboot: bool,
 
     /// Print the generated domain XML rather than create the guest.
@@ -574,16 +665,20 @@ struct Args {
         value_name = "XMLONLY",
         num_args = 0..=1,
         default_missing_value = "all",
-        help_heading = "Miscellaneous Options"
+        help_heading = "Miscellaneous Options",
+        verbatim_doc_comment
     )]
     xmlonly: Option<String>,
 
     #[arg(long = "print-step", hide = true)]
     xmlstep: Option<String>,
 
-    /// Run through install process, but do not create devices or define
-    /// the guest.
-    #[arg(long = "dry-run", help_heading = "Miscellaneous Options")]
+    /// Run through install process, but do not create devices or define the guest.
+    #[arg(
+        long = "dry-run",
+        help_heading = "Miscellaneous Options",
+        verbatim_doc_comment
+    )]
     dry: bool,
 
     /// Enable or disable validation checks. Example:
@@ -593,11 +688,21 @@ struct Args {
     check: Vec<String>,
 
     /// Suppress non-error output
-    #[arg(short, long, help_heading = "Miscellaneous Options")]
+    #[arg(
+        short,
+        long,
+        help_heading = "Miscellaneous Options",
+        verbatim_doc_comment
+    )]
     quiet: bool,
 
     /// Print debugging information
-    #[arg(short, long, help_heading = "Miscellaneous Options")]
+    #[arg(
+        short,
+        long,
+        help_heading = "Miscellaneous Options",
+        verbatim_doc_comment
+    )]
     debug: bool,
 }
 
@@ -950,133 +1055,6 @@ fn set_test_stub_options(args: &mut Args) {
     if args.osinfo.is_none() {
         args.osinfo = Some("fedora27".into());
     }
-}
-
-// --osinfo parsing
-
-/// `OSInfoData`.
-struct OsInfoData {
-    name: Option<String>,
-    id: Option<String>,
-    detect: bool,
-    require_from_cli: Option<bool>,
-    require_on: bool,
-}
-
-/// `parse_osinfo`.
-fn parse_osinfo(optstr: Option<&str>) -> OsInfoData {
-    let mut data = OsInfoData {
-        name: None,
-        id: None,
-        detect: false,
-        require_from_cli: None,
-        require_on: false,
-    };
-    match optstr {
-        Some(o) if o.contains('=') => {
-            for (k, v) in parser::parse_optstr_tuples(o) {
-                let v = v.unwrap_or_default();
-                let onoff = || {
-                    cli::raw_on_off_convert(&v).unwrap_or_else(|| {
-                        fail(format!("Error: --osinfo {o}: {k} must be 'yes' or 'no'"))
-                    })
-                };
-                match k.as_str() {
-                    "name" | "short-id" => data.name = Some(v),
-                    "id" => data.id = Some(v),
-                    "detect" => data.detect = onoff(),
-                    "require" => data.require_from_cli = Some(onoff()),
-                    _ => fail(format!("Unknown --osinfo options: ['{k}']")),
-                }
-            }
-        }
-        // `set_compat_str`
-        None | Some("auto") => data.detect = true,
-        Some("none") => data.name = Some("generic".into()),
-        Some(o) if o.contains("://") => data.id = Some(o.into()),
-        Some(o) => data.name = Some(o.into()),
-    }
-
-    // `validate`. Upstream reports a lookup error with the parser's
-    // "Error: --osinfo ..." prefix only for the key=value form.
-    let prefix = match optstr {
-        Some(o) if o.contains('=') => format!("Error: --osinfo {o}: "),
-        _ => String::new(),
-    };
-    let db = || OsDb::load_default().unwrap_or_else(|e| fail(e));
-    if let Some(id) = &data.id {
-        let os = db()
-            .os(id)
-            .unwrap_or_else(|| fail(format!("{prefix}Unknown libosinfo ID '{id}'")));
-        data.name = Some(os.short_id());
-    } else if let Some(name) = &data.name {
-        if name != "generic" {
-            let os = db().lookup_os(name).unwrap_or_else(|| {
-                fail(format!(
-                    "{prefix}Unknown OS name '{name}'. See `--osinfo list` for valid values."
-                ))
-            });
-            data.name = Some(os.short_id());
-        }
-    }
-    match data.require_from_cli {
-        Some(false) => {
-            if data.name.is_none() {
-                log::debug!("Converting `require=off` to fallback `name=generic`");
-                data.name = Some("generic".into());
-            }
-        }
-        Some(true) => data.require_on = true,
-        None => {}
-    }
-    data
-}
-
-/// `--osinfo list`'s natural sort key: numbers sorted in reverse.
-fn alphanum_key(val: &str) -> Vec<(bool, String, i64)> {
-    let mut out = vec![];
-    let mut text = String::new();
-    let mut rest = val;
-    while let Some(start) = rest.find(|c: char| c.is_ascii_digit()) {
-        text.push_str(&rest[..start]);
-        out.push((false, std::mem::take(&mut text).to_lowercase(), 0));
-        let tail = &rest[start..];
-        let end = tail
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(tail.len());
-        let n: i64 = tail[..end].parse().unwrap_or(0);
-        out.push((true, String::new(), -n));
-        rest = &tail[end..];
-    }
-    out.push((false, rest.to_lowercase(), 0));
-    out
-}
-
-/// `check_osinfo_list`.
-fn check_osinfo_list(args: &Args) -> bool {
-    if args.osinfo.as_deref() != Some("list") {
-        return false;
-    }
-    let db = OsDb::load_default().unwrap_or_else(|e| fail(e));
-    let mut list: Vec<(String, Vec<String>)> = db
-        .all_os()
-        .iter()
-        .map(|o| {
-            let mut names = o.short_id_list();
-            let name = names[0].clone();
-            names.sort();
-            names.dedup();
-            (name, names)
-        })
-        .collect();
-    list.push(("generic".into(), vec!["generic".into()]));
-    list.sort_by_cached_key(|(name, _)| alphanum_key(name));
-    for (_, names) in list {
-        println!("{}", names.join(", "));
-    }
-    println!();
-    println!("You can see additional information with:\n\n  osinfo-query os\n");
-    true
 }
 
 // --install parsing
@@ -1692,7 +1670,7 @@ fn run_all_parsers(args: &Args, b: &mut Built) {
 fn installer_detect_distro(
     guest: &mut XmlObject,
     installer: &mut Installer,
-    osdata: &OsInfoData,
+    osdata: &cli::OsInfoData,
     conn: &Connection,
 ) {
     let mut os_set = false;
@@ -1756,7 +1734,7 @@ fn installer_detect_distro(
         })
         .map(|n| (n.clone(), n))
         .collect();
-    generic_linux.sort_by_cached_key(|(n, _)| alphanum_key(n));
+    generic_linux.sort_by_cached_key(|(n, _)| cli::alphanum_key(n));
     if !generic_linux.is_empty() {
         let names: Vec<String> = generic_linux.into_iter().map(|(n, _)| n).collect();
         fail_msg += &format!(
@@ -1868,7 +1846,7 @@ fn validate_disks(b: &Built, conn: &Connection) {
 /// `build_guest_instance`.
 fn build_guest_instance(args: &mut Args, conn: &Connection, caps: &Capabilities) -> Built {
     let installdata = parse_install(args.install.as_deref());
-    let osdata = parse_osinfo(args.osinfo.as_deref().or(installdata.os.as_deref()));
+    let osdata = cli::parse_osinfo(args.osinfo.as_deref().or(installdata.os.as_deref()));
 
     let mut b = Built {
         guest: XmlObject::new(&GUEST),
@@ -2550,7 +2528,7 @@ fn main() {
     if introspected {
         return;
     }
-    if check_osinfo_list(&args) {
+    if cli::check_osinfo_list(args.osinfo.as_deref()) {
         return;
     }
 

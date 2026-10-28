@@ -84,10 +84,47 @@ pub fn argparse_parse<T: clap::Parser + clap::CommandFactory>(prog: &str, usage:
         });
     }
 
-    T::try_parse_from(argv).unwrap_or_else(|e| {
+    T::try_parse_from(&argv).unwrap_or_else(|e| {
         use clap::error::{ContextKind, ContextValue, ErrorKind};
         match e.kind() {
-            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => e.exit(),
+            ErrorKind::DisplayHelp => {
+                print!("{}", argparse_help(&T::command(), prog, usage));
+                std::process::exit(0);
+            }
+            ErrorKind::DisplayVersion => e.exit(),
+            ErrorKind::ArgumentConflict => {
+                // argparse's mutually exclusive groups: the later option
+                // is the one "not allowed".
+                let cmd = T::command();
+                let ctx = |kind| match e.get(kind) {
+                    Some(ContextValue::String(s)) => vec![s.clone()],
+                    Some(ContextValue::Strings(s)) => s.clone(),
+                    _ => vec![],
+                };
+                let mut names: Vec<String> = ctx(ContextKind::InvalidArg)
+                    .into_iter()
+                    .chain(ctx(ContextKind::PriorArg))
+                    .map(|n| argparse_name(&cmd, &n))
+                    .collect();
+                let pos = |n: &String| {
+                    argv.iter()
+                        .position(|a| a == n || a.starts_with(&format!("{n}=")))
+                };
+                names.sort_by_key(|n| std::cmp::Reverse(pos(n)));
+                match names.as_slice() {
+                    [later, earlier, ..] => argparse_fail(format!(
+                        "argument {later}: not allowed with argument {earlier}"
+                    )),
+                    _ => argparse_fail(
+                        e.to_string()
+                            .lines()
+                            .next()
+                            .unwrap_or_default()
+                            .trim_start_matches("error: ")
+                            .to_string(),
+                    ),
+                }
+            }
             ErrorKind::UnknownArgument => {
                 let arg = match e.get(ContextKind::InvalidArg) {
                     Some(ContextValue::String(s)) => s.clone(),
@@ -102,6 +139,196 @@ pub fn argparse_parse<T: clap::Parser + clap::CommandFactory>(prog: &str, usage:
             }
         }
     })
+}
+
+/// The `--long` option string clap names in an error (`--define`,
+/// `--edit [<EDIT>]`).
+fn argparse_name(cmd: &clap::Command, clap_name: &str) -> String {
+    let flag = clap_name.split([' ', '=']).next().unwrap_or_default();
+    cmd.get_arguments()
+        .find(|a| a.get_long().is_some_and(|l| format!("--{l}") == flag))
+        .and_then(|a| a.get_long())
+        .map_or_else(|| flag.to_string(), |l| format!("--{l}"))
+}
+
+/// `shutil.get_terminal_size().columns`: `$COLUMNS`, the terminal on
+/// stdout, else 80.
+fn terminal_columns() -> usize {
+    if let Some(c) = std::env::var("COLUMNS")
+        .ok()
+        .and_then(|c| c.parse::<usize>().ok())
+        .filter(|c| *c > 0)
+    {
+        return c;
+    }
+    // SAFETY: TIOCGWINSZ only writes a `winsize` into the struct we pass.
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    let ok = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) } == 0;
+    if ok && ws.ws_col > 0 {
+        ws.ws_col as usize
+    } else {
+        80
+    }
+}
+
+/// A word split where `textwrap` may break it: after a hyphen with two
+/// letters before it and a letter (and maybe one more hyphen) and a
+/// letter after it, `cloud-|init`.
+fn hyphen_chunks(word: &str) -> Vec<&str> {
+    let c: Vec<(usize, char)> = word.char_indices().collect();
+    let letter = |i: usize| {
+        c.get(i)
+            .is_some_and(|(_, ch)| ch.is_alphabetic() || *ch == '_')
+    };
+    let mut chunks = vec![];
+    let mut start = 0;
+    for i in 2..c.len() {
+        let after = letter(i + 1)
+            && (letter(i + 2) || (c.get(i + 2).is_some_and(|(_, ch)| *ch == '-') && letter(i + 3)));
+        if c[i].1 == '-' && letter(i - 1) && letter(i - 2) && after {
+            let end = c[i].0 + 1;
+            chunks.push(&word[start..end]);
+            start = end;
+        }
+    }
+    chunks.push(&word[start..]);
+    chunks
+}
+
+/// `textwrap.wrap`, as argparse's `_split_lines` uses it.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let mut lines = vec![];
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        for (n, chunk) in hyphen_chunks(word).into_iter().enumerate() {
+            let sep = if n == 0 && !line.is_empty() { 1 } else { 0 };
+            if !line.is_empty() && line.len() + sep + chunk.len() > width {
+                lines.push(std::mem::take(&mut line));
+            } else if sep == 1 {
+                line.push(' ');
+            }
+            line.push_str(chunk);
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// argparse's `--help` with upstream's `VirtHelpFormatter` (a help text
+/// with newlines keeps its lines, anything else is wrapped), built from
+/// a clap command: groups are the help headings, in the order the
+/// arguments first use them; hidden arguments and aliases stay out.
+pub fn argparse_help(cmd: &clap::Command, prog: &str, usage: &str) -> String {
+    let width = terminal_columns().saturating_sub(2).max(11);
+    let max_help_position = 24.min(width.saturating_sub(20).max(4));
+
+    let invocation = |a: &clap::Arg| -> String {
+        if a.is_positional() {
+            return a.get_id().to_string();
+        }
+        let mut strings: Vec<String> = vec![];
+        if let Some(s) = a.get_short() {
+            strings.push(format!("-{s}"));
+        }
+        if let Some(l) = a.get_long() {
+            strings.push(format!("--{l}"));
+        }
+        for alias in a.get_visible_aliases().unwrap_or_default() {
+            strings.push(format!("--{alias}"));
+        }
+        let takes_value = matches!(
+            a.get_action(),
+            clap::ArgAction::Set | clap::ArgAction::Append
+        );
+        if !takes_value {
+            return strings.join(", ");
+        }
+        // `dest.upper()`, the field name, unless a metavar is given.
+        let metavar = match a.get_value_names().and_then(|v| v.first()) {
+            Some(v) => v.to_string(),
+            None => a.get_id().as_str().to_uppercase(),
+        };
+        let optional = a.get_num_args().is_some_and(|n| n.min_values() == 0);
+        let args = if optional {
+            format!("[{metavar}]")
+        } else {
+            metavar
+        };
+        strings
+            .iter()
+            .map(|s| format!("{s} {args}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut sections: Vec<(String, Vec<(String, String)>)> = vec![
+        ("positional arguments".into(), vec![]),
+        (
+            "options".into(),
+            vec![(
+                "-h, --help".into(),
+                "show this help message and exit".into(),
+            )],
+        ),
+    ];
+    for a in cmd.get_arguments() {
+        if a.is_hide_set() || a.get_id() == "help" {
+            continue;
+        }
+        let heading = match a.get_help_heading() {
+            Some(h) => h.to_string(),
+            None if a.is_positional() => "positional arguments".into(),
+            None => "options".into(),
+        };
+        let help = a.get_help().map(|h| h.to_string()).unwrap_or_default();
+        let item = (invocation(a), help);
+        match sections.iter_mut().find(|(h, _)| *h == heading) {
+            Some((_, items)) => items.push(item),
+            None => sections.push((heading, vec![item])),
+        }
+    }
+
+    let action_max = sections
+        .iter()
+        .flat_map(|(_, items)| items.iter().map(|(inv, _)| inv.len() + 2))
+        .max()
+        .unwrap_or(0);
+    let help_position = (action_max + 2).min(max_help_position);
+    let action_width = help_position.saturating_sub(4);
+    let text_width = width.saturating_sub(help_position).max(11);
+
+    let mut out = format!("usage: {prog} {usage}\n\n");
+    if let Some(about) = cmd.get_about() {
+        out.push_str(&format!("{about}\n\n"));
+    }
+    for (heading, items) in sections.iter().filter(|(_, i)| !i.is_empty()) {
+        out.push_str(&format!("{heading}:\n"));
+        for (inv, help) in items {
+            let lines = if help.contains('\n') {
+                help.lines().map(str::to_string).collect()
+            } else {
+                wrap_words(help, text_width)
+            };
+            let mut lines = lines.iter();
+            if inv.len() <= action_width {
+                match lines.next() {
+                    Some(first) => out.push_str(&format!("  {inv:action_width$}  {first}\n")),
+                    None => out.push_str(&format!("  {inv}\n")),
+                }
+            } else {
+                out.push_str(&format!("  {inv}\n"));
+            }
+            for line in lines {
+                out.push_str(&format!("{:help_position$}{line}\n", ""));
+            }
+        }
+        out.push('\n');
+    }
+    if let Some(epilog) = cmd.get_after_help() {
+        out.push_str(&format!("{epilog}\n"));
+    }
+    out
 }
 
 /// `_GlobalState`.
@@ -968,9 +1195,200 @@ pub fn get_domain_and_guest(
     (domain, inactive, active)
 }
 
+// --osinfo parsing
+
+/// `OSInfoData`.
+pub struct OsInfoData {
+    pub name: Option<String>,
+    pub id: Option<String>,
+    pub detect: bool,
+    pub require_from_cli: Option<bool>,
+    pub require_on: bool,
+}
+
+/// `parse_osinfo`.
+pub fn parse_osinfo(optstr: Option<&str>) -> OsInfoData {
+    let mut data = OsInfoData {
+        name: None,
+        id: None,
+        detect: false,
+        require_from_cli: None,
+        require_on: false,
+    };
+    match optstr {
+        Some(o) if o.contains('=') => {
+            for (k, v) in crate::parser::parse_optstr_tuples(o) {
+                let v = v.unwrap_or_default();
+                let onoff = || {
+                    raw_on_off_convert(&v).unwrap_or_else(|| {
+                        fail(format!("Error: --osinfo {o}: {k} must be 'yes' or 'no'"))
+                    })
+                };
+                match k.as_str() {
+                    "name" | "short-id" => data.name = Some(v),
+                    "id" => data.id = Some(v),
+                    "detect" => data.detect = onoff(),
+                    "require" => data.require_from_cli = Some(onoff()),
+                    _ => fail(format!("Unknown --osinfo options: ['{k}']")),
+                }
+            }
+        }
+        // `set_compat_str`
+        None | Some("auto") => data.detect = true,
+        Some("none") => data.name = Some("generic".into()),
+        Some(o) if o.contains("://") => data.id = Some(o.into()),
+        Some(o) => data.name = Some(o.into()),
+    }
+
+    // `validate`. Upstream reports a lookup error with the parser's
+    // "Error: --osinfo ..." prefix only for the key=value form.
+    let prefix = match optstr {
+        Some(o) if o.contains('=') => format!("Error: --osinfo {o}: "),
+        _ => String::new(),
+    };
+    let db = || virtinst_core::osinfo::OsDb::load_default().unwrap_or_else(|e| fail(e));
+    if let Some(id) = &data.id {
+        let os = db()
+            .os(id)
+            .unwrap_or_else(|| fail(format!("{prefix}Unknown libosinfo ID '{id}'")));
+        data.name = Some(os.short_id());
+    } else if let Some(name) = &data.name {
+        if name != "generic" {
+            let os = db().lookup_os(name).unwrap_or_else(|| {
+                fail(format!(
+                    "{prefix}Unknown OS name '{name}'. See `--osinfo list` for valid values."
+                ))
+            });
+            data.name = Some(os.short_id());
+        }
+    }
+    match data.require_from_cli {
+        Some(false) => {
+            if data.name.is_none() {
+                log::debug!("Converting `require=off` to fallback `name=generic`");
+                data.name = Some("generic".into());
+            }
+        }
+        Some(true) => data.require_on = true,
+        None => {}
+    }
+    data
+}
+
+/// `--osinfo list`'s natural sort key: numbers sorted in reverse.
+pub fn alphanum_key(val: &str) -> Vec<(bool, String, i64)> {
+    let mut out = vec![];
+    let mut text = String::new();
+    let mut rest = val;
+    while let Some(start) = rest.find(|c: char| c.is_ascii_digit()) {
+        text.push_str(&rest[..start]);
+        out.push((false, std::mem::take(&mut text).to_lowercase(), 0));
+        let tail = &rest[start..];
+        let end = tail
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(tail.len());
+        let n: i64 = tail[..end].parse().unwrap_or(0);
+        out.push((true, String::new(), -n));
+        rest = &tail[end..];
+    }
+    out.push((false, rest.to_lowercase(), 0));
+    out
+}
+
+/// `check_osinfo_list`.
+pub fn check_osinfo_list(osinfo: Option<&str>) -> bool {
+    if osinfo != Some("list") {
+        return false;
+    }
+    let db = virtinst_core::osinfo::OsDb::load_default().unwrap_or_else(|e| fail(e));
+    let mut list: Vec<(String, Vec<String>)> = db
+        .all_os()
+        .iter()
+        .map(|o| {
+            let mut names = o.short_id_list();
+            let name = names[0].clone();
+            names.sort();
+            names.dedup();
+            (name, names)
+        })
+        .collect();
+    list.push(("generic".into(), vec!["generic".into()]));
+    list.sort_by_cached_key(|(name, _)| alphanum_key(name));
+    for (_, names) in list {
+        println!("{}", names.join(", "));
+    }
+    println!();
+    println!("You can see additional information with:\n\n  osinfo-query os\n");
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn help_wraps_like_textwrap() {
+        assert_eq!(hyphen_chunks("cloud-init"), ["cloud-", "init"]);
+        assert_eq!(hyphen_chunks("--os-variant"), ["--os-", "variant"]);
+        assert_eq!(hyphen_chunks("x-y"), ["x-y"]);
+        assert_eq!(
+            wrap_words(
+                "Perform a cloud image installation, configuring cloud-init",
+                54
+            ),
+            [
+                "Perform a cloud image installation, configuring cloud-",
+                "init"
+            ]
+        );
+    }
+
+    #[derive(clap::Parser)]
+    #[command(about = "Do things.", after_help = "Epilog.")]
+    struct HelpArgs {
+        /// Domain name
+        domain: Option<String>,
+        /// Connect to it
+        #[arg(short = 'c', long, value_name = "URI")]
+        connect: Option<String>,
+        /// Edit. Examples:
+        /// --edit 2
+        #[arg(long, num_args = 0..=1, help_heading = "Actions", verbatim_doc_comment)]
+        edit: Option<Option<String>>,
+        /// A flag.
+        #[arg(
+            long,
+            visible_alias = "flag2",
+            help_heading = "Actions",
+            verbatim_doc_comment
+        )]
+        flag: bool,
+        #[arg(long, hide = true)]
+        hidden: bool,
+    }
+
+    #[test]
+    fn help_matches_argparse() {
+        use clap::CommandFactory;
+        std::env::set_var("COLUMNS", "80");
+        let help = argparse_help(&HelpArgs::command(), "prog", "[options]");
+        assert_eq!(
+            help,
+            "usage: prog [options]\n\n\
+             Do things.\n\n\
+             positional arguments:\n  \
+             domain                Domain name\n\n\
+             options:\n  \
+             -h, --help            show this help message and exit\n  \
+             -c URI, --connect URI\n                        \
+             Connect to it\n\n\
+             Actions:\n  \
+             --edit [EDIT]         Edit. Examples:\n                        \
+             --edit 2\n  \
+             --flag, --flag2       A flag.\n\n\
+             Epilog.\n"
+        );
+    }
 
     #[test]
     fn on_off_values_match_upstream() {

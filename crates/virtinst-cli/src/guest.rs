@@ -1343,3 +1343,271 @@ pub fn set_defaults(
     add_q35_pcie_controllers(guest, opts);
     add_spice_devices(guest, opts, &support, conn)
 }
+
+/// `Guest.remove_device`: the `idx`th `list` device, its duplicate
+/// `<console>`, and the spice helpers once the last spice display is
+/// gone.
+pub fn remove_device(guest: &mut XmlObject, list: &str, idx: usize) -> XmlObject {
+    let devices = guest.child_mut("devices");
+    let removed = devices.remove_child(list, idx);
+    if devices::char::console_duplicate(&removed, devices.children("console")) {
+        devices.remove_child("console", 0);
+    }
+    parsers::graphics::remove_spice_devices(devices, &removed);
+    removed
+}
+
+/// The index `guest_propname`'s newest object, after `add_device`.
+fn add_device_with_defaults(
+    guest: &mut XmlObject,
+    list: &str,
+    dev: XmlObject,
+    conn: &Connection,
+) -> Result<usize, String> {
+    add_device(guest, dev);
+    let idx = devices(guest, list) - 1;
+    device_set_defaults(guest, &format!("devices.{list}"), idx, conn)?;
+    Ok(idx)
+}
+
+/// `Guest.convert_to_q35`.
+pub fn convert_to_q35(
+    guest: &mut XmlObject,
+    num_pcie_root_ports: Option<&str>,
+) -> Result<(), String> {
+    guest.child_mut("os").set("machine", s("q35"))?;
+
+    let mut opts = GuestOpts::default();
+    if let Some(n) = num_pcie_root_ports {
+        opts.num_pcie_root_ports = n
+            .trim()
+            .parse()
+            .map_err(|_| format!("invalid literal for int() with base 10: '{n}'"))?;
+    }
+
+    for name in virtinst_core::guest::DOMAIN_DEVICES.prop_order {
+        let mut idx = 0;
+        while idx < devices(guest, name) {
+            let devs = guest.child_mut("devices");
+            let dev = &mut devs.children_mut(name)[idx];
+            if *name == "controller"
+                && matches!(dev.get_str("type").as_deref(), Some("pci" | "ide"))
+            {
+                remove_device(guest, name, idx);
+                continue;
+            }
+            if *name == "sound" && dev.get_str("model").as_deref() == Some("ich6") {
+                dev.set("model", s("ich9"))?;
+            }
+            if *name == "interface" && dev.get_str("model").as_deref() == Some("e1000") {
+                dev.set("model", s("e1000e"))?;
+            }
+            if *name == "disk" && dev.get_str("bus").as_deref() == Some("ide") {
+                dev.set("bus", s("sata"))?;
+                let used: Vec<String> = devs
+                    .children("disk")
+                    .iter()
+                    .filter_map(|d| d.get_str("target"))
+                    .filter(|t| !t.is_empty())
+                    .collect();
+                let dev = &mut devs.children_mut(name)[idx];
+                let device = devices::disk::disk_device(dev);
+                let target = devices::build::generate_target("sata", &device, &used)?;
+                dev.set("target", s(&target))?;
+                dev.child_mut("address").clear(false);
+            }
+            let dev = &mut guest.child_mut("devices").children_mut(name)[idx];
+            if dev.class.child("address").is_some()
+                && dev.child("address").get_str("type").as_deref() == Some("pci")
+            {
+                dev.child_mut("address").clear(false);
+            }
+            idx += 1;
+        }
+    }
+
+    add_q35_pcie_controllers(guest, &opts);
+    Ok(())
+}
+
+fn graphics_of_type(guest: &XmlObject, pred: impl Fn(&str) -> bool) -> Vec<usize> {
+    guest
+        .child("devices")
+        .children("graphics")
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| pred(&g.get_str("_type").unwrap_or_default()))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// `Guest._convert_spice_gl_to_egl_headless`.
+fn convert_spice_gl_to_egl_headless(
+    guest: &mut XmlObject,
+    conn: &Connection,
+) -> Result<(), String> {
+    let Some(&spice) = graphics_of_type(guest, |t| t == "spice").first() else {
+        return Ok(());
+    };
+    let spicedev = &guest.child("devices").children("graphics")[spice];
+    if !matches!(spicedev.get("gl"), Some(Value::Bool(true))) {
+        return Ok(());
+    }
+    let rendernode = spicedev.get_str("rendernode").filter(|r| !r.is_empty());
+
+    let mut dev = XmlObject::new(&devices::graphics::DEVICE_GRAPHICS);
+    devices::graphics::set_type_prop(&mut dev, s("egl-headless"))?;
+    let idx = add_device_with_defaults(guest, "graphics", dev, conn)?;
+    if let Some(r) = rendernode {
+        guest.child_mut("devices").children_mut("graphics")[idx].set("rendernode", s(&r))?;
+    }
+    Ok(())
+}
+
+/// `Guest._convert_to_vnc_graphics`.
+fn convert_to_vnc_graphics(
+    guest: &mut XmlObject,
+    agent: Option<usize>,
+    conn: &Connection,
+) -> Result<(), String> {
+    let vnc_devs = graphics_of_type(guest, |t| t == "vnc");
+    // We ignore egl-headless, it's not a true graphical frontend
+    let mut other_devs = graphics_of_type(guest, |t| t != "vnc" && t != "egl-headless");
+
+    // Guest already had a vnc device.
+    // Remove all other devs and we are done
+    if !vnc_devs.is_empty() {
+        for idx in other_devs.into_iter().rev() {
+            remove_device(guest, "graphics", idx);
+        }
+        return Ok(());
+    }
+
+    // We didn't find any non-vnc device to convert.
+    // Add a vnc device with default config
+    if other_devs.is_empty() {
+        let mut dev = XmlObject::new(&devices::graphics::DEVICE_GRAPHICS);
+        devices::graphics::set_type_prop(&mut dev, s("vnc"))?;
+        add_device_with_defaults(guest, "graphics", dev, conn)?;
+        return Ok(());
+    }
+
+    // Convert the pre-existing graphics device to vnc
+    // Remove the rest
+    let idx = other_devs.remove(0);
+    let xml = guest.child("devices").children("graphics")[idx].get_xml();
+    let mut srcdev =
+        XmlObject::parse(&devices::graphics::DEVICE_GRAPHICS, &xml).map_err(|e| e.to_string())?;
+    for g in other_devs.into_iter().rev() {
+        remove_device(guest, "graphics", g);
+    }
+
+    let dev = &mut guest.child_mut("devices").children_mut("graphics")[idx];
+    dev.clear(false);
+    devices::graphics::set_type_prop(dev, s("vnc"))?;
+    dev.set("keymap", srcdev.get("keymap"))?;
+    devices::graphics::set_port_prop(dev, srcdev.get("_port"))?;
+    dev.set("autoport", srcdev.get("autoport"))?;
+    dev.set("passwd", srcdev.get("passwd"))?;
+    dev.set("passwdValidTo", srcdev.get("passwdValidTo"))?;
+    devices::graphics::set_listen_prop(
+        dev,
+        srcdev.get("_listen"),
+        conn_support().graphics_listen_none,
+    )?;
+    while !srcdev.children("listens").is_empty() {
+        let listen = srcdev.remove_child("listens", 0);
+        dev.add_child(listen);
+    }
+    device_set_defaults(guest, "devices.graphics", idx, conn)?;
+
+    if let Some(agent) = agent {
+        let source = guest.child_mut("devices").children_mut("channel")[agent].child_mut("source");
+        source.set("clipboard_copypaste", srcdev.get("clipboard_copypaste"))?;
+        source.set("mouse_mode", srcdev.get("mouse_mode"))?;
+    }
+    Ok(())
+}
+
+/// `Guest._convert_to_vnc_video`.
+fn convert_to_vnc_video(guest: &mut XmlObject, conn: &Connection) -> Result<(), String> {
+    if devices(guest, "video") == 0 {
+        let dev = XmlObject::new(&devices::video::DEVICE_VIDEO);
+        add_device_with_defaults(guest, "video", dev, conn)?;
+        return Ok(());
+    }
+
+    let is_primary = |v: &XmlObject| matches!(v.get("primary"), Some(Value::Bool(true)));
+    let videos = guest.child("devices").children("video");
+    let qxl_devs: Vec<usize> = videos
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v.get_str("_model").as_deref() == Some("qxl"))
+        .map(|(i, _)| i)
+        .collect();
+    if !qxl_devs.is_empty() && !videos.iter().any(is_primary) {
+        // Make sure `primary` flag is set, we need it up ahead
+        guest.child_mut("devices").children_mut("video")[0]
+            .set("primary", Some(Value::Bool(true)))?;
+    }
+
+    let mut removed = 0;
+    for idx in qxl_devs {
+        let idx = idx - removed;
+        let dev = &mut guest.child_mut("devices").children_mut("video")[idx];
+        let primary = is_primary(dev);
+        dev.clear(false);
+        device_set_defaults(guest, "devices.video", idx, conn)?;
+        let model = guest.child("devices").children("video")[idx].get_str("_model");
+        if !primary && model.as_deref() != Some("virtio") {
+            // Device can't be non-primary, so just remove it
+            log::debug!(
+                "Can't use model={} for non-primary video device, removing it instead.",
+                model.unwrap_or_else(|| "None".into())
+            );
+            remove_device(guest, "video", idx);
+            removed += 1;
+        }
+    }
+    Ok(())
+}
+
+/// `Guest._add_qemu_vdagent`: the new channel's index.
+fn add_qemu_vdagent(guest: &mut XmlObject, conn: &Connection) -> Result<Option<usize>, String> {
+    if guest
+        .child("devices")
+        .children("channel")
+        .iter()
+        .any(|c| c.get_str("type").as_deref() == Some("qemu-vdagent"))
+    {
+        return Ok(None);
+    }
+    let dev = new_device(
+        &devices::char::DEVICE_CHANNEL,
+        &[("type", s("qemu-vdagent"))],
+    );
+    add_device_with_defaults(guest, "channel", dev, conn).map(Some)
+}
+
+/// `Guest.convert_to_vnc`: convert existing XML to have one VNC
+/// graphics connection.
+pub fn convert_to_vnc(
+    guest: &mut XmlObject,
+    qemu_vdagent: bool,
+    conn: &Connection,
+) -> Result<(), String> {
+    convert_spice_gl_to_egl_headless(guest, conn)?;
+
+    // Rip out spice graphics devices unconditionally.
+    // Could be necessary if XML is in broken state.
+    parsers::graphics::force_remove_spice_devices(guest.child_mut("devices"));
+
+    let agent = if qemu_vdagent {
+        add_qemu_vdagent(guest, conn)?
+    } else {
+        None
+    };
+
+    convert_to_vnc_graphics(guest, agent, conn)?;
+    convert_to_vnc_video(guest, conn)
+}

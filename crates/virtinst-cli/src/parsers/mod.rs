@@ -17,6 +17,7 @@ use crate::parser::{lookup_prop, ParserDef};
 pub mod boot;
 pub mod chardev;
 pub mod charsrc;
+pub mod convert;
 pub mod cpu;
 pub mod devices;
 pub mod disk;

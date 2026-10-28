@@ -159,7 +159,7 @@ pub fn graphics() -> &'static ParserDef {
 }
 
 /// `Guest.has_spice`.
-fn has_spice(devices: &XmlObject) -> bool {
+pub(crate) fn has_spice(devices: &XmlObject) -> bool {
     devices
         .children("graphics")
         .iter()
@@ -248,7 +248,7 @@ fn remove_matching(devices: &mut XmlObject, name: &str, pred: impl Fn(&XmlObject
 }
 
 /// `Guest._force_remove_spice_devices`.
-fn force_remove_spice_devices(devices: &mut XmlObject) {
+pub(crate) fn force_remove_spice_devices(devices: &mut XmlObject) {
     let is_type = |t: &'static str| move |d: &XmlObject| d.get_str("type").as_deref() == Some(t);
     remove_matching(devices, "audio", is_type("spice"));
     remove_matching(devices, "channel", is_type("spicevmc"));
