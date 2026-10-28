@@ -807,54 +807,9 @@ fn update_changes(
     }
 }
 
-/// `get_xmldesc`.
-fn get_xmldesc(domain: &Domain, inactive: bool) -> String {
-    let mut flags = virt::sys::VIR_DOMAIN_XML_SECURE;
-    if inactive {
-        flags |= virt::sys::VIR_DOMAIN_XML_INACTIVE;
-    }
-    domain
-        .get_xml_desc(flags)
-        .unwrap_or_else(|e| fail(e.message()))
-}
-
-/// `get_domain_and_guest`: by name, else by ID or UUID.
-fn get_domain_and_guest(conn: &Connection, domstr: &str) -> (Domain, XmlObject, Option<XmlObject>) {
-    let isint = domstr.parse::<u32>().is_ok();
-    let isuuid = {
-        let parts: Vec<&str> = domstr.split('-').collect();
-        let lens = [8, 4, 4, 4, 12];
-        parts.len() == 5
-            && parts
-                .iter()
-                .zip(lens)
-                .all(|(p, l)| p.len() == l && p.chars().all(|c| c.is_ascii_hexdigit()))
-    };
-    let lookup = Domain::lookup_by_name(conn.as_connect(), domstr).or_else(|e| {
-        if isint {
-            Domain::lookup_by_id(conn.as_connect(), domstr.parse().unwrap())
-        } else if isuuid {
-            Domain::lookup_by_uuid_string(conn.as_connect(), domstr)
-        } else {
-            Err(e)
-        }
-    });
-    let domain = lookup
-        .unwrap_or_else(|e| fail(format!("Could not find domain '{domstr}': {}", e.message())));
-    let state = domain.get_state().unwrap_or_else(|e| fail(e.message())).0;
-    let parse = |xml: &str| XmlObject::parse(&GUEST, xml).unwrap_or_else(|e| fail(e));
-    let mut inactive = parse(&get_xmldesc(&domain, false));
-    let mut active = None;
-    if state != virt::sys::VIR_DOMAIN_SHUTOFF {
-        active = Some(inactive);
-        inactive = parse(&get_xmldesc(&domain, true));
-    }
-    (domain, inactive, active)
-}
-
 /// `defined_xml_is_unchanged`.
 fn defined_xml_is_unchanged(domain: &Domain, original_xml: &str) -> bool {
-    let rawxml = get_xmldesc(domain, true);
+    let rawxml = cli::get_xmldesc(domain, true);
     match XmlObject::parse(&GUEST, &rawxml) {
         Ok(g) => g.get_document_xml() == original_xml,
         Err(_) => false,
@@ -934,7 +889,7 @@ fn main() {
 
     let (domain, inactive, active) = match &args.domain {
         Some(d) => {
-            let (dom, inactive, active) = get_domain_and_guest(&conn, d);
+            let (dom, inactive, active) = cli::get_domain_and_guest(&conn, d);
             (Some(dom), inactive, active)
         }
         None => {

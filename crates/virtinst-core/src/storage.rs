@@ -428,7 +428,7 @@ pub(crate) fn can_auto_manage(path: &str) -> bool {
 }
 
 /// `os.path.abspath`.
-pub(crate) fn abspath(path: &str) -> String {
+pub fn abspath(path: &str) -> String {
     let joined = if path.starts_with('/') {
         path.to_string()
     } else {

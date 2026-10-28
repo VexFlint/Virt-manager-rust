@@ -608,6 +608,68 @@ impl OsInfo {
         ret
     }
 
+    /// `_get_generic_location`/`get_location`: the install tree URL for
+    /// `arch`, preferring the tree whose variant matches `profile`.
+    pub fn get_location(&self, arch: &str, profile: Option<&str>) -> Result<String, String> {
+        let profile = match profile {
+            Some("jeos") => "Server",
+            Some("desktop") => "Workstation",
+            None | Some("") => "Everything",
+            Some(p) => p,
+        };
+        // (url, matches profile) of each tree for `arch`.
+        let mut trees: Vec<(String, bool)> = vec![];
+        let mut have_trees = false;
+        unsafe {
+            let list = ffi::osinfo_os_get_tree_list(self.ptr) as *mut ffi::OsinfoList;
+            if !list.is_null() {
+                for i in 0..ffi::osinfo_list_get_length(list) {
+                    let tree = ffi::osinfo_list_get_nth(list, i) as *mut ffi::OsinfoTree;
+                    if tree.is_null() {
+                        continue;
+                    }
+                    have_trees = true;
+                    if c_str_to_string(ffi::osinfo_tree_get_architecture(tree)) != arch {
+                        continue;
+                    }
+                    let url = c_str_to_string(ffi::osinfo_tree_get_url(tree));
+                    let variants = ffi::osinfo_tree_get_os_variants(tree) as *mut ffi::OsinfoList;
+                    let mut matched = false;
+                    if !variants.is_null() {
+                        for j in 0..ffi::osinfo_list_get_length(variants) {
+                            let v =
+                                ffi::osinfo_list_get_nth(variants, j) as *mut ffi::OsinfoOsVariant;
+                            if !v.is_null()
+                                && c_str_to_string(ffi::osinfo_os_variant_get_name(v))
+                                    .contains(profile)
+                            {
+                                matched = true;
+                            }
+                        }
+                        gobject_sys::g_object_unref(variants as *mut gobject_sys::GObject);
+                    }
+                    trees.push((url, matched));
+                }
+                gobject_sys::g_object_unref(list as *mut gobject_sys::GObject);
+            }
+        }
+        if !have_trees {
+            return Err(format!(
+                "OS '{}' does not have a URL location",
+                self.short_id()
+            ));
+        }
+        // The first tree with a matching variant, else the last tree
+        // for the architecture.
+        if let Some((url, _)) = trees.iter().find(|(_, m)| *m).or(trees.last()) {
+            return Ok(url.clone());
+        }
+        Err(format!(
+            "OS '{}' does not have a URL location for the architecture '{arch}'",
+            self.short_id()
+        ))
+    }
+
     /// Human-readable display name, e.g. `"Fedora 40"`.
     pub fn name(&self) -> String {
         unsafe {

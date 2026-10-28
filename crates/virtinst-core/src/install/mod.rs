@@ -14,9 +14,12 @@
 pub mod container;
 pub(crate) mod domain_skeleton;
 pub mod import;
+pub mod installerinject;
 pub mod iso;
 pub mod manual;
 pub mod newguest;
+pub mod urlfetcher;
+pub mod volumeupload;
 pub use container::build_container_os_document;
 pub use domain_skeleton::{
     default_disk_bus, default_firmware, default_nic_model, prefers_uefi, GuestCapsDefaults,

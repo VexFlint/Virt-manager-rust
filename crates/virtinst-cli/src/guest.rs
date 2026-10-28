@@ -1082,6 +1082,19 @@ fn parser_for(guest_propname: &str) -> Option<&'static crate::parser::ParserDef>
         .find(|p| p.guest_propname == Some(guest_propname))
 }
 
+/// `dev.set_defaults(guest)` for the object at `guest_propname[idx]`.
+pub fn device_set_defaults(
+    guest: &mut XmlObject,
+    guest_propname: &str,
+    idx: usize,
+    conn: &Connection,
+) -> Result<(), String> {
+    match parser_for(guest_propname) {
+        Some(def) => parsers::set_defaults(def, guest, idx, Some(conn)),
+        None => Ok(()),
+    }
+}
+
 /// `dev.set_defaults(guest)` for every object at `guest_propname`.
 fn objects_set_defaults(
     guest: &mut XmlObject,

@@ -4,15 +4,14 @@
 //! install media/bootdev handling is the `Installer`
 //! (`virtinst_cli::installer`).
 //!
-//! `--location`, `--install` kernel/os installs, `--extra-args`,
-//! `--initrd-inject`, `--unattended`, `--cloud-init`, `--reinstall`
-//! and `--test-media-detection` are the next step of the port; they
-//! fail with a clear message for now.
+//! Distro detection for `--location` trees, `--unattended`,
+//! `--cloud-init` and `--test-media-detection` are the next step of the
+//! port; they fail with a clear message for now.
 
 use clap::{ArgAction, Parser};
 use virtinst_cli::cli::{self, fail, print_stderr, print_stdout};
 use virtinst_cli::guest::{self, GuestOpts};
-use virtinst_cli::installer::{Installer, Started};
+use virtinst_cli::installer::{Installer, InstallerArgs, Started};
 use virtinst_cli::parser::{self, run_parser, ParserDef};
 use virtinst_cli::parsers;
 use virtinst_core::capabilities::caps::Capabilities;
@@ -1198,11 +1197,13 @@ fn is_hvm(guest: &XmlObject) -> bool {
 /// right.
 fn validate_required_options(args: &Args, guest: &XmlObject, installer: &Installer) {
     let mut msg = String::new();
-    if !memory_specified(guest) {
-        msg += "\n--memory amount in MiB is required";
-    }
-    if !storage_specified(args, guest) {
-        msg += "\n--disk storage must be specified (override with --disk none)";
+    if args.reinstall.is_none() {
+        if !memory_specified(guest) {
+            msg += "\n--memory amount in MiB is required";
+        }
+        if !storage_specified(args, guest) {
+            msg += "\n--disk storage must be specified (override with --disk none)";
+        }
     }
     if !is_container(guest) && !installer.options_specified() {
         msg += &format!("\nAn install method must be specified\n({INSTALL_METHODS})");
@@ -1329,11 +1330,71 @@ fn show_guest_warnings(args: &Args, guest: &XmlObject, conn: &Connection) {
     show_memory_warnings(guest);
 }
 
+/// `get_location_for_os`.
+fn get_location_for_os(guest: &XmlObject, osname: &str, profile: Option<&str>) -> String {
+    let db = OsDb::load_default().unwrap_or_else(|e| fail(e));
+    let osinfo = db.lookup_os(osname).unwrap_or_else(|| {
+        fail(format!(
+            "Unknown OS name '{osname}'. See `--osinfo list` for valid values."
+        ))
+    });
+    let arch = guest.child("os").get_str("arch").unwrap_or_default();
+    let location = osinfo
+        .get_location(&arch, profile)
+        .unwrap_or_else(|e| fail(e));
+    print_stdout(&format!("Using {osname} --location {location}"), false);
+    location
+}
+
+/// `parse_location`: (location, kernel, initrd).
+fn parse_location(optstr: &str) -> (Option<String>, Option<String>, Option<String>) {
+    let mut def = ParserDef::new("location", None, None);
+    def.remove_first = &["location"];
+    for name in ["location", "kernel", "initrd"] {
+        def.arg(parser::ArgDef::new(name, name).can_comma());
+    }
+    let mut ret = (None, None, None);
+    let mut leftover = vec![];
+    for (k, v) in def.optdict(optstr).0 {
+        match k.as_str() {
+            "location" => ret.0 = v,
+            "kernel" => ret.1 = v,
+            "initrd" => ret.2 = v,
+            _ => leftover.push(format!("'{k}'")),
+        }
+    }
+    if !leftover.is_empty() {
+        fail(format!(
+            "Unknown --location options: [{}]",
+            leftover.join(", ")
+        ));
+    }
+    ret
+}
+
 /// `build_installer`.
-fn build_installer(args: &Args, conn: &Connection, installdata: &InstallData) -> Installer {
-    let mut no_install = installdata.no_install.unwrap_or(false);
-    let mut install_bootdev = installdata.bootdev.clone();
-    let mut cdrom = None;
+fn build_installer(
+    args: &Args,
+    conn: &Connection,
+    guest: &XmlObject,
+    installdata: &InstallData,
+) -> Installer {
+    let mut a = InstallerArgs {
+        is_reinstall: args.reinstall.is_some(),
+        install_bootdev: installdata.bootdev.clone(),
+        install_kernel: installdata.kernel.clone(),
+        install_initrd: installdata.initrd.clone(),
+        no_install: installdata.no_install.unwrap_or(false),
+        ..InstallerArgs::default()
+    };
+    let mut extra_args = args.extra_args.clone();
+    if let Some(ka) = installdata.kernel_args.clone().filter(|k| !k.is_empty()) {
+        if installdata.kernel_args_overwrite == Some(true) {
+            a.install_kernel_args = Some(ka);
+        } else {
+            extra_args = vec![ka];
+        }
+    }
 
     if args.unattended.is_some() && args.cloud_init.is_some() {
         fail_conflicting("--unattended", "--cloud-init");
@@ -1343,42 +1404,44 @@ fn build_installer(args: &Args, conn: &Connection, installdata: &InstallData) ->
             "{opt} is not implemented yet in this port of virt-install"
         ))
     };
-    if installdata.kernel.is_some() || installdata.initrd.is_some() {
-        not_yet("--install kernel=/initrd=");
-    }
-    if installdata.kernel_args.is_some() || !args.extra_args.is_empty() {
-        not_yet("--extra-args");
-    }
-    if !args.initrd_inject.is_empty() {
-        not_yet("--initrd-inject");
-    }
-    if args.unattended.is_some() {
+    // `parse_unattended`/`parse_cloud_init` return nothing for "none"
+    let given = |o: &Option<String>| o.as_deref().is_some_and(|v| v != "none");
+    if given(&args.unattended) {
         not_yet("--unattended");
     }
-    if args.cloud_init.is_some() {
-        not_yet("--cloud-init");
-    }
 
-    if installdata.os.is_some() {
-        not_yet("--install OSNAME");
-    } else if args.location.is_some() {
-        not_yet("--location");
+    if let Some(os) = &installdata.os {
+        a.location = Some(get_location_for_os(guest, os, None));
+    } else if let Some(loc) = &args.location {
+        (a.location, a.location_kernel, a.location_initrd) = parse_location(loc);
     } else if let Some(c) = &args.cdrom {
-        cdrom = Some(c.as_str());
+        a.cdrom = Some(c.clone());
         if args.livecd {
-            no_install = true;
+            a.no_install = true;
         }
     } else if args.pxe {
-        install_bootdev = Some("network".into());
+        a.install_bootdev = Some("network".into());
     } else if installdata.is_set {
     } else if args.xmlonly.is_some() || args.import_install || !args.boot.is_empty() {
-        no_install = true;
+        a.no_install = true;
     }
 
-    let mut installer =
-        Installer::new(conn, cdrom, install_bootdev, no_install).unwrap_or_else(|e| fail(e));
+    let mut installer = Installer::new(conn, a).unwrap_or_else(|e| fail(e));
+    if !extra_args.is_empty() {
+        installer
+            .set_extra_args(extra_args)
+            .unwrap_or_else(|e| fail(e));
+    }
+    if !args.initrd_inject.is_empty() {
+        installer
+            .set_initrd_injections(args.initrd_inject.clone())
+            .unwrap_or_else(|e| fail(e));
+    }
     if args.autostart {
         installer.autostart = true;
+    }
+    if given(&args.cloud_init) {
+        not_yet("--cloud-init");
     }
     installer
 }
@@ -1478,7 +1541,7 @@ fn run_all_parsers(args: &Args, b: &mut Built) {
 /// `installer_detect_distro`.
 fn installer_detect_distro(
     guest: &mut XmlObject,
-    installer: &Installer,
+    installer: &mut Installer,
     osdata: &OsInfoData,
     conn: &Connection,
 ) {
@@ -1494,7 +1557,9 @@ fn installer_detect_distro(
     }
 
     // This also validates the install location
-    let autodistro = installer.detect_distro(conn);
+    let autodistro = installer
+        .detect_distro(conn)
+        .unwrap_or_else(|e| fail(format!("Error validating install location: {e}")));
     if osdata.detect {
         if let Some(d) = autodistro {
             os_set = true;
@@ -1522,7 +1587,7 @@ fn installer_detect_distro(
     let mut fail_msg = format!("{msg}\n\n");
     fail_msg += "This is now a fatal error. Specifying an OS name is required\n\
                  for modern, performant, and secure virtual machine defaults.\n";
-    if installer.cdrom().is_some() {
+    if installer.location().is_some() || installer.cdrom().is_some() {
         fail_msg += "\nIf you expected virt-install to detect an OS name from the\n\
                      install media, you can set a fallback OS name with:\n\
                      \n  --osinfo detect=on,name=OSNAME\n";
@@ -1652,9 +1717,6 @@ fn validate_disks(b: &Built, conn: &Connection) {
 
 /// `build_guest_instance`.
 fn build_guest_instance(args: &mut Args, conn: &Connection, caps: &Capabilities) -> Built {
-    if args.reinstall.is_some() {
-        fail("--reinstall is not implemented yet in this port of virt-install");
-    }
     let installdata = parse_install(args.install.as_deref());
     let osdata = parse_osinfo(args.osinfo.as_deref().or(installdata.os.as_deref()));
 
@@ -1664,19 +1726,25 @@ fn build_guest_instance(args: &mut Args, conn: &Connection, caps: &Capabilities)
         installer: build_installer_placeholder(),
         vol_installs: vec![],
     };
-    build_options_guest(args, conn, caps, &mut b);
+    if let Some(domstr) = args.reinstall.clone() {
+        (_, b.guest, _) = cli::get_domain_and_guest(conn, &domstr);
+    } else {
+        build_options_guest(args, conn, caps, &mut b);
+    }
 
-    b.installer = build_installer(args, conn, &installdata);
+    b.installer = build_installer(args, conn, &b.guest, &installdata);
 
     // Set guest osname, from commandline or detected from media
     guest::set_os_name(&mut b.guest, "generic").unwrap_or_else(|e| fail(e));
-    installer_detect_distro(&mut b.guest, &b.installer, &osdata, conn);
+    installer_detect_distro(&mut b.guest, &mut b.installer, &osdata, conn);
 
-    // We want to fill in --name before we do disk parsing, since
-    // default disk paths are generated based on VM name
-    set_cli_default_name(&mut b.guest, conn, caps);
-    run_all_parsers(args, &mut b);
-    set_cli_defaults(args, &mut b);
+    if args.reinstall.is_none() {
+        // We want to fill in --name before we do disk parsing, since
+        // default disk paths are generated based on VM name
+        set_cli_default_name(&mut b.guest, conn, caps);
+        run_all_parsers(args, &mut b);
+        set_cli_defaults(args, &mut b);
+    }
 
     b.opts = GuestOpts {
         disk_backends: std::mem::take(&mut b.opts.disk_backends),
@@ -1685,12 +1753,18 @@ fn build_guest_instance(args: &mut Args, conn: &Connection, caps: &Capabilities)
     b.installer
         .set_install_defaults(&mut b.guest, &mut b.opts, conn)
         .unwrap_or_else(|e| fail(e));
-    for path in b.installer.get_search_paths() {
+    for path in b
+        .installer
+        .get_search_paths(conn)
+        .unwrap_or_else(|e| fail(e))
+    {
         cli::check_path_search(conn, &path);
     }
 
-    // cli specific disk validation
-    validate_disks(&b, conn);
+    if args.reinstall.is_none() {
+        // cli specific disk validation
+        validate_disks(&b, conn);
+    }
 
     validate_required_options(args, &b.guest, &b.installer);
     show_guest_warnings(args, &b.guest, conn);
