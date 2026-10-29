@@ -24,6 +24,7 @@ pub enum Buttons {
     Ok,
     Close,
     YesNo,
+    OkCancel,
 }
 
 /// `_launch_dialog.fix_text`: truncate at 512 chars, wrap at 80 columns.
@@ -175,6 +176,7 @@ async fn run_dialog_with(
         Buttons::Ok => &[("_OK", true)],
         Buttons::Close => &[("_Close", false)],
         Buttons::YesNo => &[("_No", false), ("_Yes", true)],
+        Buttons::OkCancel => &[("_Cancel", false), ("_OK", true)],
     };
     let mut last = None;
     for (label, affirmative) in labels.iter().copied() {
@@ -304,6 +306,24 @@ pub async fn yes_no(parent: Option<&gtk::Window>, text1: &str, text2: Option<&st
         DialogSpec {
             kind: MessageType::Warning,
             buttons: Buttons::YesNo,
+            text1,
+            text2,
+            title: "",
+            details: None,
+            chktext: None,
+        },
+    )
+    .await
+    .0
+}
+
+/// `vmmErrorDialog.ok_cancel`.
+pub async fn ok_cancel(parent: Option<&gtk::Window>, text1: &str, text2: Option<&str>) -> bool {
+    run_dialog(
+        parent,
+        DialogSpec {
+            kind: MessageType::Warning,
+            buttons: Buttons::OkCancel,
             text1,
             text2,
             title: "",
