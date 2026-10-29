@@ -1,7 +1,11 @@
 //! `vmmAsyncJob` (`asyncjob.py`): runs a job on a worker thread behind
 //! a progress window, pulsing until the job's meter reports a size.
+//! [`run_with_cancel`] adds upstream's `cancel_cb`: a Cancel button,
+//! the warning row a failed cancel shows, and "Cancelling job...".
 
-use std::sync::mpsc;
+use std::cell::Cell;
+use std::rc::Rc;
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use gtk::glib;
@@ -77,6 +81,11 @@ impl Meter {
         let _ = self.tx.send(Msg::Done);
     }
 
+    /// `is_started`.
+    pub fn is_started(&self) -> bool {
+        self.start.is_some()
+    }
+
     fn write(&self) {
         let stage = Some(self.text.clone());
         let Some(size) = self.size else {
@@ -148,10 +157,18 @@ impl JobHandle {
 /// `(error, details)`, as `set_error` takes them.
 pub type JobError = (String, String);
 
+/// `cancel_cb`: what the Cancel button runs, on a worker thread (it
+/// makes a blocking libvirt call). `Ok` is `asyncjob.job_canceled =
+/// True`; `Err` is the summary for `asyncjob.show_warning`.
+pub type CancelCb = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
+
 struct Window {
     win: gtk::Window,
     stage: gtk::Label,
     pbar: gtk::ProgressBar,
+    warning_box: gtk::Box,
+    warning_text: gtk::Label,
+    cancel: gtk::Button,
 }
 
 impl Window {
@@ -182,6 +199,20 @@ impl Window {
         header.append(&image);
         header.append(&pbar_text);
 
+        // `warning-box`: hidden until a cancel fails
+        let warning_icon = gtk::Image::from_icon_name("dialog-warning");
+        warning_icon.set_margin_start(3);
+        warning_icon.set_margin_end(3);
+        let warning_text = gtk::Label::new(Some("some warning"));
+        warning_text.set_width_request(400);
+        warning_text.set_wrap(true);
+        warning_text.set_max_width_chars(40);
+        warning_text.set_hexpand(true);
+        let warning_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        warning_box.append(&warning_icon);
+        warning_box.append(&warning_text);
+        warning_box.set_visible(false);
+
         let stage = gtk::Label::new(Some("Processing..."));
         stage.set_halign(gtk::Align::Start);
         stage.set_margin_start(3);
@@ -192,16 +223,41 @@ impl Window {
         pbar.set_pulse_step(0.1);
         pbar.set_show_text(true);
 
+        // `cancel-async-job`, packed at the end of `hbox1`
+        let cancel = gtk::Button::with_mnemonic("_Cancel");
+        cancel.set_visible(false);
+        let hbox1 = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        hbox1.set_halign(gtk::Align::End);
+        hbox1.append(&cancel);
+
         let vbox = gtk::Box::new(gtk::Orientation::Vertical, 5);
         vbox.set_margin_start(12);
         vbox.set_margin_end(12);
         vbox.set_margin_top(12);
         vbox.set_margin_bottom(12);
         vbox.append(&header);
+        vbox.append(&warning_box);
         vbox.append(&stage);
         vbox.append(&pbar);
+        vbox.append(&hbox1);
         win.set_child(Some(&vbox));
-        Window { win, stage, pbar }
+        Window {
+            win,
+            stage,
+            pbar,
+            warning_box,
+            warning_text,
+            cancel,
+        }
+    }
+
+    /// `show_warning`.
+    fn show_warning(&self, summary: &str) {
+        self.warning_box.set_visible(true);
+        self.warning_text.set_markup(&format!(
+            "<small>{}</small>",
+            glib::markup_escape_text(summary)
+        ));
     }
 }
 
@@ -215,11 +271,35 @@ pub async fn run(
     show_progress: bool,
     work: impl FnOnce(JobHandle) -> Result<(), JobError> + Send + 'static,
 ) -> Option<JobError> {
+    run_with_cancel(parent, title, text, show_progress, None, work).await
+}
+
+/// [`run`] with upstream's `cancel_cb`: the window gets a Cancel
+/// button. Once the cancel succeeded the job's error isn't reported
+/// (`cb_wrapper`: a libvirt error from a cancelled job; every error a
+/// cancellable job here returns is libvirt's).
+pub async fn run_with_cancel(
+    parent: Option<&gtk::Window>,
+    title: &str,
+    text: &str,
+    show_progress: bool,
+    cancel_cb: Option<CancelCb>,
+    work: impl FnOnce(JobHandle) -> Result<(), JobError> + Send + 'static,
+) -> Option<JobError> {
     let (tx, rx) = mpsc::channel();
-    let window = show_progress.then(|| Window::new(parent, title, text));
+    let window = show_progress.then(|| Rc::new(Window::new(parent, title, text)));
+    let job_canceled = Rc::new(Cell::new(false));
+    let finished = Rc::new(Cell::new(false));
+    let cancels: PendingCancels = Rc::default();
     if let Some(w) = &window {
+        w.cancel.set_visible(cancel_cb.is_some());
+        if let Some(cb) = cancel_cb.clone() {
+            connect_cancel(w, cb, &job_canceled, &finished, &cancels);
+        }
         w.win.present();
-        w.win.set_cursor_from_name(Some("progress"));
+        if cancel_cb.is_none() {
+            w.win.set_cursor_from_name(Some("progress"));
+        }
     }
     let handle = JobHandle { tx };
     let job = gtk::gio::spawn_blocking(move || work(handle));
@@ -237,12 +317,18 @@ pub async fn run(
                     let Some(w) = &window else {
                         continue;
                     };
+                    // `_set_stage_text`: a cancelled job keeps saying so
+                    let set_stage = |stage: Option<String>| {
+                        if !job_canceled.get() {
+                            w.stage
+                                .set_text(stage.as_deref().unwrap_or("Processing..."));
+                        }
+                    };
                     match msg {
                         Msg::Pulse { progress, stage } => {
                             pulsing = true;
                             w.pbar.set_text(Some(&progress));
-                            w.stage
-                                .set_text(stage.as_deref().unwrap_or("Processing..."));
+                            set_stage(stage);
                         }
                         Msg::Fraction {
                             frac,
@@ -250,8 +336,7 @@ pub async fn run(
                             stage,
                         } => {
                             pulsing = false;
-                            w.stage
-                                .set_text(stage.as_deref().unwrap_or("Processing..."));
+                            set_stage(stage);
                             w.pbar.set_text(Some(&progress));
                             w.pbar.set_fraction(frac.clamp(0.0, 1.0));
                         }
@@ -266,14 +351,66 @@ pub async fn run(
             }
         }
     };
+    finished.set(true);
+    // Upstream's `_on_cancel` runs `cancel_cb` synchronously, so a job
+    // failing because it was aborted already sees `job_canceled`: let a
+    // cancel still in flight finish before judging the job's error.
+    let pending = cancels.take();
+    for cancel in pending {
+        let _ = cancel.await;
+    }
     if let Some(w) = window {
         w.win.destroy();
     }
     match res {
         Ok(Ok(())) => None,
+        Ok(Err(_)) if cancel_cb.is_some() && job_canceled.get() => None,
         Ok(Err(e)) => Some(e),
         Err(_) => Some(("Worker thread panicked".into(), String::new())),
     }
+}
+
+/// The cancel calls still running when the job ends.
+type PendingCancels = Rc<std::cell::RefCell<Vec<glib::JoinHandle<()>>>>;
+
+/// `_on_cancel`: run `cancel_cb`; on success hide the warning and say
+/// "Cancelling job...", otherwise show why it failed.
+fn connect_cancel(
+    w: &Rc<Window>,
+    cb: CancelCb,
+    job_canceled: &Rc<Cell<bool>>,
+    finished: &Rc<Cell<bool>>,
+    cancels: &PendingCancels,
+) {
+    let weak = Rc::downgrade(w);
+    let job_canceled = job_canceled.clone();
+    let finished = finished.clone();
+    let cancels = cancels.clone();
+    w.cancel.connect_clicked(move |_| {
+        if finished.get() {
+            return;
+        }
+        let (weak, cb, job_canceled) = (weak.clone(), cb.clone(), job_canceled.clone());
+        let cancel = glib::spawn_future_local(async move {
+            let res = gtk::gio::spawn_blocking(move || cb())
+                .await
+                .unwrap_or_else(|_| Err("Worker thread panicked".into()));
+            if res.is_ok() {
+                job_canceled.set(true);
+            }
+            let Some(w) = weak.upgrade() else {
+                return;
+            };
+            match res {
+                Ok(()) => {
+                    w.warning_box.set_visible(false);
+                    w.stage.set_text("Cancelling job...");
+                }
+                Err(summary) => w.show_warning(&summary),
+            }
+        });
+        cancels.borrow_mut().push(cancel);
+    });
 }
 
 /// Waits for whichever finishes first: `job` (`Some`) or `tick`

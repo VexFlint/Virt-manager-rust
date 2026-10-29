@@ -32,6 +32,8 @@ use virtinst_core::domain::cpu::{self, CpuEditContext};
 use virtinst_core::Guest;
 use virtinst_xml::XmlBound;
 
+pub mod migration;
+
 /// One poll's worth of what the UI shows about a domain.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct DomainSnapshot {
