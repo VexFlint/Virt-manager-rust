@@ -861,7 +861,7 @@ impl VmmManager {
     /// `new_vm`: the wizard, on the selected connection.
     fn new_vm(&self) {
         let uri = self.current_conn().map(|c| c.get_uri());
-        createvm::VmmCreateVM::show_instance(&self.window(), uri);
+        createvm::VmmCreateVM::show_instance(Some(&self.window()), uri);
     }
 
     pub fn current_conn(&self) -> Option<VmmConnection> {

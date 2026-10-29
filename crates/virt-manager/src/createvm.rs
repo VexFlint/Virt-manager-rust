@@ -996,8 +996,9 @@ thread_local! {
 }
 
 impl VmmCreateVM {
-    /// `vmmCreateVM.show_instance(parentobj, uri)`.
-    pub fn show_instance(parent: &gtk::Window, uri: Option<String>) {
+    /// `vmmCreateVM.show_instance(parentobj, uri)`; the CLI passes no
+    /// parent.
+    pub fn show_instance(parent: Option<&gtk::Window>, uri: Option<String>) {
         let this = INSTANCE.with(|i| i.borrow_mut().get_or_insert_with(Self::new).clone());
         this.show(parent, uri.as_deref());
     }
@@ -1349,11 +1350,11 @@ impl VmmCreateVM {
 
     // Standard window methods
 
-    fn show(&self, parent: &gtk::Window, uri: Option<&str>) {
+    fn show(&self, parent: Option<&gtk::Window>, uri: Option<&str>) {
         eprintln!("Showing new vm wizard");
         if !self.0.window.is_visible() {
             self.reset_state(uri);
-            self.0.window.set_transient_for(Some(parent));
+            self.0.window.set_transient_for(parent);
             engine::get().increment_window_counter();
         }
         self.0.window.present();
