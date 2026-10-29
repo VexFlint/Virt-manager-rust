@@ -203,6 +203,21 @@ pub fn generate_clone_name(basename: &str, collides: impl Fn(&str) -> bool) -> S
     )
 }
 
+/// `Cloner.generate_clone_disk_path`: [`generate_clone_path`], skipping
+/// paths that already exist on the connection
+/// (`DeviceDisk.path_definitely_exists`).
+pub fn generate_clone_disk_path(
+    conn: &virt::connect::Connect,
+    is_remote: bool,
+    origname: Option<&str>,
+    newname: &str,
+    origpath: Option<&str>,
+) -> Option<String> {
+    generate_clone_path(origname, newname, origpath, |p| {
+        crate::storage::path_definitely_exists(conn, p, is_remote)
+    })
+}
+
 /// `_generate_clone_path`: `foo.img` → `foo-clone.img`, or the new
 /// VM's name when the file is named after the old one.
 pub fn generate_clone_path(
@@ -293,6 +308,16 @@ impl NewDisk {
         match &mut self.storage {
             NewStorage::Managed(v) => Some(v),
             _ => None,
+        }
+    }
+
+    /// `get_parent_pool`: the pool the new volume is created in, or the
+    /// existing storage's; a plain file copy has none.
+    pub fn get_parent_pool(&self) -> Option<&crate::storage::Pool> {
+        match &self.storage {
+            NewStorage::Existing(b) => b.pool.as_ref(),
+            NewStorage::Managed(v) => Some(&v.pool),
+            NewStorage::Local(_) => None,
         }
     }
 
@@ -427,6 +452,8 @@ fn access(path: &str, mode: libc::c_int) -> bool {
 pub struct CloneDiskInfo {
     /// `<target dev>`.
     pub target: Option<String>,
+    /// `<disk device>`: disk, cdrom, floppy or lun.
+    pub device: String,
     disk_type: String,
     read_only: bool,
     shareable: bool,
@@ -498,6 +525,7 @@ impl CloneDiskInfo {
 
         let mut info = CloneDiskInfo {
             target: attr(&["target"], "dev"),
+            device: disk.attribute(doc, "device").unwrap_or("disk").to_string(),
             disk_type,
             read_only: marker("readonly"),
             shareable: marker("shareable"),
@@ -543,8 +571,24 @@ impl CloneDiskInfo {
         self.backend.get_path()
     }
 
-    fn is_empty(&self) -> bool {
+    /// `DeviceDisk.is_empty`: no source path.
+    pub fn is_empty(&self) -> bool {
         self.get_source_path().is_none_or_empty()
+    }
+
+    /// `DeviceDisk.is_cdrom`.
+    pub fn is_cdrom(&self) -> bool {
+        self.device == "cdrom"
+    }
+
+    /// `DeviceDisk.is_floppy`.
+    pub fn is_floppy(&self) -> bool {
+        self.device == "floppy"
+    }
+
+    /// `DeviceDisk.get_size`: the source storage's size in GiB.
+    pub fn get_size(&self) -> f64 {
+        self.backend.get_size()
     }
 
     pub fn is_clone_requested(&self) -> bool {
@@ -753,9 +797,39 @@ fn clear_attr(doc: &mut Document, el: Element, name: &str) {
     }
 }
 
+/// The connection a [`Cloner`] works on: borrowed, as `virt-clone`
+/// holds it, or owned, so the cloner can move from worker thread to
+/// worker thread (the GUI's clone dialog). An owned one is closed with
+/// the cloner.
+enum ClonerConn<'a> {
+    Borrowed(&'a Connection),
+    Owned(Option<Box<Connection>>),
+}
+
+impl std::ops::Deref for ClonerConn<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        match self {
+            ClonerConn::Borrowed(c) => c,
+            ClonerConn::Owned(c) => c.as_deref().expect("only taken on drop"),
+        }
+    }
+}
+
+impl Drop for ClonerConn<'_> {
+    fn drop(&mut self) {
+        if let ClonerConn::Owned(c) = self {
+            if let Some(c) = c.take() {
+                let _ = c.close();
+            }
+        }
+    }
+}
+
 /// The `Cloner` class: a new VM from a shut off source VM's XML.
 pub struct Cloner<'a> {
-    conn: &'a Connection,
+    conn: ClonerConn<'a>,
     src_doc: Document,
     new_doc: Document,
     src_name: String,
@@ -775,11 +849,19 @@ impl<'a> Cloner<'a> {
         src_name: Option<&str>,
         src_xml: Option<&str>,
     ) -> Result<Cloner<'a>, String> {
+        Cloner::init(ClonerConn::Borrowed(conn), src_name, src_xml)
+    }
+
+    fn init(
+        conn: ClonerConn<'a>,
+        src_name: Option<&str>,
+        src_xml: Option<&str>,
+    ) -> Result<Cloner<'a>, String> {
         let src_xml = match src_xml {
             Some(xml) => xml.to_string(),
             None => {
                 let name = src_name.unwrap_or_default();
-                let dom = lookup_vm(conn, name)?;
+                let dom = lookup_vm(&conn, name)?;
                 let state = dom.get_state().map_err(lverr)?.0;
                 if state != virt::sys::VIR_DOMAIN_SHUTOFF {
                     return Err("Domain to clone must be shutoff.".into());
@@ -817,7 +899,7 @@ impl<'a> Cloner<'a> {
         // Collect disk info for every disk to determine if we will
         // default to cloning or not
         for disk in cloner.disk_elements(false) {
-            let info = CloneDiskInfo::from_element(conn, &cloner.src_doc, disk);
+            let info = CloneDiskInfo::from_element(&cloner.conn, &cloner.src_doc, disk);
             if info.is_clone_requested() {
                 log::debug!(
                     "Wants cloning: size={} path={:?}",
@@ -828,9 +910,20 @@ impl<'a> Cloner<'a> {
             cloner.diskinfos.push(info);
         }
         if let Some(nvram) = cloner.os_text(false, "nvram") {
-            cloner.nvram_diskinfo = Some(CloneDiskInfo::for_nvram(conn, &nvram));
+            cloner.nvram_diskinfo = Some(CloneDiskInfo::for_nvram(&cloner.conn, &nvram));
         }
         Ok(cloner)
+    }
+
+    /// [`Cloner::new`] owning `conn`, which it closes when dropped: a
+    /// cloner that isn't tied to a borrow, and so can be built on one
+    /// worker thread and run on another.
+    pub fn new_owned(
+        conn: Connection,
+        src_name: Option<&str>,
+        src_xml: Option<&str>,
+    ) -> Result<Cloner<'static>, String> {
+        Cloner::init(ClonerConn::Owned(Some(Box::new(conn))), src_name, src_xml)
     }
 
     fn doc(&self, new: bool) -> &Document {
@@ -880,7 +973,7 @@ impl<'a> Cloner<'a> {
         if let Some(title) = root.find(&self.new_doc, "title") {
             let _ = title.detach(&mut self.new_doc);
         }
-        let uuid = generate_unused_uuid(self.conn);
+        let uuid = generate_unused_uuid(&self.conn);
         self.set_clone_uuid(&uuid);
 
         for dev in self.device_elements(true, "graphics") {
@@ -909,7 +1002,7 @@ impl<'a> Cloner<'a> {
             if let Some(target) = iface.find(&self.new_doc, "target") {
                 clear_attr(&mut self.new_doc, target, "dev");
             }
-            let mac = generate_unused_mac(self.conn);
+            let mac = generate_unused_mac(&self.conn);
             self.set_iface_mac(iface, &mac);
         }
 
@@ -1032,7 +1125,7 @@ impl<'a> Cloner<'a> {
 
     /// `set_new_path` on disk `idx`.
     pub fn set_disk_new_path(&mut self, idx: usize, path: Option<&str>, sparse: bool) {
-        let conn = self.conn;
+        let conn: &Connection = &self.conn;
         self.diskinfos[idx].set_new_path(conn, path, sparse);
     }
 
@@ -1047,7 +1140,7 @@ impl<'a> Cloner<'a> {
     }
 
     pub fn conn(&self) -> &Connection {
-        self.conn
+        &self.conn
     }
 
     /// `_prepare_serial_files`.
@@ -1106,7 +1199,7 @@ impl<'a> Cloner<'a> {
             // We only run validation if there's some existing nvram we
             // can copy. It's valid for nvram to not exist at VM define
             // time, libvirt will create it for us
-            diskinfo.set_new_path(self.conn, Some(&new_nvram_path), self.sparse);
+            diskinfo.set_new_path(&self.conn, Some(&new_nvram_path), self.sparse);
             diskinfo.raise_error()?;
             if let Some(v) = diskinfo
                 .new_disk
@@ -1140,13 +1233,12 @@ impl<'a> Cloner<'a> {
         for idx in self.nonshare_indexes() {
             if self.diskinfos[idx].new_disk.is_none() {
                 // User didn't set a path, generate one
-                let conn = self.conn.as_connect();
-                let remote = self.conn.uri().is_remote();
-                let newpath = generate_clone_path(
+                let newpath = generate_clone_disk_path(
+                    self.conn.as_connect(),
+                    self.conn.uri().is_remote(),
                     Some(&self.src_name),
                     &new_name,
                     self.diskinfos[idx].get_source_path().as_deref(),
-                    |p| crate::storage::path_definitely_exists(conn, p, remote),
                 );
                 let sparse = self.sparse;
                 self.set_disk_new_path(idx, newpath.as_deref(), sparse);
@@ -1244,7 +1336,7 @@ impl<'a> Cloner<'a> {
         let res = (|| {
             // Replace orig VM if required
             if self.replace {
-                replace_vm(self.conn, &self.new_name())?;
+                replace_vm(&self.conn, &self.new_name())?;
             }
             // Define domain early to catch any xml errors before duping storage
             dom = Some(
@@ -1359,6 +1451,124 @@ mod tests {
             .expect("test:/// driver always opens");
         let _ = std::fs::remove_file(&path);
         conn
+    }
+
+    /// A private test driver with a dir pool holding `orig.img` (2 GiB)
+    /// and `other-clone.img`.
+    fn pool_test_conn(name: &str) -> Connection {
+        let path =
+            std::env::temp_dir().join(format!("virtinst-cloner-{name}-{}.xml", std::process::id()));
+        std::fs::write(
+            &path,
+            "<node><pool type='dir'><name>pool-dir</name>\
+             <uuid>35bb2ad9-388a-cdfe-461a-b8907f6e53fe</uuid>\
+             <capacity unit='GiB'>100</capacity><allocation>0</allocation>\
+             <available unit='GiB'>100</available><source/>\
+             <target><path>/pool-dir</path></target>\
+             <volume type='file'><name>orig.img</name><capacity unit='GiB'>2</capacity>\
+             <allocation>0</allocation><target><format type='raw'/></target></volume>\
+             <volume type='file'><name>other-clone.img</name><capacity>1000</capacity>\
+             <allocation>0</allocation></volume>\
+             </pool></node>",
+        )
+        .unwrap();
+        let conn = Connection::open(&format!("test://{}", path.display()))
+            .expect("test:/// driver always opens");
+        let _ = std::fs::remove_file(&path);
+        conn
+    }
+
+    const POOL_FIXTURE: &str = "<domain type='test'><name>orig</name>\
+         <uuid>12345678-1234-1234-1234-123456789abc</uuid><memory>8192</memory>\
+         <os><type>hvm</type></os><devices>\
+         <disk type='file' device='disk'><source file='/pool-dir/orig.img'/>\
+         <target dev='vda' bus='virtio'/></disk>\
+         <disk type='file' device='cdrom'><target dev='hdc' bus='ide'/><readonly/></disk>\
+         <disk type='file' device='floppy'><source file='/nonexistent/floppy.img'/>\
+         <target dev='fda' bus='fdc'/></disk>\
+         </devices></domain>";
+
+    /// What the GUI's storage list shows per disk: device kind, size,
+    /// emptiness, and why a disk is shared or not cloneable.
+    #[test]
+    fn diskinfo_reports_device_size_and_messages() {
+        let conn = pool_test_conn("diskinfo");
+        let cloner = Cloner::new(&conn, None, Some(POOL_FIXTURE)).unwrap();
+        let [disk, cdrom, floppy] = cloner.diskinfos() else {
+            panic!("three disks");
+        };
+        assert_eq!(disk.device, "disk");
+        assert!(!disk.is_cdrom() && !disk.is_floppy() && !disk.is_empty());
+        assert_eq!(disk.get_size(), 2.0);
+        assert!(disk.is_clone_requested());
+        assert_eq!(disk.get_share_msg(), None);
+        assert_eq!(disk.get_cloneable_msg(), None);
+
+        assert!(cdrom.is_cdrom() && cdrom.is_empty());
+        assert!(cdrom.is_share_requested());
+        assert_eq!(cdrom.get_share_msg(), Some("No storage to clone."));
+
+        assert!(floppy.is_floppy());
+        assert!(floppy.is_clone_requested());
+        assert_eq!(
+            floppy.get_cloneable_msg().as_deref(),
+            Some("Disk path '/nonexistent/floppy.img' does not exist.")
+        );
+    }
+
+    #[test]
+    fn clone_disk_path_skips_existing_volumes() {
+        let conn = pool_test_conn("diskpath");
+        let path = |orig: &str| {
+            generate_clone_disk_path(conn.as_connect(), false, Some("orig"), "new", Some(orig))
+        };
+        assert_eq!(
+            path("/pool-dir/orig.img").as_deref(),
+            Some("/pool-dir/new.img")
+        );
+        assert_eq!(
+            path("/pool-dir/other.img").as_deref(),
+            Some("/pool-dir/other-clone-1.img")
+        );
+        assert_eq!(path("/pool-dir/x").as_deref(), Some("/pool-dir/x-clone"));
+    }
+
+    /// `new_owned`: a cloner built here, run on another thread, against
+    /// its own reference on the connection; the volume is cloned with
+    /// `createXMLFrom` into the source volume's pool.
+    #[test]
+    fn owned_cloner_clones_a_volume_on_another_thread() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Cloner<'static>>();
+
+        let base = pool_test_conn("owned");
+        let owned = Connection::from_connect(base.as_connect().clone(), "test:///owned");
+        let mut cloner = Cloner::new_owned(owned, None, Some(POOL_FIXTURE)).unwrap();
+        // The floppy's storage doesn't exist: share it.
+        cloner.diskinfos_mut()[2].set_share_requested();
+        cloner.prepare().unwrap();
+        assert_eq!(cloner.new_name(), "orig-clone");
+        let new_disk = cloner.diskinfos()[0].new_disk.as_ref().unwrap();
+        assert_eq!(new_disk.get_source_path(), Some("/pool-dir/orig-clone.img"));
+        assert_eq!(
+            new_disk.get_parent_pool().map(|p| p.xml.name.as_str()),
+            Some("pool-dir")
+        );
+        assert_eq!(cloner.nonshare_indexes(), vec![0]);
+
+        std::thread::spawn(move || cloner.start_duplicate(&mut crate::progress::make_meter(true)))
+            .join()
+            .unwrap()
+            .unwrap();
+        let conn = base.as_connect();
+        assert!(VirtDomain::lookup_by_name(conn, "orig-clone").is_ok());
+        assert!(
+            virt::storage_vol::StorageVol::lookup_by_path(conn, "/pool-dir/orig-clone.img").is_ok()
+        );
+        assert!(
+            base.is_alive().unwrap(),
+            "the cloner closed only its own reference"
+        );
     }
 
     /// A MAC only in a running VM's live XML (not in its persistent
