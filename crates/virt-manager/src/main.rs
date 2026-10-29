@@ -16,6 +16,7 @@ mod about;
 mod addhardware;
 mod addstorage;
 mod asyncjob;
+mod clone;
 mod config;
 mod connection;
 mod connevents;

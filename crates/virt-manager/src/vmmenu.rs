@@ -6,8 +6,6 @@
 //! GTK4 menus are `GMenuModel`s over actions, so the menu items map to
 //! actions in a `vm` action group, enabled/disabled by
 //! [`update_widget_states`] from the same state map upstream uses.
-//! Clone, Migrate and Delete have their actions but stay disabled
-//! until their windows are ported.
 
 use std::rc::Rc;
 
@@ -20,9 +18,6 @@ use crate::engine;
 use crate::error;
 
 pub const GROUP: &str = "vm";
-
-/// Not-yet-ported windows: their actions exist but never enable.
-const UNPORTED: &[&str] = &["clone"];
 
 /// `VMShutdownMenu`.
 pub fn shutdown_menu() -> gio::Menu {
@@ -102,6 +97,7 @@ pub fn create_actions(
                     "destroy" => destroy(&parent, &vm).await,
                     "save" => save(&parent, &vm).await,
                     "show" => crate::vmwindow::VmmVMWindow::show_instance(&vm),
+                    "clone" => crate::clone::VmmCloneVM::show_instance(&parent, &vm).await,
                     "migrate" => crate::migrate::VmmMigrateDialog::show_instance(&parent, &vm),
                     "delete" => crate::delete::DeleteDialog::show(
                         Some(&parent),
@@ -133,12 +129,10 @@ pub fn update_widget_states(group: &gio::SimpleActionGroup, vm: Option<&VmmDomai
         ("show", vm.is_some()),
         ("migrate", st(VmmDomain::is_stoppable)),
         ("delete", vm.is_some()),
+        ("clone", st(VmmDomain::is_cloneable)),
     ];
     for (name, enabled) in statemap {
         set_enabled(group, name, enabled);
-    }
-    for name in UNPORTED {
-        set_enabled(group, name, false);
     }
 }
 

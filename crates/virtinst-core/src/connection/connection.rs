@@ -99,6 +99,17 @@ impl Connection {
         })
     }
 
+    /// Wraps an already open connection reference, reporting `uri` as
+    /// is — how virt-manager hands its own open connection to virtinst
+    /// (upstream's `vmmConnection.get_backend()`). The reference is
+    /// this `Connection`'s: [`Connection::close`] releases it.
+    pub fn from_connect(inner: Connect, uri: &str) -> Connection {
+        Connection {
+            inner,
+            uri: Uri::parse(uri),
+        }
+    }
+
     /// The URI libvirt reports for the open connection (`getURI`),
     /// never faked.
     pub fn real_uri(&self) -> Result<String, Error> {
@@ -195,6 +206,19 @@ mod tests {
                 .expect("still a real, live test:// connection"),
             "the real libvirt call used the real uri, not the faked one"
         );
+    }
+
+    /// `from_connect` takes its own reference: closing the wrapper
+    /// leaves the original connection open.
+    #[test]
+    fn from_connect_wraps_its_own_reference() {
+        let mut orig =
+            Connect::open(Some("test:///default")).expect("test:/// driver always opens");
+        let conn = Connection::from_connect(orig.clone(), "test:///default");
+        assert_eq!(conn.uri().scheme, "test");
+        conn.close().expect("closing the extra reference succeeds");
+        assert!(orig.is_alive().expect("the original is still open"));
+        assert_eq!(orig.close().expect("closing the original succeeds"), 0);
     }
 
     #[test]
