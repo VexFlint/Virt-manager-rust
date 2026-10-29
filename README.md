@@ -53,6 +53,12 @@ recorded before writing code, not assumed. See
 linked tickets in [`.scratch/rust-conversion/issues/`](.scratch/rust-conversion/issues/)
 for the full reasoning behind each one.
 
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) (build, tests, PRs),
+[`AGENTS.md`](AGENTS.md) (project rules, also read by AI agents) and
+[`docs/ROADMAP.md`](docs/ROADMAP.md) (what's left and how to claim an item).
+
 ## License
 
 GPL-2.0-or-later, matching upstream. See [`LICENSE`](LICENSE).
