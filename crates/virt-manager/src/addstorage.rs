@@ -523,7 +523,9 @@ pub(crate) fn get_default_path(
 }
 
 /// Blocking: `get_default_path`, `set_source_path` (`manage_path`) and,
-/// for storage that doesn't exist yet, `build_vol_install`.
+/// for storage that doesn't exist yet (`wants_storage_creation`),
+/// `build_vol_install`. The volume is validated later, by
+/// [`validate_disk`].
 pub(crate) fn plan_disk(
     conn: &virt::connect::Connect,
     req: &DiskRequest,
@@ -556,8 +558,19 @@ pub(crate) fn plan_disk(
             vol_install: None,
         });
     }
-    if managed.pool.is_none() && req.is_local && std::path::Path::new(&managed.path).exists() {
-        let props = crate::domain::path_props(conn, &managed.path, req.is_local);
+    // `StorageBackend.exists()`: on a remote connection, a path we
+    // don't auto-manage (`/dev/sdX`) counts as existing
+    let backend = virtinst_core::diskbackend::StorageBackend::new(
+        Some(managed.path.clone()),
+        None,
+        managed.pool,
+        !req.is_local,
+    );
+    if backend.exists() {
+        let props = virtinst_core::devices::disk::PathProps {
+            dev_type: backend.get_dev_type(),
+            format: backend.get_driver_type(),
+        };
         return Ok(DiskPlan {
             path: Some(managed.path),
             props: Some(props),
@@ -569,7 +582,7 @@ pub(crate) fn plan_disk(
     // allocate the disk image. Otherwise use sparse
     let sparse = req.fmt.as_deref() != Some("raw");
     let volname = managed.path.rsplit('/').next().unwrap_or_default();
-    let pool = managed.pool.as_ref().map(|p| &p.xml);
+    let pool = backend.pool.as_ref().map(|p| &p.xml);
     let mut vol = storage::VolInstall::new(volname, pool, req.size, sparse, None)?;
     if vol.supports_format() {
         glib::g_debug!(
@@ -580,13 +593,42 @@ pub(crate) fn plan_disk(
         );
         vol.format = req.fmt.clone().or(vol.format);
     }
-    // `DeviceDisk.validate`: the volume's name and size
-    vol.validate(conn)?;
     Ok(DiskPlan {
         path: Some(managed.path),
         props: Some(vol.path_props()),
         vol_install: Some(vol),
     })
+}
+
+/// Blocking `DeviceDisk.validate`, past `validate_device`'s empty path
+/// check: the volume to create is validated (its name and size,
+/// `ManagedStorageCreator.validate`); a path from the XML tab
+/// (`set_backend_for_existing_path`) has to exist; an empty disk whose
+/// `<source pool= volume=>` didn't resolve fails with that error.
+pub(crate) fn validate_disk(
+    conn: &virt::connect::Connect,
+    vol_install: Option<&virtinst_core::storage::VolInstall>,
+    existing_path: Option<&str>,
+    source_volume_err: Option<&str>,
+    remote: bool,
+) -> Result<(), String> {
+    if let Some(vol) = vol_install {
+        return vol.validate(conn);
+    }
+    if let Some(path) = existing_path {
+        let backend =
+            virtinst_core::diskbackend::StorageBackend::for_path(conn, Some(path), remote)?;
+        if !backend.exists() {
+            return Err(format!(
+                "Must specify storage creation parameters for non-existent path '{path}'."
+            ));
+        }
+        return Ok(());
+    }
+    match source_volume_err {
+        Some(e) => Err(e.to_string()),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -597,5 +639,50 @@ mod tests {
     fn host_space() {
         assert_eq!(pretty_storage(-1.0), "Unknown GiB");
         assert_eq!(pretty_storage(12.345), "12.3 GiB");
+    }
+
+    /// `StorageBackend.exists()` and `DeviceDisk.validate` against the
+    /// test driver, with `/dev` paths so no pool gets auto-created.
+    #[test]
+    fn plan_and_validate_disk() {
+        let mut conn = virt::connect::Connect::open(Some("test:///default")).unwrap();
+        let req = |path: &str, is_local: bool| DiskRequest {
+            vmname: "vm".into(),
+            is_default_storage: false,
+            entry_path: path.into(),
+            size: 1.0,
+            fmt: Some("qcow2".into()),
+            collide_paths: vec![],
+            is_session: false,
+            is_local,
+        };
+        // Remote: a device path we don't auto-manage is taken as is
+        let plan = plan_disk(&conn, &req("/dev/sdzz", false)).unwrap();
+        assert_eq!(plan.path.as_deref(), Some("/dev/sdzz"));
+        assert!(plan.vol_install.is_none());
+        assert_eq!(plan.props.unwrap().dev_type, "block");
+        // Local: it has to exist, or be in a pool
+        assert_eq!(
+            plan_disk(&conn, &req("/dev/sdzz", true)).err().unwrap(),
+            "Don't know how to create storage for path 'sdzz'. Use libvirt APIs to \
+             manage the parent directory as a pool first."
+        );
+        assert!(plan_disk(&conn, &req("/dev/null", true))
+            .unwrap()
+            .vol_install
+            .is_none());
+
+        assert!(validate_disk(&conn, None, Some("/dev/null"), None, false).is_ok());
+        assert!(validate_disk(&conn, None, Some("/dev/sdzz"), None, true).is_ok());
+        assert_eq!(
+            validate_disk(&conn, None, Some("/dev/sdzz"), None, false).unwrap_err(),
+            "Must specify storage creation parameters for non-existent path '/dev/sdzz'."
+        );
+        assert_eq!(
+            validate_disk(&conn, None, None, Some("no pool"), false).unwrap_err(),
+            "no pool"
+        );
+        assert!(validate_disk(&conn, None, None, None, false).is_ok());
+        conn.close().unwrap();
     }
 }

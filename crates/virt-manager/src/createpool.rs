@@ -1,5 +1,5 @@
 //! `createpool.py` (`vmmCreatePool`): the "Add a New Storage Pool"
-//! wizard, with the fields each pool type takes.
+//! wizard, with the fields each pool type takes and the XML tab.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -12,6 +12,7 @@ use crate::asyncjob;
 use crate::connection::VmmConnection;
 use crate::devpages::{EntryCombo, SimpleCombo};
 use crate::error;
+use crate::xmleditor::XmlEditor;
 
 /// A grid row's label and widgets, hidden together
 /// (`uiutil.set_grid_row_visible`).
@@ -39,6 +40,7 @@ fn row_label(text: &str, widget: &impl IsA<gtk::Widget>) -> gtk::Label {
 pub struct Inner {
     conn: VmmConnection,
     window: gtk::Window,
+    xmleditor: XmlEditor,
     pool_name: gtk::Entry,
     pool_type: SimpleCombo,
     pool_target_path: gtk::Entry,
@@ -67,6 +69,8 @@ impl CreatePool {
         let window = gtk::Window::builder()
             .title("Add a New Storage Pool")
             .hide_on_close(true)
+            .width_request(400)
+            .height_request(400)
             .build();
 
         // header
@@ -118,7 +122,9 @@ impl CreatePool {
         iqn_box.append(&pool_iqn_chk);
         iqn_box.append(&pool_iqn);
 
+        // pool-details
         let grid = gtk::Grid::new();
+        grid.set_valign(gtk::Align::Start);
         grid.set_row_spacing(4);
         grid.set_column_spacing(6);
         grid.attach(&row_label("_Name:", &pool_name), 0, 0, 1, 1);
@@ -163,7 +169,10 @@ impl CreatePool {
         vbox2.set_margin_end(12);
         vbox2.set_margin_top(12);
         vbox2.set_margin_bottom(12);
-        vbox2.append(&grid);
+        // `vmmXMLEditor(..., pool-details-align, pool-details)`
+        let xmleditor = XmlEditor::new(&grid);
+        xmleditor.widget().set_vexpand(true);
+        vbox2.append(xmleditor.widget());
         vbox2.append(&buttons);
         let vbox1 = gtk::Box::new(gtk::Orientation::Vertical, 0);
         vbox1.append(&header);
@@ -177,6 +186,7 @@ impl CreatePool {
         let this = CreatePool(Rc::new(Inner {
             conn: conn.clone(),
             window,
+            xmleditor,
             target_row: row(
                 &target_label,
                 &[
@@ -243,6 +253,8 @@ impl CreatePool {
             t.0.pool_iqn.set_sensitive(t.0.pool_iqn_chk.is_active());
         });
         this.0.pool_iqn_chk.connect_toggled(move |_| cb());
+        let cb = with(CreatePool::xmleditor_xml_requested);
+        this.0.xmleditor.connect_xml_requested(cb);
 
         let esc = gtk::EventControllerKey::new();
         let cb = with(CreatePool::close);
@@ -280,6 +292,8 @@ impl CreatePool {
     /// `_reset_state`.
     async fn reset_state(&self) {
         let i = &self.0;
+        i.xmleditor.reset_state();
+
         i.pool_name.set_text("");
         i.pool_name.grab_focus();
         i.pool_target_path.set_text("");
@@ -430,8 +444,8 @@ impl CreatePool {
         text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
     }
 
-    /// `_build_xmlobj_from_ui`.
-    fn build_xmlobj(&self) -> NewPool {
+    /// `_build_xmlobj_from_ui`'s fields.
+    fn build_xmlobj_from_ui(&self) -> NewPool {
         let i = &self.0;
         let mut pool = self.make_stub_pool();
         pool.target_path = Self::visible_text(
@@ -449,21 +463,56 @@ impl CreatePool {
         pool
     }
 
+    /// `_build_xmlobj`: the pool's XML, from the fields, or the XML tab
+    /// when it's showing and asked for. `None` once the error is shown.
+    async fn build_xmlobj(&self, check_xmleditor: bool) -> Option<String> {
+        let res = self.build_xmlobj_from_ui().build_xmlobj().and_then(|obj| {
+            if check_xmleditor && self.0.xmleditor.is_xml_selected() {
+                // `_build_xmlobj_from_xmleditor`
+                let xml = self.0.xmleditor.get_xml();
+                eprintln!("Using XML from xmleditor:\n{xml}");
+                return storage::parse_pool(&xml);
+            }
+            Ok(obj)
+        });
+        match res {
+            Ok(obj) => Some(obj.get_xml()),
+            Err(e) => {
+                error::show_err(
+                    Some(&self.0.window),
+                    &format!("Error building XML: {e}"),
+                    None,
+                    "",
+                )
+                .await;
+                None
+            }
+        }
+    }
+
     /// `_finish`.
     async fn finish(&self) {
         let i = &self.0;
-        let pool = self.build_xmlobj();
+        let Some(xml) = self.build_xmlobj(true).await else {
+            return;
+        };
         let Some(handle) = i.conn.handle() else {
             return;
         };
         let session = i.conn.is_qemu_unprivileged();
+        // `_validate`: the pool's name, type and XML with the defaults
         let validated = gio::spawn_blocking(move || {
-            let mut pool = pool;
-            pool.validate(handle.connect(), session).map(|_| pool)
+            let mut pool = storage::parse_pool(&xml)?;
+            storage::validate_pool(handle.connect(), &mut pool, session)?;
+            Ok::<_, String>((
+                pool.get_str("name").unwrap_or_default(),
+                pool.get_str("type").unwrap_or_default(),
+                pool.get_xml(),
+            ))
         })
         .await
         .unwrap_or_else(|_| Err("Worker thread panicked".into()));
-        let pool = match validated {
+        let (name, pool_type, xml) = match validated {
             Ok(p) => p,
             Err(e) => {
                 error::show_err(
@@ -478,16 +527,12 @@ impl CreatePool {
         };
         // `_get_build_default`: building these simply entails creating
         // a directory
-        let build = matches!(pool.pool_type.as_str(), "dir" | "fs" | "netfs");
+        let build = matches!(pool_type.as_str(), "dir" | "fs" | "netfs");
 
         let Some(handle) = i.conn.handle() else {
             return;
         };
-        eprintln!(
-            "Creating storage pool '{}' with xml:\n{}",
-            pool.name,
-            pool.to_xml()
-        );
+        eprintln!("Creating storage pool '{name}' with xml:\n{xml}");
         let err = asyncjob::run(
             Some(&i.window),
             "Creating storage pool...",
@@ -495,8 +540,7 @@ impl CreatePool {
             true,
             move |_job| {
                 eprintln!("Starting background pool creation.");
-                pool.install(handle.connect(), build)
-                    .map_err(|e| (e.clone(), e))?;
+                storage::install_pool(handle.connect(), &xml, build).map_err(|e| (e.clone(), e))?;
                 eprintln!("Pool creation succeeded");
                 Ok(())
             },
@@ -516,6 +560,15 @@ impl CreatePool {
             cb();
         }
         self.close();
+    }
+
+    /// `_xmleditor_xml_requested_cb`.
+    fn xmleditor_xml_requested(&self) {
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let xml = this.build_xmlobj(false).await;
+            this.0.xmleditor.set_xml(xml.as_deref().unwrap_or(""));
+        });
     }
 
     /// `_browse_source_cb`.

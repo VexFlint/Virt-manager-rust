@@ -1,6 +1,6 @@
 //! `hoststorage.py` (`vmmHostStorage`): the storage pool list, the
-//! selected pool's details and its volumes. The storage browser and
-//! the Connection Details window (`host.rs`) embed it.
+//! selected pool's details, its XML tab and its volumes. The storage
+//! browser and the Connection Details window (`host.rs`) embed it.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -13,12 +13,14 @@ use crate::connection::VmmConnection;
 use crate::createpool::CreatePool;
 use crate::createvol::CreateVolume;
 use crate::error;
+use crate::xmleditor::XmlEditor;
 
 /// `EDIT_POOL_IDS`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PoolEdit {
     Name,
     Autostart,
+    Xml,
 }
 
 /// A pool row: `[pool object, label, pool.is_active(), percent string]`.
@@ -27,6 +29,8 @@ pub struct PoolRow {
     pub xml: PoolXml,
     pub active: bool,
     pub autostart: bool,
+    /// `XMLDesc(0)`, for the XML tab.
+    pub xml_desc: String,
 }
 
 impl PoolRow {
@@ -70,11 +74,12 @@ async fn fetch_pools(conn: &VmmConnection) -> Vec<PoolRow> {
         pools
             .iter()
             .filter_map(|p| {
-                let xml = PoolXml::parse(&p.get_xml_desc(0).ok()?)?;
+                let xml_desc = p.get_xml_desc(0).ok()?;
                 Some(PoolRow {
-                    xml,
+                    xml: PoolXml::parse(&xml_desc)?,
                     active: p.is_active().unwrap_or(false),
                     autostart: p.get_autostart().unwrap_or(false),
+                    xml_desc,
                 })
             })
             .collect()
@@ -183,6 +188,7 @@ pub struct Inner {
     pending_select: RefCell<Option<String>>,
     pages: gtk::Stack,
     error_label: gtk::Label,
+    xmleditor: XmlEditor,
     pool_details: gtk::Box,
     pub pool_name_label: gtk::Label,
     pub pool_name_entry: gtk::Entry,
@@ -379,11 +385,17 @@ impl HostStorage {
         vol_menu.set_halign(gtk::Align::Start);
         vol_menu.set_parent(&vol_list);
 
+        // `vmmXMLEditor(..., pool-details-align, pool-details)`
+        let xmleditor = XmlEditor::new(&pool_details);
+        let pool_details_align = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        xmleditor.widget().set_hexpand(true);
+        pool_details_align.append(xmleditor.widget());
+
         // storage-pages: the details, or an error
         let error_label = gtk::Label::new(Some("some error here"));
         error_label.update_property(&[gtk::accessible::Property::Label("pool-error-label")]);
         let pages = gtk::Stack::new();
-        pages.add_named(&pool_details, Some("details"));
+        pages.add_named(&pool_details_align, Some("details"));
         pages.add_named(&error_label, Some("error"));
 
         let pane = gtk::Paned::new(gtk::Orientation::Horizontal);
@@ -421,6 +433,7 @@ impl HostStorage {
             pending_select: RefCell::default(),
             pages,
             error_label,
+            xmleditor,
             pool_details,
             pool_name_label,
             pool_name_entry,
@@ -547,6 +560,15 @@ impl HostStorage {
         self.pool_name_entry.connect_changed(move |_| cb());
         let cb = self.with(|t| t.enable_pool_apply(PoolEdit::Autostart));
         self.pool_autostart.connect_toggled(move |_| cb());
+
+        let cb = self.with(|t| t.enable_pool_apply(PoolEdit::Xml));
+        self.xmleditor.connect_changed(cb);
+        // `_xmleditor_xml_requested_cb`/`_xmleditor_xml_reset_cb`:
+        // refetch, so the XML tab gets the pool's current XML.
+        let cb = self.with(HostStorage::refresh_page);
+        self.xmleditor.connect_xml_requested(cb);
+        let cb = self.with(HostStorage::refresh_page);
+        self.xmleditor.connect_xml_reset(cb);
 
         let cb = self.with(HostStorage::vol_selected);
         self.vol_selection
@@ -721,6 +743,17 @@ impl HostStorage {
             self.vol_add.set_sensitive(false);
             self.vol_add
                 .set_tooltip_text(Some("Pool does not support volume creation"));
+        }
+
+        // `set_xml_from_libvirtobject`: only while the XML tab shows
+        if self.xmleditor.is_xml_selected() {
+            match storage::pool_xml_to_define(&pool.xml_desc) {
+                Ok(xml) => self.xmleditor.set_xml(&xml),
+                Err(e) => {
+                    eprintln!("{e}");
+                    self.set_error_page(&format!("Error selecting pool: {e}"));
+                }
+            }
         }
     }
 
@@ -1044,6 +1077,7 @@ impl HostStorage {
         let edits = self.active_edits.borrow().clone();
         let autostart = self.pool_autostart.is_active();
         let newname = self.pool_name_entry.text().to_string();
+        let newxml = self.xmleditor.get_xml();
         let edits_renamed = edits.contains(&PoolEdit::Name);
         let renamed_to = newname.clone();
         eprintln!("Applying changes for pool '{}'", pool.name());
@@ -1053,6 +1087,12 @@ impl HostStorage {
             }
             if edits.contains(&PoolEdit::Name) {
                 storage::rename_pool(conn, p, &newname)?;
+            }
+            if edits.contains(&PoolEdit::Xml) {
+                // `define_xml`
+                eprintln!("Redefining pool with XML:\n{newxml}");
+                virt::storage_pool::StoragePool::define_xml(conn, &newxml, 0)
+                    .map_err(libvirt_err)?;
             }
             Ok(())
         })
@@ -1084,11 +1124,13 @@ impl HostStorage {
             edits.push(edit);
         }
         self.pool_apply.set_sensitive(true);
+        self.xmleditor.set_details_changed(true);
     }
 
     fn disable_pool_apply(&self) {
         self.active_edits.borrow_mut().clear();
         self.pool_apply.set_sensitive(false);
+        self.xmleditor.set_details_changed(false);
     }
 
     /// `_confirm_changes`.

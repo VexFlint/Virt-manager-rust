@@ -10,6 +10,7 @@ use virt::storage_vol::StorageVol;
 use virt::sys;
 
 use crate::devices::disk::PathProps;
+use crate::xmlbuilder::{child, prop, Kind, Value, XmlClass, XmlObject};
 
 /// The parts of a pool's XML these helpers read.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -706,14 +707,7 @@ impl VolInstall {
     /// `_detect_backing_store_format`: the format of the volume at
     /// `backing_store`, when it's a file volume.
     fn detect_backing_store_format(&self, conn: &Connect) -> Option<String> {
-        let path = self.backing_store.as_deref()?;
-        let managed = manage_path(conn, path).ok()?;
-        let vol = managed.vol?;
-        let pool = managed.pool?;
-        if pool.xml.get_disk_type() != "file" {
-            return None;
-        }
-        vol_path_props(&vol).format
+        detect_backing_store_format(conn, self.backing_store.as_deref()?)
     }
 
     /// The disk's view of the volume once made.
@@ -904,34 +898,7 @@ impl NewPool {
     /// `install(create=True, build=build)` then autostart: on a
     /// failure past the define, the pool is undefined again.
     pub fn install(&self, conn: &Connect, build: bool) -> Result<(), String> {
-        let pool = StoragePool::define_xml(conn, &self.to_xml(), 0)
-            .map_err(|e| format!("Could not define storage pool: {e}"))?;
-        let mut res = Ok(());
-        if build {
-            res = pool
-                .build(sys::VIR_STORAGE_POOL_BUILD_NEW)
-                .map(|_| ())
-                .map_err(|e| format!("Could not build storage pool: {e}"));
-        }
-        if res.is_ok() {
-            res = pool
-                .create(0)
-                .map(|_| ())
-                .map_err(|e| format!("Could not start storage pool: {e}"));
-        }
-        if res.is_ok() {
-            res = pool
-                .set_autostart(true)
-                .map(|_| ())
-                .map_err(|e| format!("Could not set pool autostart flag: {e}"));
-        }
-        if res.is_err() {
-            // Try and clean up the leftover pool
-            if let Err(e) = pool.undefine() {
-                eprintln!("Error cleaning up pool after failure: {e}");
-            }
-        }
-        res
+        install_pool(conn, &self.to_xml(), build)
     }
 }
 
@@ -1121,6 +1088,423 @@ fn path_in_use_by_resolving(
     ret
 }
 
+// ---------------------------------------------------------------------
+// The XMLBuilder classes (`StoragePool`, `StorageVolume`): the XML the
+// pool and volume wizards build and their XML tabs edit, and the pool
+// details' XML tab
+// ---------------------------------------------------------------------
+
+/// `_StoragePermissions`.
+pub static STORAGE_PERMISSIONS: XmlClass = XmlClass {
+    xml_name: "permissions",
+    props: &[
+        prop("mode", "./mode", Kind::Str),
+        prop("owner", "./owner", Kind::Str),
+        prop("group", "./group", Kind::Str),
+        prop("label", "./label", Kind::Str),
+    ],
+    children: &[],
+    prop_order: &["mode", "owner", "group", "label"],
+};
+
+/// `_Host`.
+pub static STORAGE_POOL_HOST: XmlClass = XmlClass {
+    xml_name: "host",
+    props: &[
+        prop("name", "./@name", Kind::Str),
+        prop("port", "./@port", Kind::Int),
+    ],
+    children: &[],
+    prop_order: &["name", "port"],
+};
+
+/// `StoragePool`.
+pub static STORAGE_POOL: XmlClass = XmlClass {
+    xml_name: "pool",
+    props: &[
+        prop("name", "./name", Kind::Str),
+        prop("_source_dir", "./source/dir/@path", Kind::Str),
+        prop("_source_adapter", "./source/adapter/@name", Kind::Str),
+        prop("_source_device", "./source/device/@path", Kind::Str),
+        prop("type", "./@type", Kind::Str),
+        prop("uuid", "./uuid", Kind::Str),
+        prop("capacity", "./capacity", Kind::Int),
+        prop("allocation", "./allocation", Kind::Int),
+        prop("available", "./available", Kind::Int),
+        prop("format", "./source/format/@type", Kind::Str),
+        prop("iqn", "./source/initiator/iqn/@name", Kind::Str),
+        prop("source_name", "./source/name", Kind::Str),
+        prop("auth_type", "./source/auth/@type", Kind::Str),
+        prop("auth_username", "./source/auth/@username", Kind::Str),
+        prop("auth_secret_uuid", "./source/auth/secret/@uuid", Kind::Str),
+        prop("target_path", "./target/path", Kind::Str),
+    ],
+    children: &[
+        child("permissions", &STORAGE_PERMISSIONS, "./target", true),
+        child("hosts", &STORAGE_POOL_HOST, "./source", false),
+    ],
+    prop_order: &[
+        "name",
+        "type",
+        "uuid",
+        "capacity",
+        "allocation",
+        "available",
+        "format",
+        "hosts",
+        "_source_dir",
+        "_source_adapter",
+        "_source_device",
+        "source_name",
+        "target_path",
+        "permissions",
+        "auth_type",
+        "auth_username",
+        "auth_secret_uuid",
+    ],
+};
+
+/// `StorageVolume`.
+pub static STORAGE_VOLUME: XmlClass = XmlClass {
+    xml_name: "volume",
+    props: &[
+        prop("name", "./name", Kind::Str),
+        prop("type", "./@type", Kind::Str),
+        prop("key", "./key", Kind::Str),
+        prop("capacity", "./capacity", Kind::Int),
+        prop("allocation", "./allocation", Kind::Int),
+        prop("format", "./target/format/@type", Kind::Str),
+        prop("target_path", "./target/path", Kind::Str),
+        prop("backing_store", "./backingStore/path", Kind::Str),
+        prop("backing_format", "./backingStore/format/@type", Kind::Str),
+        prop(
+            "lazy_refcounts",
+            "./target/features/lazy_refcounts",
+            Kind::Bool,
+        ),
+    ],
+    children: &[child("permissions", &STORAGE_PERMISSIONS, "./target", true)],
+    prop_order: &[
+        "name",
+        "key",
+        "capacity",
+        "allocation",
+        "format",
+        "target_path",
+        "permissions",
+    ],
+};
+
+fn sval(s: impl Into<String>) -> Option<Value> {
+    Some(Value::Str(s.into()))
+}
+
+/// A property's string value, `None` when unset or empty (Python's
+/// falsy `""`).
+fn str_prop(obj: &XmlObject, name: &str) -> Option<String> {
+    obj.get_str(name).filter(|s| !s.is_empty())
+}
+
+/// An `is_int` property, 0 when unset; an unparsable value is
+/// Python's `int()` error.
+fn int_prop(obj: &XmlObject, name: &str) -> Result<i128, String> {
+    match obj.get(name) {
+        Some(Value::Int(i)) => Ok(i128::from(i)),
+        Some(Value::Str(s)) => crate::xmlbuilder::py_int(&s).map(i128::from),
+        _ => Ok(0),
+    }
+}
+
+impl NewPool {
+    /// `_build_xmlobj_from_ui`'s `StoragePool`: the stub's type and
+    /// name, then the fields the wizard filled in.
+    pub fn build_xmlobj(&self) -> Result<XmlObject, String> {
+        let mut pool = XmlObject::new(&STORAGE_POOL);
+        // `_make_stub_pool`
+        pool.set("type", sval(self.pool_type.clone()))?;
+        pool.set("name", sval(self.name.clone()))?;
+
+        pool.set("target_path", self.target_path.clone().and_then(sval))?;
+        if let Some(host) = &self.host {
+            let mut hostobj = XmlObject::new(&STORAGE_POOL_HOST);
+            hostobj.set("name", sval(host.clone()))?;
+            pool.add_child(hostobj);
+        }
+        if let Some(source) = &self.source_path {
+            pool.set(pool_source_prop(&self.pool_type), sval(source.clone()))?;
+        }
+        if let Some(fmt) = self.format.as_ref().filter(|_| self.supports_format()) {
+            pool.set("format", sval(fmt.clone()))?;
+        }
+        if let Some(iqn) = &self.iqn {
+            pool.set("iqn", sval(iqn.clone()))?;
+        }
+        if let Some(source_name) = &self.source_name {
+            pool.set("source_name", sval(source_name.clone()))?;
+        }
+        Ok(pool)
+    }
+}
+
+/// `_type_to_source_prop`: the property `source_path` stands for.
+fn pool_source_prop(pool_type: &str) -> &'static str {
+    match pool_type {
+        "netfs" | "gluster" => "_source_dir",
+        "scsi" => "_source_adapter",
+        _ => "_source_device",
+    }
+}
+
+/// `StoragePool(conn, parsexml=xml)`.
+pub fn parse_pool(xml: &str) -> Result<XmlObject, String> {
+    XmlObject::parse(&STORAGE_POOL, xml)
+}
+
+/// `vmmStoragePool.get_xml_to_define`: the pool's XML (`XMLDesc(0)`)
+/// as virtinst re-serializes it, for the XML editor.
+pub fn pool_xml_to_define(xml: &str) -> Result<String, String> {
+    parse_pool(xml).map(|o| o.get_xml())
+}
+
+/// `StoragePool.validate` on the pool `obj`: the name, then the
+/// defaults for what's unset.
+pub fn validate_pool(conn: &Connect, obj: &mut XmlObject, is_session: bool) -> Result<(), String> {
+    let name = obj.get_str("name").unwrap_or_default();
+    // `validate_name`
+    validate_generic_name("Storage object", &name)?;
+    if StoragePool::lookup_by_name(conn, &name).is_ok() {
+        return Err(format!("Name '{name}' already in use by another pool."));
+    }
+
+    let stub = NewPool {
+        name,
+        pool_type: obj.get_str("type").unwrap_or_default(),
+        ..Default::default()
+    };
+    if str_prop(obj, "target_path").is_none() {
+        let target = if stub.pool_type == "disk" {
+            // disk is a bit special, in that it demands a target path,
+            // but basically can't handle anything other than /dev
+            Some(DEFAULT_DEV_TARGET.to_string())
+        } else {
+            stub.default_target_path(is_session)
+        };
+        obj.set("target_path", target.and_then(sval))?;
+    }
+    if str_prop(obj, "source_name").is_none() {
+        obj.set("source_name", stub.default_source_name().and_then(sval))?;
+    }
+    if str_prop(obj, "format").is_none() && stub.supports_format() {
+        obj.set("format", sval("auto"))?;
+    }
+
+    if stub.pool_type == "disk" && str_prop(obj, "format").as_deref() == Some("auto") {
+        // There is no explicit "auto" type for disk pools, but leaving out
+        // the format type seems to do the job for existing formatted disks
+        obj.set("format", None)?;
+    }
+    Ok(())
+}
+
+/// `StoragePool.install(create=True, build=build)` of the pool `xml`,
+/// then autostart: on a failure past the define, the pool is undefined
+/// again.
+pub fn install_pool(conn: &Connect, xml: &str, build: bool) -> Result<(), String> {
+    let pool = StoragePool::define_xml(conn, xml, 0)
+        .map_err(|e| format!("Could not define storage pool: {e}"))?;
+    let mut res = Ok(());
+    if build {
+        res = pool
+            .build(sys::VIR_STORAGE_POOL_BUILD_NEW)
+            .map(|_| ())
+            .map_err(|e| format!("Could not build storage pool: {e}"));
+    }
+    if res.is_ok() {
+        res = pool
+            .create(0)
+            .map(|_| ())
+            .map_err(|e| format!("Could not start storage pool: {e}"));
+    }
+    if res.is_ok() {
+        res = pool
+            .set_autostart(true)
+            .map(|_| ())
+            .map_err(|e| format!("Could not set pool autostart flag: {e}"));
+    }
+    if res.is_err() {
+        // Try and clean up the leftover pool
+        if let Err(e) = pool.undefine() {
+            eprintln!("Error cleaning up pool after failure: {e}");
+        }
+    }
+    res
+}
+
+/// The fields `createvol`'s `_build_xmlobj_from_ui` sets on its
+/// `StorageVolume`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NewVolume {
+    pub name: String,
+    /// GiB, as the capacity spin button has it.
+    pub capacity: f64,
+    pub allocation: f64,
+    pub backing_store: Option<String>,
+    pub format: Option<String>,
+}
+
+impl NewVolume {
+    /// `_build_xmlobj_from_ui`.
+    pub fn build_xmlobj(&self) -> Result<XmlObject, String> {
+        const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+        let mut vol = XmlObject::new(&STORAGE_VOLUME);
+        vol.set("name", sval(self.name.clone()))?;
+        // `int()` of the float, as `XMLProperty(is_int=True)` does
+        vol.set("capacity", Some(Value::Int((self.capacity * GIB) as i64)))?;
+        vol.set(
+            "allocation",
+            Some(Value::Int((self.allocation * GIB) as i64)),
+        )?;
+        if let Some(backing) = &self.backing_store {
+            vol.set("backing_store", sval(backing.clone()))?;
+        }
+        if let Some(fmt) = &self.format {
+            vol.set("format", sval(fmt.clone()))?;
+        }
+        Ok(vol)
+    }
+}
+
+/// `StorageVolume(conn, parsexml=xml)`.
+pub fn parse_volume(xml: &str) -> Result<XmlObject, String> {
+    XmlObject::parse(&STORAGE_VOLUME, xml)
+}
+
+/// `StorageVolume.file_type`: the volume's own `type`, else the type
+/// of volume its pool makes.
+pub fn volume_file_type(vol: &XmlObject, pool: &PoolXml) -> String {
+    match vol.get_str("type").as_deref() {
+        Some(t @ ("file" | "block" | "dir" | "network")) => t.to_string(),
+        _ => pool.get_disk_type().to_string(),
+    }
+}
+
+/// `conn.support.conn_qcow2_lazy_refcounts`: qemu (every one libvirt
+/// still supports has it) and the test driver.
+fn conn_qcow2_lazy_refcounts(conn: &Connect) -> bool {
+    conn.get_type()
+        .is_ok_and(|t| matches!(t.to_lowercase().as_str(), "qemu" | "test"))
+}
+
+/// The pool's `XMLDesc(0)`, parsed (`vol.pool = ...`'s `_pool_xml`).
+fn pool_xml_of(pool: &StoragePool) -> Result<PoolXml, String> {
+    let xml = pool.get_xml_desc(0).map_err(|e| e.to_string())?;
+    PoolXml::parse(&xml).ok_or_else(|| "Unparseable pool XML".to_string())
+}
+
+/// `StorageVolume.validate` for the volume `vol` in `pool`: the name,
+/// the format and `lazy_refcounts` defaults, a logical volume fully
+/// allocated, and `is_size_conflict` (a capacity that only fits sparse
+/// is a warning, logged).
+pub fn validate_volume(
+    conn: &Connect,
+    pool: &StoragePool,
+    vol: &mut XmlObject,
+) -> Result<(), String> {
+    let name = vol.get_str("name").unwrap_or_default();
+    // `validate_name`
+    validate_generic_name("Storage object", &name)?;
+    if StorageVol::lookup_by_name(pool, &name).is_ok() {
+        return Err(format!("Name '{name}' already in use by another volume."));
+    }
+    let pool_xml = pool_xml_of(pool)?;
+
+    if str_prop(vol, "format").is_none() && volume_file_type(vol, &pool_xml) == "file" {
+        vol.set("format", sval("raw"))?;
+    }
+    // `_prop_is_unset("lazy_refcounts")`
+    let lazy_unset = vol.get("lazy_refcounts") != Some(Value::Bool(true))
+        && !vol.prop_in_store("lazy_refcounts");
+    if lazy_unset && str_prop(vol, "format").as_deref() == Some("qcow2") {
+        vol.set(
+            "lazy_refcounts",
+            Some(Value::Bool(conn_qcow2_lazy_refcounts(conn))),
+        )?;
+    }
+
+    if pool_xml.pool_type == "logical" && int_prop(vol, "allocation")? != int_prop(vol, "capacity")?
+    {
+        log::warn!(
+            "Sparse logical volumes are not supported, setting allocation equal to capacity"
+        );
+        vol.set("allocation", vol.get("capacity"))?;
+    }
+
+    // `is_size_conflict`
+    let avail = pool.get_info().map(|i| i.available).unwrap_or(u64::MAX) as i128;
+    const MIB: i128 = 1024 * 1024;
+    let (allocation, capacity) = (int_prop(vol, "allocation")?, int_prop(vol, "capacity")?);
+    if allocation > avail {
+        return Err(format!(
+            "There is not enough free space on the storage pool to create the volume. \
+             ({} M requested allocation > {} M available)",
+            allocation / MIB,
+            avail / MIB
+        ));
+    }
+    if capacity > avail {
+        log::warn!(
+            "The requested volume capacity will exceed the available pool space when the \
+             volume is fully allocated. ({} M requested capacity > {} M available)",
+            capacity / MIB,
+            avail / MIB
+        );
+    }
+    Ok(())
+}
+
+/// `_detect_backing_store_format`: the format of the volume at `path`,
+/// when it's a file volume.
+fn detect_backing_store_format(conn: &Connect, path: &str) -> Option<String> {
+    let managed = manage_path(conn, path).ok()?;
+    let vol = managed.vol?;
+    let pool = managed.pool?;
+    if pool.xml.get_disk_type() != "file" {
+        return None;
+    }
+    vol_path_props(&vol).format
+}
+
+/// `StorageVolume.install` of the volume `xml` in `pool`: the backing
+/// store's format filled in, and qcow2 metadata preallocated.
+pub fn install_volume(conn: &Connect, pool: &StoragePool, xml: &str) -> Result<StorageVol, String> {
+    let mut vol = parse_volume(xml)?;
+    let name = vol.get_str("name").unwrap_or_default();
+    let backing_store = str_prop(&vol, "backing_store");
+    if let Some(backing) = &backing_store {
+        if str_prop(&vol, "backing_format").is_none() {
+            log::debug!("Attempting to detect format for backing_store={backing}");
+            let fmt = detect_backing_store_format(conn, backing);
+            vol.set("backing_format", fmt.and_then(sval))?;
+        }
+    }
+    let xml = vol.get_xml();
+    log::debug!("Creating storage volume '{name}' with xml:\n{xml}");
+
+    // `is_really_test`: the test suite doesn't support any flags
+    let is_test = conn.get_uri().is_ok_and(|u| u.starts_with("test:"));
+    let flags = if !is_test
+        && str_prop(&vol, "format").as_deref() == Some("qcow2")
+        && backing_store.is_none()
+    {
+        sys::VIR_STORAGE_VOL_CREATE_PREALLOC_METADATA
+    } else {
+        0
+    };
+    log::debug!("Using vol create flags={flags}");
+    StorageVol::create_xml(pool, &xml, flags)
+        .map_err(|e| format!("Couldn't create storage volume '{name}': '{e}'"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1290,5 +1674,179 @@ mod tests {
         };
         let vol = VolInstall::new("lv", Some(&lvm), 1.0, true, None).unwrap();
         assert_eq!((vol.format, vol.allocation), (None, vol.capacity));
+    }
+
+    /// The XML createpool's XML tab shows, as upstream's
+    /// `StoragePool.get_xml()` prints it.
+    #[test]
+    fn pool_build_xmlobj() {
+        let pool = NewPool {
+            name: "nfs".into(),
+            pool_type: "netfs".into(),
+            target_path: Some("/var/lib/libvirt/images/nfs".into()),
+            host: Some("srv".into()),
+            source_path: Some("/export".into()),
+            format: Some("auto".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            pool.build_xmlobj().unwrap().get_xml(),
+            "<pool type=\"netfs\">\n  <name>nfs</name>\n  <source>\n    \
+             <format type=\"auto\"/>\n    <host name=\"srv\"/>\n    \
+             <dir path=\"/export\"/>\n  </source>\n  <target>\n    \
+             <path>/var/lib/libvirt/images/nfs</path>\n  </target>\n</pool>\n"
+        );
+        let iscsi = NewPool {
+            name: "is".into(),
+            pool_type: "iscsi".into(),
+            target_path: Some("/dev/disk/by-path".into()),
+            host: Some("srv".into()),
+            source_path: Some("iqn.x".into()),
+            iqn: Some("iqn.init".into()),
+            // Dropped: iSCSI pools take no format
+            format: Some("auto".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            iscsi.build_xmlobj().unwrap().get_xml(),
+            "<pool type=\"iscsi\">\n  <name>is</name>\n  <source>\n    \
+             <host name=\"srv\"/>\n    <device path=\"iqn.x\"/>\n    <initiator>\n      \
+             <iqn name=\"iqn.init\"/>\n    </initiator>\n  </source>\n  <target>\n    \
+             <path>/dev/disk/by-path</path>\n  </target>\n</pool>\n"
+        );
+        let scsi = NewPool {
+            name: "s".into(),
+            pool_type: "scsi".into(),
+            source_path: Some("host0".into()),
+            ..Default::default()
+        };
+        assert!(scsi
+            .build_xmlobj()
+            .unwrap()
+            .get_xml()
+            .contains("<adapter name=\"host0\"/>"));
+
+        let xml = "<pool type='dir'><name>default-pool</name>\
+                   <capacity unit='bytes'>100</capacity><target><path>/p</path></target></pool>";
+        assert_eq!(
+            pool_xml_to_define(xml).unwrap(),
+            "<pool type=\"dir\">\n  <name>default-pool</name>\n  \
+             <capacity unit=\"bytes\">100</capacity>\n  <target>\n    <path>/p</path>\n  \
+             </target>\n</pool>\n"
+        );
+        assert_eq!(
+            parse_pool("<volume/>").unwrap_err(),
+            "XML did not have expected root element name 'pool', found 'volume'"
+        );
+    }
+
+    /// The XML createvol's XML tab shows, before and after `validate`.
+    #[test]
+    fn volume_build_xmlobj() {
+        let vol = NewVolume {
+            name: "vol.qcow2".into(),
+            capacity: 20.0,
+            allocation: 0.0,
+            backing_store: Some("/x/base.qcow2".into()),
+            format: Some("qcow2".into()),
+        };
+        assert_eq!(
+            vol.build_xmlobj().unwrap().get_xml(),
+            "<volume>\n  <name>vol.qcow2</name>\n  <capacity>21474836480</capacity>\n  \
+             <allocation>0</allocation>\n  <target>\n    <format type=\"qcow2\"/>\n  \
+             </target>\n  <backingStore>\n    <path>/x/base.qcow2</path>\n  \
+             </backingStore>\n</volume>\n"
+        );
+        let pool = PoolXml {
+            pool_type: "logical".into(),
+            ..Default::default()
+        };
+        let parsed = parse_volume("<volume type='dir'><name>a</name></volume>").unwrap();
+        assert_eq!(volume_file_type(&parsed, &pool), "dir");
+        let parsed = parse_volume("<volume><name>a</name></volume>").unwrap();
+        assert_eq!(volume_file_type(&parsed, &pool), "block");
+    }
+
+    /// Validate and create pools and volumes against the test driver,
+    /// whose state is process-wide: unique names, and the crate's lock.
+    #[test]
+    fn validate_and_install_against_the_test_driver() {
+        let _lock = crate::test_support::TEST_DOMAIN_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut conn = Connect::open(Some("test:///default")).unwrap();
+
+        // Pools
+        let mut taken = parse_pool("<pool type='dir'><name>default-pool</name></pool>").unwrap();
+        assert_eq!(
+            validate_pool(&conn, &mut taken, false).unwrap_err(),
+            "Name 'default-pool' already in use by another pool."
+        );
+        let name = find_free_pool_name(&conn, "rusttestpool");
+        let mut disk = parse_pool(&format!(
+            "<pool type='disk'><name>{name}</name><source><format type='auto'/></source></pool>"
+        ))
+        .unwrap();
+        validate_pool(&conn, &mut disk, false).unwrap();
+        assert_eq!(disk.get_str("target_path").as_deref(), Some("/dev"));
+        assert_eq!(disk.get_str("format"), None);
+        let mut dir = NewPool {
+            name: name.clone(),
+            pool_type: "dir".into(),
+            ..Default::default()
+        }
+        .build_xmlobj()
+        .unwrap();
+        validate_pool(&conn, &mut dir, false).unwrap();
+        assert_eq!(
+            dir.get_str("target_path"),
+            Some(format!("/var/lib/libvirt/images/{name}"))
+        );
+        install_pool(&conn, &dir.get_xml(), false).unwrap();
+        let p = StoragePool::lookup_by_name(&conn, &name).unwrap();
+        assert!(p.is_active().unwrap() && p.get_autostart().unwrap());
+        p.destroy().unwrap();
+        p.undefine().unwrap();
+
+        // Volumes
+        let pool = StoragePool::lookup_by_name(&conn, "default-pool").unwrap();
+        let volname = format!("{name}.qcow2");
+        let mut vol = NewVolume {
+            name: volname.clone(),
+            capacity: 1.0,
+            allocation: 0.0,
+            backing_store: None,
+            format: Some("qcow2".into()),
+        }
+        .build_xmlobj()
+        .unwrap();
+        validate_volume(&conn, &pool, &mut vol).unwrap();
+        assert!(vol.get_xml().contains("<lazy_refcounts/>"));
+        let mut huge = parse_volume(&format!(
+            "<volume><name>{name}.img</name><capacity>{0}</capacity>\
+             <allocation>{0}</allocation></volume>",
+            u64::MAX / 2
+        ))
+        .unwrap();
+        assert!(validate_volume(&conn, &pool, &mut huge)
+            .unwrap_err()
+            .starts_with("There is not enough free space on the storage pool"));
+        assert_eq!(huge.get_str("format").as_deref(), Some("raw"));
+        let mut bad = parse_volume(&format!(
+            "<volume><name>{name}.raw</name><capacity>lots</capacity></volume>"
+        ))
+        .unwrap();
+        assert_eq!(
+            validate_volume(&conn, &pool, &mut bad).unwrap_err(),
+            "invalid literal for int() with base 10: 'lots'"
+        );
+        let created = install_volume(&conn, &pool, &vol.get_xml()).unwrap();
+        let mut again = parse_volume(&vol.get_xml()).unwrap();
+        assert_eq!(
+            validate_volume(&conn, &pool, &mut again).unwrap_err(),
+            format!("Name '{volname}' already in use by another volume.")
+        );
+        created.delete(0).unwrap();
+        conn.close().unwrap();
     }
 }
