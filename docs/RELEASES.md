@@ -25,13 +25,12 @@ Por que compilar em container de cada distro: o app linka dinamicamente
 GTK4, libvirt, libosinfo, gvnc, spice e vte. Um binário de Ubuntu não serve
 para Fedora; cada pacote precisa ser compilado contra as libs da distro.
 
-**Decisão para o Vex: conflito com o virt-manager Python.** Nossos binários e
-o schema GSettings (`org.virt-manager.virt-manager.gschema.xml`) têm o mesmo
-nome dos do pacote `virt-manager`/`virtinst` da distro.
-- Recomendado: pacote `virt-manager-rust` que **substitui** o original
-  (`Conflicts`/`Provides`/`Replaces: virt-manager, virtinst`). É o 1:1 de verdade.
-- Alternativa: instalar lado a lado com sufixo (`virt-manager-rs` etc.) e sem
-  instalar o schema (usa o do Python). Mais seguro para quem testa, menos 1:1.
+**Decidido (Vex, 2026-10-29): o pacote substitui o virt-manager Python.**
+Nossos binários e o schema GSettings (`org.virt-manager.virt-manager.gschema.xml`)
+têm o mesmo nome dos pacotes `virt-manager`/`virtinst` da distro. O pacote
+`virt-manager-rust` declara `Conflicts`/`Provides`/`Replaces: virt-manager, virtinst`
+(no Arch: `conflicts`/`provides`) e instala nos mesmos caminhos. É o 1:1 de verdade:
+quem instala o nosso remove o Python, e as configurações continuam as mesmas.
 
 ## 2. Versionamento
 
