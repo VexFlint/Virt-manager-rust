@@ -596,6 +596,12 @@ impl VmmVMWindow {
             None
         });
         i.handlers.borrow_mut().push((vm.clone().upcast(), id));
+        let cb = with(VmmVMWindow::resources_sampled);
+        let id = vm.connect_local("resources-sampled", false, move |_| {
+            cb();
+            None
+        });
+        i.handlers.borrow_mut().push((vm.clone().upcast(), id));
         if let Some(conn) = vm.conn().filter(|_| !i.is_customize_dialog) {
             let weak = Rc::downgrade(&self.0);
             let id = conn.connect_local("vm-removed", false, move |args| {
@@ -945,6 +951,13 @@ impl VmmVMWindow {
         self.0.console.vmwindow_activate_default_console_page();
     }
 
+    /// `_refresh_resources`.
+    fn refresh_resources(&self) {
+        if self.0.pages.visible_child_name().as_deref() == Some(PAGE_DETAILS) {
+            self.0.details.vmwindow_resources_refreshed();
+        }
+    }
+
     /// `_refresh_current_page`.
     fn refresh_current_page(&self, newpage: Option<&str>) {
         let i = &self.0;
@@ -1122,6 +1135,13 @@ impl VmmVMWindow {
             config.set_default_directory("screenshot", dir);
         }
         Ok(())
+    }
+
+    /// `_resources_sampled_cb`.
+    fn resources_sampled(&self) {
+        if self.is_visible() {
+            self.refresh_resources();
+        }
     }
 
     fn vm_state_changed(&self) {

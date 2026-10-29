@@ -15,6 +15,7 @@ com o número do PR **no mesmo PR** que entrega o item.
 | 17 | GUI Clonar VM | `clone.py`, `ui/clone.ui` (inclui cópia de disco) | Médio | ✅ #77 |
 | 18 | GUI Migrar VM | `migrate.py`, `ui/migrate.ui` | Médio | ✅ #76 |
 | 22 | GUI Bandeja + login | ícone na bandeja e login com senha/chaveiro (`systray.py`, `lib/keyring.py`, `lib/connectauth.py`) | Médio | ✅ #79 |
+| 25 | GUI Desempenho | página Performance nos detalhes da VM (`details.py` `_refresh_stats_page`, `ui/details.ui`) | Barato | ✅ #80 |
 
 Custo é uma estimativa grosseira de esforço (Caro > Médio > Barato).
 Itens 8, 16, 17 e 18 são independentes entre si: dá para fazer em paralelo,
