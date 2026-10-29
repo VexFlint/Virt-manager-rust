@@ -817,6 +817,11 @@ impl VmmManager {
         }
     }
 
+    /// `is_visible`.
+    pub fn is_visible(&self) -> bool {
+        self.0.visible.get()
+    }
+
     pub fn close(&self) {
         if !self.0.visible.replace(false) {
             return;

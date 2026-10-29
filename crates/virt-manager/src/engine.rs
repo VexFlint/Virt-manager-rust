@@ -20,6 +20,7 @@ use crate::connection::{ConnectError, VmmConnection};
 use crate::connmanager::VmmConnectionManager;
 use crate::error;
 use crate::manager::VmmManager;
+use crate::systray::VmmSystray;
 
 /// Distinct from upstream's `org.virt-manager.virt-manager` so a running
 /// Python virt-manager doesn't swallow this app's activation over D-Bus.
@@ -46,12 +47,22 @@ pub struct Engine {
     exiting: Cell<bool>,
 }
 
+/// The `CLI_SHOW_*` windows ported so far, besides the manager.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShowWindow {
+    /// `CLI_SHOW_HOST_SUMMARY`
+    HostSummary,
+    /// `CLI_SHOW_SYSTEM_TRAY`
+    SystemTray,
+}
+
 /// What `virt-manager`'s command line asked for.
 #[derive(Clone, Debug, Default)]
 pub struct StartupOptions {
     pub uri: Option<String>,
-    /// `--show-host-summary` (`CLI_SHOW_HOST_SUMMARY`).
-    pub show_host_summary: bool,
+    /// `--show-host-summary` / `--show-systray` (`CLI_SHOW_*`); `None`
+    /// is the manager (`CLI_SHOW_MANAGER`).
+    pub show_window: Option<ShowWindow>,
 }
 
 /// `createconn._default_uri`: probe the host for a hypervisor.
@@ -96,6 +107,16 @@ pub fn setup_first_uri(detected_uri: Option<&str>) -> Option<String> {
          A virtualization connection can be manually added via File->Add Connection"
             .to_string(),
     )
+}
+
+/// The details of `_show_systray_from_cli`'s error. Upstream's carry
+/// the `RuntimeError` traceback; ours say why the icon wasn't embedded,
+/// as the tray's D-Bus side reported it.
+fn systray_error_details(msg: &str) -> String {
+    let reason = VmmSystray::get_instance()
+        .embed_error()
+        .unwrap_or_else(|| "The system tray icon was not embedded within 5 seconds.".into());
+    format!("{msg}\n\n{reason}")
 }
 
 /// Builds the application and runs the GTK main loop.
@@ -144,9 +165,12 @@ impl Engine {
         ENGINE.with(|e| {
             let _ = e.set(engine.clone());
         });
-        // `skip_autostart`: a --show-* window was asked for
-        engine.default_startup(opts.uri.is_some(), opts.show_host_summary);
-        engine.handle_cli_command(opts.uri, opts.show_host_summary);
+        // `skip_autostart`: a --show-* window other than the tray was asked for
+        let skip_autostart = opts
+            .show_window
+            .is_some_and(|w| w != ShowWindow::SystemTray);
+        engine.default_startup(opts.uri.is_some(), skip_autostart);
+        engine.handle_cli_command(opts.uri, opts.show_window);
     }
 
     pub fn app(&self) -> gtk::Application {
@@ -168,6 +192,7 @@ impl Engine {
     }
 
     fn default_startup(&self, have_cliuri: bool, skip_autostart: bool) {
+        VmmSystray::get_instance();
         // Build the manager first so it sees every conn-added.
         let manager = self.get_manager();
         self.config
@@ -250,7 +275,14 @@ impl Engine {
         }
     }
 
-    fn handle_cli_command(&self, uri: Option<String>, show_host_summary: bool) {
+    fn handle_cli_command(&self, uri: Option<String>, show_window: Option<ShowWindow>) {
+        if show_window == Some(ShowWindow::SystemTray) {
+            // Launching only in the system tray
+            self.show_systray_from_cli();
+            if uri.is_none() {
+                return;
+            }
+        }
         let Some(uri) = uri else {
             self.get_manager().show();
             return;
@@ -258,7 +290,7 @@ impl Engine {
         let conn_is_new = self.connmanager.get_conn(&uri).is_none();
         let conn = self.connmanager.add_conn(&uri);
         if conn.is_active() {
-            self.launch_cli_window(&uri, show_host_summary);
+            self.launch_cli_window(&uri, show_window);
             return;
         }
         conn.open(move |err| {
@@ -270,19 +302,22 @@ impl Engine {
                     }
                     engine.handle_conn_error(err);
                 }
-                None => engine.launch_cli_window(&uri, show_host_summary),
+                None => engine.launch_cli_window(&uri, show_window),
             }
         });
     }
 
-    /// `_launch_cli_window`, for the windows ported so far.
-    fn launch_cli_window(&self, uri: &str, show_host_summary: bool) {
-        if !show_host_summary {
-            self.launch_manager(uri);
-            return;
-        }
-        if let Some(conn) = self.connmanager.get_conn(uri) {
-            crate::host::VmmHost::show_instance(&conn);
+    /// `_launch_cli_window`, for the windows ported so far. The tray
+    /// was already handled by [`Self::show_systray_from_cli`].
+    fn launch_cli_window(&self, uri: &str, show_window: Option<ShowWindow>) {
+        match show_window {
+            None => self.launch_manager(uri),
+            Some(ShowWindow::HostSummary) => {
+                if let Some(conn) = self.connmanager.get_conn(uri) {
+                    crate::host::VmmHost::show_instance(&conn);
+                }
+            }
+            Some(ShowWindow::SystemTray) => {}
         }
     }
 
@@ -290,6 +325,44 @@ impl Engine {
         let manager = self.get_manager();
         manager.set_initial_selection(uri);
         manager.show();
+    }
+
+    /// `_systray_is_embedded`: the tray icon isn't a window, and even
+    /// when shown it may not be embedded in a tray area.
+    fn systray_is_embedded(&self) -> bool {
+        VmmSystray::get_instance().is_embedded()
+    }
+
+    /// `_show_systray_from_cli`: force the tray icon on, then give it
+    /// five seconds to get embedded before failing like a startup
+    /// routine.
+    fn show_systray_from_cli(&self) {
+        VmmSystray::get_instance().show_from_cli();
+        fn check(count: u32) {
+            let count = count - 1;
+            let engine = get();
+            if engine.systray_is_embedded() {
+                return;
+            }
+            if count == 0 {
+                let msg = "systray did not show up";
+                engine.show_startup_error(msg, &systray_error_details(msg));
+                return;
+            }
+            glib::timeout_add_local_once(Duration::from_millis(1000), move || check(count));
+        }
+        glib::timeout_add_local_once(Duration::from_millis(1000), || check(5));
+    }
+
+    /// `_show_startup_error`: the error with its details, then exit if
+    /// nothing is left open.
+    fn show_startup_error(&self, msg: &str, details: &str) {
+        let msg = msg.to_string();
+        let details = details.to_string();
+        glib::spawn_future_local(async move {
+            error::show_err(None, &msg, Some(&details), "").await;
+            get().exit_app_if_no_windows();
+        });
     }
 
     fn handle_conn_error(&self, err: ConnectError) {
@@ -310,8 +383,13 @@ impl Engine {
         self.exit_app_if_no_windows();
     }
 
+    /// `_can_exit`.
+    fn can_exit(&self) -> bool {
+        self.window_count.get() <= 0 && !self.systray_is_embedded()
+    }
+
     fn exit_app_if_no_windows(&self) {
-        if !self.exiting.get() && self.window_count.get() <= 0 {
+        if !self.exiting.get() && self.can_exit() {
             self.exit_app();
         }
     }
@@ -323,6 +401,8 @@ impl Engine {
         glib::idle_add_local_once(|| {
             let engine = get();
             engine.connmanager.cleanup();
+            // app-closing
+            VmmSystray::get_instance().cleanup();
             if let Some(manager) = engine.manager.get() {
                 manager.save_window_size();
             }
