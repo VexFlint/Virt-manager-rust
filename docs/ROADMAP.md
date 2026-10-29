@@ -1,7 +1,8 @@
 # Roadmap
 
 O que falta para a cópia 1:1 do virt-manager v5.1.0 e o que vem depois.
-Atualizado em 29/10/2026. Cerca de 90% do 1:1 está feito (PRs #53 a #72).
+Atualizado em 29/10/2026. O 1:1 está completo (PRs #53 a #85); falta só
+o que está em "Extras" e a Fase 2.
 
 Este arquivo é a fonte da verdade do plano. Quem terminar um item marca ✅
 com o número do PR **no mesmo PR** que entrega o item.
@@ -74,9 +75,17 @@ pequenos), métodos de instalação (`--location`, `--cdrom`, `--pxe`, `--import
 `--cloud-init`, `--unattended`), `virt-xml --convert-to-q35/vnc` e `--osinfo`.
 Oráculo do harness com mais de 1300 casos do upstream.
 
-GUI: janela principal, conexões, preferências, detalhes da VM (todas as
-páginas de hardware, adicionar/remover dispositivo, aba XML), apagar VM, consoles VNC,
-SPICE e serial, navegador de storage, criar pool e volume, Nova VM completa
-(mídia local, URL, importar, manual, "Personalizar antes de instalar").
+GUI: janela principal, conexões (com login por senha e chaveiro),
+preferências, ícone na bandeja, detalhes da VM (todas as páginas de hardware,
+desempenho, adicionar/remover dispositivo, aba XML), snapshots, apagar,
+clonar e migrar VM, consoles VNC, SPICE e serial, detalhes do host (visão
+geral, redes virtuais, criar rede, storage), navegador de storage, criar pool
+e volume (com aba XML), Nova VM completa (mídia local, URL, importar, manual,
+"Personalizar antes de instalar"), correção de permissão nos caminhos de
+disco e as opções `--show-*` do `virt-manager`.
+
+Fica de fora, de propósito: a inspeção via libguestfs (`lib/inspection.py`).
+A lista de aplicativos fica oculta, como o upstream faz sem suporte a
+inspeção.
 
 Detalhes: `git log --oneline`.
