@@ -243,6 +243,11 @@ impl StorageBrowser {
         self.0.storagelist.close();
     }
 
+    /// `set_vm_name`: the new volume's default name follows the VM's.
+    pub fn set_vm_name(&self, name: &str) {
+        self.0.storagelist.set_name_hint(Some(name));
+    }
+
     pub fn set_finish_cb(&self, cb: impl Fn(&str) + 'static) {
         *self.0.finish_cb.borrow_mut() = Some(Box::new(cb));
     }

@@ -3205,6 +3205,12 @@ impl VmmCreateVM {
         if stale {
             i.storage_browser.replace(None);
         }
+        let browser = i
+            .storage_browser
+            .borrow_mut()
+            .get_or_insert_with(|| StorageBrowser::new(&conn))
+            .clone();
+        browser.set_vm_name(&i.fin.name.text());
         storagebrowse::browse(&i.storage_browser, &conn, &i.window, reason, cb);
     }
 
