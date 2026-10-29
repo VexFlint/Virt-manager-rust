@@ -222,7 +222,7 @@ pub struct Inner {
     vol_generation: Cell<u64>,
     vol_sensitive_cb: Option<VolSensitiveCallback>,
     /// Name hint passed to the volume wizard: the storage browser
-    /// sets it for the create VM wizard, which isn't ported yet.
+    /// sets it to the VM name the create VM wizard is building.
     name_hint: RefCell<Option<String>>,
     addvol: RefCell<Option<CreateVolume>>,
     addpool: RefCell<Option<CreatePool>>,
@@ -618,6 +618,11 @@ impl HostStorage {
 
     pub fn connect_browse_clicked(&self, cb: impl Fn() + 'static) {
         *self.browse_clicked.borrow_mut() = Some(Box::new(cb));
+    }
+
+    /// `set_name_hint`.
+    pub fn set_name_hint(&self, val: Option<&str>) {
+        *self.name_hint.borrow_mut() = val.map(str::to_string);
     }
 
     pub fn connect_volume_chosen(&self, cb: impl Fn(&VolRow) + 'static) {
