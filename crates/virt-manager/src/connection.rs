@@ -3,13 +3,15 @@
 //! and the domain list the engine's tick keeps current.
 //!
 //! Signals, named as upstream's: `state-changed`, `vm-added(VmmDomain)`,
-//! `vm-removed(VmmDomain)`.
+//! `vm-removed(VmmDomain)`, `resources-sampled` (after each tick's
+//! `_recalculate_stats`, for the Connection Details graphs). Network
+//! and pool libvirt events come out as `net-event(name)` and
+//! `pool-event(name)`.
 //!
 //! **Not ported yet**: the openAuth credentials dialog (`connectauth.py`
 //! — plain `virConnectOpen` covers local URIs and polkit agents),
-//! network/pool/nodedev events (only domain events are registered, in
-//! `connevents`), networks/pools/nodedevs, and the
-//! per-connection `pretty-name` setting.
+//! nodedev events, and network/pool/nodedev objects (their lists are
+//! fetched when a window needs them, and again on their events).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -25,7 +27,7 @@ use virt::sys;
 use virtinst_core::capabilities::caps::Capabilities;
 use virtinst_core::connection::Uri;
 
-use crate::connevents::{self, DomainEvent};
+use crate::connevents::{self, DomainEvent, ObjectEvent};
 use crate::domain::{DomainSnapshot, VmmDomain};
 use crate::engine;
 use crate::statsmanager::{PollFlags, RawSample};
@@ -35,8 +37,8 @@ use crate::statsmanager::{PollFlags, RawSample};
 /// so a worker thread mid-call keeps the connection alive past a
 /// user-initiated disconnect.
 #[derive(Debug)]
-/// The open connection plus its domain event callback ids.
-pub struct ConnHandle(Connect, Vec<std::ffi::c_int>);
+/// The open connection plus its event callback ids.
+pub struct ConnHandle(Connect, connevents::EventIds);
 
 impl ConnHandle {
     pub fn connect(&self) -> &Connect {
@@ -134,6 +136,115 @@ pub fn pretty_desc(uri: &str) -> String {
     ret
 }
 
+/// One `_recalculate_stats` record (`newStats`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ConnStatsRecord {
+    pub timestamp: f64,
+    /// KiB, summed over the running VMs.
+    pub memory: u64,
+    pub memory_percent: f64,
+    pub cpu_time: u64,
+    pub cpu_host_percent: f64,
+    pub disk_rd_rate: f64,
+    pub disk_wr_rate: f64,
+    pub net_rx_rate: f64,
+    pub net_tx_rate: f64,
+    pub disk_max_rate: f64,
+    pub net_max_rate: f64,
+}
+
+/// What `_recalculate_stats` reads off one running VM: `cpu_time()`,
+/// `stats_memory()`, the four rates, and the two max rates.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VmStatsSample {
+    pub cpu_time: u64,
+    pub memory: u64,
+    pub disk_rd_rate: f64,
+    pub disk_wr_rate: f64,
+    pub net_rx_rate: f64,
+    pub net_tx_rate: f64,
+    pub disk_max_rate: f64,
+    pub net_max_rate: f64,
+}
+
+/// `vmmConnection._stats`: newest record first.
+#[derive(Debug, Default)]
+pub struct ConnStats {
+    stats: std::collections::VecDeque<ConnStatsRecord>,
+}
+
+impl ConnStats {
+    fn latest(&self) -> ConnStatsRecord {
+        self.stats.front().cloned().unwrap_or_default()
+    }
+
+    /// `_recalculate_stats`, for the running VMs' samples at `now`.
+    /// `host_memory` is in KiB.
+    pub fn recalculate(
+        &mut self,
+        now: f64,
+        vms: &[VmStatsSample],
+        host_memory: u64,
+        host_cpus: u32,
+    ) {
+        let expected = crate::statsmanager::STATS_HISTORY_LENGTH;
+        self.stats.truncate(expected);
+
+        let prev = self.latest();
+        let mut mem = 0;
+        let mut cpu_time = 0;
+        let (mut rd, mut wr, mut rx, mut tx) = (0.0, 0.0, 0.0, 0.0);
+        let or10 = |v: f64| if v == 0.0 { 10.0 } else { v };
+        let mut disk_max = or10(prev.disk_max_rate);
+        let mut net_max = or10(prev.net_max_rate);
+        for vm in vms {
+            cpu_time += vm.cpu_time;
+            mem += vm.memory;
+            rd += vm.disk_rd_rate;
+            wr += vm.disk_wr_rate;
+            rx += vm.net_rx_rate;
+            tx += vm.net_tx_rate;
+            net_max = net_max.max(vm.net_max_rate);
+            disk_max = disk_max.max(vm.disk_max_rate);
+        }
+
+        let mut pcent_host_cpu = 0.0;
+        let pcent_mem = if host_memory > 0 {
+            mem as f64 * 100.0 / host_memory as f64
+        } else {
+            0.0
+        };
+        if !self.stats.is_empty() && host_cpus > 0 {
+            let elapsed = now - prev.timestamp;
+            if elapsed > 0.0 {
+                pcent_host_cpu = cpu_time as f64 * 100.0 / (elapsed * 1e9 * host_cpus as f64);
+            }
+        }
+
+        self.stats.push_front(ConnStatsRecord {
+            timestamp: now,
+            memory: mem,
+            memory_percent: pcent_mem.clamp(0.0, 100.0),
+            cpu_time,
+            cpu_host_percent: pcent_host_cpu.clamp(0.0, 100.0),
+            disk_rd_rate: rd,
+            disk_wr_rate: wr,
+            net_rx_rate: rx,
+            net_tx_rate: tx,
+            disk_max_rate: disk_max,
+            net_max_rate: net_max,
+        });
+    }
+
+    /// `_vector_helper(record_name, limit=None)`: history length + 1
+    /// values, newest first, divided by 100 and zero-padded.
+    pub fn vector(&self, f: fn(&ConnStatsRecord) -> f64) -> Vec<f64> {
+        (0..crate::statsmanager::STATS_HISTORY_LENGTH + 1)
+            .map(|i| self.stats.get(i).map(|r| f(r) / 100.0).unwrap_or(0.0))
+            .collect()
+    }
+}
+
 mod imp {
     use super::*;
 
@@ -149,6 +260,10 @@ mod imp {
         pub hostmem: Cell<u64>,
         /// `caps.host.cpu.model`.
         pub host_cpu_model: RefCell<Option<String>>,
+        /// `_stats`: the host-wide records `_recalculate_stats` keeps.
+        pub stats: RefCell<ConnStats>,
+        /// The `pretty-name` settings handler, once connected.
+        pub pretty_name_watch: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -168,6 +283,13 @@ mod imp {
                         .build(),
                     Signal::builder("vm-removed")
                         .param_types([VmmDomain::static_type()])
+                        .build(),
+                    Signal::builder("resources-sampled").build(),
+                    Signal::builder("net-event")
+                        .param_types([String::static_type()])
+                        .build(),
+                    Signal::builder("pool-event")
+                        .param_types([String::static_type()])
                         .build(),
                 ]
             })
@@ -255,10 +377,6 @@ impl VmmConnection {
 
     pub fn get_uri(&self) -> String {
         self.imp().uri.borrow().clone()
-    }
-
-    pub fn get_pretty_desc(&self) -> String {
-        pretty_desc(&self.get_uri())
     }
 
     pub fn state(&self) -> ConnState {
@@ -620,6 +738,23 @@ impl VmmConnection {
         glib::spawn_future_local(async move { vm.recache_from_event_loop().await });
     }
 
+    /// `_network_lifecycle_event`, `_storage_pool_lifecycle_event` and
+    /// `_storage_pool_refresh_event`. There are no network or pool
+    /// objects here to recache, so the windows that list them hear
+    /// `net-event(name)` / `pool-event(name)` and re-read what they show:
+    /// upstream's `net-added`/`net-removed`/`pool-added`/`pool-removed`
+    /// and the objects' `state-changed`/`refreshed`.
+    pub(crate) fn object_event(&self, event: ObjectEvent, name: &str) {
+        if !self.is_active() {
+            return;
+        }
+        let signal = match event {
+            ObjectEvent::NetworkLifecycle => "net-event",
+            ObjectEvent::PoolLifecycle | ObjectEvent::PoolRefresh => "pool-event",
+        };
+        self.emit_by_name::<()>(signal, &[&name.to_string()]);
+    }
+
     fn reconcile(&self, polled: Vec<(DomainSnapshot, RawSample)>, flags: PollFlags) {
         if !self.is_active() {
             return;
@@ -632,11 +767,13 @@ impl VmmConnection {
                 self.emit_by_name::<()>("vm-removed", &[vm]);
             }
         }
+        let mut preexisting = vec![];
         for (snap, raw) in polled {
             let found = existing.iter().find(|v| v.get_uuid() == snap.uuid);
             let vm = match found {
                 Some(vm) => {
                     vm.update(snap);
+                    preexisting.push(vm.clone());
                     vm.clone()
                 }
                 None => {
@@ -648,6 +785,117 @@ impl VmmConnection {
             };
             vm.apply_sample(&raw, flags, hostcpus);
         }
+        self.recalculate_stats(&preexisting);
+        self.emit_by_name::<()>("resources-sampled", &[]);
+    }
+
+    /// `_recalculate_stats` over the VMs that were already known before
+    /// this tick.
+    fn recalculate_stats(&self, vms: &[VmmDomain]) {
+        let samples: Vec<VmStatsSample> = vms
+            .iter()
+            .filter(|vm| vm.is_active())
+            .map(|vm| {
+                let stats = vm.stats();
+                let r = stats.latest();
+                VmStatsSample {
+                    cpu_time: r.cpu_time,
+                    memory: r.curmem,
+                    disk_rd_rate: r.disk_rd_rate,
+                    disk_wr_rate: r.disk_wr_rate,
+                    net_rx_rate: r.net_rx_rate,
+                    net_tx_rate: r.net_tx_rate,
+                    disk_max_rate: stats.disk_io_max_rate(),
+                    net_max_rate: stats.network_traffic_max_rate(),
+                }
+            })
+            .collect();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        self.imp().stats.borrow_mut().recalculate(
+            now,
+            &samples,
+            self.host_memory_size(),
+            self.host_active_processor_count(),
+        );
+    }
+
+    /// `stats_memory_vector`.
+    pub fn stats_memory_vector(&self) -> Vec<f64> {
+        self.imp().stats.borrow().vector(|r| r.memory_percent)
+    }
+
+    /// `host_cpu_time_vector`.
+    pub fn host_cpu_time_vector(&self) -> Vec<f64> {
+        self.imp().stats.borrow().vector(|r| r.cpu_host_percent)
+    }
+
+    /// `stats_memory`, in KiB.
+    pub fn stats_memory(&self) -> u64 {
+        self.imp().stats.borrow().latest().memory
+    }
+
+    /// `host_cpu_time_percentage`.
+    pub fn host_cpu_time_percentage(&self) -> f64 {
+        self.imp().stats.borrow().latest().cpu_host_percent
+    }
+
+    /// `get_pretty_desc`: the configured `pretty-name`, else the
+    /// default label. The first call starts listening for changes to
+    /// it (`_on_config_pretty_name_changed`), which upstream does at
+    /// construction; here the engine and its config come later.
+    pub fn get_pretty_desc(&self) -> String {
+        let config = engine::get().config();
+        let uri = self.get_uri();
+        if !self.imp().pretty_name_watch.replace(true) {
+            use gio::prelude::SettingsExt;
+            let weak = self.downgrade();
+            // `_config_pretty_name_changed_cb`
+            config
+                .conn_settings(&uri)
+                .connect_changed(Some("pretty-name"), move |_, _| {
+                    if let Some(conn) = weak.upgrade() {
+                        conn.emit_by_name::<()>("state-changed", &[]);
+                    }
+                });
+        }
+        let cfgname = config.get_perconn_pretty_name(&uri);
+        if !cfgname.is_empty() {
+            return cfgname;
+        }
+        pretty_desc(&uri)
+    }
+
+    /// `set_config_pretty_name`.
+    pub fn set_config_pretty_name(&self, value: &str) {
+        let config = engine::get().config();
+        let uri = self.get_uri();
+        let cfgname = config.get_perconn_pretty_name(&uri);
+        if value == cfgname {
+            return;
+        }
+        if cfgname.is_empty() && value == self.get_pretty_desc() {
+            // Don't encode the default connection value into gconf right
+            // away, require the user to edit it first
+            return;
+        }
+        config.set_perconn_pretty_name(&uri, value);
+    }
+
+    /// `get_details_window_size`.
+    pub fn get_details_window_size(&self) -> (i32, i32) {
+        engine::get()
+            .config()
+            .get_perconn_window_size(&self.get_uri())
+    }
+
+    /// `set_details_window_size`.
+    pub fn set_details_window_size(&self, w: i32, h: i32) {
+        engine::get()
+            .config()
+            .set_perconn_window_size(&self.get_uri(), w, h);
     }
 }
 
@@ -663,6 +911,53 @@ mod tests {
         assert_eq!(pretty_desc("test:///default"), "test default");
         assert_eq!(pretty_desc("lxc:///"), "LXC");
         assert_eq!(pretty_desc("xen:///"), "Xen");
+    }
+
+    #[test]
+    fn conn_stats_follow_recalculate_stats() {
+        let mut stats = ConnStats::default();
+        let vm = |cpu_time, memory| VmStatsSample {
+            cpu_time,
+            memory,
+            disk_max_rate: 10.0,
+            net_max_rate: 50.0,
+            ..Default::default()
+        };
+        // The first record has no previous timestamp: no CPU percentage
+        stats.recalculate(100.0, &[vm(1_000_000_000, 1024)], 4096, 2);
+        let r = stats.latest();
+        assert_eq!(r.cpu_host_percent, 0.0);
+        assert_eq!(r.memory, 1024);
+        assert_eq!(r.memory_percent, 25.0);
+        assert_eq!(r.net_max_rate, 50.0);
+        // 1s of CPU time over 2s on 2 host CPUs, two VMs
+        stats.recalculate(
+            102.0,
+            &[vm(1_000_000_000, 1024), vm(1_000_000_000, 2048)],
+            4096,
+            2,
+        );
+        let r = stats.latest();
+        assert!((r.cpu_host_percent - 50.0).abs() < 1e-9);
+        assert_eq!(r.memory_percent, 75.0);
+        // Clamped to 100
+        stats.recalculate(103.0, &[vm(10_000_000_000, 8192)], 4096, 1);
+        let r = stats.latest();
+        assert_eq!(r.cpu_host_percent, 100.0);
+        assert_eq!(r.memory_percent, 100.0);
+
+        let v = stats.vector(|r| r.cpu_host_percent);
+        assert_eq!(v.len(), crate::statsmanager::STATS_HISTORY_LENGTH + 1);
+        assert_eq!(&v[..3], &[1.0, 0.5, 0.0]);
+        assert_eq!(v[3], 0.0);
+
+        for i in 0..300 {
+            stats.recalculate(200.0 + i as f64, &[], 4096, 1);
+        }
+        assert_eq!(
+            stats.stats.len(),
+            crate::statsmanager::STATS_HISTORY_LENGTH + 1
+        );
     }
 
     #[test]

@@ -11,7 +11,7 @@ com o número do PR **no mesmo PR** que entrega o item.
 | # | Item | Escopo | Custo | Status |
 |---|------|--------|-------|--------|
 | 8 | GUI Snapshots | lista, criar, reverter, apagar (`virtManager/details/snapshots.py`, `ui/snapshots.ui`, `ui/snapshotsnew.ui`) | Caro | ✅ #75 |
-| 16 | GUI Detalhes do host | visão geral + redes virtuais + criar rede (`host.py`, `hostnets.py`, `createnet.py`; a aba de storage já existe em `hoststorage.rs`) | Médio | livre |
+| 16 | GUI Detalhes do host | visão geral + redes virtuais + criar rede (`host.py`, `hostnets.py`, `createnet.py`; a aba de storage já existe em `hoststorage.rs`) | Médio | ✅ #78 |
 | 17 | GUI Clonar VM | `clone.py`, `ui/clone.ui` (inclui cópia de disco) | Médio | ✅ #77 |
 | 18 | GUI Migrar VM | `migrate.py`, `ui/migrate.ui` | Médio | ✅ #76 |
 | 22 | GUI Bandeja + login | ícone na bandeja e login com senha/chaveiro (`systray.py`, `lib/keyring.py`, `lib/connectauth.py`) | Médio | adiado |

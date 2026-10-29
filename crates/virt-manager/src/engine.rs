@@ -50,6 +50,8 @@ pub struct Engine {
 #[derive(Clone, Debug, Default)]
 pub struct StartupOptions {
     pub uri: Option<String>,
+    /// `--show-host-summary` (`CLI_SHOW_HOST_SUMMARY`).
+    pub show_host_summary: bool,
 }
 
 /// `createconn._default_uri`: probe the host for a hypervisor.
@@ -142,8 +144,9 @@ impl Engine {
         ENGINE.with(|e| {
             let _ = e.set(engine.clone());
         });
-        engine.default_startup(opts.uri.is_some());
-        engine.handle_cli_command(opts.uri);
+        // `skip_autostart`: a --show-* window was asked for
+        engine.default_startup(opts.uri.is_some(), opts.show_host_summary);
+        engine.handle_cli_command(opts.uri, opts.show_host_summary);
     }
 
     pub fn app(&self) -> gtk::Application {
@@ -164,7 +167,7 @@ impl Engine {
             .clone()
     }
 
-    fn default_startup(&self, have_cliuri: bool) {
+    fn default_startup(&self, have_cliuri: bool, skip_autostart: bool) {
         // Build the manager first so it sees every conn-added.
         let manager = self.get_manager();
         self.config
@@ -172,7 +175,9 @@ impl Engine {
         self.schedule_timer();
         self.tick();
 
-        glib::idle_add_local_once(|| get().autostart_conns());
+        if !skip_autostart {
+            glib::idle_add_local_once(|| get().autostart_conns());
+        }
 
         if self.config.get_conn_uris().is_empty() && !have_cliuri {
             // Only add default if no connections are currently known
@@ -245,7 +250,7 @@ impl Engine {
         }
     }
 
-    fn handle_cli_command(&self, uri: Option<String>) {
+    fn handle_cli_command(&self, uri: Option<String>, show_host_summary: bool) {
         let Some(uri) = uri else {
             self.get_manager().show();
             return;
@@ -253,7 +258,7 @@ impl Engine {
         let conn_is_new = self.connmanager.get_conn(&uri).is_none();
         let conn = self.connmanager.add_conn(&uri);
         if conn.is_active() {
-            self.launch_manager(&uri);
+            self.launch_cli_window(&uri, show_host_summary);
             return;
         }
         conn.open(move |err| {
@@ -265,9 +270,20 @@ impl Engine {
                     }
                     engine.handle_conn_error(err);
                 }
-                None => engine.launch_manager(&uri),
+                None => engine.launch_cli_window(&uri, show_host_summary),
             }
         });
+    }
+
+    /// `_launch_cli_window`, for the windows ported so far.
+    fn launch_cli_window(&self, uri: &str, show_host_summary: bool) {
+        if !show_host_summary {
+            self.launch_manager(uri);
+            return;
+        }
+        if let Some(conn) = self.connmanager.get_conn(uri) {
+            crate::host::VmmHost::show_instance(&conn);
+        }
     }
 
     fn launch_manager(&self, uri: &str) {

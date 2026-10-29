@@ -287,6 +287,14 @@ impl XmlEditor {
     pub fn is_xml_selected(&self) -> bool {
         self.0.curpage.get() == PAGE_XML
     }
+
+    /// `reset_state`: clear XML and select the details page. Used when
+    /// callers do their own reset_state.
+    pub fn reset_state(&self) {
+        self.reset_xml();
+        // Setting curpage first will shortcircuit our page changed callback
+        self.reselect_page(PAGE_DETAILS);
+    }
 }
 
 /// `xmlutil.unindent_device_xml`: strip the indentation of the first

@@ -73,6 +73,27 @@ fn draw_fill(cr: &gtk::cairo::Context, x: f64, y: f64, h: f64, points: &[(f64, f
     let _ = cr.fill();
 }
 
+/// `draw_fill` with taper=True: the fill is boxed out to the full
+/// width instead of the last point.
+fn draw_fill_tapered(
+    cr: &gtk::cairo::Context,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    points: &[(f64, f64)],
+) {
+    if points.is_empty() {
+        return;
+    }
+    line_helper(cr, y + h, points, true);
+    let baseline_y = h + y + 1.0;
+    let start_x = w + x;
+    cr.line_to(start_x + 1.0, baseline_y);
+    cr.line_to(x - 1.0, baseline_y);
+    let _ = cr.fill();
+}
+
 mod imp {
     use super::*;
 
@@ -270,6 +291,148 @@ impl Sparkline {
         if len_changed {
             self.queue_resize();
         }
+        self.queue_draw();
+    }
+}
+
+mod graph_imp {
+    use super::*;
+
+    #[derive(Default)]
+    pub struct SparklineGraph {
+        pub data_array: RefCell<Vec<f64>>,
+        pub reversed: Cell<bool>,
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for SparklineGraph {
+        const NAME: &'static str = "VmmSparklineGraph";
+        type Type = super::SparklineGraph;
+        type ParentType = gtk::Widget;
+
+        /// `ctxt.add_class(Gtk.STYLE_CLASS_ENTRY)`: drawn as an entry,
+        /// whose CSS background and frame GTK4 renders for the node.
+        fn class_init(klass: &mut Self::Class) {
+            klass.set_css_name("entry");
+        }
+    }
+
+    impl ObjectImpl for SparklineGraph {}
+
+    impl WidgetImpl for SparklineGraph {
+        /// `Gtk.DrawingArea` requests no size of its own.
+        fn measure(&self, _orientation: gtk::Orientation, _for_size: i32) -> (i32, i32, i32, i32) {
+            (0, 0, -1, -1)
+        }
+
+        fn snapshot(&self, snapshot: &gtk::Snapshot) {
+            let widget = self.obj();
+            let (w, h) = (widget.width(), widget.height());
+            let bounds = gtk::graphene::Rect::new(0.0, 0.0, w as f32, h as f32);
+            let cr = snapshot.append_cairo(&bounds);
+            self.draw(&cr, w as f64, h as f64, widget.color());
+        }
+    }
+
+    impl SparklineGraph {
+        /// `Sparkline.do_draw` with `num_sets` 1, `filled` and no `rgb`:
+        /// the line and fill keep cairo's default source.
+        fn draw(&self, cr: &gtk::cairo::Context, w: f64, h: f64, fg: gdk::RGBA) {
+            let data = self.data_array.borrow();
+            let points_per_set = data.len();
+            let pixels_per_point = w / (points_per_set.saturating_sub(1).max(1) as f64);
+
+            // This draws the marker ticks (`Gtk.render_line`: a 1px line
+            // in the foreground color)
+            let max_ticks = 4;
+            cr.save().ok();
+            cr.set_line_width(1.0);
+            cr.set_source_rgba(
+                fg.red() as f64,
+                fg.green() as f64,
+                fg.blue() as f64,
+                fg.alpha() as f64,
+            );
+            for index in 1..max_ticks {
+                let y = ((h as i64 / max_ticks) * index) as f64 + 0.5;
+                cr.move_to(1.5, y);
+                cr.line_to(w - 2.0 + 0.5, y);
+                let _ = cr.stroke();
+            }
+            cr.restore().ok();
+
+            // Draw the actual sparkline
+            let reversed = self.reversed.get();
+            let get_y = |index: usize| {
+                let n = if reversed {
+                    points_per_set - index - 1
+                } else {
+                    index
+                };
+                h - ((h - 1.0) * data[n])
+            };
+            cr.set_line_width(2.0);
+            let mut points: Vec<(f64, f64)> = (0..points_per_set)
+                .map(|i| {
+                    let x = i as f64 * pixels_per_point;
+                    (x.trunc(), get_y(i).trunc())
+                })
+                .collect();
+            draw_line(cr, 0.0, h, &points);
+            // Fixes a fully filled graph from having an oddly tapered in
+            // end (bug 560913).
+            points.insert(0, (0.0, h));
+            draw_fill_tapered(cr, 0.0, 0.0, w, h, &points);
+        }
+    }
+}
+
+glib::wrapper! {
+    /// Upstream's `Sparkline` (the `Gtk.DrawingArea` one, not the cell
+    /// renderer above): the Connection Details CPU and memory graphs.
+    pub struct SparklineGraph(ObjectSubclass<graph_imp::SparklineGraph>)
+        @extends gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
+}
+
+/// GTK3 drew the graph over the whole entry, frame included; GTK4 puts
+/// a widget's drawing inside its CSS padding, which entries have.
+const GRAPH_CSS: &str = "entry.vmm-sparkline-graph { padding: 0; }";
+
+impl Default for SparklineGraph {
+    fn default() -> Self {
+        thread_local! {
+            static CSS: std::cell::OnceCell<()> = const { std::cell::OnceCell::new() };
+        }
+        CSS.with(|c| {
+            c.get_or_init(|| {
+                if let Some(display) = gdk::Display::default() {
+                    let provider = gtk::CssProvider::new();
+                    provider.load_from_string(GRAPH_CSS);
+                    gtk::style_context_add_provider_for_display(
+                        &display,
+                        &provider,
+                        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                    );
+                }
+            });
+        });
+        let graph: SparklineGraph = glib::Object::new();
+        graph.add_css_class("vmm-sparkline-graph");
+        graph
+    }
+}
+
+impl SparklineGraph {
+    /// `set_property("data_array", ...)`.
+    pub fn set_data_array(&self, data: Vec<f64>) {
+        self.imp().data_array.replace(data);
+        self.queue_draw();
+    }
+
+    /// `set_property("reversed", ...)`.
+    pub fn set_reversed(&self, reversed: bool) {
+        self.imp().reversed.set(reversed);
         self.queue_draw();
     }
 }

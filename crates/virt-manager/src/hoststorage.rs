@@ -1,6 +1,6 @@
 //! `hoststorage.py` (`vmmHostStorage`): the storage pool list, the
-//! selected pool's details and its volumes. The storage browser
-//! embeds it, and host details will too.
+//! selected pool's details and its volumes. The storage browser and
+//! the Connection Details window (`host.rs`) embed it.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -161,7 +161,6 @@ type VolPopupCallback = Rc<RefCell<Option<Box<dyn Fn(u32, &gtk::Widget, f64, f64
 fn icon_button(icon: &str, tooltip: &str) -> gtk::Button {
     let b = gtk::Button::from_icon_name(icon);
     b.set_tooltip_text(Some(tooltip));
-    b.set_has_frame(false);
     b
 }
 
@@ -226,6 +225,16 @@ pub struct Inner {
     browse_clicked: RefCell<Option<Callback>>,
     volume_chosen: RefCell<Option<VolCallback>>,
     cancel_clicked: RefCell<Option<Callback>>,
+    /// The connection's `state-changed` and `pool-event` handlers.
+    conn_handlers: RefCell<Vec<glib::SignalHandlerId>>,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        for id in self.conn_handlers.take() {
+            self.conn.disconnect(id);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -449,6 +458,7 @@ impl HostStorage {
             browse_clicked: RefCell::default(),
             volume_chosen: RefCell::default(),
             cancel_clicked: RefCell::default(),
+            conn_handlers: RefCell::default(),
         }));
         let weak = this.weak();
         *popup_cb.borrow_mut() = Some(Box::new(move |pos, cell, x, y| {
@@ -457,6 +467,22 @@ impl HostStorage {
             }
         }));
         this.connect_signals(&copy_path);
+        // `_conn_state_changed_cb`
+        let cb = this.with(HostStorage::refresh_conn_state);
+        let id = conn.connect_local("state-changed", false, move |_| {
+            cb();
+            None
+        });
+        this.conn_handlers.borrow_mut().push(id);
+        // `_conn_pools_changed_cb` / `_pool_changed_cb`
+        let weak = this.weak();
+        let id = conn.connect_local("pool-event", false, move |args| {
+            let name = args[1].get::<String>().ok()?;
+            let this = HostStorage(weak.upgrade()?);
+            this.spawn(|t| async move { t.pool_event(&name).await });
+            None
+        });
+        this.conn_handlers.borrow_mut().push(id);
         this.refresh_conn_state();
         this
     }
@@ -582,6 +608,10 @@ impl HostStorage {
 
     /// `refresh_page`.
     pub fn refresh_page(&self) {
+        // A priority tick does nothing for an inactive connection
+        if !self.conn.is_active() {
+            return;
+        }
         self.spawn(|t| async move { t.populate_pools().await });
     }
 
@@ -627,10 +657,13 @@ impl HostStorage {
     fn refresh_conn_state(&self) {
         let conn_active = self.conn.is_active();
         self.pool_add.set_sensitive(conn_active);
-        self.spawn(|t| async move { t.populate_pools().await });
-        if !conn_active {
-            self.set_error_page("Connection not active.");
-        }
+        self.spawn(move |t| async move {
+            t.populate_pools().await;
+            // After the (now empty) list's own "No storage pool selected."
+            if !conn_active {
+                t.set_error_page("Connection not active.");
+            }
+        });
     }
 
     fn current_pool(&self) -> Option<PoolRow> {
@@ -747,6 +780,35 @@ impl HostStorage {
                 self.refresh_current_pool();
             }
             None => self.refresh_current_pool(),
+        }
+    }
+
+    /// A `pool-event` for `name`. Upstream recaches that pool, whose
+    /// `state-changed`/`refreshed` update its row and, when it's the
+    /// one shown, the details (`_update_pool_row`); or it polls, and
+    /// the `pool-added`/`pool-removed` that follow repopulate the list
+    /// (`_conn_pools_changed_cb`).
+    async fn pool_event(&self, name: &str) {
+        let mut pools = fetch_pools(&self.conn).await;
+        pools.sort_by(|a, b| a.name().cmp(b.name()));
+        let same_list = {
+            let old = self.pools.borrow();
+            old.len() == pools.len() && old.iter().zip(&pools).all(|(a, b)| a.name() == b.name())
+        };
+        if !same_list {
+            self.populate_pools().await;
+            return;
+        }
+
+        // Update active sensitivity and percent available inline
+        for (i, pool) in pools.iter().enumerate() {
+            if let Some(row) = self.pool_list.row_at_index(i as i32) {
+                row.set_child(Some(&pool_row_widget(pool)));
+            }
+        }
+        *self.pools.borrow_mut() = pools;
+        if self.current_pool().is_some_and(|p| p.name() == name) {
+            self.refresh_current_pool();
         }
     }
 
