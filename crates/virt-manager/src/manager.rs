@@ -5,10 +5,6 @@
 //!
 //! The stats columns (CPU, host CPU, memory, disk, network) draw
 //! upstream's sparklines and follow View > Graph.
-//!
-//! Still to come, each with its own port: the windows the disabled
-//! actions open (New VM, VM/Connection details, Delete, Clone,
-//! Migrate, Preferences).
 
 use std::cell::Cell;
 use std::rc::{Rc, Weak};
@@ -573,7 +569,6 @@ impl VmmManager {
         });
         let this = VmmManager(inner);
         this.wire_signals();
-        this.set_unported_actions();
         this.init_stats();
 
         let cm = engine::get().connmanager();
@@ -696,10 +691,6 @@ impl VmmManager {
         });
         i.columnview.add_controller(keys);
     }
-
-    /// Windows not ported yet: their entry points stay visible (same
-    /// menus as upstream) but insensitive.
-    fn set_unported_actions(&self) {}
 
     /// `init_stats`: View > Graph toggles mirror the `vmlist-fields`
     /// settings, and are forced off and insensitive while the matching

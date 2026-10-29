@@ -4,10 +4,10 @@ A from-scratch Rust rewrite of [virt-manager](https://github.com/virt-manager/vi
 (the GTK/Python libvirt VM management app) — full feature parity, same GUI
 layout, full libvirt driver parity (QEMU/KVM, Xen, LXC, bhyve), Linux only.
 
-**Status: early. The GUI has its main window; the other windows are still
-being ported. Three CLI tools exist with partial flag coverage.** This is not yet a usable replacement for upstream virt-manager —
-see [Status](#status) below before expecting it to do what the real
-virt-manager does.
+**Status: feature-complete port of virt-manager v5.1.0, not yet battle-tested.**
+Every upstream window and the three CLI tools are ported; see
+[Status](#status) for the few things that differ and what hasn't been
+exercised against real hosts yet.
 
 ## Why
 
@@ -18,11 +18,16 @@ the Python original, without changing how it looks or where anything is.
 
 | Piece | State |
 |---|---|
-| `virtinst-core` | Library. All device/domain XML types, the connection layer (real `virt`/libvirt bindings), install-method logic, clone logic. |
-| `virt-install` | Working binary. `--import`, `--cdrom`/`--livecd`, `--boot`, `--cdrom --disk` (two-phase), `--pxe`, `--container --filesystem`. Most of upstream's flags aren't implemented yet. |
-| `virt-clone` | Working binary. `--preserve-data` mode only (rewrites XML — name/UUID/MACs/disk paths — no disk-content copying). |
-| `virt-xml` | Working binary. `--build-xml`/`--edit`/`--add-device`/`--remove-device`/`--print-xml`, wired up for eleven device options (`--watchdog`, `--vsock`, `--disk` — a deliberately partial slice of upstream's real 40+-field `--disk`, `--memballoon`, `--sound`, `--video`, `--controller`, `--tpm`, `--smartcard`, `--redirdev`, `--filesystem`) as the pattern to extend. `--edit`/`--remove-device` also support upstream's field-match selector form (e.g. `--remove-device --sound ich6`), not just index/`all`. |
-| `virt-manager` (GUI) | **In progress.** GTK4. Connection list with VMs, Add Connection dialog, connect/disconnect/remove connection, Run/Pause/Resume/Shut Down/Reboot/Force Reset/Force Off/Save, confirmation and error dialogs, the CPU / host CPU / memory / disk / network sparkline columns (View > Graph), Preferences, About. VM window (Open): menus, toolbar, run/pause/shutdown, hardware list and the Overview page, the embedded VNC and SPICE consoles (keyboard, mouse, password login, scaling, guest resize, fullscreen, Send Key, screenshots, SSH tunnels, SPICE audio, SPICE clipboard sharing and USB redirection; needs libgvnc-1.0 and libspice-client-glib-2.0) and the serial/text consoles (VTE, needs vte-2.91-gtk4). The other details pages are next. Shares upstream's GSettings, so saved connections carry over. Menu entries for windows not yet ported (New VM, Clone, Migrate, Delete, …) are shown but disabled. |
+| `virtinst-core` | Library. All device/domain/network/snapshot XML types, the connection layer (real `virt`/libvirt bindings), install-method logic, clone logic (including disk copying), disk path permission fixups. |
+| `virt-install` | Working binary. Every upstream option on the 1:1 parser engine, all install methods (`--location` with distro detection, `--cdrom`, `--pxe`, `--import`, `--install` kernel/initrd, `--cloud-init`, `--unattended`, `--reinstall`). |
+| `virt-clone` | Working binary. Full upstream option set: `--auto-clone`, disk copying (`--file`, `--force-copy`, `--skip-copy`, `--nonsparse`, `--reflink`), `--preserve-data`, `--nvram`, `--mac`, `--replace`, `--print-xml`, bash completion. |
+| `virt-xml` | Working binary. Every upstream device and guest option on the parser engine, `--build-xml`/`--edit`/`--add-device`/`--remove-device`/`--update`/`--print-diff`, `--convert-to-q35`/`--convert-to-vnc`, `--osinfo`. Checked byte for byte against upstream's own `virt-xml` (1300+ harness cases). |
+| `virt-manager` (GUI) | GTK4, same layout and texts as upstream. Main window (connections, VM list, sparkline columns), Add Connection with password/keyring login, Preferences, About, system tray icon (StatusNotifierItem). New VM (local media, URL, import, manual, "Customize before install"), Delete, Clone, Migrate. VM window: details for every hardware type, Add Hardware, the Performance page, the XML tab, Snapshots, the VNC/SPICE consoles (needs libgvnc-1.0 and libspice-client-glib-2.0) and serial consoles (needs vte-2.91-gtk4). Connection Details: overview, virtual networks (and Create Network), storage pools/volumes. `--show-*` startup flags. Shares upstream's GSettings and keyring entries, so saved connections and console passwords carry over. |
+
+Known differences from upstream: no libguestfs inspection (the Applications
+list stays hidden, as upstream does when inspection is unavailable); the tray
+icon needs a StatusNotifierItem host (GTK4 has no `GtkStatusIcon`, so there is
+no XEmbed fallback).
 
 Run any binary with `--help` for its exact current flag set — the help text
 says what's implemented and what upstream does differently, per flag.
