@@ -4,7 +4,7 @@
 //! install media/bootdev handling is the `Installer`
 //! (`virtinst_cli::installer`).
 
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, CommandFactory, Parser};
 use virtinst_cli::cli::{self, fail, print_stderr, print_stdout};
 use virtinst_cli::guest::{self, GuestOpts};
 use virtinst_cli::installer::{Installer, InstallerArgs, Started};
@@ -2434,6 +2434,7 @@ fn xml_to_print(b: &mut Built, args: &Args, conn: &Connection) -> Option<String>
 }
 
 fn main() {
+    cli::autocomplete(Args::command());
     cli::handle_version_flag();
     let mut args: Args = cli::argparse_parse("virt-install", "OPTIONS");
 
@@ -2468,52 +2469,24 @@ fn main() {
         (
             "location",
             args.location.iter().collect(),
-            &["initrd", "kernel", "location"],
+            &cli::LOCATION_OPTIONS,
         ),
         (
             "unattended",
             args.unattended.iter().collect(),
-            &[
-                "admin-password-file",
-                "product-key",
-                "profile",
-                "reg-login",
-                "user-login",
-                "user-password-file",
-            ],
+            &cli::UNATTENDED_OPTIONS,
         ),
         (
             "install",
             args.install.iter().collect(),
-            &[
-                "bootdev",
-                "initrd",
-                "kernel",
-                "kernel_args",
-                "kernel_args_overwrite",
-                "no_install",
-                "os",
-            ],
+            &cli::INSTALL_OPTIONS,
         ),
         (
             "cloud-init",
             args.cloud_init.iter().collect(),
-            &[
-                "clouduser-ssh-key",
-                "disable",
-                "meta-data",
-                "network-config",
-                "root-password-file",
-                "root-password-generate",
-                "root-ssh-key",
-                "user-data",
-            ],
+            &cli::CLOUD_INIT_OPTIONS,
         ),
-        (
-            "osinfo",
-            args.osinfo.iter().collect(),
-            &["detect", "id", "name", "require", "short-id"],
-        ),
+        ("osinfo", args.osinfo.iter().collect(), &cli::OSINFO_OPTIONS),
     ];
     for (flag, values, names) in extra {
         if values.iter().any(|v| *v == "?" || *v == "help") {
