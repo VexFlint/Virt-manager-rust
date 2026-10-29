@@ -98,6 +98,10 @@ pub fn setup_first_uri(detected_uri: Option<&str>) -> Option<String> {
 
 /// Builds the application and runs the GTK main loop.
 pub fn run(opts: StartupOptions) -> glib::ExitCode {
+    // Before the Application exists: GTK can load the icon theme during
+    // its own startup, and a theme loaded before the icons are registered
+    // never sees them (every bundled icon draws as image-missing).
+    gio::resources_register_include!("virt-manager.gresource").expect("bundled resources register");
     let app = gtk::Application::builder()
         .application_id(APP_ID)
         .resource_base_path(RESOURCE_BASE)
@@ -117,8 +121,6 @@ pub fn run(opts: StartupOptions) -> glib::ExitCode {
 
 impl Engine {
     fn startup(app: &gtk::Application, opts: StartupOptions) {
-        gio::resources_register_include!("virt-manager.gresource")
-            .expect("bundled resources register");
         gtk::Window::set_default_icon_name("virt-manager");
         // Upstream registers a libvirt error handler that only logs at
         // debug level; without one libvirt prints every expected error

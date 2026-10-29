@@ -132,7 +132,9 @@ Dicas do ambiente:
   `build.rs` compila uma cópia de reserva em `OUT_DIR`.
 - **App id diferente** (`org.virt-manager.virt-manager-rust`) para não brigar
   pela instância única no D-Bus com um virt-manager Python aberto.
-- Ícones do upstream embutidos como GResource.
+- Ícones do upstream embutidos como GResource, registrada antes de criar a
+  `gtk::Application` (se o tema de ícones carregar antes, os ícones saem
+  como image-missing).
 - **Async:** `gio::spawn_blocking` + `glib::spawn_future_local` (ticket 09).
   Eventos de domínio em `connevents.rs`; o tick ainda faz polling de estatísticas.
 - **Consoles:** FFI escrita à mão para a parte sem GTK das bibliotecas, com
