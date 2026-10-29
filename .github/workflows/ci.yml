@@ -27,10 +27,11 @@ jobs:
       # cpio, xorriso and genisoimage are what virt-install (ours and
       # upstream's) runs for --location ISO trees, --initrd-inject and
       # the cloud-init/unattended ISOs.
+      # python3-docutils gives rst2man for the man pages (man/build.sh).
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libvirt-dev libosinfo-1.0-dev libclang-dev pkg-config libxml2-utils libgtk-4-dev libgvnc-1.0-dev libspice-client-glib-2.0-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev python3-libvirt python3-libxml2 python3-requests cpio xorriso genisoimage
+          sudo apt-get install -y libvirt-dev libosinfo-1.0-dev libclang-dev pkg-config libxml2-utils libgtk-4-dev libgvnc-1.0-dev libspice-client-glib-2.0-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev python3-libvirt python3-libxml2 python3-requests cpio xorriso genisoimage python3-docutils
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -54,6 +55,13 @@ jobs:
       # pinned to the upstream release the port tracks.
       - name: Fetch upstream virt-manager reference
         run: git clone --depth 1 --branch v5.1.0 https://github.com/virt-manager/virt-manager "$RUNNER_TEMP/virt-manager-upstream"
+
+      # The man pages are upstream's own man/*.rst, unchanged (1:1), built
+      # with `rst2man --strict` as upstream's man/meson.build does.
+      - name: Man pages
+        run: |
+          diff -r --exclude=meson.build --exclude=build.sh "$RUNNER_TEMP/virt-manager-upstream/man" man
+          sh man/build.sh
 
       - name: Upstream comparison harness
         run: bash .scratch/rust-conversion/harness/run.sh

@@ -55,7 +55,7 @@ sudo apt-get update
 sudo apt-get install -y libvirt-dev libosinfo-1.0-dev libclang-dev pkg-config \
   libxml2-utils libgtk-4-dev libgvnc-1.0-dev libspice-client-glib-2.0-dev \
   libvte-2.91-gtk4-dev libgtksourceview-5-dev python3-libvirt python3-libxml2 python3-requests \
-  cpio xorriso genisoimage
+  cpio xorriso genisoimage python3-docutils
 ```
 
 Se adicionar uma dependência de sistema nova, adicione também no `ci.yml` e
