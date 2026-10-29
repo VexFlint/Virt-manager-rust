@@ -47,6 +47,7 @@ mod netlist;
 mod oslist;
 mod preferences;
 mod serialcon;
+mod snapshots;
 mod spice;
 mod spicedisplay;
 mod spicegtksession;

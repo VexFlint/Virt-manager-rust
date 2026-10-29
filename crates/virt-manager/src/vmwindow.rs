@@ -23,6 +23,7 @@ use crate::domain::VmmDomain;
 use crate::engine;
 use crate::error;
 use crate::manager::{tool_button, tool_content};
+use crate::snapshots::{self, VmmSnapshotPage};
 use crate::vmmenu;
 
 /// `DETAILS_PAGE_*`, as the stack's child names.
@@ -42,6 +43,10 @@ struct Inner {
     pages: gtk::Stack,
     console: VmmConsolePages,
     details: VmmDetails,
+    snapshots: VmmSnapshotPage,
+    /// `vm.snapshots_supported()`, once the worker answered: `Some(None)`
+    /// when snapshots work, `Some(Some(errmsg))` when they don't.
+    snapshots_supported: RefCell<Option<Option<String>>>,
     control_console: gtk::ToggleButton,
     control_details: gtk::ToggleButton,
     control_snapshots: gtk::ToggleButton,
@@ -253,6 +258,7 @@ impl VmmVMWindow {
 
         let console = VmmConsolePages::new(vm, &window);
         let details = VmmDetails::new(vm, is_customize_dialog);
+        let snapshots = VmmSnapshotPage::new(vm, window.upcast_ref());
 
         let menubar = gtk::PopoverMenuBar::from_model(Some(&build_menubar(vm, &console)));
 
@@ -321,14 +327,12 @@ impl VmmVMWindow {
         customize_toolbar.set_visible(false);
         toolbar_box.append(&customize_toolbar);
 
-        let snapshots = gtk::Label::new(Some(
-            "Snapshot management is not available yet in this version.",
-        ));
         let pages = gtk::Stack::new();
         pages.set_vexpand(true);
         pages.add_named(details.top_box(), Some(PAGE_DETAILS));
         pages.add_named(console.top_box(), Some(PAGE_CONSOLE));
-        pages.add_named(&snapshots, Some(PAGE_SNAPSHOTS));
+        // snapshot-placeholder
+        pages.add_named(snapshots.top_box(), Some(PAGE_SNAPSHOTS));
 
         let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
         vbox.append(&menubar);
@@ -449,6 +453,8 @@ impl VmmVMWindow {
                 pages,
                 console,
                 details,
+                snapshots,
+                snapshots_supported: RefCell::default(),
                 control_console,
                 control_details,
                 control_snapshots,
@@ -490,6 +496,16 @@ impl VmmVMWindow {
         this.console_refresh_autoconnect_from_settings();
         this.refresh_vm_state();
         this.activate_default_page();
+        // `_init_libvirt_state` primes `snapshots_supported()`.
+        let weak = Rc::downgrade(&this.0);
+        let vm = vm.clone();
+        glib::spawn_future_local(async move {
+            let errmsg = snapshots::snapshots_supported(&vm).await;
+            if let Some(inner) = weak.upgrade() {
+                inner.snapshots_supported.replace(Some(errmsg));
+                VmmVMWindow(inner).refresh_vm_state();
+            }
+        });
         this
     }
 
@@ -728,6 +744,7 @@ impl VmmVMWindow {
         self.close_inner();
         let i = &self.0;
         i.console.vmwindow_cleanup();
+        i.snapshots.cleanup();
         i.details.cleanup();
         for (obj, id) in i.handlers.take() {
             obj.disconnect(id);
@@ -854,10 +871,15 @@ impl VmmVMWindow {
         self.rebuild_vm_menu_if_needed();
         self.set_pause_state(paused);
 
-        // snapshots_supported: the Snapshots page isn't ported yet.
+        // `snapshots_supported`, insensitive until the worker answered.
+        let errmsg = i.snapshots_supported.borrow().clone();
+        let cansnap = errmsg == Some(None);
+        i.control_snapshots.set_sensitive(cansnap);
         let mut tooltip = "Manage VM snapshots".to_string();
-        tooltip += "\nSnapshot management is not available yet in this version.";
-        i.control_snapshots.set_sensitive(false);
+        if let Some(Some(errmsg)) = errmsg {
+            tooltip += "\n";
+            tooltip += &errmsg;
+        }
         i.control_snapshots.set_tooltip_text(Some(&tooltip));
 
         self.refresh_current_page(None);
@@ -931,6 +953,8 @@ impl VmmVMWindow {
         i.details.vmwindow_refresh_vm_state(newpage == PAGE_DETAILS);
         if newpage == PAGE_CONSOLE {
             i.console.vmwindow_refresh_vm_state();
+        } else if newpage == PAGE_SNAPSHOTS {
+            i.snapshots.vmwindow_refresh_vm_state();
         }
     }
 

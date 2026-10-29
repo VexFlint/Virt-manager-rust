@@ -20,6 +20,7 @@ pub mod install;
 pub mod nodedev;
 pub mod osinfo;
 pub mod progress;
+pub mod snapshot;
 pub mod storage;
 pub mod xmlbuilder;
 

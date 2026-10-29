@@ -175,6 +175,12 @@ impl CapsGuest {
             .any(|d| d.hypervisor_type.as_deref() == Some("kvm"))
     }
 
+    /// Upstream's `supports_externalSnapshot`: `<externalSnapshot/>`
+    /// under `<features>`.
+    pub fn supports_external_snapshot(&self) -> bool {
+        self.features.external_snapshot
+    }
+
     fn from_element(doc: &Document, el: Element) -> CapsGuest {
         let arch_el = el.find(doc, "arch");
         CapsGuest {
@@ -495,6 +501,27 @@ impl Capabilities {
             domain.machines.clone()
         })
     }
+
+    /// `capsinfo.guest` for a [`Capabilities::guest_lookup`]: the
+    /// `<guest>` it picked, as `vmmSnapshotNew._init_snapshot_mode`
+    /// reads `capsinfo.guest.supports_externalSnapshot()`.
+    pub fn guest_lookup_guest(
+        &self,
+        os_type: Option<&str>,
+        arch: Option<&str>,
+        typ: Option<&str>,
+        machine: Option<&str>,
+    ) -> Result<&CapsGuest, String> {
+        self.guest_lookup(os_type, arch, typ, machine)?;
+        let os_type = if os_type == Some("linux") {
+            Some("xen")
+        } else {
+            os_type
+        };
+        Ok(self
+            .guest_for_os_type(os_type, arch)
+            .expect("guest_lookup found it"))
+    }
 }
 
 #[cfg(test)]
@@ -583,6 +610,28 @@ mod tests {
             info.machines.is_empty(),
             "this driver reports no <machine> elements at all"
         );
+    }
+
+    /// `capsinfo.guest.supports_externalSnapshot()`: the test driver
+    /// doesn't report it; a qemu-style `<externalSnapshot/>` does.
+    #[test]
+    fn guest_lookup_guest_reports_external_snapshot_support() {
+        let caps = Capabilities::parse(TEST_DRIVER_CAPS).expect("parses");
+        let guest = caps
+            .guest_lookup_guest(Some("hvm"), Some("i686"), Some("test"), None)
+            .expect("finds a guest");
+        assert_eq!(guest.os_type.as_deref(), Some("hvm"));
+        assert!(!guest.supports_external_snapshot());
+        assert!(caps
+            .guest_lookup_guest(Some("hvm"), Some("ppc64"), None, None)
+            .is_err());
+
+        let qemu = TEST_DRIVER_CAPS.replace("<pae/>", "<pae/>\n      <externalSnapshot/>");
+        let caps = Capabilities::parse(&qemu).expect("parses");
+        let guest = caps
+            .guest_lookup_guest(Some("hvm"), None, None, None)
+            .expect("finds a guest");
+        assert!(guest.supports_external_snapshot());
     }
 
     #[test]
