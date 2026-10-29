@@ -1100,14 +1100,93 @@ pub fn get_completions(
     completions
 }
 
+/// `ParserLocation`'s sub-options.
+pub const LOCATION_OPTIONS: [&str; 3] = ["initrd", "kernel", "location"];
+
+/// `ParserUnattended`'s sub-options.
+pub const UNATTENDED_OPTIONS: [&str; 6] = [
+    "admin-password-file",
+    "product-key",
+    "profile",
+    "reg-login",
+    "user-login",
+    "user-password-file",
+];
+
+/// `ParserInstall`'s sub-options.
+pub const INSTALL_OPTIONS: [&str; 7] = [
+    "bootdev",
+    "initrd",
+    "kernel",
+    "kernel_args",
+    "kernel_args_overwrite",
+    "no_install",
+    "os",
+];
+
+/// `ParserCloudInit`'s sub-options.
+pub const CLOUD_INIT_OPTIONS: [&str; 8] = [
+    "clouduser-ssh-key",
+    "disable",
+    "meta-data",
+    "network-config",
+    "root-password-file",
+    "root-password-generate",
+    "root-ssh-key",
+    "user-data",
+];
+
+/// `ParserOSInfo`'s sub-options.
+pub const OSINFO_OPTIONS: [&str; 5] = ["detect", "id", "name", "require", "short-id"];
+
+/// `_get_completer_parsers`: each parser's flag and its sub-option
+/// names (`nonregex_cliname`), `VIRT_PARSERS` first.
+fn completer_parsers() -> Vec<(String, Vec<String>)> {
+    let mut defs = crate::parsers::all();
+    defs.push(crate::parsers::convert::convert_to_q35());
+    defs.push(crate::parsers::convert::convert_to_vnc());
+    let mut ret: Vec<(String, Vec<String>)> = defs
+        .into_iter()
+        .map(|d| {
+            let names = d
+                .args
+                .iter()
+                .map(|a| a.cliname.replace("[0-9]*", ""))
+                .collect();
+            (d.cli_flag_name(), names)
+        })
+        .collect();
+    let extra: [(&str, &[&str]); 6] = [
+        ("--check", &CHECK_OPTIONS),
+        ("--location", &LOCATION_OPTIONS),
+        ("--unattended", &UNATTENDED_OPTIONS),
+        ("--install", &INSTALL_OPTIONS),
+        ("--cloud-init", &CLOUD_INIT_OPTIONS),
+        ("--osinfo", &OSINFO_OPTIONS),
+    ];
+    for (flag, names) in extra {
+        ret.push((flag.into(), names.iter().map(|n| n.to_string()).collect()));
+    }
+    ret
+}
+
 /// `autocomplete(parser)`: when bash's completion script runs the tool
 /// (`_ARGCOMPLETE` set), print the completions for `COMP_LINE` and
-/// exit; otherwise do nothing. `parsers` are the options with
-/// sub-options (`--check` and friends) and their names.
-pub fn autocomplete(cmd: clap::Command, parsers: &[(&str, &[&str])]) {
+/// exit; otherwise do nothing.
+pub fn autocomplete(cmd: clap::Command) {
     if std::env::var_os("_ARGCOMPLETE").is_none() {
         return;
     }
+    let owned = completer_parsers();
+    let names: Vec<Vec<&str>> = owned
+        .iter()
+        .map(|(_, n)| n.iter().map(String::as_str).collect())
+        .collect();
+    let parsers: Vec<(&str, &[&str])> = owned
+        .iter()
+        .zip(&names)
+        .map(|((flag, _), n)| (flag.as_str(), n.as_slice()))
+        .collect();
     let mut cmd = cmd;
     cmd.build();
     let line = std::env::var("COMP_LINE").unwrap_or_default();
@@ -1120,7 +1199,7 @@ pub fn autocomplete(cmd: clap::Command, parsers: &[(&str, &[&str])]) {
     while !line.is_char_boundary(end) {
         end -= 1;
     }
-    let mut completions = get_completions(&cmd, parsers, &line[..end]);
+    let mut completions = get_completions(&cmd, &parsers, &line[..end]);
 
     // argcomplete's append_space: bash adds the space itself unless the
     // script couldn't turn `nospace` off.
@@ -1128,7 +1207,11 @@ pub fn autocomplete(cmd: clap::Command, parsers: &[(&str, &[&str])]) {
     if append_space && completions.len() == 1 && !completions[0].ends_with(['=', '/', ':']) {
         completions[0].push(' ');
     }
-    let ifs = std::env::var("IFS").unwrap_or_else(|_| "\u{b}".into());
+    // argcomplete reads `_ARGCOMPLETE_IFS` (the fish script sets it);
+    // the bash script only sets `IFS`.
+    let ifs = std::env::var("_ARGCOMPLETE_IFS")
+        .or_else(|_| std::env::var("IFS"))
+        .unwrap_or_else(|_| "\u{b}".into());
     let out = completions.join(&ifs);
 
     if std::env::var_os("VIRTINST_TEST_SUITE").is_some() {
@@ -1427,6 +1510,35 @@ mod tests {
                     .hide(true)
                     .action(clap::ArgAction::SetTrue),
             )
+    }
+
+    /// Upstream's `_add_argcomplete_cmd` cases for the parser options
+    /// (`--disk`, `--location`, `--unattended`, `--sound`...).
+    #[test]
+    fn completer_parsers_cover_upstreams() {
+        let parsers = completer_parsers();
+        let names = |flag: &str| -> Vec<String> {
+            let (_, n) = parsers.iter().find(|(f, _)| f == flag).unwrap();
+            virtparser_completer(&n.iter().map(String::as_str).collect::<Vec<_>>(), "")
+        };
+        let disk = names("--disk");
+        for want in [
+            "driver.copy_on_read=",
+            "address.base=",
+            "address.unit=",
+            "sgio=",
+            "driver.cache=",
+            // completer should strip out regexes from results
+            "source.seclabel.relabel=",
+        ] {
+            assert!(disk.iter().any(|s| s == want), "{want}");
+        }
+        assert!(names("--location").contains(&"kernel=".into()));
+        assert!(names("--install").contains(&"initrd=".into()));
+        assert!(names("--unattended").contains(&"admin-password-file=".into()));
+        assert!(names("--unattended").contains(&"profile=".into()));
+        assert!(names("--sound").contains(&"model=".into()));
+        assert!(names("--check").contains(&"disk_size=".into()));
     }
 
     /// Upstream's `_add_argcomplete_cmd` cases that apply here.

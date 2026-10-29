@@ -194,7 +194,7 @@ fn validate_disks(cloner: &Cloner) {
 }
 
 fn main() {
-    cli::autocomplete(Args::command(), &[("--check", &cli::CHECK_OPTIONS)]);
+    cli::autocomplete(Args::command());
     cli::handle_version_flag();
     let mut args = Args::parse();
 

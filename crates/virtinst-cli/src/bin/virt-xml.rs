@@ -10,7 +10,7 @@
 
 use std::io::{BufRead, IsTerminal, Write};
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use virt::domain::Domain;
 use virtinst_cli::cli::{self, fail, print_stdout};
 use virtinst_cli::guest::{self, GuestOpts};
@@ -1003,6 +1003,7 @@ fn defined_xml_is_unchanged(domain: &Domain, original_xml: &str) -> bool {
 }
 
 fn main() {
+    cli::autocomplete(Args::command());
     cli::handle_version_flag();
     let mut args: Args = cli::argparse_parse("virt-xml", "[options]");
 

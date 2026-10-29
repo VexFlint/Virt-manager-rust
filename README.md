@@ -20,7 +20,7 @@ the Python original, without changing how it looks or where anything is.
 |---|---|
 | `virtinst-core` | Library. All device/domain/network/snapshot XML types, the connection layer (real `virt`/libvirt bindings), install-method logic, clone logic (including disk copying), disk path permission fixups. |
 | `virt-install` | Working binary. Every upstream option on the 1:1 parser engine, all install methods (`--location` with distro detection, `--cdrom`, `--pxe`, `--import`, `--install` kernel/initrd, `--cloud-init`, `--unattended`, `--reinstall`). |
-| `virt-clone` | Working binary. Full upstream option set: `--auto-clone`, disk copying (`--file`, `--force-copy`, `--skip-copy`, `--nonsparse`, `--reflink`), `--preserve-data`, `--nvram`, `--mac`, `--replace`, `--print-xml`, bash completion. |
+| `virt-clone` | Working binary. Full upstream option set: `--auto-clone`, disk copying (`--file`, `--force-copy`, `--skip-copy`, `--nonsparse`, `--reflink`), `--preserve-data`, `--nvram`, `--mac`, `--replace`, `--print-xml`. |
 | `virt-xml` | Working binary. Every upstream device and guest option on the parser engine, `--build-xml`/`--edit`/`--add-device`/`--remove-device`/`--update`/`--print-diff`, `--convert-to-q35`/`--convert-to-vnc`, `--osinfo`. Checked byte for byte against upstream's own `virt-xml` (1300+ harness cases). |
 | `virt-manager` (GUI) | GTK4, same layout and texts as upstream. Main window (connections, VM list, sparkline columns), Add Connection with password/keyring login, Preferences, About, system tray icon (StatusNotifierItem). New VM (local media, URL, import, manual, "Customize before install"), Delete, Clone, Migrate. VM window: details for every hardware type, Add Hardware, the Performance page, the XML tab, Snapshots, the VNC/SPICE consoles (needs libgvnc-1.0 and libspice-client-glib-2.0) and serial consoles (needs vte-2.91-gtk4). Connection Details: overview, virtual networks (and Create Network), storage pools/volumes. `--show-*` startup flags. Shares upstream's GSettings and keyring entries, so saved connections and console passwords carry over. |
 
@@ -48,6 +48,19 @@ Try the GUI against libvirt's built-in test driver, no daemon needed:
 ```sh
 cargo run -p virt-manager -- --connect test:///default
 ```
+
+## Shell completion
+
+`virt-install`, `virt-clone` and `virt-xml` complete options and their
+sub-options (`--disk source.<TAB>`) in bash, zsh and fish, through the same
+protocol as upstream's argcomplete. The scripts are in
+`crates/virtinst-cli/data/`:
+
+| Shell | Install to |
+|-------|------------|
+| bash | `bash-completion/*` → `/usr/share/bash-completion/completions/` |
+| zsh | `zsh-completion/_*` → a directory in `$fpath` (also needs the bash files above) |
+| fish | `fish-completion/*.fish` → `~/.config/fish/completions/` |
 
 ## Design decisions
 

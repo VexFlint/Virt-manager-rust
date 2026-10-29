@@ -1,0 +1,15 @@
+#compdef virt-xml
+# zsh runs the bash completion script (argcomplete's protocol) through
+# bashcompinit, as argcomplete itself does for zsh.
+autoload -U +X bashcompinit && bashcompinit
+for _vm_dir in ${XDG_DATA_DIRS:-/usr/local/share:/usr/share}; do
+    for _vm_d in ${(s.:.)_vm_dir}; do
+        if [[ -r $_vm_d/bash-completion/completions/virt-xml ]]; then
+            source $_vm_d/bash-completion/completions/virt-xml
+            break 2
+        fi
+    done
+done
+unset _vm_dir _vm_d
+# The first <TAB> lands here; later ones go straight to bash's function.
+_bash_complete -F _python_argcomplete "$@"
