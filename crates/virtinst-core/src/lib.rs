@@ -17,6 +17,7 @@ pub mod devices;
 pub mod diskbackend;
 pub mod domain;
 pub mod install;
+pub mod network;
 pub mod nodedev;
 pub mod osinfo;
 pub mod progress;

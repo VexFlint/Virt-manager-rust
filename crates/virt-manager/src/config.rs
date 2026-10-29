@@ -137,6 +137,8 @@ pub struct Config {
     backend: Option<gio::SettingsBackend>,
     /// Per-VM relocatable `.vm` schemas, keyed by UUID.
     pervm: RefCell<HashMap<String, gio::Settings>>,
+    /// Per-connection relocatable `.connection` schemas, keyed by URI.
+    perconn: RefCell<HashMap<String, gio::Settings>>,
 }
 
 /// `CONSOLE_SCALE_NEVER/FULLSCREEN/ALWAYS`.
@@ -184,6 +186,7 @@ impl Config {
             source: source.clone(),
             backend: backend.clone(),
             pervm: RefCell::default(),
+            perconn: RefCell::default(),
         }
     }
 
@@ -219,6 +222,43 @@ impl Config {
                 gio::Settings::new_full(&schema, self.backend.as_ref(), Some(&path))
             })
             .clone()
+    }
+
+    /// `make_conn_settings`: the `.connection` schema relocated to
+    /// `/org/virt-manager/virt-manager/conns/<uri without slashes>/`,
+    /// the same path upstream's `_make_perconn_key` uses.
+    pub fn conn_settings(&self, uri: &str) -> gio::Settings {
+        self.perconn
+            .borrow_mut()
+            .entry(uri.to_string())
+            .or_insert_with(|| {
+                let schema = self
+                    .source
+                    .lookup(&format!("{SCHEMA_ID}.connection"), true)
+                    .expect("connection schema missing");
+                let path = format!(
+                    "/org/virt-manager/virt-manager/conns/{}/",
+                    uri.replace('/', "")
+                );
+                gio::Settings::new_full(&schema, self.backend.as_ref(), Some(&path))
+            })
+            .clone()
+    }
+
+    /// `get_perconn(uri, "/pretty-name")`.
+    pub fn get_perconn_pretty_name(&self, uri: &str) -> String {
+        self.conn_settings(uri).string("pretty-name").to_string()
+    }
+    pub fn set_perconn_pretty_name(&self, uri: &str, val: &str) {
+        let _ = self.conn_settings(uri).set_string("pretty-name", val);
+    }
+
+    /// `get_perconn(uri, "/window-size")`.
+    pub fn get_perconn_window_size(&self, uri: &str) -> (i32, i32) {
+        self.conn_settings(uri).get::<(i32, i32)>("window-size")
+    }
+    pub fn set_perconn_window_size(&self, uri: &str, w: i32, h: i32) {
+        let _ = self.conn_settings(uri).set("window-size", (w, h));
     }
 
     // Show VM details toolbar
@@ -621,5 +661,23 @@ mod tests {
                 net: false
             }
         );
+    }
+
+    #[test]
+    fn perconn_settings_round_trip_through_memory_backend() {
+        std::env::set_var("VIRT_MANAGER_TEST_MEMORY_SETTINGS", "1");
+        let config = Config::new();
+        let uri = "qemu+ssh://root@host/system";
+        assert_eq!(config.get_perconn_pretty_name(uri), "");
+        assert_eq!(config.get_perconn_window_size(uri), (-1, -1));
+        config.set_perconn_pretty_name(uri, "My host");
+        config.set_perconn_window_size(uri, 900, 700);
+        assert_eq!(config.get_perconn_pretty_name(uri), "My host");
+        assert_eq!(config.get_perconn_window_size(uri), (900, 700));
+        assert_eq!(
+            config.conn_settings(uri).path().as_deref(),
+            Some("/org/virt-manager/virt-manager/conns/qemu+ssh:root@hostsystem/")
+        );
+        assert_eq!(config.get_perconn_pretty_name("test:///default"), "");
     }
 }

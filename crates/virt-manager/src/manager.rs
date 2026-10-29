@@ -27,6 +27,7 @@ use crate::domain::VmmDomain;
 use crate::engine;
 use crate::error;
 use crate::graphwidgets::Sparkline;
+use crate::host;
 use crate::manager_row::{ManagerRow, RowHandle};
 use crate::preferences;
 use crate::statsmanager::StatsRecord;
@@ -525,7 +526,7 @@ impl VmmManager {
                     createconn::VmmCreateConn::show_instance(&m.window())
                 }),
                 ("new-vm", VmmManager::new_vm),
-                ("host-details", |_| {}),
+                ("host-details", VmmManager::show_host),
                 ("vm-details", |m| {
                     if let Some(vm) = m.current_vm() {
                         vmwindow::VmmVMWindow::show_instance(&vm);
@@ -543,7 +544,7 @@ impl VmmManager {
             simple_action(&conn_actions, "connect", weak, VmmManager::open_conn);
             simple_action(&conn_actions, "disconnect", weak, VmmManager::close_conn);
             simple_action(&conn_actions, "delete", weak, VmmManager::do_delete);
-            simple_action(&conn_actions, "details", weak, |_| {});
+            simple_action(&conn_actions, "details", weak, VmmManager::show_host);
 
             let weak_vm = weak.clone();
             let vm_actions = vmmenu::create_actions(
@@ -698,10 +699,7 @@ impl VmmManager {
 
     /// Windows not ported yet: their entry points stay visible (same
     /// menus as upstream) but insensitive.
-    fn set_unported_actions(&self) {
-        set_enabled(&self.0.win_actions, "host-details", false);
-        set_enabled(&self.0.conn_actions, "details", false);
-    }
+    fn set_unported_actions(&self) {}
 
     /// `init_stats`: View > Graph toggles mirror the `vmlist-fields`
     /// settings, and are forced off and insensitive while the matching
@@ -897,8 +895,16 @@ impl VmmManager {
             self.0.vm_actions.activate_action("show", None);
         } else if conn.is_disconnected() {
             self.open_conn();
+        } else {
+            self.show_host();
         }
-        // else show_host: the Connection Details window isn't ported yet.
+    }
+
+    /// `show_host`.
+    fn show_host(&self) {
+        if let Some(conn) = self.current_conn() {
+            host::VmmHost::show_instance(&conn);
+        }
     }
 
     fn do_delete(&self) {
@@ -1165,6 +1171,7 @@ impl VmmManager {
 
         set_enabled(&i.win_actions, "delete", st.can_delete);
         set_enabled(&i.win_actions, "vm-details", st.show_details);
+        set_enabled(&i.win_actions, "host-details", st.host_details);
     }
 }
 

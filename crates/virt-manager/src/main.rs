@@ -23,6 +23,7 @@ mod connevents;
 mod connmanager;
 mod console;
 mod createconn;
+mod createnet;
 mod createpool;
 mod createvm;
 mod createvol;
@@ -37,6 +38,8 @@ mod fsdetails;
 mod gfxdetails;
 mod graphwidgets;
 mod gvnc;
+mod host;
+mod hostnets;
 mod hoststorage;
 mod keymap;
 mod libvirtenummap;
@@ -87,6 +90,10 @@ struct Cli {
     /// Force fork into background on startup (this is the default)
     #[arg(long, conflicts_with = "no_fork")]
     fork: bool,
+
+    /// Show connection details window
+    #[arg(long)]
+    show_host_summary: bool,
 }
 
 fn main() -> gtk::glib::ExitCode {
@@ -94,7 +101,14 @@ fn main() -> gtk::glib::ExitCode {
     // Forking into the background isn't ported: the process always stays
     // in the foreground, which is what `--no-fork`/`--debug` ask for.
     let _ = (cli.debug, cli.no_fork, cli.fork);
+    if cli.show_host_summary && cli.uri.is_none() {
+        eprintln!("can't use --show-* options without --connect (except --show-systray)");
+        return gtk::glib::ExitCode::FAILURE;
+    }
     // LibvirtGLib.event_register()
     libvirtglib::event_register();
-    engine::run(engine::StartupOptions { uri: cli.uri })
+    engine::run(engine::StartupOptions {
+        uri: cli.uri,
+        show_host_summary: cli.show_host_summary,
+    })
 }
