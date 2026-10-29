@@ -29,7 +29,7 @@ pub use domcaps::{
 pub mod caps;
 pub use caps::{
     Capabilities, CapsCpu, CapsDomain, CapsGuest, CapsGuestFeatures, CapsHost, CapsInfo,
-    CapsMachine,
+    CapsMachine, CapsSecmodel, CapsSecmodelBaselabel,
 };
 
 // TODO: DomainCapabilities' os/features blocks — see domcaps.rs's doc

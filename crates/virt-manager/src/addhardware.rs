@@ -4,8 +4,7 @@
 //! hotplugs it into a running VM and adds it to the persistent config.
 //!
 //! **Not ported yet**: the XML editor tab (`xmleditor.py`), the
-//! storage browser behind "Manage..."
-//! and `check_path_search`'s permission fixups.
+//! storage browser behind "Manage...".
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -1855,6 +1854,10 @@ impl AddHardware {
                         return Ok(false);
                     }
                 }
+            }
+
+            if let Some(conn) = i.vm.conn() {
+                AddStorage::check_path_search(Some(&i.window), &conn, path.as_deref()).await;
             }
         }
         Ok(true)

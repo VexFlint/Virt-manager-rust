@@ -896,7 +896,8 @@ pub fn check_path_search(conn: &Connection, path: &str) {
 }
 
 fn check_path_search_opt(conn: &Connection, path: Option<&str>) {
-    let search = virtinst_core::diskbackend::check_path_search(conn.as_connect(), conn.uri(), path);
+    let search =
+        virtinst_core::devices::disk::check_path_search(conn.as_connect(), conn.uri(), path);
     if !search.fixlist.is_empty() {
         let dirs: Vec<String> = search.fixlist.iter().map(|d| format!("'{d}'")).collect();
         log::warn!(

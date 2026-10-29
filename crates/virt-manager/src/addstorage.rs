@@ -5,6 +5,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 
@@ -278,6 +279,103 @@ impl AddStorage {
     /// `storage-size`, in GiB.
     pub fn set_size(&self, size: f64) {
         self.storage_size.set_value(size);
+    }
+
+    /// `check_path_search`: when the emulator may not be able to search
+    /// the directories of `path`, offer to fix them (unless told not to
+    /// ask about them again), then list the ones that couldn't be.
+    /// `parent` is the window whose `err` upstream uses (`src`).
+    pub async fn check_path_search(
+        parent: Option<&gtk::Window>,
+        conn: &VmmConnection,
+        path: Option<&str>,
+    ) {
+        use crate::error;
+        use virtinst_core::devices::disk;
+
+        let config = crate::engine::get().config();
+        let skip_paths = config.get_perms_fix_ignore();
+        let Some(handle) = conn.handle() else {
+            return;
+        };
+        // `conn.get_backend()`'s URI. The test suite's `fakeuri`
+        // stands in for it, as in virtinst's `Connection::open`.
+        let uri = std::env::var("VIRTINST_TEST_FAKE_URI").unwrap_or_else(|_| conn.get_uri());
+        let uri = virtinst_core::connection::Uri::parse(&uri);
+        let search_path = path.map(str::to_string);
+        let searchdata = gio::spawn_blocking(move || {
+            disk::check_path_search(handle.connect(), &uri, search_path.as_deref())
+        })
+        .await
+        .unwrap_or_default();
+
+        let broken_paths: Vec<String> = searchdata
+            .fixlist
+            .iter()
+            .filter(|p| !skip_paths.contains(p))
+            .cloned()
+            .collect();
+
+        if broken_paths.is_empty() {
+            return;
+        }
+
+        glib::g_debug!(
+            "virt-manager",
+            "No search access for dirs: {}",
+            crate::addhardware::py_list(&broken_paths)
+        );
+        let (resp, chkres) = error::warn_chkbox(
+            parent,
+            &format!(
+                "The emulator may not have search permissions for the path '{}'.",
+                path.unwrap_or("None")
+            ),
+            Some("Do you want to correct this now?"),
+            "Don't ask about these directories again.",
+            error::Buttons::YesNo,
+        )
+        .await;
+
+        if chkres {
+            config.add_perms_fix_ignore(&broken_paths);
+        }
+        if !resp {
+            return;
+        }
+
+        glib::g_debug!("virt-manager", "Attempting to correct permission issues.");
+        let errors = gio::spawn_blocking(move || disk::fix_path_search(&searchdata))
+            .await
+            .unwrap_or_default();
+        if errors.is_empty() {
+            return;
+        }
+
+        let errmsg = "Errors were encountered changing permissions for the following directories:";
+        let mut details = String::new();
+        for (p, error) in &errors {
+            if broken_paths.contains(p) {
+                details += &format!("{p} : {error}\n");
+            }
+        }
+        details += "\nIt is very likely the VM will fail to start up.";
+
+        glib::g_debug!("virt-manager", "Permission errors:\n{details}");
+
+        let (_ignore, chkres) = error::err_chkbox(
+            parent,
+            errmsg,
+            Some(&details),
+            "Don't ask about these directories again.",
+            error::Buttons::Ok,
+        )
+        .await;
+
+        if chkres {
+            let paths: Vec<String> = errors.into_iter().map(|(p, _)| p).collect();
+            config.add_perms_fix_ignore(&paths);
+        }
     }
 
     /// `reset_state`.

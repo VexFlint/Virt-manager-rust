@@ -17,6 +17,7 @@ com o número do PR **no mesmo PR** que entrega o item.
 | 22 | GUI Bandeja + login | ícone na bandeja e login com senha/chaveiro (`systray.py`, `lib/keyring.py`, `lib/connectauth.py`) | Médio | ✅ #79 |
 | 25 | GUI Desempenho | página Performance nos detalhes da VM (`details.py` `_refresh_stats_page`, `ui/details.ui`) | Barato | ✅ #80 |
 | 26 | GUI opções `--show-*` | `--show-domain-creator/editor/performance/console/delete` e o repasse à instância aberta (`virtmanager.py`, `engine.py` `cli_command`) | Barato | ✅ #81 |
+| 27 | GUI permissão nos caminhos | `check_path_search`/`fix_path_search` (`virtinst/devices/disk.py`, `device/addstorage.py`) | Médio | ✅ #82 |
 
 Custo é uma estimativa grosseira de esforço (Caro > Médio > Barato).
 Itens 8, 16, 17 e 18 são independentes entre si: dá para fazer em paralelo,

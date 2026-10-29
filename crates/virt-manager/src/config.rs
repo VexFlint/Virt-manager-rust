@@ -604,6 +604,23 @@ impl Config {
     pub fn get_container_urls(&self) -> Vec<String> {
         strv(&self.urls, "containers")
     }
+
+    // Whether to ask about fixing path permissions
+    /// `add_perms_fix_ignore`: append the paths not already listed.
+    pub fn add_perms_fix_ignore(&self, pathlist: &[String]) {
+        let mut current_list = self.get_perms_fix_ignore();
+        for path in pathlist {
+            if current_list.contains(path) {
+                continue;
+            }
+            current_list.push(path.clone());
+        }
+        set_strv(&self.paths, "perms-fix-ignore", &current_list);
+    }
+
+    pub fn get_perms_fix_ignore(&self) -> Vec<String> {
+        strv(&self.paths, "perms-fix-ignore")
+    }
 }
 
 fn strv(settings: &gio::Settings, key: &str) -> Vec<String> {
@@ -683,5 +700,15 @@ mod tests {
             Some("/org/virt-manager/virt-manager/conns/qemu+ssh:root@hostsystem/")
         );
         assert_eq!(config.get_perconn_pretty_name("test:///default"), "");
+    }
+
+    #[test]
+    fn perms_fix_ignore_appends_new_paths_only() {
+        std::env::set_var("VIRT_MANAGER_TEST_MEMORY_SETTINGS", "1");
+        let config = Config::new();
+        assert!(config.get_perms_fix_ignore().is_empty());
+        config.add_perms_fix_ignore(&["/a".into(), "/a/b".into()]);
+        config.add_perms_fix_ignore(&["/a/b".into(), "/c".into()]);
+        assert_eq!(config.get_perms_fix_ignore(), vec!["/a", "/a/b", "/c"]);
     }
 }

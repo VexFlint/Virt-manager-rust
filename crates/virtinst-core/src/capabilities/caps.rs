@@ -9,10 +9,11 @@
 //! connection, never edited or serialized back, so none of ticket 06's
 //! order-preserving machinery earns its keep here either.
 //!
-//! **Not modeled**: `<host><secmodel>` (upstream's
-//! `get_qemu_baselabel` — real uid/permission resolution via
-//! `pwd.getpwuid`, unrelated to hypervisor-type selection, no current
-//! consumer); `_CapsGuest`'s query helper methods
+//! `<host><secmodel>` (with its `<baselabel>`s) is modeled too, for
+//! `get_qemu_baselabel` (`DeviceDisk.check_path_search`'s emulator
+//! user) and `DomainSeclabel._guess_secmodel`.
+//!
+//! **Not modeled**: `_CapsGuest`'s query helper methods
 //! (`supports_pae`/`is_kvm_available`/`supports_acpi`/etc — the
 //! `features` data itself *is* bound, since it's part of `_CapsGuest`'s
 //! real shape, but nothing calls these accessor methods yet);
@@ -58,12 +59,43 @@ impl CapsCpu {
     }
 }
 
-/// `<host>` — upstream's `_CapsHost`. Of `secmodels` only each
-/// `<secmodel><model>` (see this module's doc comment for why).
+/// `<secmodel><baselabel>` — upstream's `_CapsSecmodelBaselabel`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CapsSecmodelBaselabel {
+    /// `./@type`.
+    pub baselabel_type: Option<String>,
+    /// `.`: the element's text, e.g. `+107:+107`.
+    pub content: Option<String>,
+}
+
+/// `<host><secmodel>` — upstream's `_CapsSecmodel`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CapsSecmodel {
+    pub model: Option<String>,
+    pub baselabels: Vec<CapsSecmodelBaselabel>,
+}
+
+impl CapsSecmodel {
+    fn from_element(doc: &Document, el: Element) -> CapsSecmodel {
+        CapsSecmodel {
+            model: el.find(doc, "model").map(|e| e.text_content(doc)),
+            baselabels: el
+                .find_all(doc, "baselabel")
+                .into_iter()
+                .map(|b| CapsSecmodelBaselabel {
+                    baselabel_type: b.attribute(doc, "type").map(str::to_string),
+                    content: Some(b.text_content(doc)),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// `<host>` — upstream's `_CapsHost`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CapsHost {
     pub cpu: CapsCpu,
-    pub secmodels: Vec<Option<String>>,
+    pub secmodels: Vec<CapsSecmodel>,
 }
 
 impl CapsHost {
@@ -76,9 +108,78 @@ impl CapsHost {
             secmodels: el
                 .find_all(doc, "secmodel")
                 .into_iter()
-                .map(|m| m.find(doc, "model").map(|e| e.text_content(doc)))
+                .map(|m| CapsSecmodel::from_element(doc, m))
                 .collect(),
         }
+    }
+
+    /// The `<secmodel><model>` of each secmodel, in order (what
+    /// `DomainSeclabel._guess_secmodel` reads).
+    pub fn secmodel_models(&self) -> Vec<Option<String>> {
+        self.secmodels.iter().map(|s| s.model.clone()).collect()
+    }
+
+    /// `get_qemu_baselabel`: the user and uid of the DAC secmodel's
+    /// `qemu`/`kvm` base label, i.e. who the emulator runs as.
+    pub fn get_qemu_baselabel(&self) -> Option<(String, u32)> {
+        for secmodel in &self.secmodels {
+            if secmodel.model.as_deref() != Some("dac") {
+                continue;
+            }
+
+            let label = secmodel
+                .baselabels
+                .iter()
+                .find(|b| matches!(b.baselabel_type.as_deref(), Some("qemu" | "kvm")))
+                .and_then(|b| b.content.clone());
+            let Some(label) = label.filter(|l| !l.is_empty()) else {
+                continue;
+            };
+
+            // XML we are looking at is like:
+            //
+            // <secmodel>
+            //   <model>dac</model>
+            //   <doi>0</doi>
+            //   <baselabel type='kvm'>+107:+107</baselabel>
+            //   <baselabel type='qemu'>+107:+107</baselabel>
+            // </secmodel>
+            let uid = label
+                .split(':')
+                .next()
+                .unwrap_or_default()
+                .replace('+', "")
+                .trim()
+                .parse::<u32>()
+                .ok();
+            match uid.and_then(|uid| Some((getpwuid_name(uid)?, uid))) {
+                Some(found) => return Some(found),
+                None => log::debug!("Exception parsing qemu dac baselabel={label}"),
+            }
+        }
+        None
+    }
+}
+
+/// `pwd.getpwuid(uid)[0]`: the user name of `uid`, `None` when there
+/// is no such user.
+fn getpwuid_name(uid: u32) -> Option<String> {
+    // SAFETY: getpwuid_r writes into our buffers; the name pointer is
+    // read before they go out of scope.
+    unsafe {
+        let mut pwd: libc::passwd = std::mem::zeroed();
+        let mut buf = vec![0 as libc::c_char; 4096];
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        if libc::getpwuid_r(uid, &mut pwd, buf.as_mut_ptr(), buf.len(), &mut result) != 0
+            || result.is_null()
+        {
+            return None;
+        }
+        Some(
+            std::ffi::CStr::from_ptr(pwd.pw_name)
+                .to_string_lossy()
+                .into_owned(),
+        )
     }
 }
 
@@ -874,5 +975,83 @@ mod tests {
         assert!(caps.has_install_options());
         assert!(!caps.guests[0].is_kvm_available());
         assert!(!Capabilities::default().has_install_options());
+    }
+
+    /// `<capabilities>` with these `<secmodel>`s in `<host>`.
+    fn secmodel_caps(secmodels: &str) -> Capabilities {
+        Capabilities::parse(&format!(
+            "<capabilities><host><cpu><arch>x86_64</arch></cpu>{secmodels}</host></capabilities>"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn secmodels_parse_model_and_baselabels() {
+        let caps = secmodel_caps(
+            "<secmodel><model>selinux</model><doi>0</doi>\
+             <baselabel type='kvm'>system_u:system_r:svirt_t:s0</baselabel></secmodel>\
+             <secmodel><model>dac</model><doi>0</doi>\
+             <baselabel type='kvm'>+107:+107</baselabel>\
+             <baselabel type='qemu'>+107:+108</baselabel></secmodel>",
+        );
+        let host = &caps.host;
+        assert_eq!(
+            host.secmodel_models(),
+            vec![Some("selinux".to_string()), Some("dac".to_string())]
+        );
+        let dac = &host.secmodels[1];
+        assert_eq!(dac.baselabels.len(), 2);
+        assert_eq!(dac.baselabels[1].baselabel_type.as_deref(), Some("qemu"));
+        assert_eq!(dac.baselabels[1].content.as_deref(), Some("+107:+108"));
+    }
+
+    #[test]
+    fn qemu_baselabel_is_the_dac_label_user() {
+        // uid 0 always resolves (`root`), so this needs no fake passwd.
+        let caps = secmodel_caps(
+            "<secmodel><model>selinux</model>\
+             <baselabel type='qemu'>+5:+5</baselabel></secmodel>\
+             <secmodel><model>dac</model>\
+             <baselabel type='lxc'>+9:+9</baselabel>\
+             <baselabel type='qemu'>+0:+0</baselabel></secmodel>",
+        );
+        assert_eq!(caps.host.get_qemu_baselabel(), Some(("root".into(), 0)));
+
+        let kvm = secmodel_caps(
+            "<secmodel><model>dac</model><baselabel type='kvm'> +0:+107 </baselabel></secmodel>",
+        );
+        assert_eq!(kvm.host.get_qemu_baselabel(), Some(("root".into(), 0)));
+    }
+
+    #[test]
+    fn qemu_baselabel_skips_what_upstream_skips() {
+        // No dac secmodel at all
+        let none = secmodel_caps(
+            "<secmodel><model>selinux</model><baselabel type='kvm'>+0:+0</baselabel></secmodel>",
+        );
+        assert_eq!(none.host.get_qemu_baselabel(), None);
+        // A dac secmodel without a qemu/kvm label
+        let lxc = secmodel_caps(
+            "<secmodel><model>dac</model><baselabel type='lxc'>+0:+0</baselabel></secmodel>",
+        );
+        assert_eq!(lxc.host.get_qemu_baselabel(), None);
+        // An empty label is passed over, an unparseable one too, and
+        // the next dac secmodel still gets its turn.
+        let next = secmodel_caps(
+            "<secmodel><model>dac</model><baselabel type='qemu'/></secmodel>\
+             <secmodel><model>dac</model><baselabel type='qemu'>+-1:+-1</baselabel></secmodel>\
+             <secmodel><model>dac</model><baselabel type='qemu'>+0:+0</baselabel></secmodel>",
+        );
+        assert_eq!(next.host.get_qemu_baselabel(), Some(("root".into(), 0)));
+        let invalid = secmodel_caps(
+            "<secmodel><model>dac</model><baselabel type='qemu'>+-1:+-1</baselabel></secmodel>",
+        );
+        assert_eq!(invalid.host.get_qemu_baselabel(), None);
+        // A uid with no passwd entry
+        let nouser = secmodel_caps(
+            "<secmodel><model>dac</model>\
+             <baselabel type='qemu'>+4294967290:+0</baselabel></secmodel>",
+        );
+        assert_eq!(nouser.host.get_qemu_baselabel(), None);
     }
 }

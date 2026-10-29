@@ -3370,6 +3370,15 @@ impl VmmDetails {
                     return false;
                 }
             }
+
+            if let Some(conn) = self.0.vm.conn() {
+                crate::addstorage::AddStorage::check_path_search(
+                    parent.as_ref(),
+                    &conn,
+                    Some(&path),
+                )
+                .await;
+            }
             edits.path = Some(Some(path).filter(|p| !p.is_empty()));
         }
         if self.edited(Edit::Disk) {

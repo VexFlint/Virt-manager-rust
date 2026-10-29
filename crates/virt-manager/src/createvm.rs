@@ -3039,6 +3039,8 @@ impl VmmCreateVM {
                     return false;
                 }
             }
+
+            AddStorage::check_path_search(parent, &conn, Some(&path)).await;
             disk = Some(Rc::new(plan));
         }
 
@@ -3464,6 +3466,33 @@ impl VmmCreateVM {
         .await
     }
 
+    /// `installer.get_search_paths(guest)`: the paths the hypervisor
+    /// will need search access for to perform this install — the
+    /// scratch dir a tree install fetches its media into (unless that
+    /// gets uploaded), and the install CD-ROM.
+    fn install_search_paths(&self, conn: &VmmConnection) -> Result<Vec<String>, String> {
+        use virtinst_core::install::installertreemedia::{self as treemedia, TreeMedia};
+        let uri = virtinst_core::connection::Uri::parse(&conn.get_uri());
+        let (location, cdrom) = {
+            let gdata = self.0.gdata.borrow();
+            (gdata.location.clone(), gdata.cdrom.clone())
+        };
+
+        let mut search_paths = vec![];
+        if location.is_some() && !treemedia::should_upload_media(&uri)? {
+            search_paths.push(treemedia::make_scratchdir(&uri)?);
+        }
+        // `_cdrom_path`
+        let cdrom_path = match location {
+            Some(loc) => TreeMedia::new(&uri, Some(loc), None, None, None, None, None)?
+                .cdrom_path()
+                .map(str::to_string),
+            None => cdrom,
+        };
+        search_paths.extend(cdrom_path);
+        Ok(search_paths)
+    }
+
     /// `_validate_install_page`.
     async fn validate_install_page(&self) -> bool {
         let i = &self.0;
@@ -3613,6 +3642,24 @@ impl VmmCreateVM {
         // the import path. Import installer skips the storage page.
         if is_import && !self.validate_storage_page().await {
             return false;
+        }
+
+        let search_paths = match self.install_search_paths(&conn) {
+            Ok(paths) => paths,
+            Err(e) => {
+                // `_validate`'s try/except around `_validate_install_page`.
+                error::show_err(
+                    parent,
+                    &format!("Uncaught error validating install parameters: {e}"),
+                    None,
+                    "",
+                )
+                .await;
+                return false;
+            }
+        };
+        for path in search_paths {
+            AddStorage::check_path_search(parent, &conn, Some(&path)).await;
         }
 
         // Change the default values suggested to the user.
