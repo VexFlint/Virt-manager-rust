@@ -62,6 +62,12 @@ protocol as upstream's argcomplete. The scripts are in
 | zsh | `zsh-completion/_*` → a directory in `$fpath` (also needs the bash files above) |
 | fish | `fish-completion/*.fish` → `~/.config/fish/completions/` |
 
+## Man pages
+
+`man/` holds upstream's own man pages (`man/*.rst`, unchanged). Build them
+with `man/build.sh` (needs `rst2man`, from `python3-docutils`); the pages
+land in `target/man/` and install to `/usr/share/man/man1/`.
+
 ## Design decisions
 
 Every architectural decision — GUI toolkit, XML modeling approach, async

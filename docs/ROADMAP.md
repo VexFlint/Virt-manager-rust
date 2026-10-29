@@ -33,7 +33,7 @@ Itens sem dependência podem ser feitos em paralelo.
 | # | PR | Escopo | Custo | Depende de | Status |
 |---|----|--------|-------|------------|--------|
 | 23a | Autocompletar bash/zsh/fish | o protocolo do argcomplete do upstream (`cli.autocomplete`) em `virt-install`, `virt-xml` e `virt-clone` (opções e sub-opções de `--disk` etc.); zsh via `bashcompinit` e fish com o script do argcomplete | P | nada | ✅ #88 |
-| 23b | Man pages | as páginas do upstream (`man/*.rst`, via `rst2man`) para ficar 1:1; `clap_mangen` só se o `rst2man` não servir | P | nada | livre |
+| 23b | Man pages | as páginas do upstream (`man/*.rst`, via `rst2man`) para ficar 1:1; `clap_mangen` só se o `rst2man` não servir | P | nada | ✅ #89 |
 | 24a | SPICE GL: recebe o scanout | sinais `gl-scanout`/`gl-draw` do `SpiceDisplayChannel` na FFI (`spice.rs`), importa o DMA-BUF como `GdkDmabufTexture`; volta ao modo sem GL se falhar | M | nada | livre |
 | 24b | SPICE GL: liga na GUI | usa o 24a no `spicedisplay.rs` quando a VM tem `<gl enable="yes"/>` (virgl), com fallback e prints | M | 24a | livre |
 | 24c | SPICE GL: testes e cursor | cursor, redimensionar, escala e teste com virgl real; risco: drivers de GPU | P | 24b | livre |
