@@ -3012,6 +3012,26 @@ impl VmmCreateVM {
                 error::val_err(parent, "A storage path must be specified.").await;
                 return false;
             };
+            // `disk.validate()`
+            if let Some(handle) = conn.handle() {
+                let vol = plan.vol_install.clone();
+                let remote = conn.is_remote();
+                let res = gio::spawn_blocking(move || {
+                    crate::addstorage::validate_disk(
+                        handle.connect(),
+                        vol.as_ref(),
+                        None,
+                        None,
+                        remote,
+                    )
+                })
+                .await
+                .unwrap_or_else(|_| Err("Worker thread panicked".to_string()));
+                if let Err(e) = res {
+                    error::val_err_text2(parent, "Storage parameter error.", Some(&e)).await;
+                    return false;
+                }
+            }
             let names = match conn.handle() {
                 Some(handle) => {
                     let path = path.clone();

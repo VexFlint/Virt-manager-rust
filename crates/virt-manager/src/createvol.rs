@@ -1,19 +1,20 @@
 //! `createvol.py` (`vmmCreateVolume`): the "Add a Storage Volume"
 //! wizard, a new volume in a pool with its format, capacity, sparse
-//! allocation and backing store.
+//! allocation and backing store, and the XML tab.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk::prelude::*;
 use gtk::{gio, glib};
-use virtinst_core::storage::{self, PoolXml, VolInstall};
+use virtinst_core::storage::{self, NewVolume, PoolXml, VolInstall};
 
 use crate::asyncjob;
 use crate::connection::VmmConnection;
 use crate::devpages::EntryCombo;
 use crate::error;
 use crate::storagebrowse::{self, BrowseReason, StorageBrowser};
+use crate::xmleditor::XmlEditor;
 
 /// The new volume's pool and name, for `vol-created`.
 type CreatedCallback = Box<dyn Fn(&str, &str)>;
@@ -28,6 +29,7 @@ fn start_label(text: &str, widget: &impl IsA<gtk::Widget>) -> gtk::Label {
 pub struct Inner {
     conn: VmmConnection,
     window: gtk::Window,
+    xmleditor: XmlEditor,
     parent_pool: RefCell<PoolXml>,
     name_hint: RefCell<Option<String>>,
     storage_browser: RefCell<Option<StorageBrowser>>,
@@ -143,9 +145,12 @@ impl CreateVolume {
         vbox4.attach(&size_box, 0, 2, 1, 1);
 
         let details_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        details_box.set_size_request(400, 400);
         details_box.append(&intro);
         details_box.append(&vbox4);
+        // `vmmXMLEditor(..., details-box-align, details-box)`
+        let xmleditor = XmlEditor::new(&details_box);
+        xmleditor.widget().set_size_request(400, 400);
+        xmleditor.widget().set_vexpand(true);
 
         let vol_cancel = gtk::Button::with_mnemonic("_Cancel");
         let vol_create = gtk::Button::with_mnemonic("_Finish");
@@ -159,7 +164,7 @@ impl CreateVolume {
         vbox1.set_margin_end(12);
         vbox1.set_margin_top(12);
         vbox1.set_margin_bottom(12);
-        vbox1.append(&details_box);
+        vbox1.append(xmleditor.widget());
         vbox1.append(&buttons);
         let box1 = gtk::Box::new(gtk::Orientation::Vertical, 6);
         box1.append(&header);
@@ -169,6 +174,7 @@ impl CreateVolume {
         let this = CreateVolume(Rc::new(Inner {
             conn: conn.clone(),
             window,
+            xmleditor,
             parent_pool: RefCell::new(parent_pool),
             name_hint: RefCell::default(),
             storage_browser: RefCell::default(),
@@ -206,6 +212,8 @@ impl CreateVolume {
         this.0.vol_format.entry.connect_changed(move |_| cb());
         let cb = with(CreateVolume::browse_file);
         backing_browse.connect_clicked(move |_| cb());
+        let cb = with(CreateVolume::xmleditor_xml_requested);
+        this.0.xmleditor.connect_xml_requested(cb);
 
         let esc = gtk::EventControllerKey::new();
         let cb = with(CreateVolume::close);
@@ -268,6 +276,8 @@ impl CreateVolume {
     /// `_reset_state`.
     async fn reset_state(&self) {
         let i = &self.0;
+        i.xmleditor.reset_state();
+
         let pool = i.parent_pool.borrow().clone();
         let hasformat = self.stub_vol().supports_format();
         i.vol_format_label.set_visible(hasformat);
@@ -412,8 +422,8 @@ impl CreateVolume {
         }
     }
 
-    /// `_build_xmlobj_from_ui`.
-    fn build_xmlobj(&self) -> VolInstall {
+    /// `_build_xmlobj_from_ui`'s fields.
+    fn build_xmlobj_from_ui(&self) -> NewVolume {
         let i = &self.0;
         let volname = format!("{}{}", i.vol_name.text(), i.vol_name_suffix.text());
         let fmt = self.get_config_format();
@@ -424,14 +434,35 @@ impl CreateVolume {
             0.0
         };
         let backing = i.backing_store.text().to_string();
-        let gib = 1024.0 * 1024.0 * 1024.0;
-        VolInstall {
+        NewVolume {
             name: volname,
-            capacity: (cap * gib) as u128,
-            allocation: (alloc * gib) as u128,
+            capacity: cap,
+            allocation: alloc,
             backing_store: Some(backing).filter(|b| !b.is_empty()),
             format: fmt,
-            ..self.stub_vol()
+        }
+    }
+
+    /// `_build_xmlobj`: the volume's XML, from the fields, or the XML
+    /// tab when it's showing and asked for. `None` once the error is
+    /// shown.
+    async fn build_xmlobj(&self, check_xmleditor: bool) -> Option<String> {
+        let res = self.build_xmlobj_from_ui().build_xmlobj().and_then(|obj| {
+            if check_xmleditor && self.0.xmleditor.is_xml_selected() {
+                // `_build_xmlobj_from_xmleditor`
+                let xml = self.0.xmleditor.get_xml();
+                eprintln!("Using XML from xmleditor:\n{xml}");
+                return storage::parse_volume(&xml);
+            }
+            Ok(obj)
+        });
+        match res {
+            Ok(obj) => Some(obj.get_xml()),
+            Err(e) => {
+                self.show_err(&format!("Error building XML: {e}"), None)
+                    .await;
+                None
+            }
         }
     }
 
@@ -439,50 +470,53 @@ impl CreateVolume {
     /// dialog, refresh the pool and report `vol-created`.
     async fn finish(&self) {
         let i = &self.0;
-        let mut vol = self.build_xmlobj();
-        // `validate`'s defaults
-        if vol.format.is_none() && vol.file_type == "file" {
-            vol.format = Some("raw".into());
-        }
-        if i.parent_pool.borrow().pool_type == "logical" && vol.allocation != vol.capacity {
-            eprintln!(
-                "Sparse logical volumes are not supported, setting allocation equal to capacity"
-            );
-            vol.allocation = vol.capacity;
-        }
+        let Some(xml) = self.build_xmlobj(true).await else {
+            return;
+        };
         let Some(handle) = i.conn.handle() else {
             return;
         };
-        let check = vol.clone();
-        let res = gio::spawn_blocking(move || check.validate(handle.connect()))
-            .await
-            .unwrap_or_else(|_| Err("Worker thread panicked".into()));
-        if let Err(e) = res {
-            self.show_err(&format!("Error validating volume: {e}"), None)
-                .await;
-            return;
-        }
+        let pool_name = i.parent_pool.borrow().name.clone();
+        // `vol.validate()`: the volume's name and XML with the defaults
+        let lookup = pool_name.clone();
+        let res = gio::spawn_blocking(move || {
+            let conn = handle.connect();
+            let pool = virt::storage_pool::StoragePool::lookup_by_name(conn, &lookup)
+                .map_err(|e| e.to_string())?;
+            let mut vol = storage::parse_volume(&xml)?;
+            storage::validate_volume(conn, &pool, &mut vol)?;
+            Ok::<_, String>((vol.get_str("name").unwrap_or_default(), vol.get_xml()))
+        })
+        .await
+        .unwrap_or_else(|_| Err("Worker thread panicked".into()));
+        let (volname, xml) = match res {
+            Ok(v) => v,
+            Err(e) => {
+                self.show_err(&format!("Error validating volume: {e}"), None)
+                    .await;
+                return;
+            }
+        };
 
         i.window.set_cursor_from_name(Some("progress"));
         let Some(handle) = i.conn.handle() else {
             return;
         };
-        let job_vol = vol.clone();
+        let job_pool = pool_name.clone();
         let err = asyncjob::run(
             Some(&i.window),
             "Creating storage volume...",
             "Creating the storage volume may take a while...",
             true,
             move |_job| {
-                eprintln!("Starting background vol creation.");
+                // `_async_vol_create`: lookup different pool obj
                 let conn = handle.connect();
-                job_vol.install(conn).map_err(|e| (e.clone(), e))?;
-                if let Ok(pool) =
-                    virt::storage_pool::StoragePool::lookup_by_name(conn, &job_vol.pool_name)
-                {
-                    let _ = pool.refresh(0);
-                }
+                let pool = virt::storage_pool::StoragePool::lookup_by_name(conn, &job_pool)
+                    .map_err(|e| (e.to_string(), e.to_string()))?;
+                eprintln!("Starting background vol creation.");
+                storage::install_volume(conn, &pool, &xml).map_err(|e| (e.clone(), e))?;
                 eprintln!("vol creation complete.");
+                let _ = pool.refresh(0);
                 Ok(())
             },
         )
@@ -495,9 +529,18 @@ impl CreateVolume {
             return;
         }
         if let Some(cb) = i.vol_created.borrow().as_ref() {
-            cb(&vol.pool_name, &vol.name);
+            cb(&pool_name, &volname);
         }
         self.close();
+    }
+
+    /// `_xmleditor_xml_requested_cb`.
+    fn xmleditor_xml_requested(&self) {
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let xml = this.build_xmlobj(false).await;
+            this.0.xmleditor.set_xml(xml.as_deref().unwrap_or(""));
+        });
     }
 
     async fn show_err(&self, info: &str, details: Option<&str>) {

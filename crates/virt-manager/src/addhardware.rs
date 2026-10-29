@@ -1,10 +1,8 @@
 //! `addhardware.py` (`vmmAddHardware`): the Add New Virtual Hardware
 //! dialog. A list of device types on the left, the picked type's page
-//! under the blue header on the right; Finish builds the device,
-//! hotplugs it into a running VM and adds it to the persistent config.
-//!
-//! **Not ported yet**: the XML editor tab (`xmleditor.py`), the
-//! storage browser behind "Manage...".
+//! (or its XML tab) under the blue header on the right; Finish builds
+//! the device, hotplugs it into a running VM and adds it to the
+//! persistent config.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -27,6 +25,7 @@ use crate::netlist::NetList;
 use crate::storagebrowse::{self, BrowseReason, StorageBrowser};
 use crate::tpmdetails::TpmDetails;
 use crate::vsockdetails::VsockDetails;
+use crate::xmleditor::XmlEditor;
 
 /// `PAGE_*`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,6 +110,12 @@ struct NewDev {
     vol_install: Option<virtinst_core::storage::VolInstall>,
     /// `vmm_controller`: the virtio-scsi controller a disk brings.
     controller: Option<BuildFn>,
+    /// `set_backend_for_existing_path`: a disk path from the XML tab
+    /// that `disk.validate()` has to find.
+    existing_path: Option<String>,
+    /// `_source_volume_err`: why an XML tab disk's `<source pool=
+    /// volume=>` didn't resolve to a path.
+    source_volume_err: Option<String>,
 }
 
 impl NewDev {
@@ -121,6 +126,8 @@ impl NewDev {
             validate: Validate::None,
             vol_install: None,
             controller: None,
+            existing_path: None,
+            source_volume_err: None,
         }
     }
 
@@ -130,6 +137,35 @@ impl NewDev {
         let el = (self.build)(&mut doc)?;
         virtinst_xml::element_to_string(doc, el).map_err(|e| e.to_string())
     }
+
+    /// `get_xml()` as the XML tab shows it: no XML declaration, and a
+    /// trailing newline.
+    fn editor_xml(&self) -> Result<String, String> {
+        let mut doc = Document::new();
+        let el = (self.build)(&mut doc)?;
+        Ok(virtinst_core::xmlbuilder::element_xml(&doc, el))
+    }
+
+    /// The device's element name (its class's `XML_NAME`).
+    fn xml_name(&self) -> Result<String, String> {
+        let mut doc = Document::new();
+        let el = (self.build)(&mut doc)?;
+        Ok(el.full_name(&doc).to_string())
+    }
+}
+
+/// `devclass(conn, parsexml=xml)`: the root element of the XML tab's
+/// text, which has to be a `<expected>`.
+fn parse_device_xml(xml: &str, expected: &str) -> Result<(Document, Element), String> {
+    let doc = virtinst_xml::parse_libvirt_xml(xml).map_err(|e| e.to_string())?;
+    let root = doc.root_element().ok_or("XML has no root element")?;
+    let found = root.full_name(&doc);
+    if found != expected {
+        return Err(format!(
+            "XML did not have expected root element name '{expected}', found '{found}'"
+        ));
+    }
+    Ok((doc, root))
 }
 
 /// `char_recommended_types`.
@@ -327,6 +363,7 @@ pub struct AddHardware(Rc<Inner>);
 struct Inner {
     vm: VmmDomain,
     window: gtk::Window,
+    xmleditor: XmlEditor,
     storagebrowser: RefCell<Option<StorageBrowser>>,
     hw_list: gtk::ListBox,
     options: Vec<HwOption>,
@@ -720,9 +757,12 @@ impl AddHardware {
         let page_title_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         page_title_box.add_css_class("vmm-header");
         page_title_box.append(&page_title);
+        // `vmmXMLEditor(..., create-pages-align, create-pages)`
+        let xmleditor = XmlEditor::new(&create_pages);
+        xmleditor.widget().set_vexpand(true);
         let create_vbox = gtk::Box::new(gtk::Orientation::Vertical, 12);
         create_vbox.append(&page_title_box);
-        create_vbox.append(&create_pages);
+        create_vbox.append(xmleditor.widget());
 
         let error_label = gtk::Label::new(Some("label"));
         error_label.set_wrap(true);
@@ -760,6 +800,7 @@ impl AddHardware {
         let this = AddHardware(Rc::new(Inner {
             vm: vm.clone(),
             window,
+            xmleditor,
             storagebrowser: RefCell::default(),
             hw_list,
             options,
@@ -863,6 +904,8 @@ impl AddHardware {
         i.controller_type
             .widget
             .connect_selected_notify(move |_| cb());
+        let cb = with(AddHardware::xmleditor_xml_requested);
+        i.xmleditor.connect_xml_requested(cb);
 
         // bind_escape_key_close
         let keys = gtk::EventControllerKey::new();
@@ -1284,6 +1327,7 @@ impl AddHardware {
     fn hw_selected(&self) {
         let i = &self.0;
         i.finish.set_sensitive(true);
+        i.xmleditor.reset_state();
         let Some(opt) = self.get_hw_selection() else {
             self.set_error_page(None);
             return;
@@ -1317,6 +1361,24 @@ impl AddHardware {
         self.set_page_title(page);
         i.create_pages.set_visible_child_name(page.name());
         i.top_pages.set_visible_child_name("info");
+    }
+
+    /// `_xmleditor_xml_requested_cb`.
+    fn xmleditor_xml_requested(&self) {
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let xml = this.build_device(false).await.map(|dev| dev.editor_xml());
+            let xml = match xml {
+                Some(Ok(xml)) => xml,
+                Some(Err(e)) => {
+                    this.show_err(&format!("Error building device XML: {e}"), None)
+                        .await;
+                    String::new()
+                }
+                None => String::new(),
+            };
+            this.0.xmleditor.set_xml(&xml);
+        });
     }
 
     /// `_dev_to_title`.
@@ -1662,17 +1724,18 @@ impl AddHardware {
         })
     }
 
-    /// `_build_controller`.
+    /// `_build_controller`. With `_remove_usb_controller` set, the
+    /// device only shows in the XML tab: `_add_device` changes that
+    /// controller's model instead.
     fn build_controller(&self) -> Result<NewDev, String> {
         let i = &self.0;
         let controller_type = i.controller_type.get().unwrap_or_default();
         let model = i.controller_model.get();
-
-        if let Some(id) = i.remove_usb_controller.borrow().clone() {
-            let mut dev = NewDev::new(|_| Err("unused".into()));
-            dev.usb_replace = Some((id, model));
-            return Ok(dev);
-        }
+        let usb_replace = i
+            .remove_usb_controller
+            .borrow()
+            .clone()
+            .map(|id| (id, model.clone()));
 
         let index = i.vm.xmlobj().and_then(|x| {
             let devices = virtinst_xml::resolve_path(&x.doc, x.root(), &["devices"])?;
@@ -1688,23 +1751,102 @@ impl AddHardware {
                 .max()
                 .map(|m| m + 1)
         });
-        Ok(NewDev::new(move |doc| {
+        let mut dev = NewDev::new(move |doc| {
             Ok(build::controller(
                 doc,
                 &controller_type,
                 model.as_deref(),
                 index,
             ))
-        }))
+        });
+        dev.usb_replace = usb_replace;
+        Ok(dev)
     }
 
-    /// `_build_device`.
-    async fn build_device(&self) -> Option<NewDev> {
+    /// `_build_xmleditor_device`: the XML tab's device, of the page's
+    /// device class. A disk keeps the page's volume to create while its
+    /// path is unchanged.
+    async fn build_xmleditor_device(&self, srcdev: NewDev) -> Result<NewDev, String> {
+        let xml = self.0.xmleditor.get_xml();
+        glib::g_debug!("virt-manager", "Using XML from xmleditor:\n{xml}");
+        let devclass = srcdev.xml_name()?;
+        let (doc, root) = parse_device_xml(&xml, &devclass)?;
+        let mut dev = NewDev::new(move |dst| {
+            let (src, root) = parse_device_xml(&xml, &devclass)?;
+            Ok(virtinst_core::xmlbuilder::copy_element(&src, root, dst))
+        });
+        // `_add_device` acts on the dialog's `_remove_usb_controller`
+        dev.usb_replace = srcdev.usb_replace;
+
+        match root.full_name(&doc) {
+            "disk" => {
+                // `get_source_path()`: the XML's path, else the one of
+                // its `<source pool= volume=>` (`_resolve_storage_backend`)
+                let mut path = virtinst_core::devices::disk::source_path(&doc, root);
+                if path.is_none() {
+                    if let Some((pool, vol)) =
+                        virtinst_core::devices::disk::source_volume(&doc, root)
+                    {
+                        match self.lookup_volume_path(pool, vol).await {
+                            Ok(p) => path = Some(p),
+                            Err(e) => dev.source_volume_err = Some(e),
+                        }
+                    }
+                }
+                let srcpath = match &srcdev.validate {
+                    Validate::Disk(p, ..) => p.clone(),
+                    _ => None,
+                };
+                if srcdev.vol_install.is_some() && srcpath == path {
+                    dev.vol_install = srcdev.vol_install;
+                } else if path.is_some() {
+                    // Needed to convince disk.validate() to validate a
+                    // passed path
+                    dev.existing_path = path.clone();
+                }
+                let device = root.attribute(&doc, "device").unwrap_or("disk").to_string();
+                let shareable = root.find(&doc, "shareable").is_some();
+                let readonly = root.find(&doc, "readonly").is_some();
+                dev.validate = Validate::Disk(path, device, shareable, readonly);
+            }
+            "interface" => {
+                // `net.type`, `net.source`, `net.macaddr`
+                let nettype = root.attribute(&doc, "type").unwrap_or_default().to_string();
+                let srcattr = match nettype.as_str() {
+                    "network" => Some("network"),
+                    "bridge" => Some("bridge"),
+                    "direct" | "vdpa" => Some("dev"),
+                    _ => None,
+                };
+                let source = srcattr
+                    .and_then(|attr| crate::devpages::xml_attr(&doc, root, &["source"], attr));
+                let mac = crate::devpages::xml_attr(&doc, root, &["mac"], "address");
+                dev.validate = Validate::Network(NewInterface {
+                    nettype,
+                    source,
+                    mac: mac.unwrap_or_default(),
+                    ..Default::default()
+                });
+            }
+            _ => (),
+        }
+        Ok(dev)
+    }
+
+    /// `_build_device`: the page's device, or the XML tab's when it's
+    /// showing and asked for.
+    async fn build_device(&self, check_xmleditor: bool) -> Option<NewDev> {
         let page = self.get_hw_selection()?.page;
         let dev = if page == Page::Disk {
             self.build_storage().await
         } else {
             self.build_device_page(page)
+        };
+        let dev = match dev {
+            Ok(dev) if check_xmleditor && self.0.xmleditor.is_xml_selected() => {
+                self.build_xmleditor_device(dev).await
+            }
+            dev => dev,
         };
         match dev {
             Ok(dev) => Some(dev),
@@ -1722,7 +1864,7 @@ impl AddHardware {
 
     /// `_finish`.
     async fn finish(&self) {
-        let Some(dev) = self.build_device().await else {
+        let Some(dev) = self.build_device(true).await else {
             return;
         };
         match self.validate_device(&dev).await {
@@ -1834,6 +1976,8 @@ impl AddHardware {
                 error::val_err(Some(&i.window), "A storage path must be specified.").await;
                 return Ok(false);
             }
+            // `disk.validate()`
+            self.validate_disk(dev).await?;
             if let Some(path) = path {
                 // Disk collision
                 let names =
@@ -1861,6 +2005,54 @@ impl AddHardware {
             }
         }
         Ok(true)
+    }
+
+    /// `disk.validate()`, on a worker: see [`crate::addstorage::validate_disk`].
+    async fn validate_disk(&self, dev: &NewDev) -> Result<(), String> {
+        if dev.vol_install.is_none()
+            && dev.existing_path.is_none()
+            && dev.source_volume_err.is_none()
+        {
+            return Ok(());
+        }
+        let conn = self.0.vm.conn().ok_or("Not connected")?;
+        let handle = conn.handle().ok_or("Not connected")?;
+        let remote = conn.is_remote();
+        let vol = dev.vol_install.clone();
+        let path = dev.existing_path.clone();
+        let err = dev.source_volume_err.clone();
+        gtk::gio::spawn_blocking(move || {
+            crate::addstorage::validate_disk(
+                handle.connect(),
+                vol.as_ref(),
+                path.as_deref(),
+                err.as_deref(),
+                remote,
+            )
+        })
+        .await
+        .map_err(|_| "Worker thread panicked".to_string())?
+    }
+
+    /// `_resolve_storage_backend` for `<source pool= volume=>`: the
+    /// volume's path, or libvirt's error looking it up.
+    async fn lookup_volume_path(&self, pool: String, vol: String) -> Result<String, String> {
+        let handle = self
+            .0
+            .vm
+            .conn()
+            .and_then(|c| c.handle())
+            .ok_or("Not connected")?;
+        gtk::gio::spawn_blocking(move || {
+            let msg = |e: virt::error::Error| e.message().to_string();
+            let pool = virt::storage_pool::StoragePool::lookup_by_name(handle.connect(), &pool)
+                .map_err(msg)?;
+            virt::storage_vol::StorageVol::lookup_by_name(&pool, &vol)
+                .and_then(|v| v.get_path())
+                .map_err(msg)
+        })
+        .await
+        .map_err(|_| "Worker thread panicked".to_string())?
     }
 
     /// `_add_device`: hotplug, asking whether to go on when that fails,
@@ -2245,6 +2437,33 @@ mod tests {
                 "file",
                 "unix"
             ]
+        );
+    }
+
+    /// The XML tab's device: parsed as the page's class, rendered for
+    /// the editor like upstream's `get_xml()`.
+    #[test]
+    fn xmleditor_device() {
+        let (doc, root) = parse_device_xml(
+            "<disk type='file' device='disk'><source file='/a.img'/></disk>",
+            "disk",
+        )
+        .unwrap();
+        assert_eq!(
+            virtinst_core::devices::disk::source_path(&doc, root).as_deref(),
+            Some("/a.img")
+        );
+        assert_eq!(
+            parse_device_xml("<input type='tablet'/>", "disk").unwrap_err(),
+            "XML did not have expected root element name 'disk', found 'input'"
+        );
+        assert!(parse_device_xml("<disk", "disk").is_err());
+
+        let dev = NewDev::new(|doc| Ok(build::input(doc, "tablet", "usb")));
+        assert_eq!(dev.xml_name().unwrap(), "input");
+        assert_eq!(
+            dev.editor_xml().unwrap(),
+            "<input type=\"tablet\" bus=\"usb\"/>\n"
         );
     }
 }
