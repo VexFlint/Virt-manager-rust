@@ -223,17 +223,22 @@ fn page_toggle(icon: &str, label: &str, tooltip: &str) -> gtk::ToggleButton {
 impl VmmVMWindow {
     /// `vmmVMWindow.get_instance(parentobj, vm).show()`.
     pub fn show_instance(vm: &VmmDomain) {
-        let Some(conn) = vm.conn() else {
-            return;
-        };
+        if let Some(this) = Self::get_instance(vm) {
+            this.show();
+        }
+    }
+
+    /// `vmmVMWindow.get_instance(parentobj, vm)`: maintain one dialog
+    /// per VM.
+    pub fn get_instance(vm: &VmmDomain) -> Option<VmmVMWindow> {
+        let conn = vm.conn()?;
         let key = format!("{}+{}", conn.get_uri(), vm.get_uuid());
-        let this = INSTANCES.with(|i| {
+        Some(INSTANCES.with(|i| {
             i.borrow_mut()
                 .entry(key)
                 .or_insert_with(|| VmmVMWindow::new(vm, None))
                 .clone()
-        });
-        this.show();
+        }))
     }
 
     /// `vmmVMWindow(vm, parent)`: the details window abused as a
@@ -714,7 +719,7 @@ impl VmmVMWindow {
         });
     }
 
-    /// The customize dialog's window, for its error dialogs.
+    /// The window, as parent of the dialogs opened from it (`topwin`).
     pub fn window(&self) -> gtk::Window {
         self.0.window.clone().upcast()
     }
@@ -949,6 +954,31 @@ impl VmmVMWindow {
         self.0.pages.set_visible_child_name(PAGE_CONSOLE);
         self.sync_toolbar_page_buttons(PAGE_CONSOLE);
         self.0.console.vmwindow_activate_default_console_page();
+    }
+
+    /// `details-pages.set_current_page(page)` plus the `switch-page`
+    /// handler it fires (`_details_page_switch_cb`).
+    fn set_current_page(&self, page: &str) {
+        self.0.pages.set_visible_child_name(page);
+        self.details_page_switch(page);
+    }
+
+    // activate_* are called from engine.py via CLI options
+
+    /// `activate_console_page`.
+    pub fn activate_console_page(&self) {
+        self.set_current_page(PAGE_CONSOLE);
+    }
+
+    /// `activate_performance_page`.
+    pub fn activate_performance_page(&self) {
+        self.set_current_page(PAGE_DETAILS);
+        self.0.details.vmwindow_activate_performance_page();
+    }
+
+    /// `activate_config_page`.
+    pub fn activate_config_page(&self) {
+        self.set_current_page(PAGE_DETAILS);
     }
 
     /// `_refresh_resources`.

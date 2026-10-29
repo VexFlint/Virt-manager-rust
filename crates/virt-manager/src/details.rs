@@ -4445,6 +4445,22 @@ impl VmmDetails {
         self.refresh_page();
     }
 
+    /// `vmwindow_activate_performance_page`: select the Performance
+    /// row (the first row when there is none).
+    pub fn vmwindow_activate_performance_page(&self) {
+        let i = &self.0;
+        let index = i
+            .rows
+            .borrow()
+            .iter()
+            .position(|row| row.hwtype == HwType::Stats)
+            .unwrap_or(0);
+        // _set_hw_selection
+        self.disable_apply();
+        i.hw_list
+            .select_row(i.hw_list.row_at_index(index as i32).as_ref());
+    }
+
     /// Whether [`Self::vmwindow_has_unapplied_changes`] would prompt:
     /// lets the caller hold its action without waiting.
     pub fn has_pending_edits(&self) -> bool {

@@ -578,6 +578,14 @@ impl VmmConnection {
         self.imp().vms.borrow().clone()
     }
 
+    /// Whether a domain poll is running on its worker; `resources-sampled`
+    /// fires when it lands. Right after [`Self::open`] that is the first
+    /// poll, which upstream's `_populate_initial_state` finishes before
+    /// `open-completed`.
+    pub fn is_ticking(&self) -> bool {
+        self.imp().ticking.get()
+    }
+
     fn change_state(&self, state: ConnState) {
         if self.state() != state {
             self.imp().state.set(state);
