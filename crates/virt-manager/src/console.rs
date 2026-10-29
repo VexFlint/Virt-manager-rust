@@ -11,10 +11,12 @@ use std::time::Duration;
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
+use zeroize::Zeroizing;
 
 use crate::details::{graphics_pretty_type_simple, serial_console_lists};
 use crate::domain::VmmDomain;
 use crate::error;
+use crate::keyring::VmmKeyring;
 use crate::serialcon::{self, SerialConsole};
 use crate::sshtunnels::{ConnectionInfo, GraphicsDev};
 use crate::viewers::{Viewer, ViewerEvent};
@@ -656,19 +658,54 @@ impl VmmConsolePages {
         self.activate_gfx_unavailable_page(msg);
     }
 
-    /// `_activate_auth_page`. No keyring is wired up yet, so nothing
-    /// is prefilled and "remember" stays insensitive, as upstream does
-    /// without one.
+    /// `_activate_auth_page`, prefilled from the keyring
+    /// (`vmmKeyring.get_console_password`). The keyring answers
+    /// asynchronously, so the page switches once it has, and only if
+    /// the viewer that asked is still the current one.
     fn activate_auth_page(&self, with_password: bool, with_username: bool) {
+        let Some(viewer) = self.viewer() else {
+            return;
+        };
+        let weak = self.weak();
+        let vm = self.0.vm.clone();
+        glib::spawn_future_local(async move {
+            let keyring = VmmKeyring::get_instance().await;
+            let (pw, username) = keyring.get_console_password(&vm).await;
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            let this = VmmConsolePages(inner);
+            if !this.viewer().is_some_and(|v| v.same(&viewer)) {
+                return;
+            }
+            this.show_auth_page(
+                with_password,
+                with_username,
+                &pw,
+                &username,
+                keyring.is_available(),
+            );
+        });
+    }
+
+    fn show_auth_page(
+        &self,
+        with_password: bool,
+        with_username: bool,
+        pw: &str,
+        username: &str,
+        has_keyring: bool,
+    ) {
         let i = &self.0;
         i.auth_password.set_visible(with_password);
         i.label_auth_password.set_visible(with_password);
         i.auth_username.set_visible(with_username);
         i.label_auth_username.set_visible(with_username);
-        i.auth_username.set_text("");
-        i.auth_password.set_text("");
-        i.auth_remember.set_sensitive(false);
-        i.auth_remember.set_active(false);
+        i.auth_username.set_text(username);
+        i.auth_password.set_text(pw);
+        let remember = (with_password && !pw.is_empty()) || (with_username && !username.is_empty());
+        i.auth_remember.set_sensitive(has_keyring);
+        i.auth_remember.set_active(has_keyring && remember);
         i.gfx_pages.set_visible_child_name(GFX_PAGE_AUTH);
         if with_username {
             i.auth_username.grab_focus();
@@ -760,6 +797,21 @@ impl VmmConsolePages {
         if WidgetExt::is_visible(&i.auth_username) {
             v.console_set_username(&i.auth_username.text());
         }
+
+        let remember = i.auth_remember.is_active();
+        let vm = i.vm.clone();
+        let password = Zeroizing::new(i.auth_password.text().to_string());
+        let username = i.auth_username.text().to_string();
+        glib::spawn_future_local(async move {
+            let keyring = VmmKeyring::get_instance().await;
+            if remember {
+                keyring
+                    .set_console_password(&vm, &password, &username)
+                    .await;
+            } else {
+                keyring.del_console_password(&vm).await;
+            }
+        });
     }
 
     // Viewer signal handling

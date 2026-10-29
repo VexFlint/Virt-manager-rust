@@ -19,6 +19,7 @@ use crate::config::{
     DEFAULT_STORAGE_FORMAT_FROM_CONFIG,
 };
 use crate::engine;
+use crate::systray::systray_disabled_message;
 
 /// A `DropDown` plus the GSettings value behind each row
 /// (`uiutil.set_list_selection`; `connect_changed` hands over the
@@ -52,13 +53,6 @@ impl<T: PartialEq + Clone + 'static> Combo<T> {
             }
         });
     }
-}
-
-/// `vmmSystray.systray_disabled_message`. No AppIndicator/StatusNotifier
-/// backend is ported yet, so Wayland always gets the message.
-fn systray_disabled_message() -> Option<&'static str> {
-    std::env::var_os("WAYLAND_DISPLAY")?;
-    Some("AppIndicator not installed or usable, system tray icon not available on Wayland")
 }
 
 /// `vmmInspection.libguestfs_installed`: no libguestfs binding is ported.

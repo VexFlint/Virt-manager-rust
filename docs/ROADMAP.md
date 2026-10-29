@@ -14,7 +14,7 @@ com o número do PR **no mesmo PR** que entrega o item.
 | 16 | GUI Detalhes do host | visão geral + redes virtuais + criar rede (`host.py`, `hostnets.py`, `createnet.py`; a aba de storage já existe em `hoststorage.rs`) | Médio | ✅ #78 |
 | 17 | GUI Clonar VM | `clone.py`, `ui/clone.ui` (inclui cópia de disco) | Médio | ✅ #77 |
 | 18 | GUI Migrar VM | `migrate.py`, `ui/migrate.ui` | Médio | ✅ #76 |
-| 22 | GUI Bandeja + login | ícone na bandeja e login com senha/chaveiro (`systray.py`, `lib/keyring.py`, `lib/connectauth.py`) | Médio | adiado |
+| 22 | GUI Bandeja + login | ícone na bandeja e login com senha/chaveiro (`systray.py`, `lib/keyring.py`, `lib/connectauth.py`) | Médio | ✅ #79 |
 
 Custo é uma estimativa grosseira de esforço (Caro > Médio > Barato).
 Itens 8, 16, 17 e 18 são independentes entre si: dá para fazer em paralelo,

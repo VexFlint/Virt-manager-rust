@@ -8,10 +8,12 @@
 //! and pool libvirt events come out as `net-event(name)` and
 //! `pool-event(name)`.
 //!
-//! **Not ported yet**: the openAuth credentials dialog (`connectauth.py`
-//! — plain `virConnectOpen` covers local URIs and polkit agents),
-//! nodedev events, and network/pool/nodedev objects (their lists are
-//! fetched when a window needs them, and again on their events).
+//! Connections open through `openAuth` with the credentials dialog
+//! (`connectauth`), as upstream's `_do_open`.
+//!
+//! **Not ported yet**: nodedev events, and network/pool/nodedev objects
+//! (their lists are fetched when a window needs them, and again on their
+//! events).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -27,6 +29,7 @@ use virt::sys;
 use virtinst_core::capabilities::caps::Capabilities;
 use virtinst_core::connection::Uri;
 
+use crate::connectauth;
 use crate::connevents::{self, DomainEvent, ObjectEvent};
 use crate::domain::{DomainSnapshot, VmmDomain};
 use crate::engine;
@@ -67,43 +70,6 @@ pub struct ConnectError {
     pub msg: String,
     pub details: String,
     pub title: String,
-}
-
-/// `connectauth.connect_error`, minus the netcat/askpass/xen hints that
-/// need the remote and Xen paths ported first.
-pub fn connect_error(uri: &str, errmsg: &str) -> ConnectError {
-    let parsed = Uri::parse(uri);
-    let errmsg = errmsg.trim_matches(|c| c == ' ' || c == '\n');
-    let mut msg = format!("Unable to connect to libvirt {uri}.");
-    let mut hint = String::new();
-    let mut show_errmsg = true;
-    if !parsed.hostname.is_empty() || !parsed.transport.is_empty() {
-        hint.push_str("Verify that an appropriate libvirt daemon is running on the remote host.");
-    } else if mentions_virt_socket(errmsg) {
-        hint.push_str("Verify that an appropriate libvirt daemon is running.");
-        show_errmsg = false;
-    }
-    if show_errmsg {
-        msg.push_str(&format!("\n\n{errmsg}"));
-    }
-    if !hint.is_empty() {
-        msg.push_str(&format!("\n\n{hint}"));
-    }
-    let msg = msg.trim_matches('\n').to_string();
-    let details = format!("{msg}\n\nLibvirt URI is: {uri}\n\n{errmsg}");
-    ConnectError {
-        msg,
-        details,
-        title: "Virtual Machine Manager Connection Failure".into(),
-    }
-}
-
-/// Upstream's `re.search(r"virt[a-z]*-sock", tb)`.
-fn mentions_virt_socket(text: &str) -> bool {
-    text.match_indices("virt").any(|(idx, _)| {
-        let rest = text[idx + 4..].trim_start_matches(|c: char| c.is_ascii_lowercase());
-        rest.starts_with("-sock")
-    })
 }
 
 /// `vmmConnection.get_pretty_desc()` without the config `pretty-name`
@@ -620,7 +586,8 @@ impl VmmConnection {
     }
 
     /// Opens the connection on a worker thread. `done` gets upstream's
-    /// `open-completed` payload: `None` on success, the error otherwise.
+    /// `open-completed` payload: `None` on success or a cancelled auth,
+    /// the error otherwise.
     pub fn open(&self, done: impl FnOnce(Option<ConnectError>) + 'static) {
         if !self.is_disconnected() {
             return;
@@ -632,7 +599,9 @@ impl VmmConnection {
         glib::spawn_future_local(async move {
             let uri2 = uri.clone();
             let res = gio::spawn_blocking(move || {
-                let conn = Connect::open(Some(&uri2)).map_err(|e| e.message().to_string())?;
+                // `_do_open`
+                let conn = connectauth::open_auth(&uri2)
+                    .map_err(|e| connectauth::open_error(&uri2, &e))?;
                 // `_add_conn_events`
                 let event_ids = connevents::register(&conn, &weak);
                 // `_hostinfo = getInfo()`; [2] is the active CPU count.
@@ -650,7 +619,10 @@ impl VmmConnection {
                 ))
             })
             .await
-            .unwrap_or_else(|_| Err("Connect thread panicked".to_string()));
+            .unwrap_or_else(|_| {
+                let msg = "Connect thread panicked";
+                Err(Some(connectauth::connect_error(&uri, msg, msg, false)))
+            });
             match res {
                 Ok((conn, (hostcpus, hostmem, host_cpu_model))) => {
                     this.imp().hostcpus.set(hostcpus);
@@ -661,9 +633,9 @@ impl VmmConnection {
                     this.tick();
                     done(None);
                 }
-                Err(e) => {
+                Err(err) => {
                     this.change_state(ConnState::Disconnected);
-                    done(Some(connect_error(&uri, &e)));
+                    done(err);
                 }
             }
         });
@@ -957,28 +929,6 @@ mod tests {
         assert_eq!(
             stats.stats.len(),
             crate::statsmanager::STATS_HISTORY_LENGTH + 1
-        );
-    }
-
-    #[test]
-    fn connect_error_shapes() {
-        let local = connect_error("qemu:///system", "  boom \n");
-        assert_eq!(
-            local.msg,
-            "Unable to connect to libvirt qemu:///system.\n\nboom"
-        );
-        assert!(local
-            .details
-            .contains("Libvirt URI is: qemu:///system\n\nboom"));
-        let remote = connect_error("qemu+ssh://h/system", "x");
-        assert!(remote.msg.ends_with("running on the remote host."));
-        let sock = connect_error(
-            "qemu:///system",
-            "Failed to connect socket to '/run/libvirt/virtqemud-sock'",
-        );
-        assert_eq!(
-            sock.msg,
-            "Unable to connect to libvirt qemu:///system.\n\nVerify that an appropriate libvirt daemon is running."
         );
     }
 }

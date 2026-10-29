@@ -2085,6 +2085,17 @@ impl VmmDomain {
             .connect_changed(Some("autoconnect"), move |_, _| cb())
     }
 
+    /// `get_console_username`: the keyring keeps only the password.
+    pub fn get_console_username(&self) -> String {
+        self.pervm().string("console-username").to_string()
+    }
+    pub fn set_console_username(&self, username: &str) {
+        let _ = self.pervm().set_string("console-username", username);
+    }
+    pub fn del_console_username(&self) {
+        let _ = self.pervm().set_string("console-username", "");
+    }
+
     pub fn get_details_window_size(&self) -> (i32, i32) {
         self.pervm().get::<(i32, i32)>("vm-window-size")
     }

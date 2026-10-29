@@ -26,6 +26,16 @@ sourceview5 = "0.11"
 virtinst-xml = { path = "../virtinst-xml" }
 clap = { version = "4.5.61", features = ["derive"] }
 futures-channel = "0.3"
+# Upstream's AppIndicator backend for the system tray (`systray.py`): a
+# StatusNotifierItem over D-Bus, since GTK4 has no GtkStatusIcon. The
+# async-io runtime instead of the default tokio, so its futures run on
+# the GTK main context like everything else here.
+ksni = { version = "0.3.7", default-features = false, features = ["async-io"] }
+# The freedesktop Secret Service client that upstream's `lib/keyring.py`
+# hand-rolls over Gio D-Bus. Same async-io runtime (and zbus) as ksni.
+oo7 = { version = "0.6", default-features = false, features = ["async-std", "native_crypto"] }
+# Wipes the console passwords keyring.rs handles (already pulled in by oo7).
+zeroize = "1"
 #
 # Ticket 09's async model: blocking libvirt calls run on OS threads via
 # `gio::spawn_blocking`, awaited from `glib::spawn_future_local` on the

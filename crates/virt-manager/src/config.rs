@@ -276,6 +276,10 @@ impl Config {
     pub fn set_view_system_tray(&self, val: bool) {
         let _ = self.root.set_boolean("system-tray", val);
     }
+    pub fn on_view_system_tray_changed(&self, cb: impl Fn() + 'static) {
+        self.root
+            .connect_changed(Some("system-tray"), move |_, _| cb());
+    }
 
     // XML editor enabled
     pub fn get_xmleditor_enabled(&self) -> bool {

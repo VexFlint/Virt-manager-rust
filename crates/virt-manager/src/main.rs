@@ -18,6 +18,7 @@ mod addstorage;
 mod asyncjob;
 mod clone;
 mod config;
+mod connectauth;
 mod connection;
 mod connevents;
 mod connmanager;
@@ -42,6 +43,7 @@ mod host;
 mod hostnets;
 mod hoststorage;
 mod keymap;
+mod keyring;
 mod libvirtenummap;
 mod libvirtglib;
 mod manager;
@@ -59,6 +61,7 @@ mod spicegtksession;
 mod sshtunnels;
 mod statsmanager;
 mod storagebrowse;
+mod systray;
 mod tpmdetails;
 mod usbdevicewidget;
 mod viewers;
@@ -94,6 +97,10 @@ struct Cli {
     /// Show connection details window
     #[arg(long)]
     show_host_summary: bool,
+
+    /// Launch virt-manager only in system tray
+    #[arg(long)]
+    show_systray: bool,
 }
 
 fn main() -> gtk::glib::ExitCode {
@@ -101,7 +108,19 @@ fn main() -> gtk::glib::ExitCode {
     // Forking into the background isn't ported: the process always stays
     // in the foreground, which is what `--no-fork`/`--debug` ask for.
     let _ = (cli.debug, cli.no_fork, cli.fork);
-    if cli.show_host_summary && cli.uri.is_none() {
+    // Force SSH to use askpass if a password is required,
+    // rather than possibly prompting on a terminal the user isn't looking at.
+    if std::env::var_os("SSH_ASKPASS_REQUIRE").is_none() {
+        std::env::set_var("SSH_ASKPASS_REQUIRE", "force");
+    }
+    let show_window = if cli.show_host_summary {
+        Some(engine::ShowWindow::HostSummary)
+    } else if cli.show_systray {
+        Some(engine::ShowWindow::SystemTray)
+    } else {
+        None
+    };
+    if show_window.is_some_and(|w| w != engine::ShowWindow::SystemTray) && cli.uri.is_none() {
         eprintln!("can't use --show-* options without --connect (except --show-systray)");
         return gtk::glib::ExitCode::FAILURE;
     }
@@ -109,6 +128,6 @@ fn main() -> gtk::glib::ExitCode {
     libvirtglib::event_register();
     engine::run(engine::StartupOptions {
         uri: cli.uri,
-        show_host_summary: cli.show_host_summary,
+        show_window,
     })
 }
