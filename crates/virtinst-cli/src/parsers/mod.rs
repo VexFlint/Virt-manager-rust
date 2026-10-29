@@ -332,7 +332,7 @@ pub fn set_defaults(
         "seclabel" => {
             virtinst_core::domain::seclabel::set_defaults(&mut lookup_prop(guest, def)[idx], || {
                 conn.and_then(|c| Capabilities::fetch(c).ok())
-                    .map(|c| c.host.secmodels)
+                    .map(|c| c.host.secmodel_models())
                     .unwrap_or_default()
             })
         }

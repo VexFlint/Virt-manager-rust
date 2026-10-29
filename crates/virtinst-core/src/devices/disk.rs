@@ -826,6 +826,224 @@ pub fn set_defaults_obj(
     Ok(())
 }
 
+// ---------------------------------------------------------------------
+// `DeviceDisk.check_path_search` and `fix_path_search`: can the
+// emulator's DAC user reach a disk path?
+// ---------------------------------------------------------------------
+
+/// What `DeviceDisk.check_path_search` returns (its `SearchData`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchData {
+    /// The username we checked for, `None` if not applicable.
+    pub user: Option<String>,
+    /// The uid we checked for, `None` if not applicable.
+    pub uid: Option<u32>,
+    /// The directories the user cannot search, outermost first.
+    pub fixlist: Vec<String>,
+}
+
+/// `DeviceDisk.check_path_search`: check if the connection DAC user
+/// has search permissions for all the directories in the passed path.
+/// `uri` is the connection's (`conn.is_remote()`,
+/// `conn.is_qemu_privileged()`), the DAC user comes from
+/// `conn.caps.host.get_qemu_baselabel()`.
+pub fn check_path_search(
+    conn: &virt::connect::Connect,
+    uri: &crate::connection::Uri,
+    path: Option<&str>,
+) -> SearchData {
+    log::debug!(
+        "DeviceDisk.check_path_search path={}",
+        path.unwrap_or("None")
+    );
+
+    let mut searchdata = SearchData::default();
+    let Some(path) = path.filter(|p| !p.is_empty()) else {
+        return searchdata;
+    };
+
+    if uri.is_remote() {
+        return searchdata;
+    }
+    // `conn.is_qemu_privileged()`
+    if !uri.is_qemu() || crate::install::installertreemedia::is_unprivileged(uri) {
+        return searchdata;
+    }
+    if crate::storage::path_is_url(path) {
+        return searchdata;
+    }
+    if crate::diskbackend::path_is_network_vol(conn, path) {
+        return searchdata;
+    }
+    let path = crate::storage::abspath(path);
+
+    let baselabel = crate::capabilities::Capabilities::fetch_from(conn)
+        .ok()
+        .and_then(|caps| caps.host.get_qemu_baselabel());
+    let Some((user, uid)) = baselabel else {
+        return searchdata;
+    };
+    if uid == 0 && std::env::var_os("VIRTINST_TEST_SUITE").is_none() {
+        return searchdata;
+    }
+
+    searchdata.fixlist = crate::diskbackend::is_path_searchable(&path, uid, &user);
+    searchdata.fixlist.reverse();
+    searchdata.user = Some(user);
+    searchdata.uid = Some(uid);
+    searchdata
+}
+
+/// `DeviceDisk.fix_path_search`: try to fix any permission problems
+/// found by [`check_path_search`]. The `(broken path, error msg)`
+/// pairs, in `fixlist` order (upstream's dict).
+pub fn fix_path_search(searchdata: &SearchData) -> Vec<(String, String)> {
+    // `check_path_search` only fills `fixlist` along with `user`. An
+    // empty user would turn setfacl's `user:%s:x` into the owner entry
+    // (`user::x`) and strip the owner's own access, so never run it.
+    let Some(user) = searchdata.user.as_deref().filter(|u| !u.is_empty()) else {
+        return Vec::new();
+    };
+    crate::diskbackend::set_dirs_searchable(&searchdata.fixlist, user)
+}
+
+#[cfg(test)]
+mod path_search_tests {
+    use super::*;
+    use crate::connection::{Connection, Uri};
+    use crate::test_support::TEST_DOMAIN_LOCK;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Upstream's `dac-caps-template.xml`, cut down to the secmodel.
+    fn dac_caps(uid: &str) -> String {
+        format!(
+            "<capabilities><host><cpu><arch>x86_64</arch></cpu>\
+             <secmodel><model>dac</model><doi>0</doi>\
+             <baselabel type='kvm'>+{uid}:+{uid}</baselabel>\
+             <baselabel type='qemu'>+{uid}:+{uid}</baselabel>\
+             </secmodel></host></capabilities>"
+        )
+    }
+
+    fn chmod(path: &str, mode: u32) {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// Upstream's `test_disk_dir_searchable`: contrive an example that
+    /// triggers all the code, with the caps' DAC label set to our uid.
+    #[test]
+    fn disk_dir_searchable() {
+        let _guard = TEST_DOMAIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = Connection::open("test:///default").expect("test driver opens");
+        let c = conn.as_connect();
+        let pid = std::process::id();
+        let base = std::env::temp_dir();
+        let tmpdir = base.join(format!("virtinst-test-search-{pid}"));
+        let _ = std::fs::remove_dir_all(&tmpdir);
+        std::fs::create_dir_all(&tmpdir).unwrap();
+        let tmpdir = tmpdir.to_str().unwrap().to_string();
+        let capsfile = base.join(format!("virtinst-test-search-caps-{pid}.xml"));
+        let set_caps_baselabel_uid = |uid: &str| {
+            std::fs::write(&capsfile, dac_caps(uid)).unwrap();
+            std::env::set_var("VIRTINST_TEST_CAPS_FILE", &capsfile);
+        };
+        let qemu = Uri::parse("qemu:///system");
+        // SAFETY: getuid has no preconditions.
+        let me = unsafe { libc::getuid() };
+
+        // path="" and path=None trigger an early return
+        assert_eq!(check_path_search(c, &qemu, Some("")).uid, None);
+        assert_eq!(check_path_search(c, &qemu, None).uid, None);
+
+        // Invalid uid
+        set_caps_baselabel_uid("-1");
+        assert_eq!(check_path_search(c, &qemu, Some(&tmpdir)).uid, None);
+
+        // Use our uid, verify it shows we have expected access
+        set_caps_baselabel_uid(&me.to_string());
+        let footest = format!("{tmpdir}/footest");
+        let searchdata = check_path_search(c, &qemu, Some(&footest));
+        if me == 0 && std::env::var_os("VIRTINST_TEST_SUITE").is_none() {
+            // root's own uid is skipped outside the test suite
+            assert_eq!(searchdata, SearchData::default());
+        } else {
+            assert_eq!(searchdata.uid, Some(me));
+            assert!(searchdata.user.is_some());
+            assert_eq!(searchdata.fixlist, Vec::<String>::new());
+
+            // Not for remote, session, non-qemu URIs or URLs
+            for uri in [
+                "qemu+ssh://host/system",
+                "qemu:///session",
+                "test:///default",
+            ] {
+                let s = check_path_search(c, &Uri::parse(uri), Some(&tmpdir));
+                assert_eq!(s, SearchData::default(), "{uri}");
+            }
+            let url = check_path_search(c, &qemu, Some("http://example.com/foo.iso"));
+            assert_eq!(url, SearchData::default());
+
+            // Remove perms on the tmpdir, now it should report failures
+            chmod(&tmpdir, 0o000);
+            let searchdata = check_path_search(c, &qemu, Some(&tmpdir));
+            assert_eq!(searchdata.fixlist, vec![tmpdir.clone()]);
+
+            let errdict = fix_path_search(&searchdata);
+            assert_eq!(errdict, vec![]);
+        }
+
+        // Reset changes we made
+        std::env::remove_var("VIRTINST_TEST_CAPS_FILE");
+        chmod(&tmpdir, 0o777);
+        std::fs::remove_dir_all(&tmpdir).ok();
+        std::fs::remove_file(&capsfile).ok();
+    }
+
+    #[test]
+    fn fix_path_search_without_a_user_changes_nothing() {
+        let dir = std::env::temp_dir().join(format!("vmm-nouser-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = dir.to_str().unwrap().to_string();
+        for user in [None, Some(String::new())] {
+            let searchdata = SearchData {
+                user,
+                uid: None,
+                fixlist: vec![path.clone()],
+            };
+            assert!(fix_path_search(&searchdata).is_empty());
+        }
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn fix_path_search_reports_what_could_not_be_fixed() {
+        let missing = std::env::temp_dir()
+            .join(format!(
+                "virtinst-test-search-missing-{}",
+                std::process::id()
+            ))
+            .to_str()
+            .unwrap()
+            .to_string();
+        let searchdata = SearchData {
+            user: Some("virtinst-test-user".into()),
+            uid: Some(4_242_424),
+            fixlist: vec![missing.clone()],
+        };
+        assert_eq!(
+            fix_path_search(&searchdata),
+            vec![(
+                missing.clone(),
+                format!("[Errno 2] No such file or directory: '{missing}'")
+            )]
+        );
+        assert_eq!(fix_path_search(&SearchData::default()), vec![]);
+    }
+}
+
 #[cfg(test)]
 mod edit_tests {
     use super::*;

@@ -335,6 +335,56 @@ pub async fn ok_cancel(parent: Option<&gtk::Window>, text1: &str, text2: Option<
     .0
 }
 
+/// `vmmErrorDialog.warn_chkbox`: a warning with a check box; resolves
+/// to (affirmative response, checkbox state). Upstream's `buttons`
+/// default is OK/Cancel.
+pub async fn warn_chkbox(
+    parent: Option<&gtk::Window>,
+    text1: &str,
+    text2: Option<&str>,
+    chktext: &str,
+    buttons: Buttons,
+) -> (bool, bool) {
+    run_dialog(
+        parent,
+        DialogSpec {
+            kind: MessageType::Warning,
+            buttons,
+            text1,
+            text2,
+            title: "",
+            details: None,
+            chktext: Some(chktext),
+        },
+    )
+    .await
+}
+
+/// `vmmErrorDialog.err_chkbox`: an error with a check box; resolves to
+/// (affirmative response, checkbox state). Upstream's `buttons`
+/// default is OK.
+pub async fn err_chkbox(
+    parent: Option<&gtk::Window>,
+    text1: &str,
+    text2: Option<&str>,
+    chktext: &str,
+    buttons: Buttons,
+) -> (bool, bool) {
+    run_dialog(
+        parent,
+        DialogSpec {
+            kind: MessageType::Error,
+            buttons,
+            text1,
+            text2,
+            title: "",
+            details: None,
+            chktext: Some(chktext),
+        },
+    )
+    .await
+}
+
 /// `vmmErrorDialog.chkbox_helper` with its defaults (`default=True`,
 /// "Don't ask me again").
 pub async fn chkbox_helper(
@@ -371,19 +421,7 @@ pub async fn chkbox_helper_with(
     if !getcb() {
         return default;
     }
-    let (response, skip_prompt) = run_dialog(
-        parent,
-        DialogSpec {
-            kind: MessageType::Warning,
-            buttons: Buttons::YesNo,
-            text1,
-            text2,
-            title: "",
-            details: None,
-            chktext: Some(chktext),
-        },
-    )
-    .await;
+    let (response, skip_prompt) = warn_chkbox(parent, text1, text2, chktext, Buttons::YesNo).await;
     setcb(!skip_prompt);
     response
 }

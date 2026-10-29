@@ -1,8 +1,12 @@
 //! The storage behind a disk path — upstream's `diskbackend.py`
 //! classes (`StorageBackend`, `ManagedStorageCreator`,
 //! `CloneStorageCreator`) and the path helpers they use (`_get_dev_type`,
-//! `_get_size`, `check_path_search`). The pool/volume lookups they sit
-//! on (`manage_path`, `_check_if_path_managed`) live in `storage.rs`.
+//! `_get_size`). The pool/volume lookups they sit on (`manage_path`,
+//! `_check_if_path_managed`) live in `storage.rs`.
+//!
+//! Also the ACL/path perm helpers behind `DeviceDisk.check_path_search`
+//! and `fix_path_search` (in `devices/disk.rs`): `is_path_searchable`
+//! and `set_dirs_searchable` (`setfacl`, falling back to `chmod o+x`).
 //!
 //! Only what `virt-clone`'s `Cloner` needs is here so far: an existing
 //! path's backend, and the two ways of creating a cloned disk
@@ -699,153 +703,182 @@ pub fn path_is_network_vol(conn: &Connect, path: &str) -> bool {
     false
 }
 
-/// `capabilities.host.get_qemu_baselabel`: the user and uid of the
-/// DAC `qemu`/`kvm` base label.
-fn qemu_baselabel(conn: &Connect) -> Option<(String, u32)> {
-    // `conn.caps`: a magic URI's `caps=` file stands in for libvirt.
-    let xml = match std::env::var_os("VIRTINST_TEST_CAPS_FILE") {
-        Some(path) => std::fs::read_to_string(path).ok()?,
-        None => conn.get_capabilities().ok()?,
+// ---------------------------------------------------------------------
+// ACL/path perm helpers
+// ---------------------------------------------------------------------
+
+/// `SETFACL`: the command `_fix_perms_acl` runs.
+pub const SETFACL: &str = "setfacl";
+
+/// Python's `os.path.split`: `(head, tail)`, with the head's trailing
+/// slashes stripped unless it is all slashes.
+fn os_path_split(path: &str) -> (String, String) {
+    let i = path.rfind('/').map_or(0, |i| i + 1);
+    let (head, tail) = path.split_at(i);
+    let head = if !head.is_empty() && head.chars().any(|c| c != '/') {
+        head.trim_end_matches('/')
+    } else {
+        head
     };
-    let doc = virtinst_xml::parse_libvirt_xml(&xml).ok()?;
-    let host = doc.root_element()?.find(&doc, "host")?;
-    for secmodel in host.find_all(&doc, "secmodel") {
-        let model = secmodel.find(&doc, "model").map(|m| m.text_content(&doc));
-        if model.as_deref() != Some("dac") {
-            continue;
-        }
-        let label = secmodel
-            .find_all(&doc, "baselabel")
-            .into_iter()
-            .find(|b| matches!(b.attribute(&doc, "type"), Some("qemu" | "kvm")))
-            .map(|b| b.text_content(&doc));
-        let Some(label) = label else {
-            continue;
-        };
-        let uid: u32 = label
-            .split(':')
-            .next()?
-            .replace('+', "")
-            .trim()
-            .parse()
-            .ok()?;
-        return Some((username_of(uid)?, uid));
-    }
-    None
+    (head.to_string(), tail.to_string())
 }
 
-/// `pwd.getpwuid(uid)[0]`.
-fn username_of(uid: u32) -> Option<String> {
-    // SAFETY: getpwuid_r writes into our buffers; the name pointer is
-    // read before they go out of scope.
-    unsafe {
-        let mut pwd: libc::passwd = std::mem::zeroed();
-        let mut buf = vec![0 as libc::c_char; 4096];
-        let mut result: *mut libc::passwd = std::ptr::null_mut();
-        if libc::getpwuid_r(uid, &mut pwd, buf.as_mut_ptr(), buf.len(), &mut result) != 0
-            || result.is_null()
-        {
-            return None;
-        }
-        Some(
-            std::ffi::CStr::from_ptr(pwd.pw_name)
-                .to_string_lossy()
-                .into_owned(),
-        )
-    }
+/// Python's `repr()` of a `str` list, as upstream's debug messages
+/// print the commands they run.
+fn py_list_repr(items: &[&str]) -> String {
+    let items: Vec<String> = items.iter().map(|i| format!("'{i}'")).collect();
+    format!("[{}]", items.join(", "))
 }
 
-/// `_is_dir_searchable`: the mode bits, then the POSIX ACL.
-fn is_dir_searchable(dir: &str, uid: u32, username: &str) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    let Ok(meta) = std::fs::metadata(dir) else {
-        return false;
+/// `_fix_perms_acl`: `setfacl --modify user:<username>:x <dirname>`,
+/// with `setfacl` standing in for [`SETFACL`].
+fn fix_perms_acl(dirname: &str, username: &str, setfacl: &str) -> Result<(), String> {
+    let cmd = [setfacl, "--modify", &format!("user:{username}:x"), dirname];
+    let out = std::process::Command::new(cmd[0])
+        .args(&cmd[1..])
+        .output()
+        .map_err(|e| oserror_str(&e, Some(setfacl)))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    log::debug!("Ran command '{}'", py_list_repr(&cmd));
+    if !stdout.is_empty() || !stderr.is_empty() {
+        log::debug!("out={stdout}\nerr={stderr}");
+    }
+
+    if !out.status.success() {
+        return Err(stderr.into_owned());
+    }
+    Ok(())
+}
+
+/// `_fix_perms_chmod`: add `o+x` to `dirname`.
+fn fix_perms_chmod(dirname: &str) -> Result<(), String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    log::debug!("Setting +x on {dirname}");
+    let stat = |d: &str| {
+        std::fs::metadata(d)
+            .map(|m| m.mode())
+            .map_err(|e| oserror_str(&e, Some(d)))
     };
-    let flag = if uid == meta.uid() {
+    let mode = stat(dirname)?;
+    let newmode = mode | 0o001;
+    std::fs::set_permissions(dirname, std::fs::Permissions::from_mode(newmode & 0o7777))
+        .map_err(|e| oserror_str(&e, Some(dirname)))?;
+    if stat(dirname)? != newmode {
+        // Trying to change perms on vfat at least doesn't work
+        // but also doesn't seem to error. Try and detect that
+        return Err(format!("Permissions on '{dirname}' did not stick"));
+    }
+    Ok(())
+}
+
+/// `set_dirs_searchable`: give `username` search access to each of
+/// `dirlist` — `setfacl` while it works, `chmod o+x` from the first
+/// time it doesn't. The `(dir, error)` pairs that couldn't be fixed,
+/// in `dirlist` order (upstream's `errdict`).
+pub fn set_dirs_searchable(dirlist: &[String], username: &str) -> Vec<(String, String)> {
+    set_dirs_searchable_with(dirlist, username, SETFACL)
+}
+
+/// [`set_dirs_searchable`] running `setfacl` as the ACL command — the
+/// test suite's `SETFACL` override.
+fn set_dirs_searchable_with(
+    dirlist: &[String],
+    username: &str,
+    setfacl: &str,
+) -> Vec<(String, String)> {
+    let mut useacl = true;
+    let mut errdict = vec![];
+    for dirname in dirlist {
+        if useacl {
+            match fix_perms_acl(dirname, username, setfacl) {
+                Ok(()) => continue,
+                Err(e) => {
+                    log::debug!("setfacl failed: {e}");
+                    log::debug!("trying chmod");
+                    useacl = false;
+                }
+            }
+        }
+
+        // If we reach here, ACL setting failed, try chmod
+        if let Err(e) = fix_perms_chmod(dirname) {
+            errdict.push((dirname.clone(), e));
+        }
+    }
+    errdict
+}
+
+/// `_is_dir_searchable`'s mode check: the owner bit when `uid` owns the
+/// directory, the group bit when `uid` equals its *gid* (upstream
+/// compares the uid with `st_gid`, not the user's groups), the other
+/// bit otherwise.
+fn mode_is_searchable(mode: u32, st_uid: u32, st_gid: u32, uid: u32) -> bool {
+    let flag = if uid == st_uid {
         0o100
-    } else if uid == meta.gid() {
+    } else if uid == st_gid {
         0o010
     } else {
         0o001
     };
-    if meta.mode() & flag != 0 {
+    mode & flag != 0
+}
+
+/// `_is_dir_searchable`'s ACL check: whether `getfacl` output has
+/// search access for `username` (`re.search("user:%s:..x")`).
+fn acl_is_searchable(getfacl_out: &str, username: &str) -> bool {
+    regex::Regex::new(&format!("user:{username}:..x")).is_ok_and(|re| re.is_match(getfacl_out))
+}
+
+/// `_is_dir_searchable`: whether `dirname` is searchable by `uid`.
+fn is_dir_searchable(dirname: &str, uid: u32, username: &str) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(statinfo) = std::fs::metadata(dirname) else {
+        return false;
+    };
+
+    if mode_is_searchable(statinfo.mode(), statinfo.uid(), statinfo.gid(), uid) {
         return true;
     }
+
     // Check POSIX ACL (since that is what we use to 'fix' access)
-    let Ok(out) = std::process::Command::new("getfacl").arg(dir).output() else {
+    let cmd = ["getfacl", dirname];
+    let Ok(out) = std::process::Command::new(cmd[0]).arg(cmd[1]).output() else {
         log::debug!("Didn't find the getfacl command.");
         return false;
     };
+
     if !out.status.success() {
+        log::debug!(
+            "Cmd '{}' failed: {}",
+            py_list_repr(&cmd),
+            String::from_utf8_lossy(&out.stderr)
+        );
         return false;
     }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let prefix = format!("user:{username}:");
-    text.lines().any(|l| {
-        l.strip_prefix(&prefix)
-            .is_some_and(|rest| rest.len() >= 3 && rest.as_bytes()[2] == b'x')
-    })
+
+    acl_is_searchable(&String::from_utf8_lossy(&out.stdout), username)
 }
 
-/// `DeviceDisk.check_path_search`'s result.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct SearchData {
-    pub user: Option<String>,
-    pub uid: Option<u32>,
-    pub fixlist: Vec<String>,
-}
-
-/// `DeviceDisk.check_path_search`: the directories of `path` the
-/// qemu DAC user can't search, on a local privileged qemu connection.
-pub fn check_path_search(
-    conn: &Connect,
-    uri: &crate::connection::Uri,
-    path: Option<&str>,
-) -> SearchData {
-    let mut data = SearchData::default();
-    log::debug!(
-        "DeviceDisk.check_path_search path={}",
-        path.unwrap_or("None")
-    );
-    let Some(path) = path else {
-        return data;
-    };
-    let privileged = uri.path != "/session";
-    if uri.is_remote() || !(uri.is_qemu() && privileged) {
-        return data;
-    }
-    if path_is_url(path) || path_is_network_vol(conn, path) {
-        return data;
-    }
-    let path = storage::abspath(path);
-    let Some((user, uid)) = qemu_baselabel(conn) else {
-        return data;
-    };
-    if uid == 0 && std::env::var_os("VIRTINST_TEST_SUITE").is_none() {
-        return data;
-    }
-    // `is_path_searchable`
-    let (mut dir, mut base) = if std::path::Path::new(&path).is_dir() {
-        (path.clone(), "-".to_string())
+/// `is_path_searchable`: each dir component of `path` that `uid`/
+/// `username` can't search, deepest first.
+pub fn is_path_searchable(path: &str, uid: u32, username: &str) -> Vec<String> {
+    let (mut dirname, mut base) = if std::path::Path::new(path).is_dir() {
+        (path.to_string(), "-".to_string())
     } else {
-        (
-            storage::dirname(&path).to_string(),
-            storage::basename(&path).to_string(),
-        )
+        os_path_split(path)
     };
+
     let mut fixlist = vec![];
     while !base.is_empty() {
-        if !is_dir_searchable(&dir, uid, &user) {
-            fixlist.push(dir.clone());
+        if !is_dir_searchable(&dirname, uid, username) {
+            fixlist.push(dirname.clone());
         }
-        base = storage::basename(&dir).to_string();
-        dir = storage::dirname(&dir).to_string();
+        (dirname, base) = os_path_split(&dirname);
     }
-    fixlist.reverse();
-    data.user = Some(user);
-    data.uid = Some(uid);
-    data.fixlist = fixlist;
-    data
+
+    fixlist
 }
 
 #[cfg(test)]
@@ -917,5 +950,176 @@ mod tests {
         c.create(&mut make_meter(true)).unwrap();
         assert_eq!(std::fs::read(&dst).unwrap(), data);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn os_path_split_matches_python() {
+        let split = os_path_split;
+        let s = |a: &str, b: &str| (a.to_string(), b.to_string());
+        assert_eq!(split("/a/b"), s("/a", "b"));
+        assert_eq!(split("/a"), s("/", "a"));
+        assert_eq!(split("/"), s("/", ""));
+        assert_eq!(split("//"), s("//", ""));
+        assert_eq!(split("/a//b"), s("/a", "b"));
+        assert_eq!(split("/a/"), s("/a", ""));
+        assert_eq!(split("a"), s("", "a"));
+        assert_eq!(split(""), s("", ""));
+    }
+
+    #[test]
+    fn mode_check_uses_the_uid_and_upstreams_gid_comparison() {
+        // The owner's bit when the uid owns the directory
+        assert!(mode_is_searchable(0o100, 107, 36, 107));
+        assert!(!mode_is_searchable(0o011, 107, 36, 107));
+        // The group bit when the uid equals the directory's gid
+        assert!(mode_is_searchable(0o010, 0, 107, 107));
+        assert!(!mode_is_searchable(0o101, 0, 107, 107));
+        // The other bit for everybody else, groups aren't consulted
+        assert!(mode_is_searchable(0o001, 0, 0, 107));
+        assert!(!mode_is_searchable(0o770, 0, 36, 107));
+    }
+
+    #[test]
+    fn acl_check_is_upstreams_regex() {
+        let out = "# file: var/lib/foo\n# owner: root\n# group: root\nuser::rwx\n\
+                   user:qemu:r-x\nuser:other:rw-\ngroup::r-x\nmask::r-x\nother::---\n";
+        assert!(acl_is_searchable(out, "qemu"));
+        assert!(!acl_is_searchable(out, "other"));
+        assert!(!acl_is_searchable(out, "nobody"));
+        // re.search: matches anywhere, default ACLs included
+        assert!(acl_is_searchable("default:user:qemu:--x\n", "qemu"));
+        assert!(!acl_is_searchable("user:qemux:--x\n", "qemu"));
+        // `.` doesn't cross lines
+        assert!(!acl_is_searchable("user:qemu:\nx\n", "qemu"));
+    }
+
+    /// A fresh directory tree under the temp dir, removed on drop.
+    struct TmpTree(std::path::PathBuf);
+
+    impl TmpTree {
+        fn new(name: &str) -> TmpTree {
+            let dir =
+                std::env::temp_dir().join(format!("virtinst-test-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            TmpTree(dir)
+        }
+
+        fn path(&self, rel: &str) -> String {
+            let p = if rel.is_empty() {
+                self.0.clone()
+            } else {
+                self.0.join(rel)
+            };
+            p.to_str().unwrap().to_string()
+        }
+
+        fn chmod(&self, rel: &str, mode: u32) {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(self.path(rel), std::fs::Permissions::from_mode(mode))
+                .unwrap();
+        }
+
+        fn mode(&self, rel: &str) -> u32 {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(self.path(rel)).unwrap().mode() & 0o7777
+        }
+    }
+
+    impl Drop for TmpTree {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("chmod")
+                .args(["-R", "u+rwx"])
+                .arg(&self.0)
+                .status();
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn path_searchable_walks_every_parent() {
+        let tree = TmpTree::new("searchable");
+        std::fs::create_dir_all(tree.path("top/mid")).unwrap();
+        tree.chmod("top", 0o700);
+        tree.chmod("top/mid", 0o755);
+        let ours = |fixlist: Vec<String>| -> Vec<String> {
+            fixlist
+                .into_iter()
+                .filter(|d| d.starts_with(&tree.path("")))
+                .collect()
+        };
+        // SAFETY: getuid has no preconditions.
+        let me = unsafe { libc::getuid() };
+
+        // Our own uid owns the tree: everything searchable
+        let disk = tree.path("top/mid/disk.img");
+        assert_eq!(
+            ours(is_path_searchable(&disk, me, "me")),
+            Vec::<String>::new()
+        );
+
+        // Some other uid only has the "other" bits: top is 0700
+        let fake = 4_242_424;
+        assert_eq!(
+            ours(is_path_searchable(&disk, fake, "virtinst-test-user")),
+            vec![tree.path("top")]
+        );
+
+        // A directory path checks itself too, deepest first
+        tree.chmod("top/mid", 0o000);
+        assert_eq!(
+            ours(is_path_searchable(&tree.path("top/mid"), me, "me")),
+            vec![tree.path("top/mid")]
+        );
+        assert_eq!(
+            ours(is_path_searchable(&tree.path("top/mid/disk.img"), me, "me")),
+            vec![tree.path("top/mid")]
+        );
+        assert_eq!(
+            ours(is_path_searchable(
+                &tree.path("top/mid"),
+                fake,
+                "virtinst-test-user"
+            )),
+            vec![tree.path("top/mid"), tree.path("top")]
+        );
+    }
+
+    #[test]
+    fn set_dirs_searchable_tries_setfacl_then_chmod() {
+        let tree = TmpTree::new("setfacl");
+        std::fs::create_dir_all(tree.path("a")).unwrap();
+        std::fs::create_dir_all(tree.path("b")).unwrap();
+        let dirs = vec![tree.path("a"), tree.path("b")];
+
+        // setfacl worked: no chmod
+        tree.chmod("a", 0o700);
+        tree.chmod("b", 0o700);
+        assert_eq!(set_dirs_searchable_with(&dirs, "qemu", "true"), vec![]);
+        assert_eq!((tree.mode("a"), tree.mode("b")), (0o700, 0o700));
+
+        // setfacl failed: chmod o+x from then on
+        assert_eq!(set_dirs_searchable_with(&dirs, "qemu", "false"), vec![]);
+        assert_eq!((tree.mode("a"), tree.mode("b")), (0o701, 0o701));
+
+        // No setfacl at all is a failure like any other
+        tree.chmod("a", 0o700);
+        let missing = "virtinst-test-no-such-setfacl";
+        assert_eq!(
+            set_dirs_searchable_with(&dirs[..1], "qemu", missing),
+            vec![]
+        );
+        assert_eq!(tree.mode("a"), 0o701);
+
+        // What chmod can't fix is reported, in order
+        let gone = tree.path("gone");
+        let res = set_dirs_searchable_with(&[gone.clone(), tree.path("a")], "qemu", "false");
+        assert_eq!(
+            res,
+            vec![(
+                gone.clone(),
+                format!("[Errno 2] No such file or directory: '{gone}'")
+            )]
+        );
     }
 }
