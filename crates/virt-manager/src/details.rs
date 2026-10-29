@@ -4,9 +4,9 @@
 //! right, the page for the selected row; below, Remove / Cancel / Apply.
 //!
 //! Per ticket 10 the sidebar is a plain `GtkListBox` with directly built
-//! rows. Ported so far: the sidebar (labels and icons exactly as
-//! upstream computes them), the edit/Apply machinery and the Overview
-//! page; the other pages arrive in the next slices.
+//! rows: the sidebar (labels and icons exactly as upstream computes
+//! them), the edit/Apply machinery, and every page, Performance's
+//! graphs included.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -17,6 +17,8 @@ use gtk::prelude::*;
 use virtinst_xml::{Document, Element};
 
 use crate::domain::{DomainXml, VmmDomain};
+use crate::graphwidgets::SparklineGraph;
+use crate::statsmanager::{PollFlags, StatsList, StatsRecord};
 use crate::storagebrowse::{self, BrowseReason, StorageBrowser};
 use virtinst_core::domain::cpu;
 
@@ -1467,6 +1469,146 @@ impl OsPage {
     }
 }
 
+/// `_init_graphs`' disk and network line colors, one RGB per data set.
+const IO_GRAPH_RGB: [u8; 6] = [0x82, 0x00, 0x3B, 0x29, 0x5C, 0x45];
+
+/// `_refresh_stats_page`'s `_multi_color`.
+fn multi_color(text1: &str, text2: &str) -> String {
+    format!("<span color=\"#82003B\">{text1}</span> <span color=\"#295C45\">{text2}</span>")
+}
+
+/// The Performance page's texts, as `_refresh_stats_page` builds them.
+#[derive(Debug, PartialEq, Eq)]
+struct StatsTexts {
+    cpu: String,
+    mem: String,
+    /// Markup.
+    dsk: String,
+    /// Markup.
+    net: String,
+}
+
+/// `_refresh_stats_page`'s texts from the latest record: "Disabled"
+/// for a poller turned off in Preferences, `%d` truncating like Python.
+/// `vm_memory` is `xmlobj.memory`, in KiB.
+fn stats_texts(flags: PollFlags, rec: &StatsRecord, vm_memory: u64) -> StatsTexts {
+    let pretty_mem = crate::host::pretty_mem;
+    let mut texts = StatsTexts {
+        cpu: "Disabled".into(),
+        mem: "Disabled".into(),
+        dsk: "Disabled".into(),
+        net: "Disabled".into(),
+    };
+    if flags.cpu {
+        texts.cpu = format!("{} %", rec.cpu_guest_percent as i64);
+    }
+    if flags.mem {
+        texts.mem = format!("{} of {}", pretty_mem(rec.curmem), pretty_mem(vm_memory));
+    }
+    if flags.disk {
+        // _dsk_rx_tx_text
+        let (rx, tx, unit) = (rec.disk_rd_rate as i64, rec.disk_wr_rate as i64, "KiB/s");
+        texts.dsk = multi_color(&format!("{rx} {unit} read"), &format!("{tx} {unit} write"));
+    }
+    if flags.net {
+        // _net_rx_tx_text
+        let (rx, tx, unit) = (rec.net_rx_rate as i64, rec.net_tx_rate as i64, "KiB/s");
+        texts.net = multi_color(&format!("{rx} {unit} in"), &format!("{tx} {unit} out"));
+    }
+    texts
+}
+
+/// `_refresh_stats_page`'s graph data: `guest_cpu_time_vector()`,
+/// `stats_memory_vector()`, and `disk_io_vectors()` /
+/// `network_traffic_vectors()` with their two sets laid end to end
+/// (`d1 + d2`). No limit, so the whole history.
+fn stats_vectors(stats: &StatsList) -> [Vec<f64>; 4] {
+    let all = usize::MAX;
+    let cpu = stats.get_vector(|r| r.cpu_guest_percent, all, 100.0);
+    let mem = stats.get_vector(|r| r.curr_mem_percent, all, 100.0);
+    let ceil = stats.disk_io_max_rate();
+    let mut dsk = stats.get_vector(|r| r.disk_rd_rate, all, ceil);
+    dsk.extend(stats.get_vector(|r| r.disk_wr_rate, all, ceil));
+    let ceil = stats.network_traffic_max_rate();
+    let mut net = stats.get_vector(|r| r.net_rx_rate, all, ceil);
+    net.extend(stats.get_vector(|r| r.net_tx_rate, all, ceil));
+    [cpu, mem, dsk, net]
+}
+
+/// The Performance page (`overview-cpu-usage-*`,
+/// `overview-memory-usage-*`, `overview-disk-usage-*`,
+/// `overview-network-traffic-*`).
+struct StatsPage {
+    page: gtk::Box,
+    cpu_text: gtk::Label,
+    memory_text: gtk::Label,
+    disk_text: gtk::Label,
+    network_text: gtk::Label,
+    graph_cpu: SparklineGraph,
+    graph_memory: SparklineGraph,
+    graph_disk: SparklineGraph,
+    graph_network: SparklineGraph,
+}
+
+impl StatsPage {
+    fn new() -> StatsPage {
+        // _init_graphs
+        let make_graph = || {
+            let g = SparklineGraph::default();
+            g.set_hexpand(true);
+            g.set_reversed(true);
+            g
+        };
+        let io_graph = || {
+            let g = make_graph();
+            g.set_filled(false);
+            g.set_num_sets(2);
+            g.set_rgb(IO_GRAPH_RGB.iter().map(|&x| f64::from(x) / 255.0).collect());
+            g
+        };
+        let graph_cpu = make_graph();
+        let graph_memory = make_graph();
+        let graph_disk = io_graph();
+        let graph_network = io_graph();
+
+        let cpu_text = gtk::Label::new(Some("18%"));
+        let memory_text = gtk::Label::new(Some("30 MiB of 128 MiB"));
+        let disk_text = gtk::Label::new(None);
+        disk_text.set_markup("0 KiBytes/s 0 KiBytes/s");
+        let network_text = gtk::Label::new(None);
+        network_text.set_markup("0 KiBytes/s 0 KiBytes/s");
+
+        // The graph in its 75px `*-align` box over the right-aligned text.
+        let stats_frame = |title: &str, graph: &SparklineGraph, text: &gtk::Label| {
+            let align = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            align.set_size_request(-1, 75);
+            align.append(graph);
+            text.set_halign(gtk::Align::End);
+            let content = gtk::Box::new(gtk::Orientation::Vertical, 3);
+            content.append(&align);
+            content.append(text);
+            frame(title, &content)
+        };
+        let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        page.update_property(&[gtk::accessible::Property::Label("performance-tab")]);
+        page.append(&stats_frame("CPU usage", &graph_cpu, &cpu_text));
+        page.append(&stats_frame("Memory usage", &graph_memory, &memory_text));
+        page.append(&stats_frame("Disk I/O", &graph_disk, &disk_text));
+        page.append(&stats_frame("Network I/O", &graph_network, &network_text));
+        StatsPage {
+            page,
+            cpu_text,
+            memory_text,
+            disk_text,
+            network_text,
+            graph_cpu,
+            graph_memory,
+            graph_disk,
+            graph_network,
+        }
+    }
+}
+
 /// The Boot Options page (`boot-*`).
 struct BootPage {
     page: gtk::Grid,
@@ -1645,6 +1787,7 @@ struct Inner {
     memory: MemoryPage,
     boot: BootPage,
     os: OsPage,
+    stats: StatsPage,
     disk: DiskPage,
     network: NetworkPage,
     input: crate::devpages::InputPage,
@@ -1666,7 +1809,6 @@ struct Inner {
     addhw: RefCell<Option<crate::addhardware::AddHardware>>,
     graphics_title: gtk::Label,
     gfxdetails: Rc<crate::gfxdetails::GraphicsDetails>,
-    unported: gtk::Label,
     config_remove: gtk::Button,
     config_cancel: gtk::Button,
     config_apply: gtk::Button,
@@ -1706,6 +1848,7 @@ impl VmmDetails {
         let memory = MemoryPage::new();
         let boot = BootPage::new();
         let os = OsPage::new();
+        let stats = StatsPage::new();
         let disk = DiskPage::new(vm.conn(), is_customize_dialog);
         let network = NetworkPage::new(vm.conn(), is_customize_dialog);
         use crate::devpages as dp;
@@ -1731,15 +1874,13 @@ impl VmmDetails {
         graphics_page.append(&graphics_title);
         gfxdetails.top_box.set_margin_start(12);
         graphics_page.append(&gfxdetails.top_box);
-        let unported = gtk::Label::new(Some("This page is not available yet in this version."));
-        unported.set_valign(gtk::Align::Start);
-        unported.set_xalign(0.0);
         let hw_panel = gtk::Stack::new();
         hw_panel.add_named(&overview.page, Some("overview"));
         hw_panel.add_named(&cpu.page, Some("cpu"));
         hw_panel.add_named(&memory.page, Some("memory"));
         hw_panel.add_named(&boot.page, Some("boot"));
         hw_panel.add_named(&os.page, Some("os"));
+        hw_panel.add_named(&stats.page, Some("stats"));
         hw_panel.add_named(&disk.page, Some("disk"));
         hw_panel.add_named(&network.page, Some("network"));
         hw_panel.add_named(&input.page, Some("input"));
@@ -1766,7 +1907,6 @@ impl VmmDetails {
             &dp::frame_page(&dp::title("Filesystem"), &fs.top_box),
             Some("filesystem"),
         );
-        hw_panel.add_named(&unported, Some("unported"));
         let panel_scroll = gtk::ScrolledWindow::builder()
             .child(&hw_panel)
             .hexpand(true)
@@ -1809,6 +1949,7 @@ impl VmmDetails {
             memory,
             boot,
             os,
+            stats,
             disk,
             network,
             input,
@@ -1830,7 +1971,6 @@ impl VmmDetails {
             addhw: RefCell::default(),
             graphics_title,
             gfxdetails,
-            unported,
             config_remove,
             config_cancel,
             config_apply,
@@ -3503,6 +3643,10 @@ impl VmmDetails {
                 self.refresh_os_page();
                 i.hw_panel.set_visible_child_name("os");
             }
+            HwType::Stats => {
+                self.refresh_stats_page();
+                i.hw_panel.set_visible_child_name("stats");
+            }
             HwType::Disk => {
                 self.refresh_disk_page(&row);
                 i.hw_panel.set_visible_child_name("disk");
@@ -3549,7 +3693,6 @@ impl VmmDetails {
                 self.refresh_filesystem_page(&row);
                 i.hw_panel.set_visible_child_name("filesystem");
             }
-            _ => i.hw_panel.set_visible_child(&i.unported),
         }
         self.check_device_remove(&row);
         i.refreshing.set(false);
@@ -3776,6 +3919,31 @@ impl VmmDetails {
             .os
             .os_list
             .select_os(&crate::oslist::lookup_os_by_full_id(os_id.as_deref()));
+    }
+
+    /// `_refresh_stats_page`: the texts honor the Preferences polling
+    /// toggles; the graphs draw whatever history was sampled.
+    fn refresh_stats_page(&self) {
+        let i = &self.0;
+        let s = &i.stats;
+        let flags = crate::engine::get().config().get_poll_flags();
+        let vm_memory =
+            i.vm.xmlobj()
+                .and_then(|x| x.guest.memory)
+                .map(u64::from)
+                .unwrap_or(0);
+        let stats = i.vm.stats();
+        let texts = stats_texts(flags, &stats.latest(), vm_memory);
+        s.cpu_text.set_text(&texts.cpu);
+        s.memory_text.set_text(&texts.mem);
+        s.network_text.set_markup(&texts.net);
+        s.disk_text.set_markup(&texts.dsk);
+
+        let [cpu, mem, dsk, net] = stats_vectors(&stats);
+        s.graph_cpu.set_data_array(cpu);
+        s.graph_memory.set_data_array(mem);
+        s.graph_disk.set_data_array(dsk);
+        s.graph_network.set_data_array(net);
     }
 
     /// `vmmAddStorage`'s `changed`.
@@ -4251,6 +4419,16 @@ impl VmmDetails {
         o.status_icon.set_icon_name(Some(vm.run_status_icon_name()));
     }
 
+    /// `vmwindow_resources_refreshed`: a new stats sample came in.
+    pub fn vmwindow_resources_refreshed(&self) {
+        if self
+            .get_hw_row()
+            .is_some_and(|row| row.hwtype == HwType::Stats)
+        {
+            self.refresh_stats_page();
+        }
+    }
+
     /// `vmwindow_refresh_vm_state`.
     pub fn vmwindow_refresh_vm_state(&self, is_current_page: bool) {
         if !is_current_page {
@@ -4392,5 +4570,89 @@ mod tests {
         assert_eq!(video_pretty_model("virtio"), "Virtio");
         assert_eq!(chipset_label_from_machine(Some("pc-i440fx-8.2")), "i440FX");
         assert_eq!(chipset_label_from_machine(Some("pc-q35-8.2")), "Q35");
+    }
+
+    const ALL_POLLS: PollFlags = PollFlags {
+        cpu: true,
+        mem: true,
+        disk: true,
+        net: true,
+    };
+
+    #[test]
+    fn stats_texts_match_refresh_stats_page() {
+        let rec = StatsRecord {
+            cpu_guest_percent: 18.9,
+            curmem: 30 * 1024,
+            disk_rd_rate: 12.7,
+            disk_wr_rate: 0.4,
+            net_rx_rate: 1024.99,
+            net_tx_rate: 3.0,
+            ..Default::default()
+        };
+        let t = stats_texts(ALL_POLLS, &rec, 128 * 1024);
+        // `%d` truncates
+        assert_eq!(t.cpu, "18 %");
+        assert_eq!(t.mem, "30 MiB of 128 MiB");
+        assert_eq!(
+            t.dsk,
+            "<span color=\"#82003B\">12 KiB/s read</span> \
+             <span color=\"#295C45\">0 KiB/s write</span>"
+        );
+        assert_eq!(
+            t.net,
+            "<span color=\"#82003B\">1024 KiB/s in</span> \
+             <span color=\"#295C45\">3 KiB/s out</span>"
+        );
+        // uiutil.pretty_mem switches to GiB above 10 GiB
+        let t = stats_texts(ALL_POLLS, &StatsRecord::default(), 16 * 1024 * 1024);
+        assert_eq!(t.mem, " 0 MiB of 16.00 GiB");
+    }
+
+    #[test]
+    fn stats_texts_disabled_pollers() {
+        let rec = StatsRecord {
+            cpu_guest_percent: 50.0,
+            ..Default::default()
+        };
+        let none = PollFlags::default();
+        let t = stats_texts(none, &rec, 1024);
+        for text in [&t.cpu, &t.mem, &t.dsk, &t.net] {
+            assert_eq!(text, "Disabled");
+        }
+        let only_disk = PollFlags { disk: true, ..none };
+        let t = stats_texts(only_disk, &rec, 1024);
+        assert_eq!(t.cpu, "Disabled");
+        assert_eq!(t.mem, "Disabled");
+        assert!(t.dsk.contains("0 KiB/s read"));
+        assert_eq!(t.net, "Disabled");
+    }
+
+    #[test]
+    fn stats_vectors_lay_sets_end_to_end() {
+        use crate::statsmanager::{RawSample, STATS_HISTORY_LENGTH};
+        let mut list = StatsList::default();
+        let raw = |ts: f64, cpu_ns: u64, rd: i64| RawSample {
+            timestamp: ts,
+            state: virt::sys::VIR_DOMAIN_RUNNING,
+            guestcpus: 1,
+            cpu_time_abs: cpu_ns,
+            mem: Some((1000, 500)),
+            disk_rd_bytes: rd,
+            ..Default::default()
+        };
+        list.append_sample(&raw(1.0, 0, 0), ALL_POLLS, 1);
+        list.append_sample(&raw(2.0, 250_000_000, 40 * 1024), ALL_POLLS, 1);
+        let [cpu, mem, dsk, net] = stats_vectors(&list);
+        let len = STATS_HISTORY_LENGTH + 1;
+        assert_eq!(cpu.len(), len);
+        assert_eq!(mem.len(), len);
+        assert_eq!(dsk.len(), 2 * len);
+        assert_eq!(net.len(), 2 * len);
+        assert!((cpu[0] - 0.25).abs() < 1e-9);
+        assert!((mem[0] - 0.5).abs() < 1e-9);
+        // 40 KiB/s read over a 40 KiB/s ceiling; writes start at `len`
+        assert!((dsk[0] - 1.0).abs() < 1e-9);
+        assert_eq!(dsk[len], 0.0);
     }
 }

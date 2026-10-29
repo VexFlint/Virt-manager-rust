@@ -298,10 +298,25 @@ impl Sparkline {
 mod graph_imp {
     use super::*;
 
-    #[derive(Default)]
     pub struct SparklineGraph {
         pub data_array: RefCell<Vec<f64>>,
+        pub num_sets: Cell<usize>,
+        pub filled: Cell<bool>,
         pub reversed: Cell<bool>,
+        pub rgb: RefCell<Vec<f64>>,
+    }
+
+    /// `Sparkline.__init__`'s defaults.
+    impl Default for SparklineGraph {
+        fn default() -> Self {
+            SparklineGraph {
+                data_array: RefCell::default(),
+                num_sets: Cell::new(1),
+                filled: Cell::new(true),
+                reversed: Cell::new(false),
+                rgb: RefCell::default(),
+            }
+        }
     }
 
     #[glib::object_subclass]
@@ -335,11 +350,12 @@ mod graph_imp {
     }
 
     impl SparklineGraph {
-        /// `Sparkline.do_draw` with `num_sets` 1, `filled` and no `rgb`:
-        /// the line and fill keep cairo's default source.
+        /// `Sparkline.do_draw`. Without a full `rgb` the lines and fills
+        /// keep cairo's default source.
         fn draw(&self, cr: &gtk::cairo::Context, w: f64, h: f64, fg: gdk::RGBA) {
             let data = self.data_array.borrow();
-            let points_per_set = data.len();
+            let num_sets = self.num_sets.get().max(1);
+            let points_per_set = data.len() / num_sets;
             let pixels_per_point = w / (points_per_set.saturating_sub(1).max(1) as f64);
 
             // This draws the marker ticks (`Gtk.render_line`: a 1px line
@@ -363,33 +379,45 @@ mod graph_imp {
 
             // Draw the actual sparkline
             let reversed = self.reversed.get();
-            let get_y = |index: usize| {
-                let n = if reversed {
-                    points_per_set - index - 1
+            let get_y = |dataset: usize, index: usize| {
+                let mut n = dataset * points_per_set;
+                if reversed {
+                    n += points_per_set - index - 1;
                 } else {
-                    index
-                };
+                    n += index;
+                }
                 h - ((h - 1.0) * data[n])
             };
             cr.set_line_width(2.0);
-            let mut points: Vec<(f64, f64)> = (0..points_per_set)
-                .map(|i| {
-                    let x = i as f64 * pixels_per_point;
-                    (x.trunc(), get_y(i).trunc())
-                })
-                .collect();
-            draw_line(cr, 0.0, h, &points);
-            // Fixes a fully filled graph from having an oddly tapered in
-            // end (bug 560913).
-            points.insert(0, (0.0, h));
-            draw_fill_tapered(cr, 0.0, 0.0, w, h, &points);
+            let rgb = self.rgb.borrow();
+            for dataset in 0..num_sets {
+                if rgb.len() == num_sets * 3 {
+                    // Upstream's blue index is `(dataset * 1) + 2`, so a
+                    // second set takes its blue from its own red slot.
+                    cr.set_source_rgb(rgb[dataset * 3], rgb[dataset * 3 + 1], rgb[dataset + 2]);
+                }
+                let mut points: Vec<(f64, f64)> = (0..points_per_set)
+                    .map(|i| {
+                        let x = i as f64 * pixels_per_point;
+                        (x.trunc(), get_y(dataset, i).trunc())
+                    })
+                    .collect();
+                draw_line(cr, 0.0, h, &points);
+                if self.filled.get() {
+                    // Fixes a fully filled graph from having an oddly
+                    // tapered in end (bug 560913).
+                    points.insert(0, (0.0, h));
+                    draw_fill_tapered(cr, 0.0, 0.0, w, h, &points);
+                }
+            }
         }
     }
 }
 
 glib::wrapper! {
     /// Upstream's `Sparkline` (the `Gtk.DrawingArea` one, not the cell
-    /// renderer above): the Connection Details CPU and memory graphs.
+    /// renderer above): the Connection Details CPU and memory graphs and
+    /// the VM details Performance graphs.
     pub struct SparklineGraph(ObjectSubclass<graph_imp::SparklineGraph>)
         @extends gtk::Widget,
         @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
@@ -433,6 +461,25 @@ impl SparklineGraph {
     /// `set_property("reversed", ...)`.
     pub fn set_reversed(&self, reversed: bool) {
         self.imp().reversed.set(reversed);
+        self.queue_draw();
+    }
+
+    /// `set_property("filled", ...)`.
+    pub fn set_filled(&self, filled: bool) {
+        self.imp().filled.set(filled);
+        self.queue_draw();
+    }
+
+    /// `set_property("num_sets", ...)`: 1 or 2 data sets, laid end to
+    /// end in `data_array`.
+    pub fn set_num_sets(&self, num_sets: usize) {
+        self.imp().num_sets.set(num_sets.clamp(1, 2));
+        self.queue_draw();
+    }
+
+    /// `set_property("rgb", ...)`: three 0..1 components per data set.
+    pub fn set_rgb(&self, rgb: Vec<f64>) {
+        self.imp().rgb.replace(rgb);
         self.queue_draw();
     }
 }
