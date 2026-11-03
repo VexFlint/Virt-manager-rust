@@ -145,6 +145,8 @@ mod widget_imp {
         pub dirty: Cell<bool>,
         pub scaling: Cell<bool>,
         pub keep_aspect: Cell<bool>,
+        /// The texture's first row is the bottom one (a GL scanout).
+        pub flip_y: Cell<bool>,
         /// `((min_w, min_h), (nat_w, nat_h))`
         pub request: Cell<((i32, i32), (i32, i32))>,
     }
@@ -195,10 +197,20 @@ mod widget_imp {
             let rect =
                 graphene::Rect::new(ox as f32, oy as f32, (fw * sx) as f32, (fh * sy) as f32);
             snapshot.push_clip(&graphene::Rect::new(0.0, 0.0, w, h));
+            let flip = self.flip_y.get();
+            if flip {
+                // y -> 2 * top + height - y: mirrors the image in place.
+                snapshot.save();
+                snapshot.translate(&graphene::Point::new(0.0, 2.0 * rect.y() + rect.height()));
+                snapshot.scale(1.0, -1.0);
+            }
             if self.scaling.get() {
                 snapshot.append_scaled_texture(&tex, gtk::gsk::ScalingFilter::Linear, &rect);
             } else {
                 snapshot.append_texture(&tex, &rect);
+            }
+            if flip {
+                snapshot.restore();
             }
             if let Some((cur, cx, cy)) = self.overlay.borrow().as_ref().and_then(|p| p()) {
                 let rect = graphene::Rect::new(
@@ -246,6 +258,12 @@ impl DisplayWidget {
     pub fn set_scaling(&self, scaling: bool) {
         self.imp().scaling.set(scaling);
         self.queue_draw();
+    }
+
+    pub fn set_flip_y(&self, flip: bool) {
+        if self.imp().flip_y.replace(flip) != flip {
+            self.queue_draw();
+        }
     }
 
     pub fn set_keep_aspect(&self, keep: bool) {
