@@ -377,6 +377,11 @@ impl Viewer {
     /// `_create_spice_session`.
     fn create_spice_session(&self) -> Session {
         let session = Session::new();
+        // `gl-scanout` (virgl, `<gl enable="yes"/>`) only when GDK can
+        // import the DMA-BUFs; otherwise the server sends 2D surfaces.
+        if let Some(display) = gtk::gdk::Display::default() {
+            session.set_gl_scanout(spice::gl_supported(&display));
+        }
         let gtk_session = SpiceGtkSession::get(&session);
         gtk_session.set_auto_clipboard(true);
 

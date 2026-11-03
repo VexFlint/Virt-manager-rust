@@ -152,11 +152,9 @@ extern "C" {
         update: gboolean,
     );
 
-    #[allow(dead_code)] // ligado no spicedisplay no item 24b
     fn spice_display_channel_get_gl_scanout(
         channel: *mut gobject_ffi::GObject,
     ) -> *const SpiceGlScanout;
-    #[allow(dead_code)] // ligado no spicedisplay no item 24b
     fn spice_display_channel_gl_draw_done(channel: *mut gobject_ffi::GObject);
     fn spice_display_channel_get_primary(
         channel: *mut gobject_ffi::GObject,
@@ -305,7 +303,6 @@ impl Session {
 
     /// The `gl-scanout` property: whether the display channels offer
     /// the server the GL scanout capability.
-    #[allow(dead_code)] // ligado no spicedisplay no item 24b
     pub fn set_gl_scanout(&self, enabled: bool) {
         if self.0.has_property("gl-scanout") {
             self.0.set_property("gl-scanout", enabled);
@@ -436,7 +433,6 @@ pub fn main_update_display_enabled(main: &glib::Object, id: i32, enabled: bool) 
 
 /// `SpiceGlScanout`
 #[repr(C)]
-#[allow(dead_code)] // ligado no spicedisplay no item 24b
 struct SpiceGlScanout {
     fd: c_int,
     width: u32,
@@ -449,7 +445,6 @@ struct SpiceGlScanout {
 /// The display channel's GL scanout: a DMA-BUF the guest's virgl
 /// renders into (`<gl enable="yes"/>`), which the channel owns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // ligado no spicedisplay no item 24b
 pub struct GlScanout {
     pub fd: i32,
     pub width: u32,
@@ -462,7 +457,6 @@ pub struct GlScanout {
 }
 
 impl GlScanout {
-    #[allow(dead_code)] // ligado no spicedisplay no item 24b
     fn from_raw(s: &SpiceGlScanout) -> Option<GlScanout> {
         (s.fd >= 0 && s.width > 0 && s.height > 0).then_some(GlScanout {
             fd: s.fd,
@@ -477,7 +471,6 @@ impl GlScanout {
 
 /// `spice_display_channel_get_gl_scanout`, `None` before the first
 /// `gl-scanout` or after the guest drops it.
-#[allow(dead_code)] // ligado no spicedisplay no item 24b
 pub fn display_gl_scanout(display: &glib::Object) -> Option<GlScanout> {
     unsafe {
         let s = spice_display_channel_get_gl_scanout(ptr(display));
@@ -487,7 +480,6 @@ pub fn display_gl_scanout(display: &glib::Object) -> Option<GlScanout> {
 
 /// `spice_display_channel_gl_draw_done`: tells the server the frame of
 /// the last `gl-draw` was shown, so the guest can render the next one.
-#[allow(dead_code)] // ligado no spicedisplay no item 24b
 pub fn display_gl_draw_done(display: &glib::Object) {
     unsafe { spice_display_channel_gl_draw_done(ptr(display)) }
 }
@@ -495,23 +487,19 @@ pub fn display_gl_draw_done(display: &glib::Object) {
 /// Whether GDK can import DMA-BUFs here at all (a GL or Vulkan
 /// renderer with EGL dmabuf import). Without it the viewer keeps the
 /// session's `gl-scanout` off, so the server sends plain surfaces.
-#[allow(dead_code)] // ligado no spicedisplay no item 24b
 pub fn gl_supported(display: &gtk::gdk::Display) -> bool {
     display.dmabuf_formats().n_formats() > 0
 }
 
 /// `DRM_FORMAT_MOD_INVALID`: SPICE gives no modifier, so the buffer
 /// uses the driver's implicit one.
-#[allow(dead_code)] // ligado no spicedisplay no item 24b
 const DRM_FORMAT_MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
-#[allow(dead_code)] // ligado no spicedisplay no item 24b
 const DRM_FORMAT_MOD_LINEAR: u64 = 0;
 
 /// Imports the scanout as a `GdkDmabufTexture`. The fd is duplicated,
 /// so the texture stays valid after the channel replaces the scanout.
 /// `None` when GDK refuses the buffer: the caller falls back to the
 /// non-GL path.
-#[allow(dead_code)] // ligado no spicedisplay no item 24b
 pub fn gl_scanout_texture(display: &gtk::gdk::Display, s: &GlScanout) -> Option<gtk::gdk::Texture> {
     use std::os::fd::{AsRawFd, BorrowedFd};
     for modifier in [DRM_FORMAT_MOD_INVALID, DRM_FORMAT_MOD_LINEAR] {

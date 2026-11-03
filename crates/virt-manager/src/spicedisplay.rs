@@ -58,6 +58,14 @@ struct Canvas {
     data: *const u8,
 }
 
+/// The GL scanout imported as a texture (`d->egl`).
+struct Gl {
+    texture: gdk::Texture,
+    width: i32,
+    height: i32,
+    y0top: bool,
+}
+
 /// `d->mouse_pixbuf` and its hotspot.
 struct Shape {
     texture: gdk::Texture,
@@ -84,6 +92,9 @@ struct State {
     handlers: Vec<(glib::Object, glib::SignalHandlerId)>,
 
     canvas: Option<Canvas>,
+    /// `egl.enabled`: the guest renders through virgl and the shown
+    /// image is the scanout, not the primary surface.
+    gl: Option<Gl>,
     area: Rect,
     mark: i32,
     monitor_ready: bool,
@@ -166,6 +177,7 @@ impl SpiceDisplay {
                 seen: vec![],
                 handlers: vec![],
                 canvas: None,
+                gl: None,
                 area: (0, 0, 0, 0),
                 mark: 0,
                 monitor_ready: false,
@@ -350,6 +362,7 @@ impl SpiceDisplay {
             st.inputs = None;
             st.cursor = None;
             st.canvas = None;
+            st.gl = None;
             st.seen.clear();
             std::mem::take(&mut st.handlers)
         };
@@ -417,6 +430,10 @@ impl SpiceDisplay {
                 self.connect(ch, "notify::monitors", true, |this, _| {
                     this.update_monitor_area();
                 });
+                self.connect(ch, "notify::gl-scanout", false, |this, _| {
+                    this.gl_scanout();
+                });
+                self.connect(ch, "gl-draw", false, |this, _| this.gl_draw());
                 if let Some(primary) = spice::display_primary(ch) {
                     self.primary_create();
                     self.mark(primary.marked as i32);
@@ -458,6 +475,7 @@ impl SpiceDisplay {
         match spice::channel_kind(ch) {
             ChannelKind::Main => self.st().main = None,
             ChannelKind::Display if id == CHANNEL_ID => {
+                self.st().gl = None;
                 self.primary_destroy();
                 self.st().display = None;
             }
@@ -557,11 +575,9 @@ impl SpiceDisplay {
 
     /// `spice_display_widget_update_monitor_area`.
     fn update_monitor_area(&self) {
-        let (display, canvas) = {
-            let st = self.0.state.borrow();
-            (st.display.clone(), st.canvas)
+        let Some(display) = self.0.state.borrow().display.clone() else {
+            return;
         };
-        let Some(display) = display else { return };
         let monitors = spice::display_monitors(&display).unwrap_or_default();
         let found = monitors.iter().find(|m| m.0 == MONITOR_ID);
         match found {
@@ -588,7 +604,7 @@ impl SpiceDisplay {
                 );
             }
         }
-        let (w, h) = canvas.map(|c| (c.width, c.height)).unwrap_or((0, 0));
+        let (w, h) = self.primary_size();
         self.update_area((0, 0, w, h));
         self.set_monitor_ready(true);
     }
@@ -596,10 +612,8 @@ impl SpiceDisplay {
     /// `update_area`: the part of the primary surface shown.
     fn update_area(&self, area: Rect) {
         let primary = {
-            let st = self.0.state.borrow();
-            st.canvas
-                .map(|c| (0, 0, c.width, c.height))
-                .unwrap_or_default()
+            let (w, h) = self.primary_size();
+            (0, 0, w, h)
         };
         match intersect(primary, area) {
             Some(a) => self.st().area = a,
@@ -623,7 +637,7 @@ impl SpiceDisplay {
     fn update_ready(&self) {
         let (ready, changed, main) = {
             let mut st = self.st();
-            let ready = st.monitor_ready && st.mark != 0;
+            let ready = st.monitor_ready && (st.mark != 0 || st.gl.is_some());
             let main = st.main.clone().filter(|_| st.resize_guest_enable);
             let changed = st.ready != ready;
             st.ready = ready;
@@ -636,6 +650,65 @@ impl SpiceDisplay {
             self.0.area.mark_dirty();
             self.update_mouse_cursor();
         }
+    }
+
+    /// The size of what is shown: the scanout with GL, else the
+    /// primary surface.
+    fn primary_size(&self) -> (i32, i32) {
+        let st = self.0.state.borrow();
+        match (&st.gl, st.canvas) {
+            (Some(gl), _) => (gl.width, gl.height),
+            (None, Some(c)) => (c.width, c.height),
+            (None, None) => (0, 0),
+        }
+    }
+
+    /// `gl_scanout`: import the new scanout. When GDK refuses it, go
+    /// back to the primary surface (`egl.enabled = false`).
+    fn gl_scanout(&self) {
+        self.update_gl_texture();
+        self.update_monitor_area();
+    }
+
+    /// `gl_draw`: the guest finished a frame in the scanout. A fresh
+    /// texture makes GTK sample the buffer again; the server waits for
+    /// `gl_draw_done` before it renders the next frame.
+    fn gl_draw(&self) {
+        let had = self.0.state.borrow().gl.is_some();
+        self.update_gl_texture();
+        if !had {
+            self.update_monitor_area();
+        }
+        self.0.area.mark_dirty();
+        let weak = self.weak();
+        glib::idle_add_local_once(move || {
+            let Some(inner) = weak.upgrade() else { return };
+            let display = inner.state.borrow().display.clone();
+            if let Some(display) = display {
+                spice::display_gl_draw_done(&display);
+            }
+        });
+    }
+
+    fn update_gl_texture(&self) {
+        let Some(display) = self.0.state.borrow().display.clone() else {
+            return;
+        };
+        let gl = spice::display_gl_scanout(&display).and_then(|s| {
+            let texture = spice::gl_scanout_texture(&self.0.area.display(), &s);
+            if texture.is_none() {
+                eprintln!("SPICE GL: could not import the scanout, using the primary surface");
+            }
+            Some(Gl {
+                texture: texture?,
+                width: s.width as i32,
+                height: s.height as i32,
+                y0top: s.y0top,
+            })
+        });
+        let flip = gl.as_ref().is_some_and(|g| !g.y0top);
+        self.st().gl = gl;
+        self.0.area.set_flip_y(flip);
     }
 
     /// `invalidate`: new pixels in the shown area.
@@ -694,6 +767,12 @@ impl SpiceDisplay {
     }
 
     fn build_texture(&self) -> Option<gdk::Texture> {
+        {
+            let st = self.0.state.borrow();
+            if let Some(gl) = &st.gl {
+                return st.ready.then(|| gl.texture.clone());
+            }
+        }
         let f = self.frame()?;
         let format = if cfg!(target_endian = "little") {
             gdk::MemoryFormat::B8g8r8x8
