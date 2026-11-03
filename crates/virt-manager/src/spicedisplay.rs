@@ -729,6 +729,9 @@ impl SpiceDisplay {
     /// as xRGB, converted from the 16bpp formats like
     /// `do_color_convert`.
     fn frame(&self) -> Option<FrameCopy> {
+        if self.0.state.borrow().gl.is_some() {
+            return self.gl_frame();
+        }
         let st = self.0.state.borrow();
         let c = st.canvas?;
         let (ax, ay, aw, ah) = st.area;
@@ -757,6 +760,40 @@ impl SpiceDisplay {
                     pixels.extend_from_slice(&line[start..start + stride]);
                 }
             }
+        }
+        Some(FrameCopy {
+            width: aw,
+            height: ah,
+            stride,
+            pixels,
+        })
+    }
+
+    /// The GL scanout's shown area read back from the GPU (for
+    /// screenshots), top row first like the primary surface.
+    fn gl_frame(&self) -> Option<FrameCopy> {
+        let st = self.0.state.borrow();
+        let gl = st.gl.as_ref()?;
+        let (ax, ay, aw, ah) = st.area;
+        if !st.ready || aw <= 0 || ah <= 0 {
+            return None;
+        }
+        let mut downloader = gdk::TextureDownloader::new(&gl.texture);
+        downloader.set_format(if cfg!(target_endian = "little") {
+            gdk::MemoryFormat::B8g8r8x8
+        } else {
+            gdk::MemoryFormat::X8r8g8b8
+        });
+        let (bytes, src_stride) = downloader.download_bytes();
+        let mut full = bytes.to_vec();
+        if !gl.y0top {
+            flip_rows(&mut full, src_stride, gl.height as usize);
+        }
+        let stride = aw as usize * 4;
+        let mut pixels = Vec::with_capacity(stride * ah as usize);
+        for row in ay..ay + ah {
+            let start = row as usize * src_stride + ax as usize * 4;
+            pixels.extend_from_slice(full.get(start..start + stride)?);
         }
         Some(FrameCopy {
             width: aw,
@@ -1538,6 +1575,15 @@ impl SpiceDisplay {
     }
 }
 
+/// Mirrors an image of `height` rows of `stride` bytes vertically.
+fn flip_rows(pixels: &mut [u8], stride: usize, height: usize) {
+    let height = height.min(pixels.len() / stride.max(1));
+    for i in 0..height / 2 {
+        let (top, bottom) = pixels.split_at_mut((height - 1 - i) * stride);
+        top[i * stride..(i + 1) * stride].swap_with_slice(&mut bottom[..stride]);
+    }
+}
+
 /// `gdk_rectangle_intersect`.
 fn intersect(a: Rect, b: Rect) -> Option<Rect> {
     let x = a.0.max(b.0);
@@ -1623,6 +1669,16 @@ fn blank_cursor() -> Option<gdk::Cursor> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gl_rows_flipped() {
+        let mut px = vec![1, 1, 2, 2, 3, 3];
+        flip_rows(&mut px, 2, 3);
+        assert_eq!(px, [3, 3, 2, 2, 1, 1]);
+        let mut px = vec![1, 2, 3, 4];
+        flip_rows(&mut px, 2, 2);
+        assert_eq!(px, [3, 4, 1, 2]);
+    }
 
     #[test]
     fn rect_intersection() {
