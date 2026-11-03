@@ -152,6 +152,12 @@ extern "C" {
         update: gboolean,
     );
 
+    #[allow(dead_code)] // ligado no spicedisplay no item 24b
+    fn spice_display_channel_get_gl_scanout(
+        channel: *mut gobject_ffi::GObject,
+    ) -> *const SpiceGlScanout;
+    #[allow(dead_code)] // ligado no spicedisplay no item 24b
+    fn spice_display_channel_gl_draw_done(channel: *mut gobject_ffi::GObject);
     fn spice_display_channel_get_primary(
         channel: *mut gobject_ffi::GObject,
         surface_id: u32,
@@ -297,6 +303,15 @@ impl Session {
         &self.0
     }
 
+    /// The `gl-scanout` property: whether the display channels offer
+    /// the server the GL scanout capability.
+    #[allow(dead_code)] // ligado no spicedisplay no item 24b
+    pub fn set_gl_scanout(&self, enabled: bool) {
+        if self.0.has_property("gl-scanout") {
+            self.0.set_property("gl-scanout", enabled);
+        }
+    }
+
     pub fn connect(&self) -> bool {
         unsafe { spice_session_connect(ptr(&self.0)) != 0 }
     }
@@ -417,6 +432,120 @@ pub fn main_update_display_enabled(main: &glib::Object, id: i32, enabled: bool) 
             true.into_glib(),
         )
     }
+}
+
+/// `SpiceGlScanout`
+#[repr(C)]
+#[allow(dead_code)] // ligado no spicedisplay no item 24b
+struct SpiceGlScanout {
+    fd: c_int,
+    width: u32,
+    height: u32,
+    stride: u32,
+    format: u32,
+    y0top: gboolean,
+}
+
+/// The display channel's GL scanout: a DMA-BUF the guest's virgl
+/// renders into (`<gl enable="yes"/>`), which the channel owns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // ligado no spicedisplay no item 24b
+pub struct GlScanout {
+    pub fd: i32,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    /// DRM fourcc.
+    pub format: u32,
+    /// `false` when the first row is the bottom one (GL order).
+    pub y0top: bool,
+}
+
+impl GlScanout {
+    #[allow(dead_code)] // ligado no spicedisplay no item 24b
+    fn from_raw(s: &SpiceGlScanout) -> Option<GlScanout> {
+        (s.fd >= 0 && s.width > 0 && s.height > 0).then_some(GlScanout {
+            fd: s.fd,
+            width: s.width,
+            height: s.height,
+            stride: s.stride,
+            format: s.format,
+            y0top: s.y0top != 0,
+        })
+    }
+}
+
+/// `spice_display_channel_get_gl_scanout`, `None` before the first
+/// `gl-scanout` or after the guest drops it.
+#[allow(dead_code)] // ligado no spicedisplay no item 24b
+pub fn display_gl_scanout(display: &glib::Object) -> Option<GlScanout> {
+    unsafe {
+        let s = spice_display_channel_get_gl_scanout(ptr(display));
+        s.as_ref().and_then(GlScanout::from_raw)
+    }
+}
+
+/// `spice_display_channel_gl_draw_done`: tells the server the frame of
+/// the last `gl-draw` was shown, so the guest can render the next one.
+#[allow(dead_code)] // ligado no spicedisplay no item 24b
+pub fn display_gl_draw_done(display: &glib::Object) {
+    unsafe { spice_display_channel_gl_draw_done(ptr(display)) }
+}
+
+/// Whether GDK can import DMA-BUFs here at all (a GL or Vulkan
+/// renderer with EGL dmabuf import). Without it the viewer keeps the
+/// session's `gl-scanout` off, so the server sends plain surfaces.
+#[allow(dead_code)] // ligado no spicedisplay no item 24b
+pub fn gl_supported(display: &gtk::gdk::Display) -> bool {
+    display.dmabuf_formats().n_formats() > 0
+}
+
+/// `DRM_FORMAT_MOD_INVALID`: SPICE gives no modifier, so the buffer
+/// uses the driver's implicit one.
+#[allow(dead_code)] // ligado no spicedisplay no item 24b
+const DRM_FORMAT_MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
+#[allow(dead_code)] // ligado no spicedisplay no item 24b
+const DRM_FORMAT_MOD_LINEAR: u64 = 0;
+
+/// Imports the scanout as a `GdkDmabufTexture`. The fd is duplicated,
+/// so the texture stays valid after the channel replaces the scanout.
+/// `None` when GDK refuses the buffer: the caller falls back to the
+/// non-GL path.
+#[allow(dead_code)] // ligado no spicedisplay no item 24b
+pub fn gl_scanout_texture(display: &gtk::gdk::Display, s: &GlScanout) -> Option<gtk::gdk::Texture> {
+    use std::os::fd::{AsRawFd, BorrowedFd};
+    for modifier in [DRM_FORMAT_MOD_INVALID, DRM_FORMAT_MOD_LINEAR] {
+        // SAFETY: the channel keeps `fd` open until the next scanout.
+        let Ok(fd) = unsafe { BorrowedFd::borrow_raw(s.fd) }.try_clone_to_owned() else {
+            return None;
+        };
+        let builder = gtk::gdk::DmabufTextureBuilder::new()
+            .set_display(display)
+            .set_width(s.width)
+            .set_height(s.height)
+            .set_fourcc(s.format)
+            .set_modifier(modifier)
+            .set_n_planes(1)
+            .set_offset(0, 0)
+            .set_stride(0, s.stride)
+            .set_premultiplied(true);
+        // SAFETY: `fd` is a valid dmabuf owned by the release closure,
+        // which closes it once GDK lets go of the texture.
+        let raw = fd.as_raw_fd();
+        let built = unsafe {
+            builder
+                .set_fd(0, raw)
+                .build_with_release_func(move || drop(fd))
+        };
+        match built {
+            Ok(texture) => return Some(texture),
+            Err(e) => glib::g_debug!(
+                "virt-manager",
+                "dmabuf import (modifier {modifier:#x}) failed: {e}"
+            ),
+        }
+    }
+    None
 }
 
 /// `SpiceDisplayPrimary`, minus the pixels' pointer kept apart.
@@ -790,5 +919,30 @@ impl UsbDeviceManager {
 
     pub fn is_device_shared_cd(&self, device: &UsbDevice) -> bool {
         unsafe { spice_usb_device_manager_is_device_shared_cd(ptr(&self.0), device.as_ptr()) != 0 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gl_scanout_from_raw() {
+        let mut raw = SpiceGlScanout {
+            fd: 7,
+            width: 1024,
+            height: 768,
+            stride: 4096,
+            format: u32::from_le_bytes(*b"XR24"),
+            y0top: 0,
+        };
+        let s = GlScanout::from_raw(&raw).unwrap();
+        assert_eq!((s.fd, s.width, s.height, s.stride), (7, 1024, 768, 4096));
+        assert!(!s.y0top);
+        raw.fd = -1;
+        assert_eq!(GlScanout::from_raw(&raw), None);
+        raw.fd = 7;
+        raw.width = 0;
+        assert_eq!(GlScanout::from_raw(&raw), None);
     }
 }
