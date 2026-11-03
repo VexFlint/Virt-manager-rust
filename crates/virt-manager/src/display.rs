@@ -201,7 +201,10 @@ mod widget_imp {
             if flip {
                 // y -> 2 * top + height - y: mirrors the image in place.
                 snapshot.save();
-                snapshot.translate(&graphene::Point::new(0.0, 2.0 * rect.y() + rect.height()));
+                snapshot.translate(&graphene::Point::new(
+                    0.0,
+                    flip_origin(rect.y(), rect.height()),
+                ));
                 snapshot.scale(1.0, -1.0);
             }
             if self.scaling.get() {
@@ -284,9 +287,22 @@ impl DisplayWidget {
     }
 }
 
+/// Where `y -> origin - y` puts a rect starting at `y` and `height`
+/// tall back onto itself, mirrored.
+fn flip_origin(y: f32, height: f32) -> f32 {
+    2.0 * y + height
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flip_keeps_the_rect() {
+        let (y, h) = (40.0, 300.0);
+        let o = flip_origin(y, h);
+        assert_eq!((o - y, o - (y + h)), (y + h, y));
+    }
 
     #[test]
     fn render_region_modes() {
