@@ -49,6 +49,19 @@ Try the GUI against libvirt's built-in test driver, no daemon needed:
 cargo run -p virt-manager -- --connect test:///default
 ```
 
+## Install
+
+`packaging/install.sh` installs everything in upstream's `/usr` layout
+(binaries, `.desktop`, AppStream metainfo, hicolor icon, GSettings schema,
+man pages, shell completion). It replaces a distro `virt-manager`/`virtinst`
+install, since the paths and the schema are the same:
+
+```sh
+cargo build --release --workspace
+sudo sh packaging/install.sh            # PREFIX=/usr by default
+DESTDIR=/tmp/root sh packaging/install.sh  # staging, for packages
+```
+
 ## Shell completion
 
 `virt-install`, `virt-clone` and `virt-xml` complete options and their

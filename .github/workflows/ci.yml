@@ -28,10 +28,12 @@ jobs:
       # upstream's) runs for --location ISO trees, --initrd-inject and
       # the cloud-init/unattended ISOs.
       # python3-docutils gives rst2man for the man pages (man/build.sh).
+      # desktop-file-utils and appstream validate the installed .desktop
+      # and metainfo (packaging/check-install.sh).
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libvirt-dev libosinfo-1.0-dev libclang-dev pkg-config libxml2-utils libgtk-4-dev libgvnc-1.0-dev libspice-client-glib-2.0-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev python3-libvirt python3-libxml2 python3-requests cpio xorriso genisoimage python3-docutils
+          sudo apt-get install -y libvirt-dev libosinfo-1.0-dev libclang-dev pkg-config libxml2-utils libgtk-4-dev libgvnc-1.0-dev libspice-client-glib-2.0-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev python3-libvirt python3-libxml2 python3-requests cpio xorriso genisoimage python3-docutils desktop-file-utils appstream
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -62,6 +64,14 @@ jobs:
         run: |
           diff -r --exclude=meson.build --exclude=build.sh "$RUNNER_TEMP/virt-manager-upstream/man" man
           sh man/build.sh
+
+      # The /usr layout the Linux packages ship (docs/RELEASES.md, R1),
+      # as upstream's meson install lays it out.
+      - name: Install layout
+        run: sh packaging/check-install.sh
+        env:
+          BINDIR: target/debug
+          UPSTREAM_REF: ${{ runner.temp }}/virt-manager-upstream
 
       - name: Upstream comparison harness
         run: bash .scratch/rust-conversion/harness/run.sh
