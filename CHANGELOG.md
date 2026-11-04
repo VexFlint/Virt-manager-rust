@@ -11,6 +11,23 @@ The package version comes from the root `Cargo.toml`. The `--version` of all
 four programs prints the upstream version the port is based on (`5.1.0`),
 just like the Python virt-manager; the package version shows in "About".
 
+## [1.0.0] - 2026-11-04
+
+Based on virt-manager 5.1.0. First stable release.
+
+### Added
+- Translations: GUI and CLI use gettext with upstream's own catalogs
+  (`po/`), so the texts match the Python virt-manager. Brazilian Portuguese
+  (`pt_BR`) is included; a new language only needs its `.po` file.
+- Language selector in Preferences > General ("System default" or any
+  bundled language). Applies after restarting virt-manager.
+- Documentation in English and Portuguese (`*.pt-BR.md`).
+- Packages ship the `.mo` translation files.
+
+### Fixed
+- Flaky clone tests in CI (MAC address generation).
+- rpm package now lists the translation files.
+
 ## [0.9.0] - 2026-11-04
 
 Based on virt-manager 5.1.0.

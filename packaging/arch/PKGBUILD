@@ -6,7 +6,7 @@
 # Na CI (release.yml) o tarball vem do 'git archive' do commit e o pkgver
 # é trocado pela versão do Cargo.toml.
 pkgname=virt-manager-rust
-pkgver=0.9.0
+pkgver=1.0.0
 pkgrel=1
 pkgdesc='Desktop tool for managing virtual machines (Rust port of virt-manager 5.1.0)'
 arch=(x86_64)

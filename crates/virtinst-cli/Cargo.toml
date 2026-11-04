@@ -26,4 +26,4 @@ log = { version = "0.4", features = ["std"] }
 virt = "0.4"
 clap = { version = "4.5.61", features = ["derive"] }
 virtinst-core = { path = "../virtinst-core" }
-virtinst-xml = { version = "0.9.0", path = "../virtinst-xml" }
+virtinst-xml = { version = "1.0.0", path = "../virtinst-xml" }

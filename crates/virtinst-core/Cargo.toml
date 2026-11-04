@@ -15,7 +15,7 @@ log = "0.4"
 shlex = "1.3"
 # virtinst-xml re-exports edit_xml's Document/Element (ticket 06) — no
 # need for a direct edit-xml dependency alongside it.
-virtinst-xml = { version = "0.9.0", path = "../virtinst-xml" }
+virtinst-xml = { version = "1.0.0", path = "../virtinst-xml" }
 # Rust libvirt bindings (ticket 02). Needs libvirt-dev at build time
 # (pkg-config: `libvirt`) — installed on this machine 2026-08-19.
 virt = "0.4"

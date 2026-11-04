@@ -257,17 +257,19 @@ jobs:
         with:
           subject-path: dist/*
       - if: github.ref_type == 'tag'
-        name: Release rascunho
+        name: Release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.check.outputs.version }}
         run: |
-          # 0.x e -rc.N saem como pre-release (docs/RELEASES.md, seção 2).
+          # 0.x e -rc.N saem como rascunho de pre-release; versões estáveis
+          # (1.0.0 em diante) saem publicadas direto como "Latest"
+          # (docs/RELEASES.md, seção 2).
           case "$VERSION" in
-              0.*|*-rc.*) pre=--prerelease ;;
-              *) pre= ;;
+              0.*|*-rc.*) mode="--draft --prerelease" ;;
+              *) mode="--latest" ;;
           esac
-          gh release create "$GITHUB_REF_NAME" dist/* --draft $pre \
+          gh release create "$GITHUB_REF_NAME" dist/* $mode \
               --title "virt-manager-rust $VERSION" \
               --notes-file notes.md --generate-notes
       - if: github.ref_type != 'tag'

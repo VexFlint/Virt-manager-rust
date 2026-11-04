@@ -1,6 +1,6 @@
 # Plano de releases (GitHub Releases)
 
-Status: **em andamento** (R1 a R7 feitos; `v0.9.0` saiu em 2026-11-04). Nenhum item começa sem o Vex escolher.
+Status: **em andamento** (R1 a R7 feitos; `v0.9.0` e `v1.0.0` saíram em 2026-11-04). Nenhum item começa sem o Vex escolher.
 Reserve o item como no `docs/ROADMAP.md` (seção 2) antes de começar.
 
 Modelo visual: a página de release do
@@ -36,8 +36,8 @@ quem instala o nosso remove o Python, e as configurações continuam as mesmas.
 
 - SemVer com tag `vX.Y.Z`. A versão vem do `Cargo.toml` da raiz
   (`[workspace.package] version`); o workflow falha se a tag não bater.
-- Primeira release: `v0.9.0`, marcada como *pre-release*. `v1.0.0` quando o
-  1:1 estiver validado em uso real.
+- Primeira release: `v0.9.0`, marcada como *pre-release*. `v1.0.0` (2026-11-04),
+  depois do teste no PC do Vex, é a primeira estável, publicada como "Latest".
 - Cada nota diz a base do upstream: "baseado no virt-manager 5.1.0".
 - Tags `vX.Y.Z-rc.N` geram release *pre-release* automaticamente.
 
@@ -54,8 +54,10 @@ Gatilho: `push` de tag `v*` (e `workflow_dispatch` para testar sem publicar).
    `glib-compile-schemas --strict` no schema instalado.
 4. `publish`: junta tudo, gera `SHA256SUMS`, cria a atestação de origem
    (`actions/attest-build-provenance`, verificável com `gh attestation verify`)
-   e cria a release como **rascunho** com o modelo da seção 4. O Vex (ou o
-   Claude, se autorizado) revisa e publica.
+   e cria a release com o modelo da seção 4. `0.x` e `-rc.N` saem como
+   **rascunho** de pre-release (o Vex revisa e publica); versões estáveis
+   (`1.0.0` em diante) saem **publicadas direto como "Latest"**, visíveis na
+   página principal do repositório.
 
 Notas automáticas: `.github/release.yml` com categorias por label
 (GUI, CLI, Correções, Infra) para o "Gerar notas" do GitHub.
