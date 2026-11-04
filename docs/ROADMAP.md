@@ -55,6 +55,7 @@ byte; use `tr!`, `trf!` (placeholders `%s`/`%(nome)s`) e `ntr!` de
 | T6 | GUI: telas restantes | storage, host, snapshots, clonar, migrar, preferências, console | M | T1 | ✅ |
 | T7 | CLI | mensagens e `--help` de virt-install/virt-xml/virt-clone (e as mensagens do virtinst-core) | M | T1 | ✅ |
 | T8 | Pacotes | `.mo` em `/usr/share/locale/*/LC_MESSAGES/virt-manager-rust.mo` nos .deb/.rpm/Arch/tarball, `check-install.sh` confere | P | T1 | ✅ |
+| T9 | Seletor de idioma nas Preferências | "Padrão do sistema" + línguas do `po/LINGUAS` (geradas no build), salvo em `~/.config/virt-manager-rust/language`, vale ao reiniciar. Exceção ao 1:1 pedida pelo Vex | P | T1 | ✅ |
 
 Adicionar uma língua: copie `po/<língua>.po` do upstream v5.1.0, ponha o
 código em `po/LINGUAS` e abra o PR. O `build.rs` roda `msgfmt --check`, então

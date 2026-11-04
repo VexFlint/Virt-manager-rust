@@ -114,6 +114,46 @@ fn warn_box(markup: &str) -> (gtk::Box, gtk::Label) {
     (hbox, label)
 }
 
+/// Not in upstream (Vex, 04/11/2026): pick the GUI language. "System
+/// default" plus every language in `po/LINGUAS` (built into
+/// `i18n::LANGUAGES`), saved to `i18n::language_file` and applied at
+/// the next start.
+fn language_row() -> gtk::Grid {
+    use virtinst_core::i18n;
+    let mut rows: Vec<(Option<String>, String)> =
+        vec![(None, virtinst_core::tr!("System default").to_string())];
+    rows.extend(
+        i18n::LANGUAGES
+            .iter()
+            .map(|(code, name)| (Some(code.to_string()), format!("{name} ({code})"))),
+    );
+    let combo = Combo::new(rows);
+    let initial = i18n::saved_language();
+    combo.set_list_selection(&initial);
+    let label = grid_label(virtinst_core::tr!("_Language:"), &combo.dropdown);
+    let (warn, _) = warn_box(&format!(
+        "<small>{}</small>",
+        glib::markup_escape_text(virtinst_core::tr!(
+            "Restart virt-manager for the language change to take effect."
+        ))
+    ));
+    warn.set_visible(false);
+    let warn2 = warn.clone();
+    combo.connect_changed(move |code: Option<String>| {
+        if let Err(e) = i18n::save_language(code.as_deref()) {
+            eprintln!("Error saving the language: {e}");
+        }
+        warn2.set_visible(code != initial);
+    });
+    let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    hbox.append(&label);
+    hbox.append(&combo.dropdown);
+    let grid = new_grid();
+    grid.attach(&hbox, 0, 0, 1, 1);
+    grid.attach(&warn, 0, 1, 1, 1);
+    grid
+}
+
 /// A config setter for one check button.
 type Setter = fn(bool);
 
@@ -189,6 +229,7 @@ impl VmmPreferences {
         general.attach(&system_tray_warn_box, 0, 1, 1, 1);
         general.attach(&xmleditor, 0, 2, 1, 1);
         general.attach(&lg_grid, 0, 3, 1, 1);
+        general.attach(&language_row(), 0, 4, 1, 1);
 
         // Polling
         let update_interval = gtk::SpinButton::with_range(1.0, 60.0, 1.0);
