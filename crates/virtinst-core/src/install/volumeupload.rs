@@ -124,7 +124,10 @@ fn upload_file(
 
         // Start transfer
         let mut total = 0u64;
-        meter.start(&format!("Transferring '{}'", basename(src)), Some(size));
+        meter.start(
+            &crate::trf!("Transferring '%(filename)s'", filename = basename(src)),
+            Some(size),
+        );
         let mut buf = vec![0u8; 1024 * 1024];
         loop {
             let n = fileobj.read(&mut buf).map_err(|e| e.to_string())?;

@@ -121,11 +121,14 @@ pub fn set_model(doc: &mut Document, ctrl: Element, model: Option<&str>) {
 /// `populate_controller_model_combo`'s rows: `(model, label)`.
 pub fn model_rows(ctype: &str) -> Vec<(Option<&'static str>, &'static str)> {
     let mut rows = match ctype {
-        "usb" => vec![(Some("usb3"), "USB 3"), (Some("ich9-ehci1"), "USB 2")],
-        "scsi" => vec![(Some("virtio-scsi"), "VirtIO SCSI")],
+        "usb" => vec![
+            (Some("usb3"), crate::tr!("USB 3")),
+            (Some("ich9-ehci1"), crate::tr!("USB 2")),
+        ],
+        "scsi" => vec![(Some("virtio-scsi"), crate::tr!("VirtIO SCSI"))],
         _ => vec![],
     };
-    rows.push((None, "Hypervisor default"));
+    rows.push((None, crate::tr!("Hypervisor default")));
     rows
 }
 

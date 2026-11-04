@@ -23,7 +23,7 @@ see virt-sysprep(1).";
     disable_version_flag = true,
     override_usage = "virt-clone --original [NAME] ...",
     about = ABOUT,
-    after_help = "See man page for examples and full option syntax.",
+    after_help = virtinst_core::tr!("See man page for examples and full option syntax."),
     infer_long_args = true,
     args_override_self = true
 )]
@@ -129,7 +129,9 @@ fn process_src(args: &Args) -> (Option<String>, Option<String>) {
             .unwrap_or_else(|e| fail(virtinst_core::diskbackend::oserror_str(&e, Some(path))))
     });
     if src_xml.is_none() && args.src_name.is_none() {
-        fail("An original machine name is required, use '--original src_name' and try again.");
+        fail(virtinst_core::tr!(
+            "An original machine name is required, use '--original src_name' and try again."
+        ));
     }
     (args.src_name.clone(), src_xml)
 }
@@ -208,7 +210,7 @@ fn main() {
     let conn = cli::get_connection(args.connect.as_deref());
 
     if args.new_diskfile.is_empty() && !args.auto_clone {
-        fail("Either --auto-clone or --file is required, use '--auto-clone or --file' and try again.");
+        fail(virtinst_core::tr!("Either --auto-clone or --file is required, use '--auto-clone or --file' and try again."));
     }
 
     let (src_name, src_xml) = process_src(&args);
@@ -248,7 +250,7 @@ fn main() {
     if let Some(name) = &args.new_name {
         cloner.set_clone_name(name);
     } else if !args.auto_clone {
-        fail("A name is required for the new virtual machine, use '--name NEW_VM_NAME' to specify one.");
+        fail(virtinst_core::tr!("A name is required for the new virtual machine, use '--name NEW_VM_NAME' to specify one."));
     }
 
     process_macs(&args, &mut cloner);
@@ -271,7 +273,7 @@ fn main() {
         }
         print_stdout("", false);
         print_stdout(
-            &format!("Clone '{}' created successfully.", cloner.new_name()),
+            &virtinst_core::trf!("Clone '%s' created successfully.", cloner.new_name()),
             false,
         );
     }

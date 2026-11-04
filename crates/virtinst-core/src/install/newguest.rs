@@ -467,17 +467,19 @@ impl NewGuest {
             return Ok(());
         }
         if !domcaps.supports_uefi_loader() {
-            return Err("Libvirt version does not support UEFI.".into());
+            return Err(crate::tr!("Libvirt version does not support UEFI.").into());
         }
         if !domcaps.arch_can_uefi() {
-            return Err(format!(
-                "Don't know how to setup UEFI for arch '{}'",
+            return Err(crate::trf!(
+                "Don't know how to setup UEFI for arch '%s'",
                 self.arch
             ));
         }
         let path = domcaps
             .find_uefi_path_for_arch(conn.uri.is_bhyve())
-            .ok_or_else(|| format!("Did not find any UEFI binary path for arch '{}'", self.arch))?;
+            .ok_or_else(|| {
+                crate::trf!("Did not find any UEFI binary path for arch '%s'", self.arch)
+            })?;
         // Secure boot firmware needs SMM, which needs q35.
         let secure = self.is_x86() && path.contains("secboot");
         if secure {

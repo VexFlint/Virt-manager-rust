@@ -144,7 +144,11 @@ fn make_installconfig(
     if let Some(login) = login {
         let login = login.to_lowercase();
         if !is_user_login_safe(&login) {
-            return Err(format!("{osname} cannot use '{login}' as user-login."));
+            return Err(crate::trf!(
+                "%(osname)s cannot use '%(loginname)s' as user-login.",
+                osname = osname,
+                loginname = login
+            ));
         }
         config.set_user_login(&login);
         config.set_user_realname(&realname.unwrap_or_default());
@@ -152,13 +156,19 @@ fn make_installconfig(
 
     let user_password = data.get_user_password()?.filter(|p| !p.is_empty());
     if script.script.requires_user_password() && user_password.is_none() {
-        return Err(format!("{osname} requires the user-password to be set."));
+        return Err(crate::trf!(
+            "%s requires the user-password to be set.",
+            osname
+        ));
     }
     config.set_user_password(user_password.as_deref().unwrap_or(""));
 
     let admin_password = data.get_admin_password()?.filter(|p| !p.is_empty());
     if script.script.requires_admin_password() && admin_password.is_none() {
-        return Err(format!("{osname} requires the admin-password to be set."));
+        return Err(crate::trf!(
+            "%s requires the admin-password to be set.",
+            osname
+        ));
     }
     config.set_admin_password(admin_password.as_deref().unwrap_or(""));
 
@@ -249,7 +259,10 @@ impl OSInstallScript {
         tree: Option<&OsTree>,
     ) -> Result<Self, String> {
         if !Self::have_new_libosinfo() {
-            return Err("libosinfo or osinfo-db is too old to support unattended installs.".into());
+            return Err(crate::tr!(
+                "libosinfo or osinfo-db is too old to support unattended installs."
+            )
+            .into());
         }
         let target = match (media, tree) {
             (Some(m), _) => ScriptTarget::Media(m.clone()),
@@ -272,9 +285,10 @@ impl OSInstallScript {
         log::debug!("Using '{namestr}' injection method");
         let method = injection_method(namestr);
         if method & self.script.get_injection_methods() == 0 {
-            return Err(format!(
-                "OS '{}' does not support required injection method '{namestr}'",
-                self.osname
+            return Err(crate::trf!(
+                "OS '%(osname)s' does not support required injection method '%(methodname)s'",
+                osname = self.osname,
+                methodname = namestr
             ));
         }
         self.script.set_preferred_injection_method(method);
@@ -345,8 +359,9 @@ fn lookup_rawscripts(
         if !media.supports_installer_script() {
             // This is a specific annotation for media like livecds that
             // don't support unattended installs
-            return Err(format!(
-                "OS '{osname}' media does not support unattended installation"
+            return Err(crate::trf!(
+                "OS '%s' media does not support unattended installation",
+                osname
             ));
         }
         script_list = media.get_install_script_list();
@@ -355,8 +370,9 @@ fn lookup_rawscripts(
         script_list = osinfo.get_install_script_list();
     }
     if script_list.is_empty() {
-        return Err(format!(
-            "OS '{osname}' does not support unattended installation."
+        return Err(crate::trf!(
+            "OS '%s' does not support unattended installation.",
+            osname
         ));
     }
 

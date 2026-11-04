@@ -489,8 +489,9 @@ pub fn filesystem_defaults(
         .attribute(doc, "type")
         .map_or(true, |t| t == super::filesystem::TYPE_MOUNT);
     if !target.is_empty() && !(driver_mode && is_mount) && !target.starts_with('/') {
-        return Err(format!(
-            "Filesystem target '{target}' must be an absolute path"
+        return Err(crate::trf!(
+            "Filesystem target '%s' must be an absolute path",
+            target
         ));
     }
     Ok(())
@@ -622,8 +623,9 @@ fn fill_hostdev(
                     ("vfio-pci", "yes")
                 }
                 _ => {
-                    return Err(format!(
-                        "Don't know how to generate nodedev for mdev type id '{type_id}'"
+                    return Err(crate::trf!(
+                        "Don't know how to generate nodedev for mdev type id '%s'",
+                        type_id
                     ))
                 }
             };
@@ -638,8 +640,8 @@ fn fill_hostdev(
             );
         }
         other => {
-            return Err(format!(
-                "Unsupported node device type '{}'",
+            return Err(crate::trf!(
+                "Unsupported node device type '%s'",
                 other.unwrap_or("None")
             ))
         }
@@ -704,7 +706,11 @@ pub fn generate_target(bus: &str, device: &str, used: &[String]) -> Result<Strin
     }
     first_found.ok_or_else(|| {
         if maxnode == 1 {
-            format!("Only {maxnode} disk for bus '{bus}' are supported")
+            crate::trf!(
+                "Only %(number)s disk for bus '%(bus)s' are supported",
+                number = maxnode,
+                bus = bus
+            )
         } else {
             format!("Only {maxnode} disks for bus '{bus}' are supported")
         }

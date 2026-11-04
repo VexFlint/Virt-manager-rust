@@ -414,10 +414,10 @@ impl CloneVolInstall {
 
     /// `StorageVolume.validate`.
     pub fn validate(&mut self) -> Result<(), String> {
-        storage::validate_generic_name("Storage object", &self.name)?;
+        storage::validate_generic_name(crate::tr!("Storage object"), &self.name)?;
         if StorageVol::lookup_by_name(&self.pool.pool, &self.name).is_ok() {
-            return Err(format!(
-                "Name '{}' already in use by another volume.",
+            return Err(crate::trf!(
+                "Name '%s' already in use by another volume.",
                 self.name
             ));
         }
@@ -482,7 +482,10 @@ impl CloneVolInstall {
         if really_test {
             cloneflags = 0;
         }
-        meter.start(&format!("Allocating '{}'", self.name), Some(self.capacity));
+        meter.start(
+            &crate::trf!("Allocating '%(filename)s'", filename = self.name),
+            Some(self.capacity),
+        );
         let ret = StorageVol::create_xml_from(&self.pool.pool, &xml, &self.input_vol, cloneflags)
             .map_err(|e| {
             format!(
@@ -543,7 +546,10 @@ impl CloneStorageCreator {
                  file when the guest is running.",
             )
         } else {
-            (true, "There is not enough free space to create the disk.")
+            (
+                true,
+                crate::tr!("There is not enough free space to create the disk."),
+            )
         };
         (
             fatal,
@@ -573,7 +579,10 @@ impl CloneStorageCreator {
 
         let name = storage::basename(&self.input_path);
         let size_bytes = (self.size * GIB) as u64;
-        meter.start(&format!("Cloning {name}"), Some(size_bytes));
+        meter.start(
+            &crate::trf!("Cloning %(srcfile)s", srcfile = name),
+            Some(size_bytes),
+        );
 
         if self.input_path == "/dev/null" {
             // Not really sure why this check is here,
@@ -589,11 +598,11 @@ impl CloneStorageCreator {
         // Only failures inside upstream's inner `try` get the "Error
         // cloning" wrapping; the sparse pre-allocation is outside it.
         let err = |e: std::io::Error, filename: Option<&str>| {
-            format!(
-                "Error cloning diskimage {} to {}: {}",
-                self.input_path,
-                self.output_path,
-                oserror_str(&e, filename)
+            crate::trf!(
+                "Error cloning diskimage %(inputpath)s to %(outputpath)s: %(error)s",
+                inputpath = self.input_path,
+                outputpath = self.output_path,
+                error = oserror_str(&e, filename)
             )
         };
         let out = Some(self.output_path.as_str());
@@ -768,7 +777,7 @@ fn fix_perms_chmod(dirname: &str) -> Result<(), String> {
     if stat(dirname)? != newmode {
         // Trying to change perms on vfat at least doesn't work
         // but also doesn't seem to error. Try and detect that
-        return Err(format!("Permissions on '{dirname}' did not stick"));
+        return Err(crate::trf!("Permissions on '%s' did not stick", dirname));
     }
     Ok(())
 }

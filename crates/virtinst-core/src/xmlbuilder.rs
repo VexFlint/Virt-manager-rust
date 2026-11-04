@@ -693,10 +693,7 @@ impl XmlObject {
         let root = doc.root_element().ok_or("XML has no root element")?;
         let name = root.full_name(&doc).rsplit(':').next().unwrap_or_default();
         if name != class.xml_name.rsplit(':').next().unwrap_or_default() {
-            return Err(format!(
-                "XML did not have expected root element name '{}', found '{name}'",
-                class.xml_name
-            ));
+            return Err(crate::trf!("XML did not have expected root element name '%(expectname)s', found '%(foundname)s'", expectname = class.xml_name, foundname = name));
         }
         let mut obj = XmlObject {
             class,

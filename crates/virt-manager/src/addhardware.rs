@@ -248,11 +248,7 @@ fn hostdev_rows(devtype: &str, devs: &[(NodeDevice, bool)]) -> Vec<HostdevRow> {
             if devtype == "mdev" && prettyname.chars().count() <= 41 {
                 for parentdev in &all {
                     if dev.parent.as_ref() == Some(&parentdev.name) {
-                        prettyname = virtinst_core::trf!(
-                            "%(input_bus)s %(input_type)s",
-                            input_bus = pretty(parentdev),
-                            input_type = prettyname
-                        );
+                        prettyname = format!("{} {}", pretty(parentdev), prettyname);
                     }
                 }
             }

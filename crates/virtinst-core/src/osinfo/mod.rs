@@ -624,7 +624,7 @@ impl OsVariant {
     pub fn generic() -> OsVariant {
         OsVariant {
             name: "generic".into(),
-            label: "Generic or unknown OS. Usage is not recommended.".into(),
+            label: crate::tr!("Generic or unknown OS. Usage is not recommended.").into(),
             full_id: None,
             eol: false,
         }
@@ -752,8 +752,8 @@ impl OsInfo {
             }
         }
         if !have_trees {
-            return Err(format!(
-                "OS '{}' does not have a URL location",
+            return Err(crate::trf!(
+                "OS '%s' does not have a URL location",
                 self.short_id()
             ));
         }
@@ -762,9 +762,10 @@ impl OsInfo {
         if let Some((url, _)) = trees.iter().find(|(_, m)| *m).or(trees.last()) {
             return Ok(url.clone());
         }
-        Err(format!(
-            "OS '{}' does not have a URL location for the architecture '{arch}'",
-            self.short_id()
+        Err(crate::trf!(
+            "OS '%(osname)s' does not have a URL location for the architecture '%(archname)s'",
+            osname = self.short_id(),
+            archname = arch
         ))
     }
 

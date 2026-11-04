@@ -565,12 +565,12 @@ impl Network {
         let dev = self.forward.dev.as_deref().filter(|d| !d.is_empty());
         let mode = self.forward.mode.as_deref().filter(|m| !m.is_empty());
         match (mode, dev) {
-            (None, _) => "Isolated network".into(),
-            (Some("nat"), Some(dev)) => format!("NAT to {dev}"),
-            (Some("nat"), None) => "NAT".into(),
-            (Some("route"), Some(dev)) => format!("Route to {dev}"),
-            (Some("route"), None) => "Routed network".into(),
-            (Some(mode), _) => format!("{} network", capitalize(mode)),
+            (None, _) => crate::tr!("Isolated network").into(),
+            (Some("nat"), Some(dev)) => crate::trf!("NAT to %s", dev),
+            (Some("nat"), None) => crate::tr!("NAT").into(),
+            (Some("route"), Some(dev)) => crate::trf!("Route to %s", dev),
+            (Some("route"), None) => crate::tr!("Routed network").into(),
+            (Some(mode), _) => crate::trf!("%s network", capitalize(mode)),
         }
     }
 }
@@ -876,11 +876,14 @@ pub fn parse_network(xml: &str) -> Result<XmlObject, String> {
 
 /// `_validate`: a usable name no other network has.
 pub fn validate(conn: &Connect, name: &str) -> Result<(), String> {
-    crate::storage::validate_generic_name("Network", name)?;
+    crate::storage::validate_generic_name(crate::tr!("Network"), name)?;
     if VirNetwork::lookup_by_name(conn, name).is_err() {
         return Ok(());
     }
-    Err(format!("Name '{name}' already in use by another network."))
+    Err(crate::trf!(
+        "Name '%s' already in use by another network.",
+        name
+    ))
 }
 
 /// `reset_state`'s `generatename.generate_name("network", ...)`: a name

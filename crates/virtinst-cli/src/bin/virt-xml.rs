@@ -32,7 +32,7 @@ use virtinst_core::xmlbuilder::XmlObject;
     name = "virt-xml",
     disable_version_flag = true,
     override_usage = "virt-xml [options]",
-    about = "Edit libvirt XML using command line options.",
+    about = virtinst_core::tr!("Edit libvirt XML using command line options."),
     after_help = "Use '--option=?' or '--option help' to see available suboptions\n\
                   See man page for examples and full option syntax.",
     infer_long_args = true,
@@ -86,7 +86,7 @@ struct Args {
     /// Force defining the domain. Only required if a --print option was specified.
     #[arg(
         long,
-        help_heading = "Output options",
+        help_heading = virtinst_core::tr!("Output options"),
         conflicts_with = "no_define",
         verbatim_doc_comment
     )]
@@ -119,7 +119,7 @@ struct Args {
     #[arg(
         long,
         visible_alias = "os-variant",
-        help_heading = "OS options",
+        help_heading = virtinst_core::tr!("OS options"),
         verbatim_doc_comment
     )]
     osinfo: Option<String>,
@@ -128,7 +128,7 @@ struct Args {
     #[arg(
         long,
         num_args = 0..=1,
-        help_heading = "Conversion options",
+        help_heading = virtinst_core::tr!("Conversion options"),
         verbatim_doc_comment
     )]
     convert_to_q35: Option<Option<String>>,
@@ -137,7 +137,7 @@ struct Args {
     #[arg(
         long,
         num_args = 0..=1,
-        help_heading = "Conversion options",
+        help_heading = virtinst_core::tr!("Conversion options"),
         verbatim_doc_comment
     )]
     convert_to_vnc: Option<Option<String>>,
@@ -208,7 +208,7 @@ struct Args {
     #[arg(
         long,
         visible_alias = "security",
-        help_heading = "XML options",
+        help_heading = virtinst_core::tr!("XML options"),
         verbatim_doc_comment
     )]
     seclabel: Vec<String>,
@@ -272,7 +272,7 @@ struct Args {
     /// --qemu-commandline env=DISPLAY=:0.1
     #[arg(
         long = "qemu-commandline",
-        help_heading = "XML options",
+        help_heading = virtinst_core::tr!("XML options"),
         verbatim_doc_comment
     )]
     qemu_commandline: Vec<String>,
@@ -283,7 +283,7 @@ struct Args {
         long = "launchSecurity",
         value_name = "LAUNCHSECURITY",
         visible_alias = "launchsecurity",
-        help_heading = "XML options",
+        help_heading = virtinst_core::tr!("XML options"),
         verbatim_doc_comment
     )]
     launch_security: Vec<String>,
@@ -331,14 +331,14 @@ struct Args {
     #[arg(
         long,
         alias = "host-device",
-        help_heading = "XML options",
+        help_heading = virtinst_core::tr!("XML options"),
         verbatim_doc_comment
     )]
     hostdev: Vec<String>,
 
     #[arg(
         long,
-        help_heading = "XML options",
+        help_heading = virtinst_core::tr!("XML options"),
         help = "Pass host directory to the guest. Ex: \n\
                 --filesystem /my/source/dir,/dir/in/guest\n\
                 --filesystem template_name,/,type=template"
@@ -528,7 +528,7 @@ fn check_xmlopt_collision(args: &Args) -> (&'static ParserDef, Vec<String>) {
         .filter(|(_, v)| !v.is_empty())
         .collect();
     if collisions.is_empty() {
-        fail("No change specified.");
+        fail(virtinst_core::tr!("No change specified."));
     }
     if collisions.len() != 1 {
         let names: Vec<String> = collisions
@@ -566,7 +566,10 @@ fn check_action_collision(args: &Args) -> (ActionName, Option<String>) {
             .iter()
             .map(|(a, _)| format!("--{}", a.as_str()))
             .collect();
-        fail(format!("Conflicting options {}", names.join(", ")));
+        fail(virtinst_core::trf!(
+            "Conflicting options %s",
+            names.join(", ")
+        ));
     }
     collisions.into_iter().next().unwrap()
 }
@@ -575,11 +578,15 @@ fn check_action_collision(args: &Args) -> (ActionName, Option<String>) {
 fn validate_action(action: &Action, args: &Args) {
     if args.osinfo.is_some() {
         match action.name {
-            ActionName::Edit => fail("--osinfo/--os-variant is not supported with --edit"),
-            ActionName::RemoveDevice => {
-                fail("--osinfo/--os-variant is not supported with --remove-device")
-            }
-            ActionName::BuildXml => fail("--osinfo/--os-variant is not supported with --build-xml"),
+            ActionName::Edit => fail(virtinst_core::tr!(
+                "--osinfo/--os-variant is not supported with --edit"
+            )),
+            ActionName::RemoveDevice => fail(virtinst_core::tr!(
+                "--osinfo/--os-variant is not supported with --remove-device"
+            )),
+            ActionName::BuildXml => fail(virtinst_core::tr!(
+                "--osinfo/--os-variant is not supported with --build-xml"
+            )),
             ActionName::AddDevice => {}
         }
     }
@@ -787,7 +794,12 @@ fn perform_engine(
                         }
                     };
                     res.unwrap_or_else(|e| {
-                        fail(format!("Error: {} {optstr}: {e}", def.cli_flag_name()))
+                        fail(virtinst_core::trf!(
+                            "Error: %(cli_flag_name)s %(options)s: %(err)s",
+                            cli_flag_name = def.cli_flag_name(),
+                            options = optstr,
+                            err = e
+                        ))
                     });
                 }
             }
@@ -885,7 +897,7 @@ fn prompt_yes_or_no(msg: &str) -> bool {
         match line.trim().to_lowercase().as_str() {
             "y" | "yes" => return true,
             "n" | "no" => return false,
-            _ => print_stdout("Please enter 'yes' or 'no'.", false),
+            _ => print_stdout(virtinst_core::tr!("Please enter 'yes' or 'no'."), false),
         }
     }
 }
@@ -951,17 +963,17 @@ fn update_changes(
     let (confirm_msg, success, failure) = match action.name {
         ActionName::AddDevice => (
             "Hotplug this device to the guest",
-            "Device hotplug successful.",
+            virtinst_core::tr!("Device hotplug successful."),
             "Error attempting device hotplug",
         ),
         ActionName::RemoveDevice => (
             "Hotunplug this device from the guest",
-            "Device hotunplug successful.",
+            virtinst_core::tr!("Device hotunplug successful."),
             "Error attempting device hotunplug",
         ),
         ActionName::Edit => (
             "Update this device for the guest",
-            "Device update successful.",
+            virtinst_core::tr!("Device update successful."),
             "Error attempting device update",
         ),
         ActionName::BuildXml => unreachable!("--build-xml returns before"),
@@ -1032,16 +1044,16 @@ fn main() {
         let stdin = std::io::stdin();
         if !stdin.is_terminal() {
             if args.confirm {
-                fail("Can't use --confirm with stdin input.");
+                fail(virtinst_core::tr!("Can't use --confirm with stdin input."));
             }
             if args.update {
-                fail("Can't use --update with stdin input.");
+                fail(virtinst_core::tr!("Can't use --update with stdin input."));
             }
             let mut xml = String::new();
             let _ = std::io::Read::read_to_string(&mut stdin.lock(), &mut xml);
             stdinxml = Some(xml);
         } else {
-            fail("A domain must be specified");
+            fail(virtinst_core::tr!("A domain must be specified"));
         }
     }
 
@@ -1161,22 +1173,39 @@ fn main() {
     let name = guest_name(&xmlobj);
     if !define {
         if args.start {
-            if args.confirm && !prompt_yes_or_no(&format!("Start '{name}' with the changed XML?")) {
+            if args.confirm
+                && !prompt_yes_or_no(&virtinst_core::trf!(
+                    "Start '%s' with the changed XML?",
+                    name
+                ))
+            {
                 return;
             }
             if action.name == ActionName::AddDevice {
                 devs.iter().for_each(|d| setup_device(d, &conn));
             }
             match Domain::create_xml(conn.as_connect(), &xmlobj.get_document_xml(), 0) {
-                Ok(_) => print_stdout(&format!("Domain '{name}' started successfully."), false),
-                Err(e) => fail(format!("Failed starting domain '{name}': {}", e.message())),
+                Ok(_) => print_stdout(
+                    &virtinst_core::trf!("Domain '%s' started successfully.", name),
+                    false,
+                ),
+                Err(e) => fail(virtinst_core::trf!(
+                    "Failed starting domain '%(domain)s': %(error)s",
+                    domain = name,
+                    error = e.message()
+                )),
             }
         }
         return;
     }
 
     // `define_changes`
-    if args.confirm && !prompt_yes_or_no(&format!("Define '{name}' with the changed XML?")) {
+    if args.confirm
+        && !prompt_yes_or_no(&virtinst_core::trf!(
+            "Define '%s' with the changed XML?",
+            name
+        ))
+    {
         return;
     }
     if action.name == ActionName::AddDevice {
@@ -1184,23 +1213,26 @@ fn main() {
     }
     let dom = Domain::define_xml(conn.as_connect(), &xmlobj.get_document_xml())
         .unwrap_or_else(|e| fail(e.message()));
-    print_stdout(&format!("Domain '{name}' defined successfully."), false);
+    print_stdout(
+        &virtinst_core::trf!("Domain '%s' defined successfully.", name),
+        false,
+    );
 
     if args.start {
         if let Err(e) = dom.create() {
-            fail(format!(
-                "Failed starting domain '{}': {}",
-                guest_name(&inactive),
-                e.message()
+            fail(virtinst_core::trf!(
+                "Failed starting domain '%(domain)s': %(error)s",
+                domain = guest_name(&inactive),
+                error = e.message()
             ));
         }
         print_stdout(
-            &format!("Domain '{}' started successfully.", guest_name(&inactive)),
+            &virtinst_core::trf!("Domain '%s' started successfully.", guest_name(&inactive)),
             false,
         );
     } else if vm_is_running && !performed_update {
         print_stdout(
-            "Changes will take effect after the domain is fully powered off.",
+            virtinst_core::tr!("Changes will take effect after the domain is fully powered off."),
             false,
         );
     } else if defined_xml_is_unchanged(&dom, &original_xml) {

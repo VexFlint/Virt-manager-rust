@@ -121,14 +121,19 @@ pub fn enable_uefi(guest: &mut XmlObject, os: &mut XmlObject) -> Result<(), Erro
     // _lookup_default_uefi_path
     let arch = os.get_str("arch").unwrap_or_else(|| "None".into());
     if !domcaps.supports_uefi_loader() {
-        return Err("Libvirt version does not support UEFI.".into());
+        return Err(virtinst_core::tr!("Libvirt version does not support UEFI.").into());
     }
     if !domcaps.arch_can_uefi() {
-        return Err(format!("Don't know how to setup UEFI for arch '{arch}'"));
+        return Err(virtinst_core::trf!(
+            "Don't know how to setup UEFI for arch '%s'",
+            arch
+        ));
     }
     let path = domcaps
         .find_uefi_path_for_arch(conn_support().is_bhyve)
-        .ok_or_else(|| format!("Did not find any UEFI binary path for arch '{arch}'"))?;
+        .ok_or_else(|| {
+            virtinst_core::trf!("Did not find any UEFI binary path for arch '%s'", arch)
+        })?;
     log::debug!("Setting default UEFI path={path}");
     set_uefi_path(guest, os, path)
 }

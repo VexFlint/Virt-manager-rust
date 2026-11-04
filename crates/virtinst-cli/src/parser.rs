@@ -615,8 +615,12 @@ pub enum ParseError {
 
 /// `_on_off_convert`.
 fn on_off_convert(key: &str, val: &str) -> Result<bool, ParseError> {
-    crate::cli::raw_on_off_convert(val)
-        .ok_or_else(|| ParseError::Fail(format!("{key} must be 'yes' or 'no'")))
+    crate::cli::raw_on_off_convert(val).ok_or_else(|| {
+        ParseError::Fail(virtinst_core::trf!(
+            "%(key)s must be 'yes' or 'no'",
+            key = key
+        ))
+    })
 }
 
 impl ArgInst {
@@ -829,11 +833,7 @@ impl<'a> ParseCtx<'a> {
     /// `lookup_param`.
     fn lookup_param(&self, inst: &XmlObject, arg: &ArgInst) -> Result<bool, Error> {
         if arg.def.propname.is_none() && arg.def.lookup_cb.is_none() {
-            return Err(format!(
-                "Don't know how to match device type '{}' property '{}'",
-                device_type(inst.class),
-                arg.key
-            ));
+            return Err(virtinst_core::trf!("Don't know how to match device type '%(device_type)s' property '%(property_name)s'", device_type = device_type(inst.class), property_name = arg.key));
         }
         let mut inst = inst;
         for fi in [arg.def.find_inst, arg.def.find_inst_nested]
@@ -882,7 +882,12 @@ fn raised(def: &ParserDef, optstr: &str, err: &str) -> Error {
     if let Some(msg) = err.strip_prefix(FAIL_MARK) {
         return msg.to_string();
     }
-    format!("Error: {} {optstr}: {err}", def.cli_flag_name())
+    virtinst_core::trf!(
+        "Error: %(cli_flag_name)s %(options)s: %(err)s",
+        cli_flag_name = def.cli_flag_name(),
+        options = optstr,
+        err = err
+    )
 }
 
 fn to_fail(def: &ParserDef, optstr: &str, e: ParseError) -> Error {
@@ -1448,8 +1453,8 @@ pub fn find_objects_to_edit(
     if let Some(idx) = idx {
         // Edit device by index
         if idx == 0 {
-            return Err(format!(
-                "Invalid --edit option '{}'",
+            return Err(virtinst_core::trf!(
+                "Invalid --edit option '%s'",
                 editval.unwrap_or_default()
             ));
         }
