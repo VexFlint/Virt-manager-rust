@@ -1,5 +1,6 @@
 #!/bin/sh
-# Topo das notas da release (docs/RELEASES.md, seção 4), com os nomes dos
+# Topo das notas da release (docs/RELEASES.md, seção 4), em inglês com
+# a versão em português num <details>, com os nomes dos
 # arquivos que estão em <pasta>. O "O que mudou" vem do --generate-notes do
 # GitHub, por isso termina aqui.
 #
@@ -21,25 +22,43 @@ row() {
 cat <<NOTES
 ## virt-manager-rust $v
 
+1:1 port of virt-manager 5.1.0 to Rust + GTK4. Replaces the distro's
+\`virt-manager\`/\`virtinst\` packages (same paths and same settings).
+
+### Highlights
+- (edit before publishing: 3 to 5 lines, what users will notice)
+
+### Install
+| System | File | Command |
+|---|---|---|
+NOTES
+row "Ubuntu 24.04" "*_ubuntu24.04_*.deb" '`sudo apt install ./file.deb`'
+row "Debian 13" "*_debian13_*.deb" '`sudo apt install ./file.deb`'
+row "Fedora" "*.rpm" '`sudo dnf install ./file.rpm`'
+row "Arch" "*.pkg.tar.zst" '`sudo pacman -U file.pkg.tar.zst`'
+row "Other" "*-x86_64-linux.tar.gz" 'see `INSTALL` in the tarball'
+cat <<NOTES
+| Windows | coming later (phase 2) | |
+
+Verify: \`sha256sum -c SHA256SUMS\` and
+\`gh attestation verify file --repo $repo\`.
+
+<details>
+<summary>Português (Brasil)</summary>
+
 Porte 1:1 do virt-manager 5.1.0 para Rust + GTK4. Substitui os pacotes
 \`virt-manager\`/\`virtinst\` da distro (mesmos caminhos e mesmas configurações).
 
-### Destaques
-- (editar antes de publicar: 3 a 5 linhas, o que o usuário percebe)
+**Destaques**
+- (editar antes de publicar: os mesmos destaques acima, em português)
 
-### Instalar
-| Sistema | Arquivo | Comando |
-|---|---|---|
-NOTES
-row "Ubuntu 24.04" "*_ubuntu24.04_*.deb" '`sudo apt install ./arquivo.deb`'
-row "Debian 13" "*_debian13_*.deb" '`sudo apt install ./arquivo.deb`'
-row "Fedora" "*.rpm" '`sudo dnf install ./arquivo.rpm`'
-row "Arch" "*.pkg.tar.zst" '`sudo pacman -U arquivo.pkg.tar.zst`'
-row "Outras" "*-x86_64-linux.tar.gz" 'ver `INSTALL` no tarball'
-cat <<NOTES
-| Windows | em breve (Fase 2) | |
+**Instalar:** baixe o arquivo do seu sistema na tabela acima e rode o
+comando dela. Em outras distros, use o tarball e siga o \`INSTALL\`.
+Windows: em breve (Fase 2).
 
 Verificar: \`sha256sum -c SHA256SUMS\` e
 \`gh attestation verify arquivo --repo $repo\`.
+
+</details>
 
 NOTES

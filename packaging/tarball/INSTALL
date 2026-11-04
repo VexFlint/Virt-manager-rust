@@ -1,3 +1,30 @@
+virt-manager-rust (generic tarball for x86_64 Linux)
+====================================================
+
+(Português abaixo.)
+
+1:1 port of virt-manager 5.1.0 to Rust + GTK4. This tarball holds the usr/
+tree in the same layout as the Python virt-manager and replaces it: remove
+the distro's virt-manager/virtinst packages before installing.
+
+The binaries were built on Ubuntu 24.04 and link dynamically against the
+libraries below. On other distros, prefer the native package (.deb, .rpm,
+Arch) when there is one.
+
+Dependencies (Ubuntu/Debian names):
+  libvirt0 libosinfo-1.0-0 libgtk-4-1 libgvnc-1.0-0
+  libspice-client-glib-2.0-8 libvte-2.91-gtk4-0 libgtksourceview-5-0
+
+Install:
+  sudo cp -r usr/. /usr/
+  sudo glib-compile-schemas /usr/share/glib-2.0/schemas
+  sudo gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor
+  sudo update-desktop-database -q /usr/share/applications
+
+Uninstall: delete the files listed by `tar tzf` in this tarball and run
+the three commands above again.
+
+
 virt-manager-rust (tarball genérico para x86_64 Linux)
 ======================================================
 

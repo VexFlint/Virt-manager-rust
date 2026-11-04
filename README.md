@@ -1,10 +1,5 @@
-> **Aviso:** este programa foi reconstruído com IA, principalmente como teste
-> e prova de conceito do potencial de um modelo de fronteira (Claude, da
-> Anthropic) e do seu harness para migrar um programa escrito em Python para
-> Rust. Temos todo o respeito pelos desenvolvedores do
-> [virt-manager original](https://github.com/virt-manager/virt-manager) e
-> pelo esforço deles em desenvolver o projeto.
->
+**English** · [Português (Brasil)](README.pt-BR.md)
+
 > **Disclaimer:** this program was rebuilt with AI, mainly as a test and proof
 > of concept of how well a frontier model (Claude, by Anthropic) and its
 > harness can migrate a Python program to Rust. We have the utmost respect for
@@ -112,6 +107,11 @@ for the full reasoning behind each one.
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) (build, tests, PRs),
 [`AGENTS.md`](AGENTS.md) (project rules, also read by AI agents) and
 [`docs/ROADMAP.md`](docs/ROADMAP.md) (what's left and how to claim an item).
+The project rules and planning docs (`AGENTS.md`, `docs/ROADMAP.md`,
+`docs/RELEASES.md`) are written in Portuguese, the maintainers' language.
+
+The program's interface is in English, with upstream's own strings. It has no
+translations yet (upstream's gettext catalogs are not wired in).
 
 ## License
 
