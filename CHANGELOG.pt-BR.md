@@ -13,6 +13,11 @@ igual ao virt-manager Python; a versão do pacote aparece no "Sobre".
 
 ## [Não lançado]
 
+### Adicionado
+- `bench/run.sh`: benchmark reproduzível contra o virt-manager Python
+  (tempo e memória da CLI, abertura, memória e CPU ociosas da GUI), com os
+  resultados em `bench/results/` e uma seção de Desempenho no README.
+
 ### Corrigido
 - O `virt-install` carrega o banco do libosinfo uma vez por execução, e não a
   cada consulta: `--print-xml` de um convidado importado caiu de 3,4 s para 0,35 s.

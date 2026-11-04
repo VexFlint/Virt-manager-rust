@@ -46,6 +46,51 @@ faz diferente.
 A interface do programa está em inglês, com as strings do próprio upstream.
 Ainda não há traduções (os catálogos gettext do upstream não estão ligados).
 
+## Desempenho
+
+Medido contra o virt-manager Python (upstream `bac5379`) na mesma máquina, só
+em `qemu:///session`, com o [`bench/run.sh`](bench/run.sh). Os dados brutos e
+o ambiente completo (CPU, kernel, versões das bibliotecas, commit) estão em
+[`bench/results/2026-11-04/`](bench/results/2026-11-04/). Os valores são
+mediana ± intervalo interquartil: 20 execuções por comando da CLI (3 de
+aquecimento) e 10 aberturas da GUI.
+
+| Medida | Python | Rust | Rust / Python |
+|---|---|---|---|
+| `virt-install --import --print-xml` | 529 ± 3 ms | 349 ± 4 ms | 0,66 |
+| `virt-install`, pico de RSS | 124 MiB | 84 MiB | 0,68 |
+| `virt-xml --edit --print-diff` | 273 ± 3 ms | 14 ± 0 ms | 0,05 |
+| `virt-xml`, pico de RSS | 74 MiB | 27 MiB | 0,36 |
+| `virt-clone --auto-clone --print-xml` | 277 ± 2 ms | 13 ± 0 ms | 0,05 |
+| `virt-clone`, pico de RSS | 76 MiB | 27 MiB | 0,35 |
+| GUI: da abertura até a janela principal | 615 ± 9 ms | 255 ± 4 ms | 0,41 |
+| GUI: RSS 5 s depois de abrir | 126 MiB | 159 MiB | 1,26 |
+| GUI: idem, com `GSK_RENDERER=cairo` | | 128 MiB | 1,02 |
+| GUI: CPU ociosa em 10 s | 0,1% | 0,0% | abaixo da resolução de 0,1% |
+
+**Ganhos:** todo comando da CLI é mais rápido e usa menos memória; a GUI
+mostra a janela principal 2,4× mais cedo.
+
+**Perdas:** a GUI usa 33 MiB (26%) a mais de memória ociosa. Com o
+renderizador cairo do GTK4 ela cai para 128 MiB, a 2 MiB do Python, então a
+memória a mais é do renderizador padrão (GPU).
+
+Ainda não medido: desempenho dos consoles (VNC/SPICE), listas grandes de VMs,
+conexões remotas e Wayland nativo (a GUI foi medida via Xwayland, que o script
+usa para achar a janela).
+
+### Ideias para criar e manter
+
+- Rodar o `bench/run.sh` antes de cada release e versionar os resultados,
+  para comparar cada versão com a anterior.
+- Rodar a parte da CLI na CI contra `test:///default`, para pegar regressões
+  como os 3,4 s do `virt-install` corrigidos no #117 (cada consulta ao
+  osinfo recarregava o banco inteiro).
+- Reduzir a memória ociosa da GUI: medir o que o renderizador padrão aloca e se dá
+  para enxugar sem trocar de renderizador.
+- Medir o que ainda falta acima: consoles, uma lista com centenas de VMs,
+  conexões remotas `qemu+ssh` e Wayland nativo.
+
 ## Compilar
 
 ```sh

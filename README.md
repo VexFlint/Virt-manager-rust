@@ -40,6 +40,50 @@ no XEmbed fallback).
 Run any binary with `--help` for its exact current flag set — the help text
 says what's implemented and what upstream does differently, per flag.
 
+## Performance
+
+Measured against the Python virt-manager (upstream `bac5379`) on the same
+machine, `qemu:///session` only, with [`bench/run.sh`](bench/run.sh). Raw data
+and the full environment (CPU, kernel, library versions, commit) are in
+[`bench/results/2026-11-04/`](bench/results/2026-11-04/). Values are median ±
+interquartile range: 20 runs per CLI command (3 warm-up runs), 10 GUI launches.
+
+| Measure | Python | Rust | Rust / Python |
+|---|---|---|---|
+| `virt-install --import --print-xml` | 529 ± 3 ms | 349 ± 4 ms | 0.66 |
+| `virt-install` peak RSS | 124 MiB | 84 MiB | 0.68 |
+| `virt-xml --edit --print-diff` | 273 ± 3 ms | 14 ± 0 ms | 0.05 |
+| `virt-xml` peak RSS | 74 MiB | 27 MiB | 0.36 |
+| `virt-clone --auto-clone --print-xml` | 277 ± 2 ms | 13 ± 0 ms | 0.05 |
+| `virt-clone` peak RSS | 76 MiB | 27 MiB | 0.35 |
+| GUI: launch to main window shown | 615 ± 9 ms | 255 ± 4 ms | 0.41 |
+| GUI: RSS 5 s after launch | 126 MiB | 159 MiB | 1.26 |
+| GUI: same, with `GSK_RENDERER=cairo` | | 128 MiB | 1.02 |
+| GUI: idle CPU over 10 s | 0.1% | 0.0% | below the 0.1% resolution |
+
+**Gains:** every CLI command is faster and uses less memory; the GUI shows its
+main window 2.4× sooner.
+
+**Losses:** the GUI uses 33 MiB (26%) more memory at idle. With GTK4's cairo
+renderer it drops to 128 MiB, within 2 MiB of Python, so the extra memory is
+the default (GPU) renderer's.
+
+Not measured yet: console (VNC/SPICE) performance, large VM lists, remote
+connections and native Wayland (the GUI was measured through Xwayland, which
+the script needs to find the window).
+
+### Ideas to build and keep
+
+- Run `bench/run.sh` before every release and commit the results, so each
+  version is compared against the previous one.
+- Run the CLI part in CI against `test:///default`, to catch regressions
+  like the 3.4 s `virt-install` fixed in #117 (every osinfo lookup reloaded
+  the whole database).
+- Reduce the GUI's idle memory: measure what the default renderer allocates and
+  whether it can be trimmed without switching renderers.
+- Measure what is still missing above: consoles, a list with hundreds of VMs,
+  remote `qemu+ssh` connections and native Wayland.
+
 ## Building
 
 ```sh
