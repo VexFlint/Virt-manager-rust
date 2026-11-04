@@ -34,9 +34,9 @@ use crate::vmwindow;
 pub fn build_conn_markup(name: &str, disconnected: bool, connecting: bool) -> String {
     let name = glib::markup_escape_text(name);
     let text = if disconnected {
-        format!("{name} - Not Connected")
+        virtinst_core::trf!("%(connection)s - Not Connected", connection = name)
     } else if connecting {
-        format!("{name} - Connecting...")
+        virtinst_core::trf!("%(connection)s - Connecting...", connection = name)
     } else {
         name.to_string()
     };

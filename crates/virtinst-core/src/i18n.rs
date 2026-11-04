@@ -82,6 +82,18 @@ pub fn ngettext(singular: &str, plural: &str, n: u32) -> String {
     gettextrs::dngettext(DOMAIN, singular, plural, n)
 }
 
+/// A `.ui` section heading: upstream's msgid is the whole
+/// `<b>Title</b>` markup, so look that up first, then the bare title.
+pub fn bold(title: &str) -> String {
+    let markup = format!("<b>{title}</b>");
+    let t = gettext(&markup);
+    if t != markup {
+        t
+    } else {
+        format!("<b>{}</b>", gettext(title))
+    }
+}
+
 /// Python's `%` operator on a translated string: `%s`/`%d`/`%i` take the
 /// positional `args` in order, `%(name)s`/`%(name)d` the `named` ones,
 /// `%%` is a literal `%`. Anything else is copied as is.
@@ -114,7 +126,10 @@ pub fn format(template: &str, args: &[&dyn Display], named: &[(&str, &dyn Displa
             match parsed {
                 Some((end, conv)) => {
                     let name = &body[..end];
-                    match named.iter().find(|(n, _)| *n == name) {
+                    match named
+                        .iter()
+                        .find(|(n, _)| n.trim_start_matches("r#") == name)
+                    {
                         Some((_, v)) => out.push_str(&v.to_string()),
                         None => out.push_str(&rest[pos..pos + end + 4]),
                     }
@@ -187,6 +202,10 @@ mod tests {
         // No catalog bound in this test: msgids come back untouched.
         assert_eq!(crate::trf!("Unknown text %s", 7), "Unknown text 7");
         assert_eq!(crate::trf!("%(a)s-%(b)s", a = 1, b = "z"), "1-z");
+        assert_eq!(
+            crate::trf!("Channel %(type)s", r#type = "spice"),
+            "Channel spice"
+        );
         assert_eq!(crate::ntr!("%d disk", "%d disks", 2, 2), "2 disks");
     }
 

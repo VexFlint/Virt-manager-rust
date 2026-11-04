@@ -293,7 +293,7 @@ pub(crate) fn frame_page(title: &gtk::Label, body: &impl IsA<gtk::Widget>) -> gt
 
 pub(crate) fn title(text: &str) -> gtk::Label {
     let l = gtk::Label::new(None);
-    l.set_markup(&format!("<b>{text}</b>"));
+    l.set_markup(&virtinst_core::i18n::bold(text));
     l
 }
 
@@ -306,22 +306,26 @@ pub(crate) fn xml_attr(doc: &Document, el: Element, path: &[&str], name: &str) -
 /// `vmmAddHardware.input_pretty_name`.
 pub fn input_pretty_name(typ: &str, bus: &str) -> String {
     if typ == "tablet" && bus == "usb" {
-        return "EvTouch USB Graphics Tablet".into();
+        return virtinst_core::tr!("EvTouch USB Graphics Tablet").into();
     }
     let typ_label = match typ {
-        "keyboard" => "Keyboard",
-        "mouse" => "Mouse",
-        "tablet" => "Tablet",
+        "keyboard" => virtinst_core::tr!("Keyboard"),
+        "mouse" => virtinst_core::tr!("Mouse"),
+        "tablet" => virtinst_core::tr!("Tablet"),
         other => other,
     };
     let bus_label = match bus {
-        "ps2" => "PS/2",
-        "usb" => "USB",
-        "virtio" => "VirtIO",
-        "xen" => "Xen",
+        "ps2" => virtinst_core::tr!("PS/2"),
+        "usb" => virtinst_core::tr!("USB"),
+        "virtio" => virtinst_core::tr!("VirtIO"),
+        "xen" => virtinst_core::tr!("Xen"),
         other => other,
     };
-    format!("{bus_label} {typ_label}")
+    virtinst_core::trf!(
+        "%(input_bus)s %(input_type)s",
+        input_bus = bus_label,
+        input_type = typ_label
+    )
 }
 
 /// `vmmAddHardware.sound_pretty_model`.
@@ -337,12 +341,12 @@ pub fn sound_pretty_model(model: &str) -> String {
 /// `vmmAddHardware.watchdog_pretty_action`.
 pub fn watchdog_pretty_action(val: &str) -> String {
     match val {
-        "reset" => "Forcefully reset the guest",
-        "shutdown" => "Gracefully shutdown the guest",
-        "poweroff" => "Forcefully power off the guest",
-        "pause" => "Pause the guest",
-        "none" => "No action",
-        "dump" => "Dump guest memory core",
+        "reset" => virtinst_core::tr!("Forcefully reset the guest"),
+        "shutdown" => virtinst_core::tr!("Gracefully shutdown the guest"),
+        "poweroff" => virtinst_core::tr!("Forcefully power off the guest"),
+        "pause" => virtinst_core::tr!("Pause the guest"),
+        "none" => virtinst_core::tr!("No action"),
+        "dump" => virtinst_core::tr!("Dump guest memory core"),
         other => other,
     }
     .into()
@@ -351,9 +355,9 @@ pub fn watchdog_pretty_action(val: &str) -> String {
 /// `vmmAddHardware.rng_pretty_type`.
 pub fn rng_pretty_type(val: &str) -> String {
     match val {
-        "random" => "Random",
-        "egd" => "Entropy Gathering Daemon",
-        "builtin" => "Builtin RNG",
+        "random" => virtinst_core::tr!("Random"),
+        "egd" => virtinst_core::tr!("Entropy Gathering Daemon"),
+        "builtin" => virtinst_core::tr!("Builtin RNG"),
         other => other,
     }
     .into()
@@ -390,8 +394,8 @@ impl InputPage {
         let mut g = Grid::new();
         let dev_type = value_label();
         let mode = value_label();
-        g.row("Type:", &dev_type);
-        let mode_row = g.row("Mode:", &mode);
+        g.row(virtinst_core::tr!("Type:"), &dev_type);
+        let mode_row = g.row(virtinst_core::tr!("Mode:"), &mode);
         InputPage {
             page: g.page(&title("Virtual Input Device")),
             dev_type,
@@ -405,8 +409,8 @@ impl InputPage {
         let typ = xml_attr(doc, el, &[], "type").unwrap_or_default();
         let bus = xml_attr(doc, el, &[], "bus").unwrap_or_default();
         let mode = match typ.as_str() {
-            "tablet" => Some("Absolute Movement"),
-            "mouse" => Some("Relative Movement"),
+            "tablet" => Some(virtinst_core::tr!("Absolute Movement")),
+            "mouse" => Some(virtinst_core::tr!("Relative Movement")),
             _ => None,
         };
         self.dev_type.set_text(&input_pretty_name(&typ, &bus));
@@ -432,7 +436,7 @@ impl SoundPage {
             sound_pretty_model,
         );
         let mut g = Grid::new();
-        g.row("M_odel:", &model.widget);
+        g.row(virtinst_core::tr!("M_odel:"), &model.widget);
         SoundPage {
             page: g.page(&title("Sound Device")),
             model,
@@ -457,10 +461,10 @@ impl VideoPage {
         let model = SimpleCombo::new(vec![], crate::details::video_pretty_model);
         let accel3d = gtk::CheckButton::new();
         let mut g = Grid::new();
-        g.row("M_odel:", &model.widget);
-        let accel3d_row = g.row("_3D acceleration:", &accel3d);
+        g.row(virtinst_core::tr!("M_odel:"), &model.widget);
+        let accel3d_row = g.row(virtinst_core::tr!("_3D acceleration:"), &accel3d);
         VideoPage {
-            page: g.page(&title("Video")),
+            page: g.page(&title(virtinst_core::tr!("Video"))),
             model,
             accel3d,
             accel3d_row,
@@ -476,7 +480,7 @@ impl VideoPage {
             .map(|m| (Some(m.to_string()), crate::details::video_pretty_model(m)))
             .collect();
         if values.is_empty() {
-            values.push((None, "Hypervisor default".into()));
+            values.push((None, virtinst_core::tr!("Hypervisor default").into()));
         }
         self.model.set_values(values);
     }
@@ -528,10 +532,10 @@ impl WatchdogPage {
             watchdog_pretty_action,
         );
         let mut g = Grid::new();
-        g.row("M_odel:", &model.widget);
-        g.row("Ac_tion:", &action.widget);
+        g.row(virtinst_core::tr!("M_odel:"), &model.widget);
+        g.row(virtinst_core::tr!("Ac_tion:"), &action.widget);
         WatchdogPage {
-            page: g.page(&title("Watchdog")),
+            page: g.page(&title(virtinst_core::tr!("Watchdog"))),
             model,
             action,
         }
@@ -554,13 +558,16 @@ impl SmartcardPage {
     pub fn new() -> SmartcardPage {
         let mode = SimpleCombo::new(
             vec![
-                (Some("passthrough".into()), "Passthrough".into()),
-                (Some("host".into()), "Host".into()),
+                (
+                    Some("passthrough".into()),
+                    virtinst_core::tr!("Passthrough").into(),
+                ),
+                (Some("host".into()), virtinst_core::tr!("Host").into()),
             ],
             str::to_string,
         );
         let mut g = Grid::new();
-        g.row("M_ode:", &mode.widget);
+        g.row(virtinst_core::tr!("M_ode:"), &mode.widget);
         SmartcardPage {
             page: g.page(&title("Smartcard Device")),
             mode,
@@ -587,8 +594,8 @@ impl RedirPage {
         let dev_type = value_label();
         let address = value_label();
         let mut g = Grid::new();
-        g.row("Type:", &dev_type);
-        let address_row = g.row("Address:", &address);
+        g.row(virtinst_core::tr!("Type:"), &dev_type);
+        let address_row = g.row(virtinst_core::tr!("Address:"), &address);
         RedirPage {
             page: g.page(&title),
             title,
@@ -629,10 +636,10 @@ impl RngPage {
         let rng_type = value_label();
         let device = value_label();
         let mut g = Grid::new();
-        g.row("Type:", &rng_type);
-        let device_row = g.row("Host Device:", &device);
+        g.row(virtinst_core::tr!("Type:"), &rng_type);
+        let device_row = g.row(virtinst_core::tr!("Host Device:"), &device);
         RngPage {
-            page: g.page(&title("Random Number Generator")),
+            page: g.page(&title(virtinst_core::tr!("Random Number Generator"))),
             rng_type,
             device,
             device_row,
@@ -663,9 +670,9 @@ impl PanicPage {
     pub fn new() -> PanicPage {
         let model = value_label();
         let mut g = Grid::new();
-        g.row("Model:", &model);
+        g.row(virtinst_core::tr!("Model:"), &model);
         PanicPage {
-            page: g.page(&title("Panic Notifier")),
+            page: g.page(&title(virtinst_core::tr!("Panic Notifier"))),
             model,
         }
     }
@@ -691,15 +698,15 @@ impl CharPage {
         let title = title("insert type");
         let dev_type = value_label();
         let mut g = Grid::new();
-        g.row("Device type:", &dev_type);
+        g.row(virtinst_core::tr!("Device type:"), &dev_type);
         let rows = [
-            "Source path:",
-            "Source host:",
-            "Bind host:",
-            "Target type:",
-            "Target name:",
-            "State:",
-            "Clipboard:",
+            virtinst_core::tr!("Source path:"),
+            virtinst_core::tr!("Source host:"),
+            virtinst_core::tr!("Bind host:"),
+            virtinst_core::tr!("Target type:"),
+            virtinst_core::tr!("Target name:"),
+            virtinst_core::tr!("State:"),
+            virtinst_core::tr!("Clipboard:"),
         ]
         .iter()
         .map(|text| {
@@ -726,17 +733,17 @@ impl CharPage {
         let show_clipboard = xml_attr(doc, el, &[], "type").as_deref() == Some("qemu-vdagent");
 
         let mut typelabel = match tag {
-            "serial" => "Serial Device".to_string(),
-            "parallel" => "Parallel Device".to_string(),
-            "console" => "Console Device".to_string(),
-            "channel" => "Channel Device".to_string(),
+            "serial" => virtinst_core::tr!("Serial Device").to_string(),
+            "parallel" => virtinst_core::tr!("Parallel Device").to_string(),
+            "console" => virtinst_core::tr!("Console Device").to_string(),
+            "channel" => virtinst_core::tr!("Channel Device").to_string(),
             other => {
                 let mut c = other.chars();
                 let cap: String = c
                     .next()
                     .map(|f| f.to_uppercase().chain(c).collect())
                     .unwrap_or_default();
-                format!("{cap} Device")
+                virtinst_core::trf!("%s Device", cap)
             }
         };
         if let Some(port) = target_port {
@@ -799,7 +806,14 @@ impl CharPage {
             // notifications about connection state.
             (xml_attr(doc, el, &["target"], "state"), Some(is_qemuga)),
             (
-                Some(if clipboard { "On" } else { "Off" }.to_string()),
+                Some(
+                    if clipboard {
+                        virtinst_core::tr!("On")
+                    } else {
+                        virtinst_core::tr!("Off")
+                    }
+                    .to_string(),
+                ),
                 Some(show_clipboard),
             ),
         ];
@@ -834,12 +848,12 @@ impl ControllerPage {
             .has_frame(true)
             .build();
         let mut g = Grid::new();
-        g.row("Type:", &ctype);
-        let model_row = g.row("M_odel:", &model.widget);
-        let devices_row = g.row("Devices:", &scroll);
+        g.row(virtinst_core::tr!("Type:"), &ctype);
+        let model_row = g.row(virtinst_core::tr!("M_odel:"), &model.widget);
+        let devices_row = g.row(virtinst_core::tr!("Devices:"), &scroll);
         devices_row.label.set_valign(gtk::Align::Start);
         ControllerPage {
-            page: g.page(&title("Controller")),
+            page: g.page(&title(virtinst_core::tr!("Controller"))),
             ctype,
             model,
             model_row,
@@ -904,7 +918,7 @@ impl HostdevPage {
         use virtinst_core::devices::hostdev::STARTUP_POLICIES;
         let source = value_label();
         let rombar = gtk::CheckButton::new();
-        let mut rows = vec![(None, "Hypervisor default".to_string())];
+        let mut rows = vec![(None, virtinst_core::tr!("Hypervisor default").to_string())];
         rows.extend(
             STARTUP_POLICIES
                 .iter()
@@ -912,9 +926,12 @@ impl HostdevPage {
         );
         let startup_policy = SimpleCombo::new(rows, str::to_string);
         let mut g = Grid::new();
-        g.row("Device:", &source);
-        let rombar_row = g.row("ROM _BAR:", &rombar);
-        let startup_policy_row = g.row("Startup Policy:", &startup_policy.widget);
+        g.row(virtinst_core::tr!("Device:"), &source);
+        let rombar_row = g.row(virtinst_core::tr!("ROM _BAR:"), &rombar);
+        let startup_policy_row = g.row(
+            virtinst_core::tr!("Startup Policy:"),
+            &startup_policy.widget,
+        );
         let title = title("");
         HostdevPage {
             page: g.page(&title),

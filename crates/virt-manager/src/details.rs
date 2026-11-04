@@ -123,16 +123,24 @@ impl HwRow {
 /// `_init_hw_list`'s static rows.
 fn static_rows(is_customize_dialog: bool) -> Vec<HwRow> {
     let mut rows = vec![
-        ("Overview", HwType::General, "computer"),
-        ("OS information", HwType::Os, "computer"),
+        (virtinst_core::tr!("Overview"), HwType::General, "computer"),
+        (virtinst_core::tr!("OS information"), HwType::Os, "computer"),
     ];
     if !is_customize_dialog {
-        rows.push(("Performance", HwType::Stats, performance_icon_name()));
+        rows.push((
+            virtinst_core::tr!("Performance"),
+            HwType::Stats,
+            performance_icon_name(),
+        ));
     }
     rows.extend([
-        ("CPUs", HwType::Cpu, "device_cpu"),
-        ("Memory", HwType::Memory, "device_mem"),
-        ("Boot Options", HwType::Boot, "system-run"),
+        (virtinst_core::tr!("CPUs"), HwType::Cpu, "device_cpu"),
+        (virtinst_core::tr!("Memory"), HwType::Memory, "device_mem"),
+        (
+            virtinst_core::tr!("Boot Options"),
+            HwType::Boot,
+            "system-run",
+        ),
     ]);
     rows.into_iter()
         .map(|(label, hwtype, icon)| HwRow {
@@ -179,13 +187,13 @@ fn pretty_bytes(val: u64) -> String {
 /// `vmmAddHardware.disk_pretty_bus`.
 pub fn disk_pretty_bus(bus: &str) -> String {
     match bus {
-        "ide" => "IDE",
-        "sata" => "SATA",
-        "scsi" => "SCSI",
-        "sd" => "SD",
-        "usb" => "USB",
-        "virtio" => "VirtIO",
-        "xen" => "Xen",
+        "ide" => virtinst_core::tr!("IDE"),
+        "sata" => virtinst_core::tr!("SATA"),
+        "scsi" => virtinst_core::tr!("SCSI"),
+        "sd" => virtinst_core::tr!("SD"),
+        "usb" => virtinst_core::tr!("USB"),
+        "virtio" => virtinst_core::tr!("VirtIO"),
+        "xen" => virtinst_core::tr!("Xen"),
         other => other,
     }
     .to_string()
@@ -194,14 +202,14 @@ pub fn disk_pretty_bus(bus: &str) -> String {
 /// `vmmAddHardware.char_pretty_type`.
 pub fn char_pretty_type(val: &str) -> String {
     match val {
-        "pty" => "Pseudo TTY",
-        "file" => "Output to a file",
-        "tcp" => "TCP net console",
-        "udp" => "UDP net console",
-        "unix" => "UNIX socket",
-        "spicevmc" => "Spice agent",
-        "spiceport" => "Spice port",
-        "qemu-vdagent" => "QEMU vdagent",
+        "pty" => virtinst_core::tr!("Pseudo TTY"),
+        "file" => virtinst_core::tr!("Output to a file"),
+        "tcp" => virtinst_core::tr!("TCP net console"),
+        "udp" => virtinst_core::tr!("UDP net console"),
+        "unix" => virtinst_core::tr!("UNIX socket"),
+        "spicevmc" => virtinst_core::tr!("Spice agent"),
+        "spiceport" => virtinst_core::tr!("Spice port"),
+        "qemu-vdagent" => virtinst_core::tr!("QEMU vdagent"),
         other => other,
     }
     .to_string()
@@ -239,14 +247,14 @@ pub fn video_pretty_model(model: &str) -> String {
 /// `vmmAddHardware.controller_pretty_type`.
 fn controller_pretty_type(val: &str) -> String {
     match val {
-        "ide" => "IDE",
-        "fdc" => "Floppy",
-        "scsi" => "SCSI",
-        "sata" => "SATA",
-        "virtio-serial" => "VirtIO Serial",
-        "usb" => "USB",
-        "pci" => "PCI",
-        "ccid" => "CCID",
+        "ide" => virtinst_core::tr!("IDE"),
+        "fdc" => virtinst_core::tr!("Floppy"),
+        "scsi" => virtinst_core::tr!("SCSI"),
+        "sata" => virtinst_core::tr!("SATA"),
+        "virtio-serial" => virtinst_core::tr!("VirtIO Serial"),
+        "usb" => virtinst_core::tr!("USB"),
+        "pci" => virtinst_core::tr!("PCI"),
+        "ccid" => virtinst_core::tr!("CCID"),
         "xenbus" => "xenbus",
         other => other,
     }
@@ -256,8 +264,8 @@ fn controller_pretty_type(val: &str) -> String {
 /// `vmmAddHardware.controller_pretty_desc`.
 fn controller_pretty_desc(ctype: &str, model: Option<&str>) -> String {
     match (ctype, model) {
-        ("scsi", Some("virtio-scsi")) => "VirtIO SCSI".into(),
-        ("pci", Some("pcie-root")) => "PCIe".into(),
+        ("scsi", Some("virtio-scsi")) => virtinst_core::tr!("VirtIO SCSI").into(),
+        ("pci", Some("pcie-root")) => virtinst_core::tr!("PCIe").into(),
         _ => controller_pretty_type(ctype),
     }
 }
@@ -314,31 +322,40 @@ fn label_for_device(doc: &Document, tag: &str, idx: usize, el: Element, disk_idx
         "disk" => {
             let device = a("device").unwrap_or_else(|| "disk".into());
             if device == "floppy" {
-                return format!("Floppy {disk_idx}");
+                return virtinst_core::trf!("Floppy %(index)d", index = disk_idx);
             }
             let bus = child_attr(doc, el, &["target"], "bus")
                 .map(|b| disk_pretty_bus(&b))
                 .unwrap_or_default();
             match device.as_str() {
-                "cdrom" => format!("{bus} CDROM {disk_idx}"),
-                "disk" => format!("{bus} Disk {disk_idx}"),
-                other => format!("{bus} {} {disk_idx}", capitalize(other)),
+                "cdrom" => {
+                    virtinst_core::trf!("%(bus)s CDROM %(index)d", bus = bus, index = disk_idx)
+                }
+                "disk" => {
+                    virtinst_core::trf!("%(bus)s Disk %(index)d", bus = bus, index = disk_idx)
+                }
+                other => virtinst_core::trf!(
+                    "%(bus)s %(device)s %(index)d",
+                    bus = bus,
+                    device = capitalize(other),
+                    index = disk_idx
+                ),
             }
         }
         "interface" => {
             let mac = child_attr(doc, el, &["mac"], "address").unwrap_or_default();
             let start = mac.len().saturating_sub(9);
-            format!("NIC {}", &mac[start..])
+            virtinst_core::trf!("NIC %(mac)s", mac = &mac[start..])
         }
         "input" => match a("type").as_deref() {
-            Some("tablet") => "Tablet".into(),
-            Some("mouse") => "Mouse".into(),
-            Some("keyboard") => "Keyboard".into(),
-            _ => "Input".into(),
+            Some("tablet") => virtinst_core::tr!("Tablet").into(),
+            Some("mouse") => virtinst_core::tr!("Mouse").into(),
+            Some("keyboard") => virtinst_core::tr!("Keyboard").into(),
+            _ => virtinst_core::tr!("Input").into(),
         },
-        "serial" => format!("Serial {}", port()),
-        "parallel" => format!("Parallel {}", port()),
-        "console" => format!("Console {}", port()),
+        "serial" => virtinst_core::trf!("Serial %(num)d", num = port()),
+        "parallel" => virtinst_core::trf!("Parallel %(num)d", num = port()),
+        "console" => virtinst_core::trf!("Console %(num)d", num = port()),
         "channel" => {
             let ctype = a("type").unwrap_or_default();
             let pretty_type = char_pretty_type(&ctype);
@@ -347,35 +364,44 @@ fn label_for_device(doc: &Document, tag: &str, idx: usize, el: Element, disk_idx
             // Don't print channel name with qemu-vdagent, to avoid
             // ambiguity with the typical spice agent channel
             match name {
-                Some(name) if ctype != "qemu-vdagent" => format!("Channel ({name})"),
-                _ => format!("Channel {pretty_type}"),
+                Some(name) if ctype != "qemu-vdagent" => {
+                    virtinst_core::trf!("Channel (%(name)s)", name = name)
+                }
+                _ => virtinst_core::trf!("Channel %(type)s", r#type = pretty_type),
             }
         }
-        "graphics" => format!(
-            "Display {}",
+        "graphics" => virtinst_core::trf!(
+            "Display %s",
             graphics_pretty_type_simple(&a("type").unwrap_or_default())
         ),
-        "redirdev" => format!(
-            "{} Redirector {}",
-            disk_pretty_bus(&a("bus").unwrap_or_default()),
-            idx + 1
+        "redirdev" => virtinst_core::trf!(
+            "%(bus)s Redirector %(index)d",
+            bus = disk_pretty_bus(&a("bus").unwrap_or_default()),
+            index = idx + 1
         ),
         "hostdev" => hostdev_pretty_name(doc, el),
-        "sound" => format!("Sound {}", a("model").unwrap_or_default()),
-        "video" => format!(
-            "Video {}",
+        "sound" => virtinst_core::trf!("Sound %s", a("model").unwrap_or_default()),
+        "video" => virtinst_core::trf!(
+            "Video %s",
             video_pretty_model(&child_attr(doc, el, &["model"], "type").unwrap_or_default())
         ),
         "filesystem" => {
             let target = child_attr(doc, el, &["target"], "dir").unwrap_or_default();
-            format!("Filesystem {}", target.chars().take(8).collect::<String>())
+            virtinst_core::trf!(
+                "Filesystem %(path)s",
+                path = target.chars().take(8).collect::<String>()
+            )
         }
         "controller" => {
             let desc =
                 controller_pretty_desc(&a("type").unwrap_or_default(), a("model").as_deref());
             match a("index") {
-                Some(i) => format!("Controller {desc} {i}"),
-                None => format!("Controller {desc}"),
+                Some(i) => virtinst_core::trf!(
+                    "Controller %(controller)s %(index)s",
+                    controller = desc,
+                    index = i
+                ),
+                None => virtinst_core::trf!("Controller %(controller)s", controller = desc),
             }
         }
         "rng" => {
@@ -384,21 +410,21 @@ fn label_for_device(doc: &Document, tag: &str, idx: usize, el: Element, disk_idx
                 .map(|b| b.text_content(doc))
                 .filter(|t| !t.is_empty());
             match backend {
-                Some(dev) => format!("RNG {dev}"),
-                None => "RNG".into(),
+                Some(dev) => virtinst_core::trf!("RNG %(device)s", device = dev),
+                None => virtinst_core::tr!("RNG").into(),
             }
         }
         "tpm" => match child_attr(doc, el, &["backend", "device"], "path") {
-            Some(path) => format!("TPM {path}"),
-            None => format!(
-                "TPM v{}",
-                child_attr(doc, el, &["backend"], "version").unwrap_or_default()
+            Some(path) => virtinst_core::trf!("TPM %(device)s", device = path),
+            None => virtinst_core::trf!(
+                "TPM v%(version)s",
+                version = child_attr(doc, el, &["backend"], "version").unwrap_or_default()
             ),
         },
-        "panic" => "Panic Notifier".into(),
-        "smartcard" => "Smartcard".into(),
-        "vsock" => "VirtIO VSOCK".into(),
-        _ => "Watchdog".into(),
+        "panic" => virtinst_core::tr!("Panic Notifier").into(),
+        "smartcard" => virtinst_core::tr!("Smartcard").into(),
+        "vsock" => virtinst_core::tr!("VirtIO VSOCK").into(),
+        _ => virtinst_core::tr!("Watchdog").into(),
     }
 }
 
@@ -618,14 +644,14 @@ fn arch_can_uefi(arch: Option<&str>) -> bool {
 pub fn label_for_firmware_path(arch: Option<&str>, path: Option<&str>) -> String {
     let Some(path) = path.filter(|p| !p.is_empty()) else {
         return if matches!(arch, Some("i686" | "x86_64")) {
-            "BIOS".into()
+            virtinst_core::tr!("BIOS").into()
         } else {
-            "Default".into()
+            virtinst_core::tr!("Default").into()
         };
     };
     match uefi_arch_for_path(path) {
-        Some(a) => format!("UEFI {a}: {path}"),
-        None => format!("Custom: {path}"),
+        Some(a) => virtinst_core::trf!("UEFI %(arch)s: %(path)s", arch = a, path = path),
+        None => virtinst_core::trf!("Custom: %(path)s", path = path),
     }
 }
 
@@ -646,7 +672,7 @@ fn value_label() -> gtk::Label {
 fn frame(title: &str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 6);
     let label = gtk::Label::new(None);
-    label.set_markup_with_mnemonic(&format!("<b>{title}</b>"));
+    label.set_markup_with_mnemonic(&virtinst_core::i18n::bold(title));
     label.set_xalign(0.0);
     vbox.append(&label);
     child.set_margin_start(12);
@@ -697,7 +723,7 @@ impl Overview {
         name.set_hexpand(true);
         let uuid = value_label();
         let status_icon = gtk::Image::new();
-        let status_text = gtk::Label::new(Some("Shut down"));
+        let status_text = gtk::Label::new(Some(virtinst_core::tr!("Shut down")));
         let status_box = gtk::Box::new(gtk::Orientation::Horizontal, 3);
         status_box.append(&status_icon);
         status_box.append(&status_text);
@@ -714,18 +740,18 @@ impl Overview {
             .row_spacing(6)
             .column_spacing(12)
             .build();
-        let name_label = grid_label("_Name:");
+        let name_label = grid_label(virtinst_core::tr!("_Name:"));
         name_label.set_mnemonic_widget(Some(&name));
-        let title_label = grid_label("T_itle:");
+        let title_label = grid_label(virtinst_core::tr!("T_itle:"));
         title_label.set_mnemonic_widget(Some(&title));
-        let desc_label = grid_label("D_escription:");
+        let desc_label = grid_label(virtinst_core::tr!("D_escription:"));
         desc_label.set_mnemonic_widget(Some(&description));
         desc_label.set_valign(gtk::Align::Start);
         basic.attach(&name_label, 0, 0, 1, 1);
         basic.attach(&name, 1, 0, 1, 1);
-        basic.attach(&grid_label("UUID:"), 0, 1, 1, 1);
+        basic.attach(&grid_label(virtinst_core::tr!("UUID:")), 0, 1, 1, 1);
         basic.attach(&uuid, 1, 1, 1, 1);
-        basic.attach(&grid_label("Status:"), 0, 2, 1, 1);
+        basic.attach(&grid_label(virtinst_core::tr!("Status:")), 0, 2, 1, 1);
         basic.attach(&status_box, 1, 2, 1, 1);
         basic.attach(&title_label, 0, 3, 1, 1);
         basic.attach(&title, 1, 3, 1, 1);
@@ -735,11 +761,11 @@ impl Overview {
         let hv = value_label();
         let arch = value_label();
         let emulator = value_label();
-        let machine_title = grid_label("Machine _Type: ");
+        let machine_title = grid_label(virtinst_core::tr!("Machine _Type: "));
         let machine_label = value_label();
-        let chipset_title = grid_label("Chipse_t:");
+        let chipset_title = grid_label(virtinst_core::tr!("Chipse_t:"));
         let chipset_label = value_label();
-        let firmware_title = grid_label("Firm_ware:");
+        let firmware_title = grid_label(virtinst_core::tr!("Firm_ware:"));
         let firmware_label = value_label();
         let machine_combo = crate::devpages::SimpleCombo::unsorted(vec![], str::to_string);
         let chipset_combo = crate::devpages::SimpleCombo::unsorted(vec![], str::to_string);
@@ -766,11 +792,11 @@ impl Overview {
             .row_spacing(6)
             .column_spacing(12)
             .build();
-        hvgrid.attach(&grid_label("Hypervisor:"), 0, 0, 1, 1);
+        hvgrid.attach(&grid_label(virtinst_core::tr!("Hypervisor:")), 0, 0, 1, 1);
         hvgrid.attach(&hv, 1, 0, 1, 1);
-        hvgrid.attach(&grid_label("Architecture:"), 0, 1, 1, 1);
+        hvgrid.attach(&grid_label(virtinst_core::tr!("Architecture:")), 0, 1, 1, 1);
         hvgrid.attach(&arch, 1, 1, 1, 1);
-        hvgrid.attach(&grid_label("Emulator:"), 0, 2, 1, 1);
+        hvgrid.attach(&grid_label(virtinst_core::tr!("Emulator:")), 0, 2, 1, 1);
         hvgrid.attach(&emulator, 1, 2, 1, 1);
         hvgrid.attach(&machine_title, 0, 3, 1, 1);
         hvgrid.attach(&machine_value, 1, 3, 1, 1);
@@ -937,9 +963,21 @@ impl CpuModelCombo {
     /// the domcaps models, sorted by sort key.
     fn set_rows(&self, models: Vec<String>) {
         let special = [
-            ("Application Default", "01", cpu::SPECIAL_MODE_APP_DEFAULT),
-            ("Hypervisor Default", "02", cpu::SPECIAL_MODE_HV_DEFAULT),
-            ("Clear CPU configuration", "03", cpu::SPECIAL_MODE_CLEAR),
+            (
+                virtinst_core::tr!("Application Default"),
+                "01",
+                cpu::SPECIAL_MODE_APP_DEFAULT,
+            ),
+            (
+                virtinst_core::tr!("Hypervisor Default"),
+                "02",
+                cpu::SPECIAL_MODE_HV_DEFAULT,
+            ),
+            (
+                virtinst_core::tr!("Clear CPU configuration"),
+                "03",
+                cpu::SPECIAL_MODE_CLEAR,
+            ),
             ("host-model", "04", cpu::SPECIAL_MODE_HOST_MODEL),
             ("host-passthrough", "05", cpu::SPECIAL_MODE_HOST_PASSTHROUGH),
             ("maximum", "06", cpu::SPECIAL_MODE_MAXIMUM),
@@ -1027,11 +1065,13 @@ impl CpuPage {
         let host_cpus = left_label("8");
         let vcpus = spin(1.0, 1024.0, 2.0);
         vcpus.set_hexpand(true);
-        let vcpus_label = left_label("vCPU a_llocation:");
+        let vcpus_label = left_label(virtinst_core::tr!("vCPU a_llocation:"));
         vcpus_label.set_mnemonic_widget(Some(&vcpus));
         let warn_icon = gtk::Image::from_icon_name("dialog-warning");
         let warn_text = gtk::Label::new(None);
-        warn_text.set_markup("<small>Overcommitting vCPUs can hurt performance</small>");
+        warn_text.set_markup(virtinst_core::tr!(
+            "<small>Overcommitting vCPUs can hurt performance</small>"
+        ));
         let vcpus_warn_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         vcpus_warn_box.set_halign(gtk::Align::Start);
         vcpus_warn_box.append(&warn_icon);
@@ -1040,18 +1080,27 @@ impl CpuPage {
             .row_spacing(6)
             .column_spacing(12)
             .build();
-        cpus_grid.attach(&left_label("Logical host CPUs:"), 0, 0, 1, 1);
+        cpus_grid.attach(
+            &left_label(virtinst_core::tr!("Logical host CPUs:")),
+            0,
+            0,
+            1,
+            1,
+        );
         cpus_grid.attach(&host_cpus, 1, 0, 1, 1);
         cpus_grid.attach(&vcpus_label, 0, 1, 1, 1);
         cpus_grid.attach(&vcpus, 1, 1, 1, 1);
         cpus_grid.attach(&vcpus_warn_box, 0, 2, 2, 1);
 
-        let copy_host = gtk::CheckButton::with_mnemonic("Copy host CP_U configuration");
+        let copy_host =
+            gtk::CheckButton::with_mnemonic(virtinst_core::tr!("Copy host CP_U configuration"));
         let model = CpuModelCombo::new();
         model.widget.set_hexpand(true);
-        let model_label = left_label("M_odel:");
+        let model_label = left_label(virtinst_core::tr!("M_odel:"));
         model_label.set_mnemonic_widget(Some(&model.entry));
-        let secure = gtk::CheckButton::with_label("Enable available CPU security flaw mitigations");
+        let secure = gtk::CheckButton::with_label(virtinst_core::tr!(
+            "Enable available CPU security flaw mitigations"
+        ));
         let config_grid = gtk::Grid::builder()
             .row_spacing(3)
             .column_spacing(12)
@@ -1063,7 +1112,8 @@ impl CpuPage {
         config_grid.attach(&model.widget, 1, 1, 1, 1);
         config_grid.attach(&secure, 0, 2, 2, 1);
 
-        let topology_enable = gtk::CheckButton::with_mnemonic("Manuall_y set CPU topology");
+        let topology_enable =
+            gtk::CheckButton::with_mnemonic(virtinst_core::tr!("Manuall_y set CPU topology"));
         let sockets = spin(1.0, 256.0, 10.0);
         let cores = spin(1.0, 256.0, 10.0);
         let threads = spin(1.0, 256.0, 10.0);
@@ -1072,9 +1122,9 @@ impl CpuPage {
             .column_spacing(12)
             .build();
         for (i, (text, spin)) in [
-            ("Socke_ts:", &sockets),
-            ("Cor_es:", &cores),
-            ("Thread_s:", &threads),
+            (virtinst_core::tr!("Socke_ts:"), &sockets),
+            (virtinst_core::tr!("Cor_es:"), &cores),
+            (virtinst_core::tr!("Thread_s:"), &threads),
         ]
         .into_iter()
         .enumerate()
@@ -1090,12 +1140,12 @@ impl CpuPage {
         topology_box.append(&topology_table);
         let topology_expander = gtk::Expander::new(None);
         let exp_label = gtk::Label::new(None);
-        exp_label.set_markup_with_mnemonic("<b>To_pology</b>");
+        exp_label.set_markup_with_mnemonic(virtinst_core::tr!("<b>To_pology</b>"));
         topology_expander.set_label_widget(Some(&exp_label));
         topology_expander.set_child(Some(&topology_box));
 
         let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        page.append(&frame("CPUs", &cpus_grid));
+        page.append(&frame(virtinst_core::tr!("CPUs"), &cpus_grid));
         page.append(&frame("Configu_ration", &config_grid));
         page.append(&topology_expander);
 
@@ -1132,7 +1182,7 @@ impl MemoryPage {
         let host_memory = left_label("2 GiB");
         let memory = spin(1.0, 10240000.0, 25.0);
         let maxmem = spin(1.0, 10240000.0, 25.0);
-        let shared = gtk::CheckButton::with_mnemonic("Enable shared _memory");
+        let shared = gtk::CheckButton::with_mnemonic(virtinst_core::tr!("Enable shared _memory"));
         shared.set_halign(gtk::Align::Start);
         let grid = gtk::Grid::builder()
             .row_spacing(6)
@@ -1147,14 +1197,14 @@ impl MemoryPage {
         let with_unit = |spin: &gtk::SpinButton| {
             let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 3);
             hbox.append(spin);
-            hbox.append(&left_label("MiB"));
+            hbox.append(&left_label(virtinst_core::tr!("MiB")));
             hbox
         };
-        let cur_label = right("Current a_llocation:");
+        let cur_label = right(virtinst_core::tr!("Current a_llocation:"));
         cur_label.set_mnemonic_widget(Some(&memory));
-        let max_label = right("Ma_ximum allocation:");
+        let max_label = right(virtinst_core::tr!("Ma_ximum allocation:"));
         max_label.set_mnemonic_widget(Some(&maxmem));
-        grid.attach(&right("Total host memory:"), 0, 0, 1, 1);
+        grid.attach(&right(virtinst_core::tr!("Total host memory:")), 0, 0, 1, 1);
         grid.attach(&host_memory, 1, 0, 1, 1);
         grid.attach(&cur_label, 0, 1, 1, 1);
         let cur_box = with_unit(&memory);
@@ -1165,7 +1215,7 @@ impl MemoryPage {
         grid.attach(&shared, 1, 3, 1, 1);
 
         let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        page.append(&frame("Memory", &grid));
+        page.append(&frame(virtinst_core::tr!("Memory"), &grid));
         MemoryPage {
             page,
             host_memory,
@@ -1191,7 +1241,7 @@ struct BootRow {
 fn path_entry() -> (gtk::Box, gtk::Entry, gtk::Button) {
     let entry = gtk::Entry::new();
     entry.set_hexpand(true);
-    let browse = gtk::Button::with_label("Browse");
+    let browse = gtk::Button::with_label(virtinst_core::tr!("Browse"));
     let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     hbox.set_hexpand(true);
     hbox.append(&entry);
@@ -1210,7 +1260,7 @@ impl ModeCombo {
     fn new(modes: &[&str]) -> ModeCombo {
         let mut values = vec![None];
         values.extend(modes.iter().map(|m| Some(m.to_string())));
-        let labels: Vec<&str> = std::iter::once("Hypervisor default")
+        let labels: Vec<&str> = std::iter::once(virtinst_core::tr!("Hypervisor default"))
             .chain(modes.iter().copied())
             .collect();
         let widget = gtk::DropDown::from_strings(&labels);
@@ -1225,7 +1275,7 @@ impl ModeCombo {
     fn set_modes(&self, modes: &[&str]) {
         let mut values = vec![None];
         values.extend(modes.iter().map(|m| Some(m.to_string())));
-        let labels: Vec<&str> = std::iter::once("Hypervisor default")
+        let labels: Vec<&str> = std::iter::once(virtinst_core::tr!("Hypervisor default"))
             .chain(modes.iter().copied())
             .collect();
         self.widget.set_model(Some(&gtk::StringList::new(&labels)));
@@ -1283,14 +1333,14 @@ impl DiskPage {
             l.set_selectable(true);
             l
         };
-        let source_mnemonic = right("Source _path:");
+        let source_mnemonic = right(virtinst_core::tr!("Source _path:"));
         let source_label = value();
         source_label.set_ellipsize(gtk::pango::EllipsizeMode::Start);
         source_label.update_property(&[gtk::accessible::Property::Label("disk-source-label")]);
         let mediacombo = crate::mediacombo::MediaCombo::new(conn.clone());
         mediacombo.set_mnemonic_label(&source_mnemonic);
         mediacombo.show_clear_icon();
-        let browse = gtk::Button::with_mnemonic("_Browse");
+        let browse = gtk::Button::with_mnemonic(virtinst_core::tr!("_Browse"));
         let source_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         source_box.set_hexpand(true);
         source_box.append(&mediacombo.top_box);
@@ -1315,19 +1365,19 @@ impl DiskPage {
             .build();
         grid.attach(&source_mnemonic, 0, 0, 1, 1);
         grid.attach(&source, 1, 0, 1, 1);
-        grid.attach(&right("Device type:"), 0, 1, 1, 1);
+        grid.attach(&right(virtinst_core::tr!("Device type:")), 0, 1, 1, 1);
         grid.attach(&target_type, 1, 1, 1, 1);
         // The bus is only editable in the customize dialog.
         let bus_labeller = if is_customize_dialog {
-            let l = right("Disk b_us:");
+            let l = right(virtinst_core::tr!("Disk b_us:"));
             l.set_mnemonic_widget(Some(&bus_combo.widget));
             l
         } else {
-            right("Disk bus:")
+            right(virtinst_core::tr!("Disk bus:"))
         };
         grid.attach(&bus_labeller, 0, 2, 1, 1);
         grid.attach(&bus_value, 1, 2, 1, 1);
-        grid.attach(&right("Storage size:"), 0, 3, 1, 1);
+        grid.attach(&right(virtinst_core::tr!("Storage size:")), 0, 3, 1, 1);
         grid.attach(&size, 1, 3, 1, 1);
 
         let addstorage = crate::addstorage::AddStorage::new(conn);
@@ -1414,18 +1464,18 @@ impl NetworkPage {
             .build();
         grid.attach(&netlist.top_label, 0, 0, 1, 1);
         grid.attach(&netlist.top_box, 1, 0, 1, 1);
-        let model_label = right("Device mode_l:");
+        let model_label = right(virtinst_core::tr!("Device mode_l:"));
         model_label.set_mnemonic_widget(Some(&model.widget));
         grid.attach(&model_label, 0, 1, 1, 1);
         grid.attach(&model.widget, 1, 1, 1, 1);
         // The MAC is only editable in the customize dialog.
         grid.attach(&right("MAC address:"), 0, 2, 1, 1);
         grid.attach(&mac_value, 1, 2, 1, 1);
-        let ip_label = right("I_P address:");
+        let ip_label = right(virtinst_core::tr!("I_P address:"));
         ip_label.set_mnemonic_widget(Some(&refresh_ip));
         grid.attach(&ip_label, 0, 3, 1, 1);
         grid.attach(&ip_box, 1, 3, 1, 1);
-        let link_label = right("Link _state:");
+        let link_label = right(virtinst_core::tr!("Link _state:"));
         link_label.set_mnemonic_widget(Some(&link_state));
         grid.attach(&link_label, 0, 4, 1, 1);
         grid.attach(&link_state, 1, 4, 1, 1);
@@ -1494,26 +1544,44 @@ struct StatsTexts {
 fn stats_texts(flags: PollFlags, rec: &StatsRecord, vm_memory: u64) -> StatsTexts {
     let pretty_mem = crate::host::pretty_mem;
     let mut texts = StatsTexts {
-        cpu: "Disabled".into(),
-        mem: "Disabled".into(),
-        dsk: "Disabled".into(),
-        net: "Disabled".into(),
+        cpu: virtinst_core::tr!("Disabled").into(),
+        mem: virtinst_core::tr!("Disabled").into(),
+        dsk: virtinst_core::tr!("Disabled").into(),
+        net: virtinst_core::tr!("Disabled").into(),
     };
     if flags.cpu {
         texts.cpu = format!("{} %", rec.cpu_guest_percent as i64);
     }
     if flags.mem {
-        texts.mem = format!("{} of {}", pretty_mem(rec.curmem), pretty_mem(vm_memory));
+        texts.mem = virtinst_core::trf!(
+            "%(currentmem)s of %(maxmem)s",
+            currentmem = pretty_mem(rec.curmem),
+            maxmem = pretty_mem(vm_memory)
+        );
     }
     if flags.disk {
         // _dsk_rx_tx_text
         let (rx, tx, unit) = (rec.disk_rd_rate as i64, rec.disk_wr_rate as i64, "KiB/s");
-        texts.dsk = multi_color(&format!("{rx} {unit} read"), &format!("{tx} {unit} write"));
+        texts.dsk = multi_color(
+            &virtinst_core::trf!("%(received)d %(units)s read", received = rx, units = unit),
+            &virtinst_core::trf!(
+                "%(transferred)d %(units)s write",
+                transferred = tx,
+                units = unit
+            ),
+        );
     }
     if flags.net {
         // _net_rx_tx_text
         let (rx, tx, unit) = (rec.net_rx_rate as i64, rec.net_tx_rate as i64, "KiB/s");
-        texts.net = multi_color(&format!("{rx} {unit} in"), &format!("{tx} {unit} out"));
+        texts.net = multi_color(
+            &virtinst_core::trf!("%(received)d %(units)s in", received = rx, units = unit),
+            &virtinst_core::trf!(
+                "%(transferred)d %(units)s out",
+                transferred = tx,
+                units = unit
+            ),
+        );
     }
     texts
 }
@@ -1574,9 +1642,9 @@ impl StatsPage {
         let cpu_text = gtk::Label::new(Some("18%"));
         let memory_text = gtk::Label::new(Some("30 MiB of 128 MiB"));
         let disk_text = gtk::Label::new(None);
-        disk_text.set_markup("0 KiBytes/s 0 KiBytes/s");
+        disk_text.set_markup(virtinst_core::tr!("0 KiBytes/s 0 KiBytes/s"));
         let network_text = gtk::Label::new(None);
-        network_text.set_markup("0 KiBytes/s 0 KiBytes/s");
+        network_text.set_markup(virtinst_core::tr!("0 KiBytes/s 0 KiBytes/s"));
 
         // The graph in its 75px `*-align` box over the right-aligned text.
         let stats_frame = |title: &str, graph: &SparklineGraph, text: &gtk::Label| {
@@ -1591,10 +1659,26 @@ impl StatsPage {
         };
         let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
         page.update_property(&[gtk::accessible::Property::Label("performance-tab")]);
-        page.append(&stats_frame("CPU usage", &graph_cpu, &cpu_text));
-        page.append(&stats_frame("Memory usage", &graph_memory, &memory_text));
-        page.append(&stats_frame("Disk I/O", &graph_disk, &disk_text));
-        page.append(&stats_frame("Network I/O", &graph_network, &network_text));
+        page.append(&stats_frame(
+            virtinst_core::tr!("CPU usage"),
+            &graph_cpu,
+            &cpu_text,
+        ));
+        page.append(&stats_frame(
+            virtinst_core::tr!("Memory usage"),
+            &graph_memory,
+            &memory_text,
+        ));
+        page.append(&stats_frame(
+            virtinst_core::tr!("Disk I/O"),
+            &graph_disk,
+            &disk_text,
+        ));
+        page.append(&stats_frame(
+            virtinst_core::tr!("Network I/O"),
+            &graph_network,
+            &network_text,
+        ));
         StatsPage {
             page,
             cpu_text,
@@ -1638,10 +1722,12 @@ struct BootPage {
 
 impl BootPage {
     fn new() -> BootPage {
-        let autostart = gtk::CheckButton::with_mnemonic("Start virt_ual machine on host boot up");
+        let autostart = gtk::CheckButton::with_mnemonic(virtinst_core::tr!(
+            "Start virt_ual machine on host boot up"
+        ));
         autostart.set_halign(gtk::Align::Start);
 
-        let menu = gtk::CheckButton::with_mnemonic("Enable boot me_nu");
+        let menu = gtk::CheckButton::with_mnemonic(virtinst_core::tr!("Enable boot me_nu"));
         menu.set_halign(gtk::Align::Start);
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::Single);
@@ -1674,7 +1760,8 @@ impl BootPage {
         order_box.append(&menu);
         order_box.append(&table);
 
-        let kernel_enable = gtk::CheckButton::with_mnemonic("Ena_ble direct kernel boot");
+        let kernel_enable =
+            gtk::CheckButton::with_mnemonic(virtinst_core::tr!("Ena_ble direct kernel boot"));
         kernel_enable.set_halign(gtk::Align::Start);
         let (kernel_hbox, kernel, kernel_browse) = path_entry();
         let (initrd_hbox, initrd, initrd_browse) = path_entry();
@@ -1686,15 +1773,19 @@ impl BootPage {
             .row_spacing(6)
             .build();
         ktable.set_hexpand(true);
-        let dtb_label = left_label("D_TB path:");
+        let dtb_label = left_label(virtinst_core::tr!("D_TB path:"));
         dtb_label.set_mnemonic_widget(Some(&dtb));
         for (row, (text, widget, mnemonic)) in [
             (
-                "Ke_rnel path:",
+                virtinst_core::tr!("Ke_rnel path:"),
                 kernel_hbox.upcast_ref::<gtk::Widget>(),
                 &kernel,
             ),
-            ("_Initrd path:", initrd_hbox.upcast_ref(), &initrd),
+            (
+                virtinst_core::tr!("_Initrd path:"),
+                initrd_hbox.upcast_ref(),
+                &initrd,
+            ),
         ]
         .into_iter()
         .enumerate()
@@ -1706,7 +1797,7 @@ impl BootPage {
         }
         ktable.attach(&dtb_label, 0, 2, 1, 1);
         ktable.attach(&dtb_box, 1, 2, 1, 1);
-        let args_label = left_label("Kernel ar_gs:");
+        let args_label = left_label(virtinst_core::tr!("Kernel ar_gs:"));
         args_label.set_mnemonic_widget(Some(&kernel_args));
         ktable.attach(&args_label, 0, 3, 1, 1);
         ktable.attach(&kernel_args, 1, 3, 1, 1);
@@ -1718,7 +1809,7 @@ impl BootPage {
         kernel_vbox.append(&kernel_box);
         let kernel_expander = gtk::Expander::new(None);
         let exp_label = gtk::Label::new(None);
-        exp_label.set_markup_with_mnemonic("<b>Dir_ect kernel boot</b>");
+        exp_label.set_markup_with_mnemonic(virtinst_core::tr!("<b>Dir_ect kernel boot</b>"));
         kernel_expander.set_label_widget(Some(&exp_label));
         kernel_expander.set_child(Some(&kernel_vbox));
 
@@ -1728,9 +1819,12 @@ impl BootPage {
             .row_spacing(6)
             .column_spacing(6)
             .build();
-        for (row, (text, entry)) in [("Init _path:", &init_path), ("Init ar_gs:", &init_args)]
-            .into_iter()
-            .enumerate()
+        for (row, (text, entry)) in [
+            (virtinst_core::tr!("Init _path:"), &init_path),
+            (virtinst_core::tr!("Init ar_gs:"), &init_args),
+        ]
+        .into_iter()
+        .enumerate()
         {
             let label = left_label(text);
             label.set_mnemonic_widget(Some(entry));
@@ -1830,7 +1924,9 @@ impl VmmDetails {
     pub fn new(vm: &VmmDomain, is_customize_dialog: bool) -> VmmDetails {
         let hw_list = gtk::ListBox::new();
         hw_list.set_selection_mode(gtk::SelectionMode::Browse);
-        hw_list.update_property(&[gtk::accessible::Property::Label("Hardware")]);
+        hw_list.update_property(&[gtk::accessible::Property::Label(virtinst_core::tr!(
+            "Hardware"
+        ))]);
         let hw_scroll = gtk::ScrolledWindow::builder()
             .child(&hw_list)
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -1838,7 +1934,7 @@ impl VmmDetails {
             .has_frame(true)
             .min_content_width(165)
             .build();
-        let add_hardware = gtk::Button::with_mnemonic("A_dd Hardware");
+        let add_hardware = gtk::Button::with_mnemonic(virtinst_core::tr!("A_dd Hardware"));
         let left = gtk::Box::new(gtk::Orientation::Vertical, 6);
         left.append(&hw_scroll);
         left.append(&add_hardware);
@@ -1904,7 +2000,7 @@ impl VmmDetails {
             Some("vsock"),
         );
         hw_panel.add_named(
-            &dp::frame_page(&dp::title("Filesystem"), &fs.top_box),
+            &dp::frame_page(&dp::title(virtinst_core::tr!("Filesystem")), &fs.top_box),
             Some("filesystem"),
         );
         let panel_scroll = gtk::ScrolledWindow::builder()
@@ -1913,9 +2009,9 @@ impl VmmDetails {
             .vexpand(true)
             .build();
 
-        let config_remove = gtk::Button::with_mnemonic("_Remove");
-        let config_cancel = gtk::Button::with_mnemonic("_Cancel");
-        let config_apply = gtk::Button::with_mnemonic("_Apply");
+        let config_remove = gtk::Button::with_mnemonic(virtinst_core::tr!("_Remove"));
+        let config_cancel = gtk::Button::with_mnemonic(virtinst_core::tr!("_Cancel"));
+        let config_apply = gtk::Button::with_mnemonic(virtinst_core::tr!("_Apply"));
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
@@ -2349,10 +2445,14 @@ impl VmmDetails {
         };
         if !self.0.vm.can_use_device_boot_order() {
             return vec![
-                row("hd", "Hard Disk", "drive-harddisk"),
-                row("cdrom", "CDROM", "media-optical"),
-                row("network", "Network (PXE)", "network-idle"),
-                row("fd", "Floppy", "media-floppy"),
+                row("hd", virtinst_core::tr!("Hard Disk"), "drive-harddisk"),
+                row("cdrom", virtinst_core::tr!("CDROM"), "media-optical"),
+                row(
+                    "network",
+                    virtinst_core::tr!("Network (PXE)"),
+                    "network-idle",
+                ),
+                row("fd", virtinst_core::tr!("Floppy"), "media-floppy"),
             ];
         }
         let mut ret = vec![];
@@ -2367,7 +2467,7 @@ impl VmmDetails {
         if ret.is_empty() {
             ret.push(BootRow {
                 key: None,
-                label: "No bootable devices".into(),
+                label: virtinst_core::tr!("No bootable devices").into(),
                 icon: None,
                 active: false,
                 can_select: false,
@@ -2636,7 +2736,7 @@ impl VmmDetails {
             Err(e) => {
                 crate::error::show_err(
                     self.parent().as_ref(),
-                    &format!("Error applying changes: {e}"),
+                    &virtinst_core::trf!("Error applying changes: %s", e),
                     None,
                     "",
                 )
@@ -2732,7 +2832,7 @@ impl VmmDetails {
             if let Err(e) = self.0.vm.set_autostart(b.autostart.is_active()).await {
                 crate::error::show_err(
                     parent.as_ref(),
-                    &format!("Error changing autostart value: {e}"),
+                    &virtinst_core::trf!("Error changing autostart value: %s", e),
                     None,
                     "",
                 )
@@ -2769,7 +2869,7 @@ impl VmmDetails {
             if !k.initrd.is_empty() && k.kernel.is_empty() {
                 crate::error::val_err(
                     parent.as_ref(),
-                    "Cannot set initrd without specifying a kernel path",
+                    virtinst_core::tr!("Cannot set initrd without specifying a kernel path"),
                 )
                 .await;
                 return false;
@@ -2777,7 +2877,9 @@ impl VmmDetails {
             if !k.kernel_args.is_empty() && k.kernel.is_empty() {
                 crate::error::val_err(
                     parent.as_ref(),
-                    "Cannot set kernel arguments without specifying a kernel path",
+                    virtinst_core::tr!(
+                        "Cannot set kernel arguments without specifying a kernel path"
+                    ),
                 )
                 .await;
                 return false;
@@ -2788,7 +2890,11 @@ impl VmmDetails {
             let init = b.init_path.text().trim().to_string();
             let initargs = b.init_args.text().trim().to_string();
             if init.is_empty() {
-                crate::error::val_err(parent.as_ref(), "An init path must be specified").await;
+                crate::error::val_err(
+                    parent.as_ref(),
+                    virtinst_core::tr!("An init path must be specified"),
+                )
+                .await;
                 return false;
             }
             edits.init = Some((init, initargs));
@@ -3069,7 +3175,10 @@ impl VmmDetails {
                         .map(|r| r.label.clone())
                         .unwrap_or_default();
                     // `DeviceAddress.pretty_desc`
-                    let a = |n| child_attr(doc, d, &["address"], n).unwrap_or("None".into());
+                    let a = |n| {
+                        child_attr(doc, d, &["address"], n)
+                            .unwrap_or(virtinst_core::tr!("None").into())
+                    };
                     let address =
                         if child_attr(doc, d, &["address"], "type").as_deref() == Some("drive") {
                             format!(
@@ -3080,9 +3189,13 @@ impl VmmDetails {
                                 a("unit")
                             )
                         } else {
-                            "None".into()
+                            virtinst_core::tr!("None").into()
                         };
-                    format!("{name} on {address}")
+                    virtinst_core::trf!(
+                        "%(device)s on %(address)s",
+                        device = name,
+                        address = address
+                    )
                 })
                 .collect()
         });
@@ -3135,7 +3248,10 @@ impl VmmDetails {
         };
         let doc = &x.doc;
         let gtype = attr(doc, el, "type").unwrap_or_default();
-        let title = format!("{} Server", graphics_pretty_type_simple(&gtype));
+        let title = virtinst_core::trf!(
+            "%(graphicstype)s Server",
+            graphicstype = graphics_pretty_type_simple(&gtype)
+        );
         self.0
             .graphics_title
             .set_markup(&format!("<b>{}</b>", glib::markup_escape_text(&title)));
@@ -3363,7 +3479,7 @@ impl VmmDetails {
                 if !crate::error::yes_no(
                     parent.as_ref(),
                     &msg,
-                    Some("Do you really want to use the disk?"),
+                    Some(virtinst_core::tr!("Do you really want to use the disk?")),
                 )
                 .await
                 {
@@ -3458,7 +3574,7 @@ impl VmmDetails {
         if let Err(e) = define.await {
             crate::error::show_err(
                 parent.as_ref(),
-                &format!("Error changing VM configuration: {e}"),
+                &virtinst_core::trf!("Error changing VM configuration: %s", e),
                 None,
                 "",
             )
@@ -3483,7 +3599,8 @@ impl VmmDetails {
             return true;
         }
 
-        let msg = "These changes will take effect after the next guest shutdown.";
+        let msg =
+            virtinst_core::tr!("These changes will take effect after the next guest shutdown.");
         crate::error::show_notice(parent.as_ref(), msg, hotplug_err.as_deref()).await;
         true
     }
@@ -3615,8 +3732,9 @@ impl VmmDetails {
         let i = &self.0;
         i.refreshing.set(true);
         i.config_remove.set_sensitive(true);
-        i.config_remove
-            .set_tooltip_text(Some("Remove this device from the virtual machine"));
+        i.config_remove.set_tooltip_text(Some(virtinst_core::tr!(
+            "Remove this device from the virtual machine"
+        )));
         if let Some((x, el)) = self.device_element(&row) {
             let xml = virtinst_core::xmlbuilder::element_xml(&x.doc, el);
             i.xmleditor
@@ -3753,9 +3871,15 @@ impl VmmDetails {
             };
             inner.hw_list.select_row(Some(&listrow));
             let menu = gio::Menu::new();
-            menu.append(Some("_Add Hardware"), Some("hw.add-hardware"));
+            menu.append(
+                Some(virtinst_core::tr!("_Add Hardware")),
+                Some("hw.add-hardware"),
+            );
             if inner.config_remove.is_visible() {
-                menu.append(Some("_Remove Hardware"), Some("hw.remove-hardware"));
+                menu.append(
+                    Some(virtinst_core::tr!("_Remove Hardware")),
+                    Some("hw.remove-hardware"),
+                );
             }
             rmhw.set_enabled(inner.config_remove.is_sensitive());
             popover.set_menu_model(Some(&menu));
@@ -3805,9 +3929,9 @@ impl VmmDetails {
             }
             HwType::Video => {
                 if count("graphics") > 0 && count("video") <= 1 {
-                    self.disable_device_remove(
-                        "Cannot remove last video device while Graphics/Display is attached.",
-                    );
+                    self.disable_device_remove(virtinst_core::tr!(
+                        "Cannot remove last video device while Graphics/Display is attached."
+                    ));
                 }
             }
             HwType::Controller => {
@@ -3896,7 +4020,7 @@ impl VmmDetails {
             parent.as_ref(),
             || config.get_confirm_removedev(),
             |v| config.set_confirm_removedev(v),
-            "Are you sure you want to remove this device?",
+            virtinst_core::tr!("Are you sure you want to remove this device?"),
             None,
         )
         .await;
@@ -4001,10 +4125,11 @@ impl VmmDetails {
                 .flatten()
                 .collect::<Vec<_>>()
                 .join("\n");
-            this.0
-                .network
-                .ip
-                .set_text(if label.is_empty() { "Unknown" } else { &label });
+            this.0.network.ip.set_text(if label.is_empty() {
+                virtinst_core::tr!("Unknown")
+            } else {
+                &label
+            });
         });
     }
 
@@ -4034,7 +4159,7 @@ impl VmmDetails {
         let state = child_attr(doc, el, &["link"], "state");
         n.link_state
             .set_active(state.is_none() || state.as_deref() == Some("up"));
-        n.ip.set_text("Unknown");
+        n.ip.set_text(virtinst_core::tr!("Unknown"));
         self.set_network_ip_details(row);
 
         let (nettype, source, network) = virtinst_core::devices::network::interface_source(doc, el);
@@ -4059,7 +4184,11 @@ impl VmmDetails {
         let bus = child_attr(doc, el, &["target"], "bus");
 
         let has_storage = path.is_some() || volume.is_some();
-        d.size.set_text(if has_storage { "Unknown" } else { "-" });
+        d.size.set_text(if has_storage {
+            virtinst_core::tr!("Unknown")
+        } else {
+            "-"
+        });
         d.target_type.set_text(&row.label);
         d.bus_label.set_text(
             &bus.as_deref()
@@ -4146,18 +4275,25 @@ impl VmmDetails {
         };
         let os = &x.guest.os;
         o.hv.set_text(&vm.get_pretty_hv_type());
-        o.arch.set_text(os.arch.as_deref().unwrap_or("Unknown"));
-        o.emulator
-            .set_text(x.emulator().as_deref().unwrap_or("None"));
+        o.arch
+            .set_text(os.arch.as_deref().unwrap_or(virtinst_core::tr!("Unknown")));
+        o.emulator.set_text(
+            x.emulator()
+                .as_deref()
+                .unwrap_or(virtinst_core::tr!("None")),
+        );
 
         let firmware = if os.firmware.as_deref() == Some("efi") {
-            "UEFI".to_string()
+            virtinst_core::tr!("UEFI").to_string()
         } else {
             label_for_firmware_path(os.arch.as_deref(), os.loader.as_deref())
         };
         o.firmware_label.set_text(&firmware);
 
-        let machtype = os.machine.clone().unwrap_or_else(|| "Unknown".into());
+        let machtype = os
+            .machine
+            .clone()
+            .unwrap_or_else(|| virtinst_core::tr!("Unknown").into());
         o.machine_label.set_text(&machtype);
         o.chipset_label
             .set_text(chipset_label_from_machine(Some(&machtype)));
@@ -4256,7 +4392,7 @@ impl VmmDetails {
         }
 
         c.copy_host.set_active(is_host);
-        let mut text = "Copy host CP_U configuration".to_string();
+        let mut text = virtinst_core::tr!("Copy host CP_U configuration").to_string();
         if is_host {
             text += &format!(" ({})", mode.unwrap_or_default());
         }
@@ -4292,7 +4428,8 @@ impl VmmDetails {
         let host_mem = i.vm.conn().map(|c| c.host_memory_size()).unwrap_or(0) / 1024;
         let vm_cur_mem = f64::from(x.guest.current_memory.unwrap_or(0)) / 1024.0;
         let vm_max_mem = f64::from(x.guest.memory.unwrap_or(0)) / 1024.0;
-        m.host_memory.set_text(&format!("{host_mem} MiB"));
+        m.host_memory
+            .set_text(&virtinst_core::trf!("%d MiB", host_mem));
         m.memory.set_value(vm_cur_mem.round());
         m.maxmem.set_value(vm_max_mem.round());
 
@@ -4355,7 +4492,11 @@ impl VmmDetails {
                 (c.supports_firmware_efi(), c.supports_uefi_loader())
             });
             if efi {
-                uefirows.push(("UEFI".to_string(), None, Some("efi".to_string())));
+                uefirows.push((
+                    virtinst_core::tr!("UEFI").to_string(),
+                    None,
+                    Some("efi".to_string()),
+                ));
             }
             for path in domcaps.iter().flat_map(|c| c.loader.values.iter()) {
                 uefirows.push((
@@ -4365,9 +4506,13 @@ impl VmmDetails {
                 ));
             }
             let firmware_warn = if !(uefi_loader || efi) {
-                Some("Libvirt or hypervisor does not support UEFI.")
+                Some(virtinst_core::tr!(
+                    "Libvirt or hypervisor does not support UEFI."
+                ))
             } else if uefirows.is_empty() {
-                Some("Libvirt did not detect any UEFI/OVMF firmware image installed on the host.")
+                Some(virtinst_core::tr!(
+                    "Libvirt did not detect any UEFI/OVMF firmware image installed on the host."
+                ))
             } else {
                 None
             };

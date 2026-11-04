@@ -83,8 +83,8 @@ fn cant_embed_graphics(ginfo: &ConnectionInfo) -> Option<String> {
     if matches!(ginfo.gtype.as_str(), "vnc" | "spice") {
         return None;
     }
-    Some(format!(
-        "Cannot display graphical console type '{}'",
+    Some(virtinst_core::trf!(
+        "Cannot display graphical console type '%s'",
         ginfo.gtype
     ))
 }
@@ -131,7 +131,10 @@ fn build_graphical_menu_items(vm: &VmmDomain) -> Vec<MenuEntry> {
                     found_default = true;
                 } else {
                     tooltip = Some(
-                        "virt-manager does not support more than one graphical console".into(),
+                        virtinst_core::tr!(
+                            "virt-manager does not support more than one graphical console"
+                        )
+                        .into(),
                     );
                 }
             }
@@ -144,7 +147,7 @@ fn build_graphical_menu_items(vm: &VmmDomain) -> Vec<MenuEntry> {
     }
     if ret.is_empty() {
         ret.push(MenuEntry {
-            label: "Graphical console not configured for guest".into(),
+            label: virtinst_core::tr!("Graphical console not configured for guest").into(),
             dev: None,
             tooltip: None,
         });
@@ -165,9 +168,9 @@ fn build_serial_menu_items(vm: &VmmDomain) -> Vec<MenuEntry> {
                 .chain(consoles.into_iter().map(|d| ("console", d)));
             for (tag, (idx, el)) in tagged {
                 let label = if tag == "console" {
-                    format!("Text Console {}", idx + 1)
+                    virtinst_core::trf!("Text Console %d", idx + 1)
                 } else {
-                    format!("Serial {}", idx + 1)
+                    virtinst_core::trf!("Serial %d", idx + 1)
                 };
                 // vmmSerialConsole.can_connect
                 let ctype = el.attribute(doc, "type").unwrap_or_default().to_string();
@@ -182,7 +185,7 @@ fn build_serial_menu_items(vm: &VmmDomain) -> Vec<MenuEntry> {
     }
     if ret.is_empty() {
         ret.push(MenuEntry {
-            label: "No text console available".into(),
+            label: virtinst_core::tr!("No text console available").into(),
             dev: None,
             tooltip: None,
         });
@@ -279,18 +282,22 @@ impl VmmConsolePages {
         auth.set_hexpand(true);
         auth.set_row_spacing(6);
         auth.set_column_spacing(6);
-        let label_auth_password = gtk::Label::with_mnemonic("_Password:");
+        let label_auth_password = gtk::Label::with_mnemonic(virtinst_core::tr!("_Password:"));
         label_auth_password.set_xalign(1.0);
-        let label_auth_username = gtk::Label::with_mnemonic("_Username:");
+        let label_auth_username = gtk::Label::with_mnemonic(virtinst_core::tr!("_Username:"));
         label_auth_username.set_xalign(1.0);
         let auth_username = gtk::Entry::new();
         let auth_password = gtk::PasswordEntry::new();
         auth_password.set_show_peek_icon(true);
         label_auth_username.set_mnemonic_widget(Some(&auth_username));
         label_auth_password.set_mnemonic_widget(Some(&auth_password));
-        let auth_login = gtk::Button::with_mnemonic("_Login");
-        let auth_remember = gtk::CheckButton::with_mnemonic("_Save this password in your keyring");
-        auth_remember.set_tooltip_text(Some("Check to save password, uncheck to forget password."));
+        let auth_login = gtk::Button::with_mnemonic(virtinst_core::tr!("_Login"));
+        let auth_remember = gtk::CheckButton::with_mnemonic(virtinst_core::tr!(
+            "_Save this password in your keyring"
+        ));
+        auth_remember.set_tooltip_text(Some(virtinst_core::tr!(
+            "Check to save password, uncheck to forget password."
+        )));
         auth.attach(&label_auth_username, 0, 0, 1, 1);
         auth.attach(&auth_username, 1, 0, 1, 1);
         auth.attach(&label_auth_password, 0, 1, 1, 1);
@@ -303,7 +310,7 @@ impl VmmConsolePages {
         gfx_pages.add_named(&gfx_unavailable, Some(GFX_PAGE_UNAVAILABLE));
         console_pages.add_named(&gfx_pages, Some(CONSOLE_PAGE_GRAPHICS));
 
-        let connect_button = gtk::Button::with_mnemonic("_Connect to console");
+        let connect_button = gtk::Button::with_mnemonic(virtinst_core::tr!("_Connect to console"));
         connect_button.set_halign(gtk::Align::Center);
         connect_button.set_valign(gtk::Align::Center);
         console_pages.add_named(&connect_button, Some(CONSOLE_PAGE_CONNECT));
@@ -452,9 +459,11 @@ impl VmmConsolePages {
         let leave = gtk::Button::new();
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         content.append(&gtk::Image::from_icon_name("view-restore-symbolic"));
-        content.append(&gtk::Label::new(Some("Leave Fullscreen")));
+        content.append(&gtk::Label::new(Some(virtinst_core::tr!(
+            "Leave Fullscreen"
+        ))));
         leave.set_child(Some(&content));
-        leave.set_tooltip_text(Some("Leave fullscreen"));
+        leave.set_tooltip_text(Some(virtinst_core::tr!("Leave fullscreen")));
         leave.update_property(&[gtk::accessible::Property::Label("Fullscreen Exit")]);
         leave.add_css_class("flat");
         let weak = self.weak();
@@ -467,7 +476,7 @@ impl VmmConsolePages {
 
         let send_key = gtk::MenuButton::new();
         send_key.set_icon_name("preferences-desktop-keyboard-shortcuts-symbolic");
-        send_key.set_tooltip_text(Some("Send key combination"));
+        send_key.set_tooltip_text(Some(virtinst_core::tr!("Send key combination")));
         send_key.update_property(&[gtk::accessible::Property::Label("Fullscreen Send Key")]);
         send_key.set_menu_model(Some(&self.0.keycombo_menu));
         send_key.add_css_class("flat");
@@ -598,9 +607,9 @@ impl VmmConsolePages {
 
     fn show_vm_status_unavailable(&self) {
         if self.0.vm.is_crashed() {
-            self.activate_vm_unavailable_page("Guest has crashed.");
+            self.activate_vm_unavailable_page(virtinst_core::tr!("Guest has crashed."));
         } else {
-            self.activate_vm_unavailable_page("Guest is not running.");
+            self.activate_vm_unavailable_page(virtinst_core::tr!("Guest is not running."));
         }
     }
 
@@ -764,7 +773,9 @@ impl VmmConsolePages {
             return;
         }
 
-        self.activate_gfx_unavailable_page("Connecting to graphical console for guest");
+        self.activate_gfx_unavailable_page(virtinst_core::tr!(
+            "Connecting to graphical console for guest"
+        ));
 
         eprintln!("Starting connect process for {}", ginfo.logstring());
         let viewer = if ginfo.gtype == "vnc" {
@@ -779,8 +790,9 @@ impl VmmConsolePages {
             if let Err(e) = viewer.console_open().await {
                 // Only if this is still the current viewer.
                 if this.viewer().is_some_and(|v| v.same(&viewer)) {
-                    this.activate_gfx_unavailable_page(&format!(
-                        "Error connecting to graphical console:\n{e}"
+                    this.activate_gfx_unavailable_page(&virtinst_core::trf!(
+                        "Error connecting to graphical console:\n%s",
+                        e
                     ));
                 }
             }
@@ -862,7 +874,7 @@ impl VmmConsolePages {
         glib::spawn_future_local(async move {
             error::show_err_text2(
                 Some(&parent),
-                "USB redirection error",
+                virtinst_core::tr!("USB redirection error"),
                 None,
                 "",
                 Some(&errstr),
@@ -872,7 +884,7 @@ impl VmmConsolePages {
     }
 
     fn viewer_auth_error(&self, errmsg: &str, viewer_will_disconnect: bool) {
-        let errmsg = format!("Viewer authentication error: {errmsg}");
+        let errmsg = virtinst_core::trf!("Viewer authentication error: %s", errmsg);
         let parent = self.0.topwin.clone();
         let msg = errmsg.clone();
         glib::spawn_future_local(async move {
@@ -894,7 +906,7 @@ impl VmmConsolePages {
             self.show_vm_status_unavailable();
             return;
         }
-        let msg = "Viewer was disconnected.";
+        let msg = virtinst_core::tr!("Viewer was disconnected.");
         let mut errmsg = String::new();
         if let Some(d) = errdetails.filter(|d| !d.is_empty()) {
             errmsg += &format!("\n{d}");
@@ -912,7 +924,7 @@ impl VmmConsolePages {
     }
 
     fn viewer_disconnected(&self, errdetails: Option<String>, ssherr: String) {
-        self.activate_gfx_unavailable_page("Viewer is disconnecting.");
+        self.activate_gfx_unavailable_page(virtinst_core::tr!("Viewer is disconnecting."));
         self.viewer_disconnected_set_page(errdetails, ssherr);
     }
 
@@ -1111,7 +1123,7 @@ impl VmmConsolePages {
     }
 
     pub fn vmwindow_close(&self) {
-        self.activate_vm_unavailable_page("Viewer window closed.");
+        self.activate_vm_unavailable_page(virtinst_core::tr!("Viewer window closed."));
     }
 
     /// `vmwindow_get_title_message`.
@@ -1120,7 +1132,7 @@ impl VmmConsolePages {
             return None;
         }
         let keystr = self.viewer()?.console_get_grab_keys();
-        Some(format!("Press {keystr} to release pointer."))
+        Some(virtinst_core::trf!("Press %s to release pointer.", keystr))
     }
 
     pub fn vmwindow_activate_default_console_page(&self) {

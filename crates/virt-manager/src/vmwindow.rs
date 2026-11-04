@@ -141,9 +141,9 @@ fn build_view_menu(console: &VmmConsolePages) -> gio::Menu {
     let view = gio::Menu::new();
     let pages = gio::Menu::new();
     for (label, page) in [
-        ("_Console", PAGE_CONSOLE),
-        ("_Details", PAGE_DETAILS),
-        ("Sna_pshots", PAGE_SNAPSHOTS),
+        (virtinst_core::tr!("_Console"), PAGE_CONSOLE),
+        (virtinst_core::tr!("_Details"), PAGE_DETAILS),
+        (virtinst_core::tr!("Sna_pshots"), PAGE_SNAPSHOTS),
     ] {
         let item = gio::MenuItem::new(Some(label), None);
         item.set_action_and_target_value(Some("vmwin.page"), Some(&page.to_variant()));
@@ -152,14 +152,23 @@ fn build_view_menu(console: &VmmConsolePages) -> gio::Menu {
     view.append_section(None, &pages);
 
     let display = gio::Menu::new();
-    display.append(Some("_Fullscreen"), Some("vmwin.fullscreen"));
-    display.append(Some("_Resize to VM"), Some("vmwin.size-to-vm"));
+    display.append(
+        Some(virtinst_core::tr!("_Fullscreen")),
+        Some("vmwin.fullscreen"),
+    );
+    display.append(
+        Some(virtinst_core::tr!("_Resize to VM")),
+        Some("vmwin.size-to-vm"),
+    );
     let scale = gio::Menu::new();
     let scale_modes = gio::Menu::new();
     for (label, mode) in [
-        ("_Always", CONSOLE_SCALE_ALWAYS),
-        ("_Only when Fullscreen", CONSOLE_SCALE_FULLSCREEN),
-        ("_Never", CONSOLE_SCALE_NEVER),
+        (virtinst_core::tr!("_Always"), CONSOLE_SCALE_ALWAYS),
+        (
+            virtinst_core::tr!("_Only when Fullscreen"),
+            CONSOLE_SCALE_FULLSCREEN,
+        ),
+        (virtinst_core::tr!("_Never"), CONSOLE_SCALE_NEVER),
     ] {
         let item = gio::MenuItem::new(Some(label), None);
         item.set_action_and_target_value(Some("vmwin.scale"), Some(&mode.to_variant()));
@@ -168,17 +177,23 @@ fn build_view_menu(console: &VmmConsolePages) -> gio::Menu {
     scale.append_section(None, &scale_modes);
     let resize = gio::Menu::new();
     resize.append(
-        Some("Auto _resize VM with window"),
+        Some(virtinst_core::tr!("Auto _resize VM with window")),
         Some("vmwin.resizeguest"),
     );
     scale.append_section(None, &resize);
-    display.append_submenu(Some("_Scale Display"), &scale);
-    display.append_submenu(Some("Co_nsoles"), console.vmwindow_get_console_list_menu());
-    display.append(Some("_Autoconnect"), Some("vmwin.autoconnect"));
+    display.append_submenu(Some(virtinst_core::tr!("_Scale Display")), &scale);
+    display.append_submenu(
+        Some(virtinst_core::tr!("Co_nsoles")),
+        console.vmwindow_get_console_list_menu(),
+    );
+    display.append(
+        Some(virtinst_core::tr!("_Autoconnect")),
+        Some("vmwin.autoconnect"),
+    );
     view.append_section(None, &display);
 
     let toolbar = gio::Menu::new();
-    toolbar.append(Some("T_oolbar"), Some("vmwin.toolbar"));
+    toolbar.append(Some(virtinst_core::tr!("T_oolbar")), Some("vmwin.toolbar"));
     view.append_section(None, &toolbar);
     view
 }
@@ -188,8 +203,14 @@ fn build_view_menu(console: &VmmConsolePages) -> gio::Menu {
 fn build_vm_menu(vm: &VmmDomain) -> gio::Menu {
     let menu = vmmenu::action_menu(Some(vm), false);
     let extra = gio::Menu::new();
-    extra.append(Some("_Take Screenshot"), Some("vmwin.screenshot"));
-    extra.append(Some("_Redirect USB device"), Some("vmwin.usb-redirection"));
+    extra.append(
+        Some(virtinst_core::tr!("_Take Screenshot")),
+        Some("vmwin.screenshot"),
+    );
+    extra.append(
+        Some(virtinst_core::tr!("_Redirect USB device")),
+        Some("vmwin.usb-redirection"),
+    );
     menu.append_section(None, &extra);
     menu
 }
@@ -198,16 +219,25 @@ fn build_menubar(vm: &VmmDomain, console: &VmmConsolePages) -> gio::Menu {
     let menubar = gio::Menu::new();
     let file = gio::Menu::new();
     let f1 = gio::Menu::new();
-    f1.append(Some("_View Manager"), Some("vmwin.view-manager"));
+    f1.append(
+        Some(virtinst_core::tr!("_View Manager")),
+        Some("vmwin.view-manager"),
+    );
     file.append_section(None, &f1);
     let f2 = gio::Menu::new();
-    f2.append(Some("_Close"), Some("vmwin.close"));
-    f2.append(Some("_Quit"), Some("vmwin.quit"));
+    f2.append(Some(virtinst_core::tr!("_Close")), Some("vmwin.close"));
+    f2.append(Some(virtinst_core::tr!("_Quit")), Some("vmwin.quit"));
     file.append_section(None, &f2);
-    menubar.append_submenu(Some("_File"), &file);
-    menubar.append_submenu(Some("Virtual _Machine"), &build_vm_menu(vm));
-    menubar.append_submenu(Some("_View"), &build_view_menu(console));
-    menubar.append_submenu(Some("Send _Key"), console.vmwindow_get_keycombo_menu());
+    menubar.append_submenu(Some(virtinst_core::tr!("_File")), &file);
+    menubar.append_submenu(
+        Some(virtinst_core::tr!("Virtual _Machine")),
+        &build_vm_menu(vm),
+    );
+    menubar.append_submenu(Some(virtinst_core::tr!("_View")), &build_view_menu(console));
+    menubar.append_submenu(
+        Some(virtinst_core::tr!("Send _Key")),
+        console.vmwindow_get_keycombo_menu(),
+    );
     menubar
 }
 
@@ -270,27 +300,31 @@ impl VmmVMWindow {
         // details-toolbar
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         toolbar.add_css_class("toolbar");
-        let control_console = page_toggle("icon_console", "Console", "Show the graphical console");
+        let control_console = page_toggle(
+            "icon_console",
+            virtinst_core::tr!("Console"),
+            virtinst_core::tr!("Show the graphical console"),
+        );
         let control_details = page_toggle(
             "dialog-information",
-            "Details",
-            "Show virtual hardware details",
+            virtinst_core::tr!("Details"),
+            virtinst_core::tr!("Show virtual hardware details"),
         );
         control_details.set_group(Some(&control_console));
         control_console.set_active(true);
         let control_run = tool_button(
             "media-playback-start-symbolic",
             None,
-            "Power on the virtual machine",
+            virtinst_core::tr!("Power on the virtual machine"),
         );
         let control_pause = gtk::ToggleButton::new();
         control_pause.set_child(Some(&tool_content("media-playback-pause-symbolic", None)));
-        control_pause.set_tooltip_text(Some("Pause the virtual machine"));
+        control_pause.set_tooltip_text(Some(virtinst_core::tr!("Pause the virtual machine")));
         control_pause.add_css_class("flat");
         let control_shutdown = tool_button(
             "system-shutdown-symbolic",
             None,
-            "Shut down the virtual machine",
+            virtinst_core::tr!("Shut down the virtual machine"),
         );
         let control_shutdown_menu = gtk::MenuButton::new();
         control_shutdown_menu.set_menu_model(Some(&vmmenu::shutdown_menu()));
@@ -299,11 +333,15 @@ impl VmmVMWindow {
         shutdown_box.add_css_class("linked");
         shutdown_box.append(&control_shutdown);
         shutdown_box.append(&control_shutdown_menu);
-        let control_snapshots = page_toggle("vm_clone_wizard", "Snapshots", "Manage VM snapshots");
+        let control_snapshots = page_toggle(
+            "vm_clone_wizard",
+            virtinst_core::tr!("Snapshots"),
+            virtinst_core::tr!("Manage VM snapshots"),
+        );
         control_snapshots.set_group(Some(&control_console));
         let control_fullscreen = gtk::ToggleButton::new();
         control_fullscreen.set_child(Some(&tool_content("view-fullscreen-symbolic", None)));
-        control_fullscreen.set_tooltip_text(Some("Switch to fullscreen view"));
+        control_fullscreen.set_tooltip_text(Some(virtinst_core::tr!("Switch to fullscreen view")));
         control_fullscreen.add_css_class("flat");
         control_fullscreen.set_hexpand(true);
         control_fullscreen.set_halign(gtk::Align::End);
@@ -322,10 +360,12 @@ impl VmmVMWindow {
         // customize-toolbar
         let customize_toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         customize_toolbar.add_css_class("toolbar");
-        let finish_customize = gtk::Button::with_mnemonic("_Begin Installation");
-        finish_customize.set_tooltip_text(Some("Begin Installation"));
+        let finish_customize =
+            gtk::Button::with_mnemonic(virtinst_core::tr!("_Begin Installation"));
+        finish_customize.set_tooltip_text(Some(virtinst_core::tr!("Begin Installation")));
         finish_customize.add_css_class("flat");
-        let cancel_customize = gtk::Button::with_mnemonic("_Cancel Installation");
+        let cancel_customize =
+            gtk::Button::with_mnemonic(virtinst_core::tr!("_Cancel Installation"));
         cancel_customize.add_css_class("flat");
         customize_toolbar.append(&finish_customize);
         customize_toolbar.append(&cancel_customize);
@@ -706,7 +746,7 @@ impl VmmVMWindow {
             eprintln!("Asking to cancel customization");
             let result = error::yes_no(
                 Some(this.0.window.upcast_ref()),
-                "This will abort the installation. Are you sure?",
+                virtinst_core::tr!("This will abort the installation. Are you sure?"),
                 None,
             )
             .await;
@@ -838,7 +878,11 @@ impl VmmVMWindow {
     }
 
     fn change_run_text(&self, can_restore: bool) {
-        let text = if can_restore { "Restore" } else { "Run" };
+        let text = if can_restore {
+            "Restore"
+        } else {
+            virtinst_core::tr!("Run")
+        };
         self.0
             .control_run
             .update_property(&[gtk::accessible::Property::Label(text)]);
@@ -847,9 +891,17 @@ impl VmmVMWindow {
     fn refresh_title(&self) {
         let vm = &self.0.vm;
         let conn_desc = vm.conn().map(|c| c.get_pretty_desc()).unwrap_or_default();
-        let mut title = format!("{} on {}", vm.get_name_or_title(), conn_desc);
+        let mut title = virtinst_core::trf!(
+            "%(device)s on %(address)s",
+            device = vm.get_name_or_title(),
+            address = conn_desc
+        );
         if let Some(grabmsg) = self.0.console.vmwindow_get_title_message() {
-            title = format!("{grabmsg} {title}");
+            title = virtinst_core::trf!(
+                "%(input_bus)s %(input_type)s",
+                input_bus = grabmsg,
+                input_type = title
+            );
         }
         self.0.window.set_title(Some(&title));
     }
@@ -874,9 +926,9 @@ impl VmmVMWindow {
         i.control_shutdown_menu.set_sensitive(stop);
         i.control_pause.set_sensitive(stop);
         i.control_pause.set_tooltip_text(Some(if paused {
-            "Resume the virtual machine"
+            virtinst_core::tr!("Resume the virtual machine")
         } else {
-            "Pause the virtual machine"
+            virtinst_core::tr!("Pause the virtual machine")
         }));
         vmmenu::update_widget_states(&i.vm_actions, Some(vm));
         self.rebuild_vm_menu_if_needed();
@@ -886,7 +938,7 @@ impl VmmVMWindow {
         let errmsg = i.snapshots_supported.borrow().clone();
         let cansnap = errmsg == Some(None);
         i.control_snapshots.set_sensitive(cansnap);
-        let mut tooltip = "Manage VM snapshots".to_string();
+        let mut tooltip = virtinst_core::tr!("Manage VM snapshots").to_string();
         if let Some(Some(errmsg)) = errmsg {
             tooltip += "\n";
             tooltip += &errmsg;
@@ -1068,7 +1120,7 @@ impl VmmVMWindow {
             let Some(widget) = this.0.console.vmwindow_viewer_get_usb_widget() else {
                 error::show_err(
                     Some(parent),
-                    "Error initializing spice USB device widget",
+                    virtinst_core::tr!("Error initializing spice USB device widget"),
                     None,
                     "",
                 )
@@ -1078,7 +1130,7 @@ impl VmmVMWindow {
             widget.set_visible(true);
             error::show_info(
                 Some(parent),
-                "Select USB devices for redirection",
+                virtinst_core::tr!("Select USB devices for redirection"),
                 None,
                 Some(widget.upcast_ref()),
                 error::Buttons::Close,
@@ -1093,7 +1145,7 @@ impl VmmVMWindow {
             if let Err(e) = this.take_screenshot().await {
                 error::show_err(
                     Some(this.0.window.upcast_ref()),
-                    &format!("Error taking screenshot: {e}"),
+                    &virtinst_core::trf!("Error taking screenshot: %s", e),
                     None,
                     "",
                 )
@@ -1136,13 +1188,13 @@ impl VmmVMWindow {
         let start_folder = config.get_default_directory("screenshot");
 
         let filter = gtk::FileFilter::new();
-        filter.set_name(Some("PNG files"));
+        filter.set_name(Some(virtinst_core::tr!("PNG files")));
         filter.add_suffix("png");
         let filters = gio::ListStore::new::<gtk::FileFilter>();
         filters.append(&filter);
         let dialog = gtk::FileDialog::builder()
-            .title("Save Virtual Machine Screenshot")
-            .accept_label("_Save")
+            .title(virtinst_core::tr!("Save Virtual Machine Screenshot"))
+            .accept_label(virtinst_core::tr!("_Save"))
             .modal(true)
             .initial_name(default.as_str())
             .filters(&filters)

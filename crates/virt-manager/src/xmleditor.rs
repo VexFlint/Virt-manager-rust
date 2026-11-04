@@ -85,10 +85,10 @@ impl XmlEditor {
 
         let notebook = gtk::Notebook::new();
         notebook.set_show_border(false);
-        let details_tab = gtk::Label::with_mnemonic("_Details");
+        let details_tab = gtk::Label::with_mnemonic(virtinst_core::tr!("_Details"));
         details_tab.update_property(&[gtk::accessible::Property::Label("Details tab")]);
         notebook.append_page(&details_box, Some(&details_tab));
-        let xml_tab = gtk::Label::with_mnemonic("_XML");
+        let xml_tab = gtk::Label::with_mnemonic(virtinst_core::tr!("_XML"));
         xml_tab.set_tooltip_text(Some("Edit libvirt XML"));
         xml_tab.update_property(&[gtk::accessible::Property::Label("XML tab")]);
         notebook.append_page(&xml_grid, Some(&xml_tab));
@@ -222,13 +222,17 @@ impl XmlEditor {
         let this = self.clone();
         glib::spawn_future_local(async move {
             let text2 = if to_xml {
-                "Your changes will be lost if you leave this tab. Really leave this tab?"
+                virtinst_core::tr!(
+                    "Your changes will be lost if you leave this tab. Really leave this tab?"
+                )
             } else {
-                "Your XML changes will be lost if you leave this tab. Really leave this tab?"
+                virtinst_core::tr!(
+                    "Your XML changes will be lost if you leave this tab. Really leave this tab?"
+                )
             };
             let leave = crate::error::yes_no(
                 this.parent().as_ref(),
-                "There are unapplied changes.",
+                virtinst_core::tr!("There are unapplied changes."),
                 Some(text2),
             )
             .await;
