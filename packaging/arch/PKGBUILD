@@ -1,0 +1,38 @@
+# PKGBUILD do virt-manager-rust (docs/RELEASES.md, R6). Compila a partir do
+# tarball da tag e instala com o packaging/install.sh, no layout do
+# virt-manager Python, que ele substitui. Os hooks do pacman (glib2,
+# gtk-update-icon-cache, desktop-file-utils) atualizam os caches.
+#
+# Na CI (release.yml) o tarball vem do 'git archive' do commit e o pkgver
+# é trocado pela versão do Cargo.toml.
+pkgname=virt-manager-rust
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Desktop tool for managing virtual machines (Rust port of virt-manager 5.1.0)'
+arch=(x86_64)
+url='https://github.com/VexFlint/Virt-manager-rust'
+license=(GPL-2.0-or-later)
+depends=(libvirt libosinfo gtk4 gtk-vnc spice-gtk vte4 gtksourceview5
+         gsettings-desktop-schemas hicolor-icon-theme glib2 gcc-libs glibc)
+makedepends=(cargo clang python-docutils)
+optdepends=('qemu-desktop: run VMs on this host'
+            'dnsmasq: NAT for the default virtual network'
+            'xorriso: cloud-init and unattended install ISOs')
+provides=(virt-manager virt-install)
+conflicts=(virt-manager virt-install)
+options=(!lto !debug)
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "Virt-manager-rust-$pkgver"
+  export CARGO_TARGET_DIR=target
+  cargo build --release --workspace --locked
+}
+
+package() {
+  cd "Virt-manager-rust-$pkgver"
+  DESTDIR="$pkgdir" sh packaging/install.sh
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 CHANGELOG.md "$pkgdir/usr/share/doc/$pkgname/CHANGELOG.md"
+}
