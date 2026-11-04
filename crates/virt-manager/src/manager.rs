@@ -55,7 +55,7 @@ pub fn build_vm_markup(name: &str, status: &str) -> String {
 /// `_build_conn_hint`.
 pub fn build_conn_hint(uri: &str, disconnected: bool) -> String {
     if disconnected {
-        format!("{uri} (Double click to connect)")
+        virtinst_core::trf!("%(uri)s (Double click to connect)", uri = uri)
     } else {
         uri.to_string()
     }
@@ -111,11 +111,11 @@ fn stats_action_name(col: StatsColumn) -> &'static str {
 
 fn stats_title(col: StatsColumn) -> &'static str {
     match col {
-        StatsColumn::GuestCpu => "CPU usage",
-        StatsColumn::HostCpu => "Host CPU usage",
-        StatsColumn::Memory => "Memory usage",
-        StatsColumn::Disk => "Disk I/O",
-        StatsColumn::Network => "Network I/O",
+        StatsColumn::GuestCpu => virtinst_core::tr!("CPU usage"),
+        StatsColumn::HostCpu => virtinst_core::tr!("Host CPU usage"),
+        StatsColumn::Memory => virtinst_core::tr!("Memory usage"),
+        StatsColumn::Disk => virtinst_core::tr!("Disk I/O"),
+        StatsColumn::Network => virtinst_core::tr!("Network I/O"),
     }
 }
 
@@ -279,39 +279,69 @@ fn build_menubar() -> gio::Menu {
 
     let file = gio::Menu::new();
     let s1 = gio::Menu::new();
-    s1.append(Some("_Add Connection..."), Some("win.add-connection"));
-    s1.append(Some("_New Virtual Machine"), Some("win.new-vm"));
+    s1.append(
+        Some(virtinst_core::tr!("_Add Connection...")),
+        Some("win.add-connection"),
+    );
+    s1.append(
+        Some(virtinst_core::tr!("_New Virtual Machine")),
+        Some("win.new-vm"),
+    );
     file.append_section(None, &s1);
     let s2 = gio::Menu::new();
-    s2.append(Some("_Close"), Some("win.close"));
-    s2.append(Some("_Quit"), Some("win.quit"));
+    s2.append(Some(virtinst_core::tr!("_Close")), Some("win.close"));
+    s2.append(Some(virtinst_core::tr!("_Quit")), Some("win.quit"));
     file.append_section(None, &s2);
-    menubar.append_submenu(Some("_File"), &file);
+    menubar.append_submenu(Some(virtinst_core::tr!("_File")), &file);
 
     let edit = gio::Menu::new();
     let e1 = gio::Menu::new();
-    e1.append(Some("_Connection Details"), Some("win.host-details"));
-    e1.append(Some("_Virtual Machine Details"), Some("win.vm-details"));
-    e1.append(Some("_Delete"), Some("win.delete"));
+    e1.append(
+        Some(virtinst_core::tr!("_Connection Details")),
+        Some("win.host-details"),
+    );
+    e1.append(
+        Some(virtinst_core::tr!("_Virtual Machine Details")),
+        Some("win.vm-details"),
+    );
+    e1.append(Some(virtinst_core::tr!("_Delete")), Some("win.delete"));
     edit.append_section(None, &e1);
     let e2 = gio::Menu::new();
-    e2.append(Some("_Preferences"), Some("win.preferences"));
+    e2.append(
+        Some(virtinst_core::tr!("_Preferences")),
+        Some("win.preferences"),
+    );
     edit.append_section(None, &e2);
-    menubar.append_submenu(Some("_Edit"), &edit);
+    menubar.append_submenu(Some(virtinst_core::tr!("_Edit")), &edit);
 
     let view = gio::Menu::new();
     let graph = gio::Menu::new();
-    graph.append(Some("_Guest CPU Usage"), Some("win.stats-guest-cpu"));
-    graph.append(Some("_Host CPU Usage"), Some("win.stats-host-cpu"));
-    graph.append(Some("_Memory Usage"), Some("win.stats-memory"));
-    graph.append(Some("_Disk I/O"), Some("win.stats-disk"));
-    graph.append(Some("_Network I/O"), Some("win.stats-network"));
-    view.append_submenu(Some("_Graph"), &graph);
-    menubar.append_submenu(Some("_View"), &view);
+    graph.append(
+        Some(virtinst_core::tr!("_Guest CPU Usage")),
+        Some("win.stats-guest-cpu"),
+    );
+    graph.append(
+        Some(virtinst_core::tr!("_Host CPU Usage")),
+        Some("win.stats-host-cpu"),
+    );
+    graph.append(
+        Some(virtinst_core::tr!("_Memory Usage")),
+        Some("win.stats-memory"),
+    );
+    graph.append(
+        Some(virtinst_core::tr!("_Disk I/O")),
+        Some("win.stats-disk"),
+    );
+    graph.append(
+        Some(virtinst_core::tr!("_Network I/O")),
+        Some("win.stats-network"),
+    );
+    view.append_submenu(Some(virtinst_core::tr!("_Graph")), &graph);
+    menubar.append_submenu(Some(virtinst_core::tr!("_View")), &view);
 
     let help = gio::Menu::new();
-    help.append(Some("_About"), Some("win.about"));
-    menubar.append_submenu(Some("_Help"), &help);
+    help.append(Some(virtinst_core::tr!("_About")), Some("win.about"));
+    menubar.append_submenu(Some(virtinst_core::tr!("_Help")), &help);
     menubar
 }
 
@@ -319,15 +349,18 @@ fn build_menubar() -> gio::Menu {
 fn build_conn_menu() -> gio::Menu {
     let menu = gio::Menu::new();
     let s1 = gio::Menu::new();
-    s1.append(Some("_New"), Some("conn.create"));
-    s1.append(Some("_Connect"), Some("conn.connect"));
-    s1.append(Some("Dis_connect"), Some("conn.disconnect"));
+    s1.append(Some(virtinst_core::tr!("_New")), Some("conn.create"));
+    s1.append(Some(virtinst_core::tr!("_Connect")), Some("conn.connect"));
+    s1.append(
+        Some(virtinst_core::tr!("Dis_connect")),
+        Some("conn.disconnect"),
+    );
     menu.append_section(None, &s1);
     let s2 = gio::Menu::new();
-    s2.append(Some("De_lete"), Some("conn.delete"));
+    s2.append(Some(virtinst_core::tr!("De_lete")), Some("conn.delete"));
     menu.append_section(None, &s2);
     let s3 = gio::Menu::new();
-    s3.append(Some("_Details"), Some("conn.details"));
+    s3.append(Some(virtinst_core::tr!("_Details")), Some("conn.details"));
     menu.append_section(None, &s3);
     menu
 }
@@ -359,7 +392,7 @@ impl VmmManager {
         let (w, h) = config.get_manager_window_size();
         let window = gtk::ApplicationWindow::builder()
             .application(app)
-            .title("Virtual Machine Manager")
+            .title(virtinst_core::tr!("Virtual Machine Manager"))
             .default_width(if w > 0 { w } else { 550 })
             .default_height(if h > 0 { h } else { 550 })
             .build();
@@ -372,26 +405,30 @@ impl VmmManager {
         // Toolbar
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         toolbar.add_css_class("toolbar");
-        let new_btn = tool_button("vm_new", None, "Create a new virtual machine");
+        let new_btn = tool_button(
+            "vm_new",
+            None,
+            virtinst_core::tr!("Create a new virtual machine"),
+        );
         new_btn.set_action_name(Some("win.new-vm"));
         toolbar.append(&new_btn);
         toolbar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
         let open_btn = tool_button(
             "icon_console",
-            Some("_Open"),
-            "Show the virtual machine console and details",
+            Some(virtinst_core::tr!("_Open")),
+            virtinst_core::tr!("Show the virtual machine console and details"),
         );
         open_btn.set_action_name(Some("vm.show"));
         toolbar.append(&open_btn);
         let run_btn = tool_button(
             "media-playback-start-symbolic",
             None,
-            "Power on the virtual machine",
+            virtinst_core::tr!("Power on the virtual machine"),
         );
         toolbar.append(&run_btn);
         let pause_btn = gtk::ToggleButton::new();
         pause_btn.set_child(Some(&tool_content("media-playback-pause-symbolic", None)));
-        pause_btn.set_tooltip_text(Some("Pause the virtual machine"));
+        pause_btn.set_tooltip_text(Some(virtinst_core::tr!("Pause the virtual machine")));
         pause_btn.add_css_class("flat");
         toolbar.append(&pause_btn);
         let shutdown_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -399,7 +436,7 @@ impl VmmManager {
         let shutdown_btn = tool_button(
             "system-shutdown-symbolic",
             None,
-            "Shut down the virtual machine",
+            virtinst_core::tr!("Shut down the virtual machine"),
         );
         let shutdown_menu_btn = gtk::MenuButton::new();
         shutdown_menu_btn.set_menu_model(Some(&vmmenu::shutdown_menu()));
@@ -466,7 +503,7 @@ impl VmmManager {
                 gtk::Widget::NONE,
             );
         });
-        let name_col = gtk::ColumnViewColumn::new(Some("Name"), Some(factory));
+        let name_col = gtk::ColumnViewColumn::new(Some(virtinst_core::tr!("Name")), Some(factory));
         name_col.set_expand(true);
         name_col.set_sorter(Some(&gtk::CustomSorter::new(|a, b| {
             let key = |o: &glib::Object| {
@@ -914,8 +951,8 @@ impl VmmManager {
         }
         let parent = self.window();
         glib::spawn_future_local(async move {
-            let text = format!(
-                "This will remove the connection:\n\n{}\n\nAre you sure?",
+            let text = virtinst_core::trf!(
+                "This will remove the connection:\n\n%s\n\nAre you sure?",
                 conn.get_uri()
             );
             if error::yes_no(Some(&parent), &text, None).await {
@@ -1131,11 +1168,15 @@ impl VmmManager {
     }
 
     fn change_run_text(&self, can_restore: bool) {
-        let text = if can_restore { "Restore" } else { "Run" };
+        let text = if can_restore {
+            "Restore"
+        } else {
+            virtinst_core::tr!("Run")
+        };
         self.0.run_btn.set_tooltip_text(Some(if can_restore {
             "Restore the virtual machine"
         } else {
-            "Power on the virtual machine"
+            virtinst_core::tr!("Power on the virtual machine")
         }));
         self.0
             .run_btn
@@ -1160,9 +1201,9 @@ impl VmmManager {
         self.set_pause_state(st.is_paused);
         i.pause_btn.set_sensitive(st.show_pause);
         i.pause_btn.set_tooltip_text(Some(if st.is_paused {
-            "Resume the virtual machine"
+            virtinst_core::tr!("Resume the virtual machine")
         } else {
-            "Pause the virtual machine"
+            virtinst_core::tr!("Pause the virtual machine")
         }));
 
         set_enabled(&i.win_actions, "delete", st.can_delete);

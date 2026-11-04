@@ -332,7 +332,9 @@ impl Engine {
 
         if self.config.get_conn_uris().is_empty() && !have_cliuri {
             // Only add default if no connections are currently known
-            manager.set_startup_error("Checking for virtualization packages...");
+            manager.set_startup_error(virtinst_core::tr!(
+                "Checking for virtualization packages..."
+            ));
             glib::timeout_add_local_once(Duration::from_millis(1000), || get().add_default_conn());
         }
     }

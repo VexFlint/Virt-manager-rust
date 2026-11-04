@@ -48,7 +48,7 @@ byte; use `tr!`, `trf!` (placeholders `%s`/`%(nome)s`) e `ntr!` de
 | # | PR | Escopo | Custo | Depende de | Status |
 |---|----|--------|-------|------------|--------|
 | T1 | Base de tradução | `gettext-rs`, `i18n.rs` (`tr!`/`trf!`/`ntr!`), `init()` nos 4 binários, `po/pt_BR.po` do upstream, `build.rs` com `msgfmt --check`, teste em pt_BR | P | nada | ✅ |
-| T2 | GUI: janela principal, menus, diálogos comuns | `manager.rs`, about, erros e confirmações; alinhar msgids com o upstream | M | T1 | |
+| T2 | GUI: janela principal, menus, diálogos comuns | `manager.rs`, about, erros e confirmações; alinhar msgids com o upstream | M | T1 | ✅ |
 | T3 | GUI: Detalhes da VM | `details*.rs` | G | T1 | |
 | T4 | GUI: Adicionar hardware | `addhardware.rs` e afins | M | T1 | |
 | T5 | GUI: Nova VM + Personalizar | `createvm.rs` | M | T1 | |

@@ -213,7 +213,7 @@ impl Window {
         warning_box.append(&warning_text);
         warning_box.set_visible(false);
 
-        let stage = gtk::Label::new(Some("Processing..."));
+        let stage = gtk::Label::new(Some(virtinst_core::tr!("Processing...")));
         stage.set_halign(gtk::Align::Start);
         stage.set_margin_start(3);
         stage.set_margin_end(3);
@@ -224,7 +224,7 @@ impl Window {
         pbar.set_show_text(true);
 
         // `cancel-async-job`, packed at the end of `hbox1`
-        let cancel = gtk::Button::with_mnemonic("_Cancel");
+        let cancel = gtk::Button::with_mnemonic(virtinst_core::tr!("_Cancel"));
         cancel.set_visible(false);
         let hbox1 = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         hbox1.set_halign(gtk::Align::End);
@@ -320,8 +320,11 @@ pub async fn run_with_cancel(
                     // `_set_stage_text`: a cancelled job keeps saying so
                     let set_stage = |stage: Option<String>| {
                         if !job_canceled.get() {
-                            w.stage
-                                .set_text(stage.as_deref().unwrap_or("Processing..."));
+                            w.stage.set_text(
+                                stage
+                                    .as_deref()
+                                    .unwrap_or(virtinst_core::tr!("Processing...")),
+                            );
                         }
                     };
                     match msg {
@@ -404,7 +407,7 @@ fn connect_cancel(
             match res {
                 Ok(()) => {
                     w.warning_box.set_visible(false);
-                    w.stage.set_text("Cancelling job...");
+                    w.stage.set_text(virtinst_core::tr!("Cancelling job..."));
                 }
                 Err(summary) => w.show_warning(&summary),
             }

@@ -7,10 +7,10 @@ pub fn show(parent: &gtk::Window) {
         .transient_for(parent)
         .destroy_with_parent(true)
         .modal(true)
-        .program_name("Virtual Machine Manager")
+        .program_name(virtinst_core::tr!("Virtual Machine Manager"))
         .version(env!("CARGO_PKG_VERSION"))
-        .copyright("Copyright (C) 2006-2020 Red Hat Inc.")
-        .comments("Powered by libvirt")
+        .copyright(virtinst_core::tr!("Copyright (C) 2006-2020 Red Hat Inc."))
+        .comments(virtinst_core::tr!("Powered by libvirt"))
         .website("https://virt-manager.org/")
         .website_label("https://virt-manager.org/")
         .authors([
