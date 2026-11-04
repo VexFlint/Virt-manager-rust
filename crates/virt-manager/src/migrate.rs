@@ -87,11 +87,11 @@ pub fn build_dest_row(origuri: &str, dest: &DestConn) -> DestRow {
     let pretty_uri = &dest.pretty_desc;
     let mut can_migrate = false;
     let desc = if driver(&dest.uri) != driver(origuri) {
-        format!("{pretty_uri} (Hypervisors do not match)")
+        virtinst_core::trf!("%(uri)s (Hypervisors do not match)", uri = pretty_uri)
     } else if dest.disconnected {
-        format!("{pretty_uri} (Disconnected)")
+        virtinst_core::trf!("%(uri)s (Disconnected)", uri = pretty_uri)
     } else if dest.uri == origuri {
-        format!("{pretty_uri} (Same connection)")
+        virtinst_core::trf!("%(uri)s (Same connection)", uri = pretty_uri)
     } else {
         can_migrate = dest.active;
         pretty_uri.clone()
@@ -112,7 +112,7 @@ pub fn dest_rows(origuri: &str, conns: &[DestConn]) -> (Vec<DestRow>, usize) {
         rows.insert(
             0,
             DestRow {
-                label: "No usable connections available.".into(),
+                label: virtinst_core::tr!("No usable connections available.").into(),
                 uri: None,
                 can_migrate: false,
             },
@@ -159,7 +159,7 @@ fn cancel_migration(src: &ConnHandle, uuid: &str) -> Result<(), String> {
         .and_then(|dom| migration::abort_job(&dom))
         .map_err(|e| {
             eprintln!("Error cancelling migrate job: {e}");
-            format!("Error cancelling migrate job: {e}")
+            virtinst_core::trf!("Error cancelling migrate job: %s", e)
         })
 }
 
@@ -278,7 +278,7 @@ impl VmmMigrateDialog {
 
     fn new() -> VmmMigrateDialog {
         let window = gtk::Window::builder()
-            .title("Migrate the virtual machine")
+            .title(virtinst_core::tr!("Migrate the virtual machine"))
             .width_request(300)
             .height_request(400)
             .default_width(400)
@@ -315,25 +315,40 @@ impl VmmMigrateDialog {
         dest.set_factory(Some(&dest_factory(true)));
         dest.set_list_factory(Some(&dest_factory(false)));
         accessible_name(&dest, "conn-combo");
-        let new_host = summary_label("New _host:");
+        let new_host = summary_label(virtinst_core::tr!("New _host:"));
         new_host.set_mnemonic_widget(Some(&dest));
         let table2 = gtk::Grid::builder()
             .row_spacing(6)
             .column_spacing(6)
             .build();
-        table2.attach(&summary_label("Migrating VM:"), 0, 0, 1, 1);
-        table2.attach(&summary_label("Original host:"), 0, 1, 1, 1);
+        table2.attach(
+            &summary_label(virtinst_core::tr!("Migrating VM:")),
+            0,
+            0,
+            1,
+            1,
+        );
+        table2.attach(
+            &summary_label(virtinst_core::tr!("Original host:")),
+            0,
+            1,
+            1,
+            1,
+        );
         table2.attach(&new_host, 0, 2, 1, 1);
         table2.attach(&label_name, 1, 0, 1, 1);
         table2.attach(&label_src, 1, 1, 1, 1);
         table2.attach(&dest, 1, 2, 1, 1);
 
         // Connectivity: mode
-        let mode = gtk::DropDown::from_strings(&["Direct", "Tunnelled"]);
+        let mode = gtk::DropDown::from_strings(&[
+            virtinst_core::tr!("Direct"),
+            virtinst_core::tr!("Tunnelled"),
+        ]);
         mode.set_halign(gtk::Align::Start);
         mode.set_hexpand(false);
         mode.set_tooltip_text(Some(MODE_TOOLTIP));
-        let mode_label = mnemonic_label("M_ode:", &mode, gtk::Align::End);
+        let mode_label = mnemonic_label(virtinst_core::tr!("M_ode:"), &mode, gtk::Align::End);
         mode_label.set_tooltip_text(Some(MODE_TOOLTIP));
         let box1 = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         box1.append(&mode_label);
@@ -348,7 +363,7 @@ impl VmmMigrateDialog {
         accessible_name(&set_port, "port-check");
         let address = gtk::Entry::new();
         accessible_name(&address, "address-text");
-        let address_label = gtk::Label::new(Some("Let libvirt decide"));
+        let address_label = gtk::Label::new(Some(virtinst_core::tr!("Let libvirt decide")));
         address_label.set_halign(gtk::Align::Start);
         let box2 = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         box2.append(&address);
@@ -358,7 +373,7 @@ impl VmmMigrateDialog {
             1.0,
             0,
         );
-        let port_label = gtk::Label::new(Some("Let libvirt decide"));
+        let port_label = gtk::Label::new(Some(virtinst_core::tr!("Let libvirt decide")));
         port_label.set_halign(gtk::Align::Start);
         port_label.set_hexpand(true);
         let hbox4 = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -369,14 +384,18 @@ impl VmmMigrateDialog {
             .column_spacing(6)
             .build();
         direct_box.attach(
-            &mnemonic_label("_Address:", &set_address, gtk::Align::End),
+            &mnemonic_label(
+                virtinst_core::tr!("_Address:"),
+                &set_address,
+                gtk::Align::End,
+            ),
             0,
             0,
             1,
             1,
         );
         direct_box.attach(
-            &mnemonic_label("_Port:", &set_port, gtk::Align::Start),
+            &mnemonic_label(virtinst_core::tr!("_Port:"), &set_port, gtk::Align::Start),
             0,
             1,
             1,
@@ -407,7 +426,7 @@ impl VmmMigrateDialog {
         tunnel_warning_box.append(&warn_icon);
         tunnel_warning_box.append(&tunnel_warning_label);
         let tunnel_box = gtk::Grid::builder().column_spacing(6).build();
-        let uri_label = mnemonic_label("_URI:", &tunnel_uri, gtk::Align::Start);
+        let uri_label = mnemonic_label(virtinst_core::tr!("_URI:"), &tunnel_uri, gtk::Align::Start);
         uri_label.set_hexpand(false);
         tunnel_box.attach(&uri_label, 0, 0, 1, 1);
         tunnel_box.attach(&tunnel_uri, 1, 0, 1, 1);
@@ -420,7 +439,7 @@ impl VmmMigrateDialog {
         grid2.attach(&tunnel_box, 0, 2, 1, 1);
         // frame1: a shadowless frame, bold title
         let frame_label = gtk::Label::new(None);
-        frame_label.set_markup("<b>Connectivity</b>");
+        frame_label.set_markup(virtinst_core::tr!("<b>Connectivity</b>"));
         frame_label.set_xalign(0.0);
         let frame1 = gtk::Box::new(gtk::Orientation::Vertical, 6);
         frame1.append(&frame_label);
@@ -430,12 +449,20 @@ impl VmmMigrateDialog {
         let unsafe_migrate = gtk::CheckButton::new();
         unsafe_migrate.set_halign(gtk::Align::Start);
         unsafe_migrate.set_tooltip_text(Some(UNSAFE_TOOLTIP));
-        let unsafe_label = mnemonic_label("A_llow unsafe:", &unsafe_migrate, gtk::Align::Start);
+        let unsafe_label = mnemonic_label(
+            virtinst_core::tr!("A_llow unsafe:"),
+            &unsafe_migrate,
+            gtk::Align::Start,
+        );
         unsafe_label.set_tooltip_text(Some(UNSAFE_TOOLTIP));
         let temporary = gtk::CheckButton::new();
         temporary.set_halign(gtk::Align::Start);
         temporary.set_tooltip_text(Some(TEMPORARY_TOOLTIP));
-        let temporary_label = mnemonic_label("_Temporary move:", &temporary, gtk::Align::Start);
+        let temporary_label = mnemonic_label(
+            virtinst_core::tr!("_Temporary move:"),
+            &temporary,
+            gtk::Align::Start,
+        );
         temporary_label.set_tooltip_text(Some(TEMPORARY_TOOLTIP));
         let grid1 = gtk::Grid::builder()
             .row_spacing(6)
@@ -447,7 +474,7 @@ impl VmmMigrateDialog {
         grid1.attach(&unsafe_migrate, 1, 0, 1, 1);
         grid1.attach(&temporary_label, 0, 1, 1, 1);
         grid1.attach(&temporary, 1, 1, 1, 1);
-        let advanced_expander = gtk::Expander::new(Some("Advanced options"));
+        let advanced_expander = gtk::Expander::new(Some(virtinst_core::tr!("Advanced options")));
         advanced_expander.set_child(Some(&grid1));
 
         let config_box = gtk::Box::new(gtk::Orientation::Vertical, 18);
@@ -462,8 +489,8 @@ impl VmmMigrateDialog {
         details_box_align.set_vexpand(true);
         details_box_align.append(xmleditor.widget());
 
-        let cancel = gtk::Button::with_mnemonic("_Cancel");
-        let finish = gtk::Button::with_mnemonic("_Migrate");
+        let cancel = gtk::Button::with_mnemonic(virtinst_core::tr!("_Cancel"));
+        let finish = gtk::Button::with_mnemonic(virtinst_core::tr!("_Migrate"));
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         buttons.set_halign(gtk::Align::End);
         buttons.append(&cancel);
@@ -622,9 +649,9 @@ impl VmmMigrateDialog {
         i.xmleditor.set_xml("");
         i.xmleditor.widget().set_current_page(Some(0));
 
-        i.header_label.set_markup(&format!(
-            "<span size='large'>Migrate '{}'</span>",
-            glib::markup_escape_text(&vm.get_name())
+        i.header_label.set_markup(&virtinst_core::trf!(
+            "<span size='large'>Migrate '%(vm)s'</span>",
+            vm = glib::markup_escape_text(&vm.get_name())
         ));
         i.advanced_expander.set_expanded(false);
         i.cancel.grab_focus();
@@ -688,7 +715,9 @@ impl VmmMigrateDialog {
             return;
         };
         let can_migrate = row.can_migrate;
-        let tooltip = (!can_migrate).then_some("A valid destination connection must be selected.");
+        let tooltip = (!can_migrate).then_some(virtinst_core::tr!(
+            "A valid destination connection must be selected."
+        ));
         i.config_box.set_visible(can_migrate);
         i.finish.set_sensitive(can_migrate);
         i.finish.set_tooltip_text(tooltip);
@@ -869,8 +898,12 @@ impl VmmMigrateDialog {
             destlabel.push_str(uri);
         }
         let name = vm.get_name();
-        let title = format!("Migrating VM '{name}'");
-        let text = format!("Migrating VM '{name}' to {destlabel}. This may take a while.");
+        let title = virtinst_core::trf!("Migrating VM '%s'", name);
+        let text = virtinst_core::trf!(
+            "Migrating VM '%(name)s' to %(host)s. This may take a while.",
+            name = name,
+            host = destlabel
+        );
 
         // `migrate()`'s first step, before any libvirt call
         vm.set_install_abort();
@@ -906,7 +939,7 @@ impl VmmMigrateDialog {
             Some((error, details)) => {
                 error::show_err(
                     Some(&i.window),
-                    &format!("Unable to migrate guest: {error}"),
+                    &virtinst_core::trf!("Unable to migrate guest: %s", error),
                     Some(&details),
                     "",
                 )

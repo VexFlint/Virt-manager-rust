@@ -51,9 +51,9 @@ impl NetRow {
     /// `run_status`.
     fn run_status(&self) -> &'static str {
         if self.active {
-            "Active"
+            virtinst_core::tr!("Active")
         } else {
-            "Inactive"
+            virtinst_core::tr!("Inactive")
         }
     }
 }
@@ -146,11 +146,11 @@ fn ip_expander(markup: &str) -> (gtk::Expander, gtk::Label, gtk::Label, gtk::Lab
     let table = gtk::Grid::new();
     table.set_row_spacing(5);
     table.set_column_spacing(6);
-    table.attach(&field_label("Network:"), 0, 0, 1, 1);
+    table.attach(&field_label(virtinst_core::tr!("Network:")), 0, 0, 1, 1);
     table.attach(&network, 1, 0, 1, 1);
-    table.attach(&field_label("DHCP range:"), 0, 1, 1, 1);
+    table.attach(&field_label(virtinst_core::tr!("DHCP range:")), 0, 1, 1, 1);
     table.attach(&dhcp_range, 1, 1, 1, 1);
-    table.attach(&field_label("Forwarding:"), 0, 2, 1, 1);
+    table.attach(&field_label(virtinst_core::tr!("Forwarding:")), 0, 2, 1, 1);
     let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 3);
     hbox.append(&forwarding);
     table.attach(&hbox, 1, 2, 1, 1);
@@ -238,7 +238,7 @@ impl HostNets {
         net_name.update_property(&[gtk::accessible::Property::Label("net-name")]);
         let net_device = value_label(Some("net-device"));
         let net_state_icon = gtk::Image::from_icon_name("image-missing");
-        let net_state = gtk::Label::new(Some("Running"));
+        let net_state = gtk::Label::new(Some(virtinst_core::tr!("Running")));
         net_state.set_halign(gtk::Align::Start);
         net_state.set_hexpand(true);
         let hbox3 = gtk::Box::new(gtk::Orientation::Horizontal, 3);
@@ -249,19 +249,19 @@ impl HostNets {
         net_autostart.update_property(&[gtk::accessible::Property::Label("net-autostart")]);
         let net_name_domain = gtk::Label::new(Some("label"));
         net_name_domain.set_halign(gtk::Align::Start);
-        let autostart_label = field_label("A_utostart:");
+        let autostart_label = field_label(virtinst_core::tr!("A_utostart:"));
         autostart_label.set_mnemonic_widget(Some(&net_autostart));
         let domain_label = gtk::Label::new(None);
-        domain_label.set_markup("Domain:");
+        domain_label.set_markup(virtinst_core::tr!("Domain:"));
         domain_label.set_halign(gtk::Align::Start);
         let table4 = gtk::Grid::new();
         table4.set_row_spacing(5);
         table4.set_column_spacing(6);
-        table4.attach(&field_label("Name:"), 0, 0, 1, 1);
+        table4.attach(&field_label(virtinst_core::tr!("Name:")), 0, 0, 1, 1);
         table4.attach(&net_name, 1, 0, 1, 1);
-        table4.attach(&field_label("Device:"), 0, 1, 1, 1);
+        table4.attach(&field_label(virtinst_core::tr!("Device:")), 0, 1, 1, 1);
         table4.attach(&net_device, 1, 1, 1, 1);
-        table4.attach(&field_label("State:"), 0, 2, 1, 1);
+        table4.attach(&field_label(virtinst_core::tr!("State:")), 0, 2, 1, 1);
         table4.attach(&hbox3, 1, 2, 1, 1);
         table4.attach(&autostart_label, 0, 3, 1, 1);
         table4.attach(&net_autostart, 1, 3, 1, 1);
@@ -269,11 +269,11 @@ impl HostNets {
         table4.attach(&net_name_domain, 1, 4, 1, 1);
 
         let (net_ipv4_expander, net_ipv4_network, net_ipv4_dhcp_range, net_ipv4_forwarding) =
-            ip_expander("<b>IPv_4 configuration</b>");
-        net_ipv4_forwarding.set_text("NAT to any device");
+            ip_expander(virtinst_core::tr!("<b>IPv_4 configuration</b>"));
+        net_ipv4_forwarding.set_text(virtinst_core::tr!("NAT to any device"));
         let (net_ipv6_expander, net_ipv6_network, net_ipv6_dhcp_range, net_ipv6_forwarding) =
-            ip_expander("<b>IPv_6 configuration</b>");
-        net_ipv6_forwarding.set_text("Routed");
+            ip_expander(virtinst_core::tr!("<b>IPv_6 configuration</b>"));
+        net_ipv6_forwarding.set_text(virtinst_core::tr!("Routed"));
 
         let net_details = gtk::Box::new(gtk::Orientation::Vertical, 12);
         net_details.append(&table4);
@@ -308,16 +308,28 @@ impl HostNets {
         pane.set_margin_bottom(3);
 
         // Bottom bar: network buttons on the left, Apply on the right
-        let net_add = icon_button("list-add", "Add Network", "net-add");
-        let net_start = icon_button("media-playback-start", "Start Network", "net-start");
-        let net_stop = icon_button("process-stop", "Stop Network", "net-stop");
-        let net_delete = icon_button("edit-delete", "Delete Network", "net-delete");
+        let net_add = icon_button("list-add", virtinst_core::tr!("Add Network"), "net-add");
+        let net_start = icon_button(
+            "media-playback-start",
+            virtinst_core::tr!("Start Network"),
+            "net-start",
+        );
+        let net_stop = icon_button(
+            "process-stop",
+            virtinst_core::tr!("Stop Network"),
+            "net-stop",
+        );
+        let net_delete = icon_button(
+            "edit-delete",
+            virtinst_core::tr!("Delete Network"),
+            "net-delete",
+        );
         let hbox16 = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         hbox16.set_hexpand(true);
         for b in [&net_add, &net_start, &net_stop, &net_delete] {
             hbox16.append(b);
         }
-        let net_apply = gtk::Button::with_mnemonic("_Apply");
+        let net_apply = gtk::Button::with_mnemonic(virtinst_core::tr!("_Apply"));
         let hbox17 = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         hbox17.append(&net_apply);
         let hbox15 = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -516,14 +528,14 @@ impl HostNets {
         let net = self.current_network();
         *self.shown_net.borrow_mut() = net.clone();
         let Some(net) = net else {
-            self.set_error_page("No virtual network selected.");
+            self.set_error_page(virtinst_core::tr!("No virtual network selected."));
             return;
         };
 
         self.network_pages.set_visible_child_name("details");
         if let Err(e) = self.populate_net_state(&net) {
             eprintln!("{e}");
-            self.set_error_page(&format!("Error selecting network: {e}"));
+            self.set_error_page(&virtinst_core::trf!("Error selecting network: %s", e));
         }
         self.disable_net_apply();
     }
@@ -571,10 +583,12 @@ impl HostNets {
         // `_refresh_conn_state`'s pages, set after the list is filled
         // and kept until the connection comes back
         if !self.conn.is_active() {
-            self.set_error_page("Connection not active.");
+            self.set_error_page(virtinst_core::tr!("Connection not active."));
         } else if !supported {
             self.net_add.set_sensitive(false);
-            self.set_error_page("Libvirt connection does not support virtual network management.");
+            self.set_error_page(virtinst_core::tr!(
+                "Libvirt connection does not support virtual network management."
+            ));
         } else {
             self.refresh_current_network();
         }
@@ -634,7 +648,7 @@ impl HostNets {
 
         let dhcpstr = match summary.dhcp {
             Some((start, end)) => format!("{start} - {end}"),
-            None => "Disabled".into(),
+            None => virtinst_core::tr!("Disabled").into(),
         };
         self.net_ipv4_dhcp_range.set_text(&dhcpstr);
         self.net_ipv4_network.set_text(&netstr);
@@ -649,17 +663,17 @@ impl HostNets {
         self.net_ipv6_expander.set_visible(netstr.is_some());
 
         let prettymode = if netstr.is_some() {
-            "Routed network"
+            virtinst_core::tr!("Routed network")
         } else if net.xmlobj.get_ipv6_enabled() {
-            "Isolated network, internal routing only"
+            virtinst_core::tr!("Isolated network, internal routing only")
         } else {
-            "Isolated network, routing disabled"
+            virtinst_core::tr!("Isolated network, routing disabled")
         };
         self.net_ipv6_forwarding.set_text(prettymode);
 
         let dhcpstr = match summary.dhcp {
             Some((start, end)) => format!("{start} - {end}"),
-            None => "Disabled".into(),
+            None => virtinst_core::tr!("Disabled").into(),
         };
         self.net_ipv6_dhcp_range.set_text(&dhcpstr);
         self.net_ipv6_network
@@ -690,7 +704,8 @@ impl HostNets {
         self.net_delete.set_sensitive(!active);
 
         self.net_autostart.set_active(net.autostart);
-        self.net_autostart.set_label(Some("On Boot"));
+        self.net_autostart
+            .set_label(Some(virtinst_core::tr!("On Boot")));
         self.quiet.set(false);
 
         self.populate_net_ipv4_state(net)?;
@@ -733,15 +748,15 @@ impl HostNets {
         let Some(net) = self.current_network() else {
             return;
         };
-        let msg = format!(
-            "Are you sure you want to permanently delete the network {}?",
+        let msg = virtinst_core::trf!(
+            "Are you sure you want to permanently delete the network %s?",
             net.name
         );
         if !error::yes_no(self.parent().as_ref(), &msg, None).await {
             return;
         }
         eprintln!("Deleting network '{}'", net.name);
-        let intro = format!("Error deleting network '{}'", net.name);
+        let intro = virtinst_core::trf!("Error deleting network '%s'", net.name);
         self.lifecycle_action(&net, &intro, |_, n| n.undefine().map_err(libvirt_err))
             .await;
     }
@@ -752,7 +767,7 @@ impl HostNets {
             return;
         };
         eprintln!("Starting network '{}'", net.name);
-        let intro = format!("Error starting network '{}'", net.name);
+        let intro = virtinst_core::trf!("Error starting network '%s'", net.name);
         self.lifecycle_action(&net, &intro, |_, n| {
             n.create().map(|_| ()).map_err(libvirt_err)
         })
@@ -765,7 +780,7 @@ impl HostNets {
             return;
         };
         eprintln!("Stopping network '{}'", net.name);
-        let intro = format!("Error stopping network '{}'", net.name);
+        let intro = virtinst_core::trf!("Error stopping network '%s'", net.name);
         self.lifecycle_action(&net, &intro, |_, n| n.destroy().map_err(libvirt_err))
             .await;
     }
@@ -823,7 +838,7 @@ impl HostNets {
         if let Err(e) = res {
             error::show_err(
                 self.parent().as_ref(),
-                &format!("Error changing network settings: {e}"),
+                &virtinst_core::trf!("Error changing network settings: %s", e),
                 None,
                 "",
             )

@@ -260,23 +260,23 @@ impl HostStorage {
     ) -> HostStorage {
         // Bottom bar: pool buttons on the left, dialog buttons on the
         // right (`hbox9`).
-        let pool_add = icon_button("list-add", "Add Pool");
-        let pool_start = icon_button("media-playback-start", "Start Pool");
-        let pool_stop = icon_button("process-stop", "Stop Pool");
-        let pool_delete = icon_button("edit-delete", "Delete Pool");
+        let pool_add = icon_button("list-add", virtinst_core::tr!("Add Pool"));
+        let pool_start = icon_button("media-playback-start", virtinst_core::tr!("Start Pool"));
+        let pool_stop = icon_button("process-stop", virtinst_core::tr!("Stop Pool"));
+        let pool_delete = icon_button("edit-delete", virtinst_core::tr!("Delete Pool"));
         let pool_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         pool_buttons.set_hexpand(true);
         for b in [&pool_add, &pool_start, &pool_stop, &pool_delete] {
             pool_buttons.append(b);
         }
-        let browse_local = gtk::Button::with_mnemonic("_Browse Local");
-        browse_local.set_tooltip_text(Some("Browse local filesystem"));
-        let browse_cancel = gtk::Button::with_mnemonic("_Cancel");
-        browse_cancel.set_tooltip_text(Some("Cancel and close dialog"));
-        let choose_volume = gtk::Button::with_mnemonic("Ch_oose Volume");
-        choose_volume.set_tooltip_text(Some("Choose the selected volume"));
-        let pool_apply = gtk::Button::with_mnemonic("_Apply");
-        pool_apply.set_tooltip_text(Some("Apply pool changes"));
+        let browse_local = gtk::Button::with_mnemonic(virtinst_core::tr!("_Browse Local"));
+        browse_local.set_tooltip_text(Some(virtinst_core::tr!("Browse local filesystem")));
+        let browse_cancel = gtk::Button::with_mnemonic(virtinst_core::tr!("_Cancel"));
+        browse_cancel.set_tooltip_text(Some(virtinst_core::tr!("Cancel and close dialog")));
+        let choose_volume = gtk::Button::with_mnemonic(virtinst_core::tr!("Ch_oose Volume"));
+        choose_volume.set_tooltip_text(Some(virtinst_core::tr!("Choose the selected volume")));
+        let pool_apply = gtk::Button::with_mnemonic(virtinst_core::tr!("_Apply"));
+        pool_apply.set_tooltip_text(Some(virtinst_core::tr!("Apply pool changes")));
         let dialog_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         for b in [&browse_local, &browse_cancel, &choose_volume, &pool_apply] {
             dialog_buttons.append(b);
@@ -310,26 +310,26 @@ impl HostStorage {
         pool_location.set_halign(gtk::Align::Start);
         pool_location.set_selectable(true);
         let pool_state_icon = gtk::Image::from_icon_name("image-missing");
-        let pool_state = gtk::Label::new(Some("Active"));
+        let pool_state = gtk::Label::new(Some(virtinst_core::tr!("Active")));
         let pool_state_box = gtk::Box::new(gtk::Orientation::Horizontal, 3);
         pool_state_box.set_halign(gtk::Align::Start);
         pool_state_box.append(&pool_state_icon);
         pool_state_box.append(&pool_state);
-        let pool_autostart = gtk::CheckButton::with_mnemonic("On Boot");
+        let pool_autostart = gtk::CheckButton::with_mnemonic(virtinst_core::tr!("On Boot"));
         pool_autostart.set_halign(gtk::Align::Start);
         pool_autostart.update_property(&[gtk::accessible::Property::Label("pool-autostart")]);
-        let pool_name_label = field_label("Name:");
-        let pool_state_label = field_label("State:");
-        let pool_autostart_label = field_label("A_utostart:");
+        let pool_name_label = field_label(virtinst_core::tr!("Name:"));
+        let pool_state_label = field_label(virtinst_core::tr!("State:"));
+        let pool_autostart_label = field_label(virtinst_core::tr!("A_utostart:"));
         pool_autostart_label.set_mnemonic_widget(Some(&pool_autostart));
         let table = gtk::Grid::new();
         table.set_row_spacing(5);
         table.set_column_spacing(8);
         table.attach(&pool_name_label, 0, 0, 1, 1);
         table.attach(&pool_name_entry, 1, 0, 1, 1);
-        table.attach(&field_label("Size:"), 0, 1, 1, 1);
+        table.attach(&field_label(virtinst_core::tr!("Size:")), 0, 1, 1, 1);
         table.attach(&pool_sizes, 1, 1, 1, 1);
-        table.attach(&field_label("Location:"), 0, 2, 1, 1);
+        table.attach(&field_label(virtinst_core::tr!("Location:")), 0, 2, 1, 1);
         table.attach(&pool_location, 1, 2, 1, 1);
         table.attach(&pool_state_label, 0, 3, 1, 1);
         table.attach(&pool_state_box, 1, 3, 1, 1);
@@ -338,11 +338,11 @@ impl HostStorage {
 
         // Volumes header and vol-list
         let vol_title = gtk::Label::new(None);
-        vol_title.set_markup("<b>Volumes</b>");
+        vol_title.set_markup(virtinst_core::tr!("<b>Volumes</b>"));
         vol_title.set_halign(gtk::Align::Start);
-        let vol_add = icon_button("list-add", "Create new volume");
-        let pool_refresh = icon_button("view-refresh", "Refresh volume list");
-        let vol_delete = icon_button("edit-delete", "Delete volume");
+        let vol_add = icon_button("list-add", virtinst_core::tr!("Create new volume"));
+        let pool_refresh = icon_button("view-refresh", virtinst_core::tr!("Refresh volume list"));
+        let vol_delete = icon_button("edit-delete", virtinst_core::tr!("Delete volume"));
         let vol_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         vol_buttons.set_hexpand(true);
         for b in [&vol_add, &pool_refresh, &vol_delete] {
@@ -377,7 +377,7 @@ impl HostStorage {
         pool_details.append(&vol_box);
 
         // `_volmenu`
-        let copy_path = gtk::Button::with_mnemonic("Copy Volume Path");
+        let copy_path = gtk::Button::with_mnemonic(virtinst_core::tr!("Copy Volume Path"));
         copy_path.set_has_frame(false);
         let vol_menu = gtk::Popover::new();
         vol_menu.set_child(Some(&copy_path));
@@ -688,7 +688,7 @@ impl HostStorage {
             t.populate_pools().await;
             // After the (now empty) list's own "No storage pool selected."
             if !conn_active {
-                t.set_error_page("Connection not active.");
+                t.set_error_page(virtinst_core::tr!("Connection not active."));
             }
         });
     }
@@ -715,10 +715,10 @@ impl HostStorage {
         self.pool_details.set_sensitive(true);
         self.pool_name_entry.set_text(pool.name());
         self.pool_name_entry.set_editable(!active);
-        self.pool_sizes.set_markup(&format!(
-            "{} Free / <i>{} In Use</i>",
-            storage::pretty_bytes(pool.xml.available),
-            storage::pretty_bytes(pool.xml.allocation)
+        self.pool_sizes.set_markup(&virtinst_core::trf!(
+            "%(bytesfree)s Free / <i>%(bytesinuse)s In Use</i>",
+            bytesfree = storage::pretty_bytes(pool.xml.available),
+            bytesinuse = storage::pretty_bytes(pool.xml.allocation)
         ));
         self.pool_location
             .set_text(pool.xml.target_path.as_deref().unwrap_or(""));
@@ -727,9 +727,13 @@ impl HostStorage {
         } else {
             "state_shutoff"
         }));
-        self.pool_state
-            .set_text(if active { "Active" } else { "Inactive" });
-        self.pool_autostart.set_label(Some("On Boot"));
+        self.pool_state.set_text(if active {
+            virtinst_core::tr!("Active")
+        } else {
+            virtinst_core::tr!("Inactive")
+        });
+        self.pool_autostart
+            .set_label(Some(virtinst_core::tr!("On Boot")));
         self.pool_autostart.set_active(pool.autostart);
         self.quiet.set(false);
 
@@ -741,13 +745,15 @@ impl HostStorage {
         self.pool_start.set_sensitive(!active);
         self.pool_refresh.set_sensitive(active);
         self.vol_add.set_sensitive(active);
-        self.vol_add.set_tooltip_text(Some("Create new volume"));
+        self.vol_add
+            .set_tooltip_text(Some(virtinst_core::tr!("Create new volume")));
         self.vol_delete.set_sensitive(false);
 
         if active && !storage::supports_volume_creation(&pool.xml.pool_type, false) {
             self.vol_add.set_sensitive(false);
-            self.vol_add
-                .set_tooltip_text(Some("Pool does not support volume creation"));
+            self.vol_add.set_tooltip_text(Some(virtinst_core::tr!(
+                "Pool does not support volume creation"
+            )));
         }
 
         // `set_xml_from_libvirtobject`: only while the XML tab shows
@@ -756,7 +762,7 @@ impl HostStorage {
                 Ok(xml) => self.xmleditor.set_xml(&xml),
                 Err(e) => {
                     eprintln!("{e}");
-                    self.set_error_page(&format!("Error selecting pool: {e}"));
+                    self.set_error_page(&virtinst_core::trf!("Error selecting pool: %s", e));
                 }
             }
         }
@@ -778,7 +784,7 @@ impl HostStorage {
         *self.shown_pool.borrow_mut() = pool.clone();
         let Some(pool) = pool else {
             self.vol_store.remove_all();
-            self.set_error_page("No storage pool selected.");
+            self.set_error_page(virtinst_core::tr!("No storage pool selected."));
             return;
         };
         self.pages.set_visible_child_name("details");
@@ -952,8 +958,8 @@ impl HostStorage {
         let Some(pool) = self.current_pool() else {
             return;
         };
-        let msg = format!(
-            "Are you sure you want to permanently delete the pool {}?",
+        let msg = virtinst_core::trf!(
+            "Are you sure you want to permanently delete the pool %s?",
             pool.name()
         );
         if !error::yes_no(self.parent().as_ref(), &msg, None).await {
@@ -966,7 +972,7 @@ impl HostStorage {
     /// `_pool_refresh_cb`.
     async fn pool_refresh_clicked(&self) {
         self.confirm_changes().await;
-        self.pool_action("Refresh", |_, p| {
+        self.pool_action(virtinst_core::tr!("Refresh"), |_, p| {
             p.refresh(0).map(|_| ()).map_err(libvirt_err)
         })
         .await;
@@ -1042,8 +1048,8 @@ impl HostStorage {
         let (Some(pool), Some(vol)) = (self.current_pool(), self.current_vol()) else {
             return;
         };
-        let msg = format!(
-            "Are you sure you want to permanently delete the volume {}?",
+        let msg = virtinst_core::trf!(
+            "Are you sure you want to permanently delete the volume %s?",
             vol.xml.name
         );
         if !error::yes_no(self.parent().as_ref(), &msg, None).await {
@@ -1105,7 +1111,7 @@ impl HostStorage {
         if let Err(e) = res {
             error::show_err(
                 self.parent().as_ref(),
-                &format!("Error changing pool settings: {e}"),
+                &virtinst_core::trf!("Error changing pool settings: %s", e),
                 Some(&e),
                 "",
             )
@@ -1276,28 +1282,28 @@ fn build_vol_columns(list: &gtk::ColumnView, popup_cb: &VolPopupCallback) {
 
     let name = column(
         list,
-        "Volumes",
+        virtinst_core::tr!("Volumes"),
         true,
         |r| r.name.clone(),
         |a, b| a.name.cmp(&b.name),
     );
     column(
         list,
-        "Size",
+        virtinst_core::tr!("Size"),
         false,
         |r| r.sizestr.clone(),
         |a, b| a.xml.capacity.cmp(&b.xml.capacity),
     );
     column(
         list,
-        "Format",
+        virtinst_core::tr!("Format"),
         false,
         |r| r.format.clone(),
         |a, b| a.format.cmp(&b.format),
     );
     column(
         list,
-        "Used By",
+        virtinst_core::tr!("Used By"),
         false,
         |r| r.in_use_by.clone(),
         |a, b| a.in_use_by.cmp(&b.in_use_by),

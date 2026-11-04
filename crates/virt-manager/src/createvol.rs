@@ -52,7 +52,7 @@ pub struct CreateVolume(Rc<Inner>);
 impl CreateVolume {
     pub fn new(conn: &VmmConnection, parent_pool: PoolXml) -> CreateVolume {
         let window = gtk::Window::builder()
-            .title("Add a Storage Volume")
+            .title(virtinst_core::tr!("Add a Storage Volume"))
             .hide_on_close(true)
             .build();
 
@@ -60,7 +60,9 @@ impl CreateVolume {
         let icon = gtk::Image::from_icon_name("document-new");
         icon.set_pixel_size(48);
         let header_label = gtk::Label::new(None);
-        header_label.set_markup("<span size='large'>Create storage volume</span>");
+        header_label.set_markup(virtinst_core::tr!(
+            "<span size='large'>Create storage volume</span>"
+        ));
         header_label.set_xalign(0.0);
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         header.set_margin_start(6);
@@ -70,9 +72,9 @@ impl CreateVolume {
         header.append(&icon);
         header.append(&header_label);
 
-        let intro = gtk::Label::new(Some(
-            "Create a storage unit to be used directly by a virtual machine.",
-        ));
+        let intro = gtk::Label::new(Some(virtinst_core::tr!(
+            "Create a storage unit to be used directly by a virtual machine."
+        )));
         intro.set_halign(gtk::Align::Start);
 
         // table1: name and format
@@ -90,11 +92,17 @@ impl CreateVolume {
                 .collect(),
         );
         vol_format.entry.set_width_chars(10);
-        let vol_format_label = start_label("F_ormat:", &vol_format.entry);
+        let vol_format_label = start_label(virtinst_core::tr!("F_ormat:"), &vol_format.entry);
         let table1 = gtk::Grid::new();
         table1.set_row_spacing(6);
         table1.set_column_spacing(6);
-        table1.attach(&start_label("_Name:", &vol_name), 0, 0, 1, 1);
+        table1.attach(
+            &start_label(virtinst_core::tr!("_Name:"), &vol_name),
+            0,
+            0,
+            1,
+            1,
+        );
         table1.attach(&name_box, 1, 0, 1, 1);
         table1.attach(&vol_format_label, 0, 1, 1, 1);
         table1.attach(&vol_format.top, 1, 1, 1, 1);
@@ -103,33 +111,52 @@ impl CreateVolume {
         let backing_store = gtk::Entry::new();
         backing_store.set_hexpand(true);
         backing_store.update_property(&[gtk::accessible::Property::Label("backing-store")]);
-        let backing_browse = gtk::Button::with_mnemonic("_Browse...");
+        let backing_browse = gtk::Button::with_mnemonic(virtinst_core::tr!("_Browse..."));
         let grid1 = gtk::Grid::new();
         grid1.set_margin_top(4);
         grid1.set_column_spacing(6);
-        grid1.attach(&start_label("Pa_th:", &backing_store), 0, 0, 1, 1);
+        grid1.attach(
+            &start_label(virtinst_core::tr!("Pa_th:"), &backing_store),
+            0,
+            0,
+            1,
+            1,
+        );
         grid1.attach(&backing_store, 1, 0, 1, 1);
         grid1.attach(&backing_browse, 2, 0, 1, 1);
-        let backing_expander = gtk::Expander::with_mnemonic("_Backing store");
+        let backing_expander = gtk::Expander::with_mnemonic(virtinst_core::tr!("_Backing store"));
         backing_expander.set_child(Some(&grid1));
 
         // size-box
         let quota = gtk::Label::new(None);
-        quota.set_markup("<b>Storage Volume Quota</b>");
+        quota.set_markup(virtinst_core::tr!("<b>Storage Volume Quota</b>"));
         quota.set_halign(gtk::Align::Start);
         let vol_parent_info = gtk::Label::new(None);
         vol_parent_info.set_halign(gtk::Align::Start);
         let adjustment = gtk::Adjustment::new(1.0, 0.0, 100_000.0, 1.0, 1000.0, 0.0);
         let vol_capacity = gtk::SpinButton::new(Some(&adjustment), 10.0, 1);
         vol_capacity.update_property(&[gtk::accessible::Property::Label("vol-capacity")]);
-        let vol_nonsparse = gtk::CheckButton::with_mnemonic("_Allocate entire volume now");
+        let vol_nonsparse =
+            gtk::CheckButton::with_mnemonic(virtinst_core::tr!("_Allocate entire volume now"));
         let table2 = gtk::Grid::new();
         table2.set_halign(gtk::Align::Start);
         table2.set_row_spacing(6);
         table2.set_column_spacing(6);
-        table2.attach(&start_label("Ca_pacity:", &vol_capacity), 0, 0, 1, 1);
+        table2.attach(
+            &start_label(virtinst_core::tr!("Ca_pacity:"), &vol_capacity),
+            0,
+            0,
+            1,
+            1,
+        );
         table2.attach(&vol_capacity, 1, 0, 1, 1);
-        table2.attach(&gtk::Label::new(Some("GiB")), 2, 0, 1, 1);
+        table2.attach(
+            &gtk::Label::new(Some(virtinst_core::tr!("GiB"))),
+            2,
+            0,
+            1,
+            1,
+        );
         table2.attach(&vol_nonsparse, 1, 1, 2, 1);
         let size_box = gtk::Box::new(gtk::Orientation::Vertical, 5);
         let vbox6 = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -152,8 +179,8 @@ impl CreateVolume {
         xmleditor.widget().set_size_request(400, 400);
         xmleditor.widget().set_vexpand(true);
 
-        let vol_cancel = gtk::Button::with_mnemonic("_Cancel");
-        let vol_create = gtk::Button::with_mnemonic("_Finish");
+        let vol_cancel = gtk::Button::with_mnemonic(virtinst_core::tr!("_Cancel"));
+        let vol_create = gtk::Button::with_mnemonic(virtinst_core::tr!("_Finish"));
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         buttons.set_halign(gtk::Align::End);
         buttons.append(&vol_cancel);
@@ -298,10 +325,10 @@ impl CreateVolume {
         i.vol_capacity.set_range(0.1, 1_000_000.0);
         i.vol_capacity.set_value(default_cap.min(pool_avail) as f64);
 
-        i.vol_parent_info.set_markup(&format!(
-            "<b>{}'s</b> available space: {}",
-            glib::markup_escape_text(&pool.name),
-            storage::pretty_bytes(pool.available)
+        i.vol_parent_info.set_markup(&virtinst_core::trf!(
+            "<b>%(volume)s's</b> available space: %(size)s",
+            volume = glib::markup_escape_text(&pool.name),
+            size = storage::pretty_bytes(pool.available)
         ));
 
         let name = self.default_vol_name().await;
@@ -459,7 +486,7 @@ impl CreateVolume {
         match res {
             Ok(obj) => Some(obj.get_xml()),
             Err(e) => {
-                self.show_err(&format!("Error building XML: {e}"), None)
+                self.show_err(&virtinst_core::trf!("Error building XML: %s", e), None)
                     .await;
                 None
             }
@@ -492,7 +519,7 @@ impl CreateVolume {
         let (volname, xml) = match res {
             Ok(v) => v,
             Err(e) => {
-                self.show_err(&format!("Error validating volume: {e}"), None)
+                self.show_err(&virtinst_core::trf!("Error validating volume: %s", e), None)
                     .await;
                 return;
             }
@@ -505,8 +532,8 @@ impl CreateVolume {
         let job_pool = pool_name.clone();
         let err = asyncjob::run(
             Some(&i.window),
-            "Creating storage volume...",
-            "Creating the storage volume may take a while...",
+            virtinst_core::tr!("Creating storage volume..."),
+            virtinst_core::tr!("Creating the storage volume may take a while..."),
             true,
             move |_job| {
                 // `_async_vol_create`: lookup different pool obj
@@ -524,8 +551,11 @@ impl CreateVolume {
         i.window.set_cursor(None);
 
         if let Some((error, details)) = err {
-            self.show_err(&format!("Error creating vol: {error}"), Some(&details))
-                .await;
+            self.show_err(
+                &virtinst_core::trf!("Error creating vol: %s", error),
+                Some(&details),
+            )
+            .await;
             return;
         }
         if let Some(cb) = i.vol_created.borrow().as_ref() {

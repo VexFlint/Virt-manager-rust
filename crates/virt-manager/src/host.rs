@@ -36,14 +36,18 @@ pub fn pretty_mem(val: u64) -> String {
 
 /// The `performance-memory` text.
 fn memory_text(vm_memory: u64, host_memory: u64) -> String {
-    format!("{} of {}", pretty_mem(vm_memory), pretty_mem(host_memory))
+    virtinst_core::trf!(
+        "%(currentmem)s of %(maxmem)s",
+        currentmem = pretty_mem(vm_memory),
+        maxmem = pretty_mem(host_memory)
+    )
 }
 
 /// A glade `GtkFrame` with shadow none: the bold label over the child.
 fn frame(title: &str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 6);
     let label = gtk::Label::new(None);
-    label.set_markup(&format!("<b>{title}</b>"));
+    label.set_markup(&virtinst_core::i18n::bold(title));
     label.set_xalign(0.0);
     vbox.append(&label);
     vbox.append(child);
@@ -93,13 +97,16 @@ fn build_menubar() -> gio::Menu {
     let menubar = gio::Menu::new();
     let file = gio::Menu::new();
     let f1 = gio::Menu::new();
-    f1.append(Some("_View Manager"), Some("host.view-manager"));
+    f1.append(
+        Some(virtinst_core::tr!("_View Manager")),
+        Some("host.view-manager"),
+    );
     file.append_section(None, &f1);
     let f2 = gio::Menu::new();
-    f2.append(Some("_Close"), Some("host.close"));
-    f2.append(Some("_Quit"), Some("host.quit"));
+    f2.append(Some(virtinst_core::tr!("_Close")), Some("host.close"));
+    f2.append(Some(virtinst_core::tr!("_Quit")), Some("host.quit"));
     file.append_section(None, &f2);
-    menubar.append_submenu(Some("_File"), &file);
+    menubar.append_submenu(Some(virtinst_core::tr!("_File")), &file);
     menubar
 }
 
@@ -147,12 +154,12 @@ impl VmmHost {
         overview_uri.set_selectable(true);
         overview_uri.set_ellipsize(gtk::pango::EllipsizeMode::End);
         let config_autoconnect = gtk::CheckButton::new();
-        let name_label = gtk::Label::with_mnemonic("_Name:");
+        let name_label = gtk::Label::with_mnemonic(virtinst_core::tr!("_Name:"));
         name_label.set_halign(gtk::Align::End);
         name_label.set_mnemonic_widget(Some(&overview_name));
-        let uri_label = gtk::Label::new(Some("Libvirt URI:"));
+        let uri_label = gtk::Label::new(Some(virtinst_core::tr!("Libvirt URI:")));
         uri_label.set_halign(gtk::Align::End);
-        let autoconnect_label = gtk::Label::with_mnemonic("A_utoconnect:");
+        let autoconnect_label = gtk::Label::with_mnemonic(virtinst_core::tr!("A_utoconnect:"));
         autoconnect_label.set_halign(gtk::Align::End);
         autoconnect_label.set_mnemonic_widget(Some(&config_autoconnect));
         let table1 = gtk::Grid::new();
@@ -171,10 +178,11 @@ impl VmmHost {
         table1.attach(&config_autoconnect, 1, 2, 1, 1);
 
         // CPU and memory usage (box4)
-        let (cpu_frame, cpu_usage_graph, performance_cpu) = performance_frame("CPU usage");
+        let (cpu_frame, cpu_usage_graph, performance_cpu) =
+            performance_frame(virtinst_core::tr!("CPU usage"));
         performance_cpu.set_text("60%");
         let (memory_frame, memory_usage_graph, performance_memory) =
-            performance_frame("Memory usage");
+            performance_frame(virtinst_core::tr!("Memory usage"));
         performance_memory.set_text("1.59 GiB of 2.2 GiB");
         let box4 = gtk::Box::new(gtk::Orientation::Vertical, 0);
         box4.set_vexpand(true);
@@ -208,9 +216,15 @@ impl VmmHost {
         notebook.set_margin_bottom(6);
         notebook.set_vexpand(true);
         for (page, label) in [
-            (box1.upcast_ref::<gtk::Widget>(), "_Overview"),
-            (net_align.upcast_ref(), "_Virtual Networks"),
-            (storage_align.upcast_ref(), "_Storage"),
+            (
+                box1.upcast_ref::<gtk::Widget>(),
+                virtinst_core::tr!("_Overview"),
+            ),
+            (
+                net_align.upcast_ref(),
+                virtinst_core::tr!("_Virtual Networks"),
+            ),
+            (storage_align.upcast_ref(), virtinst_core::tr!("_Storage")),
         ] {
             notebook.append_page(page, Some(&gtk::Label::with_mnemonic(label)));
         }
@@ -440,8 +454,10 @@ impl VmmHost {
         let conn_active = i.conn.is_active();
 
         let desc = i.conn.get_pretty_desc();
-        i.window
-            .set_title(Some(&format!("{desc} - Connection Details")));
+        i.window.set_title(Some(&virtinst_core::trf!(
+            "%(connection)s - Connection Details",
+            connection = desc
+        )));
         // `has_focus()`: the entry's text child holds the focus in GTK4
         let has_focus = gtk::prelude::GtkWindowExt::focus(&i.window)
             .is_some_and(|f| f.is_ancestor(&i.overview_name) || f == i.overview_name);

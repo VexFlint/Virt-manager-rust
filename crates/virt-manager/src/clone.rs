@@ -30,12 +30,12 @@ fn get_cloneable_msg(diskinfo: &CloneDiskInfo) -> Option<String> {
     }
     diskinfo
         .is_empty()
-        .then(|| "No storage to clone.".to_string())
+        .then(|| virtinst_core::tr!("No storage to clone.").to_string())
 }
 
 /// Python's `"%s" % value` for an optional string.
 fn or_none(v: Option<&str>) -> &str {
-    v.unwrap_or("None")
+    v.unwrap_or(virtinst_core::tr!("None"))
 }
 
 /// `_StorageInfo`: close to the cloner's `_CloneDiskInfo` content. All
@@ -179,20 +179,27 @@ impl StorageInfo {
     /// `get_tooltip`.
     pub fn get_tooltip(&self) -> String {
         let mut lines = vec![
-            format!("Disk target: {}", or_none(self.get_target())),
-            format!("Original path: {}", or_none(self.get_orig_disk_path())),
+            virtinst_core::trf!("Disk target: %s", or_none(self.get_target())),
+            virtinst_core::trf!("Original path: %s", or_none(self.get_orig_disk_path())),
         ];
         if let Some(new) = self.get_new_disk_path() {
-            lines.push(format!("New path: {new}"));
+            lines.push(virtinst_core::trf!("New path: %s", new));
         }
         lines.push("\n".into());
 
         match &self.share_msg {
-            Some(reason) => lines.push(format!("Storage is safe to share: {reason}")),
-            None => lines.push("Sharing this storage is potentially dangerous.".into()),
+            Some(reason) => lines.push(virtinst_core::trf!(
+                "Storage is safe to share: %(reason)s",
+                reason = reason
+            )),
+            None => lines
+                .push(virtinst_core::tr!("Sharing this storage is potentially dangerous.").into()),
         }
         if let Some(reason) = &self.cloneable_msg {
-            lines.push(format!("Storage is not cloneable: {reason}"));
+            lines.push(virtinst_core::trf!(
+                "Storage is not cloneable: %(reason)s",
+                reason = reason
+            ));
         }
         lines.join("\n")
     }
@@ -203,15 +210,15 @@ impl StorageInfo {
         let mut lines = vec![self
             .get_orig_disk_path()
             .filter(|p| !p.is_empty())
-            .unwrap_or("No storage.")
+            .unwrap_or(virtinst_core::tr!("No storage."))
             .to_string()];
 
         let mut line = String::new();
         if self.is_share_requested() {
-            line += &format!("Share disk with {vm_name}");
+            line += &virtinst_core::trf!("Share disk with %s", vm_name);
         }
         if self.is_clone_requested() {
-            line += "Clone this disk";
+            line += virtinst_core::tr!("Clone this disk");
             let sizelabel = self.get_size_label();
             if !sizelabel.is_empty() {
                 line += &format!(" ({sizelabel})");
@@ -288,10 +295,11 @@ fn share_warnings(list: &[StorageInfo]) -> String {
 
 /// `_finish`'s progress window title and text.
 fn job_title_text(new_name: &str, has_nonshare: bool) -> (String, String) {
-    let title = format!("Creating virtual machine clone '{new_name}'");
+    let title = virtinst_core::trf!("Creating virtual machine clone '%s'", new_name);
     let text = if has_nonshare {
-        format!(
-            "Creating virtual machine clone '{new_name}' and selected storage (this may take a while)"
+        virtinst_core::trf!(
+            "Creating virtual machine clone '%s' and selected storage (this may take a while)",
+            new_name
         )
     } else {
         title.clone()
@@ -378,7 +386,7 @@ struct StorageDialog {
 impl StorageDialog {
     fn new(parent: &gtk::Window) -> StorageDialog {
         let window = gtk::Window::builder()
-            .title("Change storage path")
+            .title(virtinst_core::tr!("Change storage path"))
             .transient_for(parent)
             .destroy_with_parent(true)
             .hide_on_close(true)
@@ -397,9 +405,9 @@ impl StorageDialog {
         // when the dialog opens.
         orig.set_focusable(false);
         orig.set_ellipsize(gtk::pango::EllipsizeMode::Start);
-        let size_label = lighter_label("Size:", gtk::Align::End);
+        let size_label = lighter_label(virtinst_core::tr!("Size:"), gtk::Align::End);
         size_label.set_valign(gtk::Align::End);
-        let path_label = lighter_label("Path:", gtk::Align::End);
+        let path_label = lighter_label(virtinst_core::tr!("Path:"), gtk::Align::End);
         path_label.set_valign(gtk::Align::Center);
         let table5 = gtk::Grid::new();
         table5.set_valign(gtk::Align::Center);
@@ -408,11 +416,17 @@ impl StorageDialog {
         table5.set_column_spacing(12);
         table5.attach(&path_label, 0, 0, 1, 1);
         table5.attach(&orig, 1, 0, 1, 1);
-        table5.attach(&lighter_label("Target:", gtk::Align::End), 0, 1, 1, 1);
+        table5.attach(
+            &lighter_label(virtinst_core::tr!("Target:"), gtk::Align::End),
+            0,
+            1,
+            1,
+            1,
+        );
         table5.attach(&target, 1, 1, 1, 1);
         table5.attach(&size_label, 0, 2, 1, 1);
         table5.attach(&size, 1, 2, 1, 1);
-        let label1 = gtk::Label::new(Some("Existing disk"));
+        let label1 = gtk::Label::new(Some(virtinst_core::tr!("Existing disk")));
         label1.set_halign(gtk::Align::Start);
         let image2 = gtk::Image::from_icon_name("drive-harddisk");
         image2.set_pixel_size(48);
@@ -426,15 +440,16 @@ impl StorageDialog {
         table4.attach(&table5, 1, 1, 1, 1);
 
         // table3: the new disk
-        let doclone =
-            gtk::CheckButton::with_mnemonic("Create a new disk (c_lone) for the virtual machine");
+        let doclone = gtk::CheckButton::with_mnemonic(virtinst_core::tr!(
+            "Create a new disk (c_lone) for the virtual machine"
+        ));
         doclone.set_halign(gtk::Align::Start);
         let new = gtk::Entry::new();
         new.set_hexpand(true);
         new.set_width_chars(25);
         new.update_property(&[gtk::accessible::Property::Label("new-path")]);
-        let browse = gtk::Button::with_mnemonic("_Browse...");
-        let new_label = gtk::Label::with_mnemonic("New _Path:");
+        let browse = gtk::Button::with_mnemonic(virtinst_core::tr!("_Browse..."));
+        let new_label = gtk::Label::with_mnemonic(virtinst_core::tr!("New _Path:"));
         new_label.set_halign(gtk::Align::End);
         new_label.set_mnemonic_widget(Some(&new));
         let table3 = gtk::Grid::new();
@@ -458,8 +473,8 @@ impl StorageDialog {
         vbox2.append(&table4);
         vbox2.append(&table3);
 
-        let cancel = gtk::Button::with_mnemonic("_Cancel");
-        let ok = gtk::Button::with_mnemonic("_OK");
+        let cancel = gtk::Button::with_mnemonic(virtinst_core::tr!("_Cancel"));
+        let ok = gtk::Button::with_mnemonic(virtinst_core::tr!("_OK"));
         let action_area = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         action_area.set_halign(gtk::Align::End);
         action_area.append(&cancel);
@@ -545,7 +560,7 @@ impl VmmCloneVM {
         if let Err(e) = this.show(parent, vm).await {
             error::show_err(
                 Some(parent),
-                &format!("Error launching clone dialog: {e}"),
+                &virtinst_core::trf!("Error launching clone dialog: %s", e),
                 None,
                 "",
             )
@@ -555,7 +570,7 @@ impl VmmCloneVM {
 
     fn new() -> VmmCloneVM {
         let window = gtk::Window::builder()
-            .title("Clone Virtual Machine")
+            .title(virtinst_core::tr!("Clone Virtual Machine"))
             .hide_on_close(true)
             .build();
         window.update_property(&[gtk::accessible::Property::Label("vmm-clone")]);
@@ -564,7 +579,9 @@ impl VmmCloneVM {
         let image4 = gtk::Image::from_icon_name("vm_clone_wizard");
         image4.set_pixel_size(48);
         let label2 = gtk::Label::new(None);
-        label2.set_markup("<span size='large'>Clone virtual machine</span>");
+        label2.set_markup(virtinst_core::tr!(
+            "<span size='large'>Clone virtual machine</span>"
+        ));
         label2.set_halign(gtk::Align::Start);
         label2.set_hexpand(true);
         label2.add_css_class("vmm-header-text");
@@ -587,9 +604,9 @@ impl VmmCloneVM {
         dest_host.set_halign(gtk::Align::Start);
         dest_host.set_ellipsize(gtk::pango::EllipsizeMode::End);
         dest_host.set_lines(0);
-        let label4 = gtk::Label::new(Some("Original VM:"));
+        let label4 = gtk::Label::new(Some(virtinst_core::tr!("Original VM:")));
         label4.set_halign(gtk::Align::Start);
-        let dest_host_label = gtk::Label::new(Some("Connection:"));
+        let dest_host_label = gtk::Label::new(Some(virtinst_core::tr!("Connection:")));
         dest_host_label.set_halign(gtk::Align::Start);
         let grid1 = gtk::Grid::new();
         grid1.set_row_spacing(6);
@@ -607,7 +624,7 @@ impl VmmCloneVM {
         new_name.set_margin_bottom(3);
         new_name.set_hexpand(true);
         new_name.set_width_chars(30);
-        let label3 = lighter_label("_Name:", gtk::Align::Start);
+        let label3 = lighter_label(virtinst_core::tr!("_Name:"), gtk::Align::Start);
         label3.set_mnemonic_widget(Some(&new_name));
         let name_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         name_box.append(&label3);
@@ -629,10 +646,10 @@ impl VmmCloneVM {
             .vexpand(true)
             .has_frame(true)
             .build();
-        let label6 = lighter_label("Storage:", gtk::Align::Start);
+        let label6 = lighter_label(virtinst_core::tr!("Storage:"), gtk::Align::Start);
         label6.set_hexpand(true);
         label6.set_mnemonic_widget(Some(&storage_list));
-        let details_button = gtk::Button::with_mnemonic("_Details...");
+        let details_button = gtk::Button::with_mnemonic(virtinst_core::tr!("_Details..."));
         let storage_header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         storage_header.append(&label6);
         storage_header.append(&details_button);
@@ -675,8 +692,8 @@ impl VmmCloneVM {
         vbox3.append(&vbox5);
         vbox3.append(&box3);
 
-        let cancel = gtk::Button::with_mnemonic("_Cancel");
-        let ok = gtk::Button::with_mnemonic("C_lone");
+        let cancel = gtk::Button::with_mnemonic(virtinst_core::tr!("_Cancel"));
+        let ok = gtk::Button::with_mnemonic(virtinst_core::tr!("C_lone"));
         let hbuttonbox1 = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         hbuttonbox1.set_halign(gtk::Align::End);
         hbuttonbox1.append(&cancel);
@@ -913,7 +930,7 @@ impl VmmCloneVM {
         column(
             self,
             storage_list,
-            "Clone",
+            virtinst_core::tr!("Clone"),
             |this| {
                 let b = gtk::Box::new(gtk::Orientation::Horizontal, 0);
                 b.append(&gtk::Image::new());
@@ -958,7 +975,7 @@ impl VmmCloneVM {
         let path_col = column(
             self,
             storage_list,
-            "Storage",
+            virtinst_core::tr!("Storage"),
             |_| {
                 let b = gtk::Box::new(gtk::Orientation::Horizontal, 0);
                 let img = gtk::Image::new();
@@ -1257,7 +1274,7 @@ impl VmmCloneVM {
             return;
         }
         if exists {
-            let text1 = "Cloning will overwrite the existing file";
+            let text1 = virtinst_core::tr!("Cloning will overwrite the existing file");
             let text2 = "Using an existing image will overwrite \
                          the path during the clone process. Are \
                          you sure you want to use this path?";
@@ -1328,7 +1345,7 @@ impl VmmCloneVM {
             Ok(Some(cloner)) => cloner,
             Ok(None) => return,
             Err(e) => {
-                let msg = format!("Error with clone settings: {e}");
+                let msg = virtinst_core::trf!("Error with clone settings: %s", e);
                 error::show_err(Some(&win), &msg, None, "").await;
                 return;
             }
@@ -1347,7 +1364,11 @@ impl VmmCloneVM {
         // `_finish_cb`
         win.set_cursor(None);
         if let Some((error, details)) = err {
-            let error = format!("Error creating virtual machine clone '{new_name}': {error}");
+            let error = virtinst_core::trf!(
+                "Error creating virtual machine clone '%(vm)s': %(error)s",
+                vm = new_name,
+                error = error
+            );
             error::show_err(Some(&win), &error, Some(&details), "").await;
             return;
         }
@@ -1409,7 +1430,7 @@ impl VmmCloneVM {
         }
         error::ok_cancel(
             Some(&self.0.window),
-            "Sharing storage may cause data to be overwritten.",
+            virtinst_core::tr!("Sharing storage may cause data to be overwritten."),
             Some(&format!(
                 "The following disk devices will be shared with {vmname}:\n\n{warn_str}\n\
                  Running the new guest could overwrite data in these disk images."
