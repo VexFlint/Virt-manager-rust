@@ -14,7 +14,7 @@ url='https://github.com/VexFlint/Virt-manager-rust'
 license=(GPL-2.0-or-later)
 depends=(libvirt libosinfo gtk4 gtk-vnc spice-gtk vte4 gtksourceview5
          gsettings-desktop-schemas hicolor-icon-theme glib2 gcc-libs glibc)
-makedepends=(cargo clang python-docutils)
+makedepends=(cargo clang python-docutils gettext)
 optdepends=('qemu-desktop: run VMs on this host'
             'dnsmasq: NAT for the default virtual network'
             'xorriso: cloud-init and unattended install ISOs')
