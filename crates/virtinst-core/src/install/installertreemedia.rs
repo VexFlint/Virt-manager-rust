@@ -180,12 +180,15 @@ impl TreeMedia {
     ) -> Result<TreeMedia, String> {
         if location_kernel.is_some() || location_initrd.is_some() {
             if location.is_none() {
-                return Err(
-                    "location kernel/initrd may only be specified with a location URL/path".into(),
-                );
+                return Err(crate::tr!(
+                    "location kernel/initrd may only be specified with a location URL/path"
+                )
+                .into());
             }
             if !(location_kernel.is_some() && location_initrd.is_some()) {
-                return Err("location kernel/initrd must be specified as a pair".into());
+                return Err(
+                    crate::tr!("location kernel/initrd must be specified as a pair").into(),
+                );
             }
         }
 
@@ -204,8 +207,9 @@ impl TreeMedia {
         };
 
         if remote && media_type != MediaType::Url && media_type != MediaType::Kernel {
-            return Err(format!(
-                "Cannot access install tree on remote connection: {loc}"
+            return Err(crate::trf!(
+                "Cannot access install tree on remote connection: %s",
+                loc
             ));
         }
 
@@ -300,7 +304,7 @@ impl TreeMedia {
         let (kernelpath, initrdpath) = pairs
             .into_iter()
             .find(|(k, i)| fetcher.has_file(k) && fetcher.has_file(i))
-            .ok_or("Couldn't find kernel for install tree.")?;
+            .ok_or(crate::tr!("Couldn't find kernel for install tree."))?;
         let fetcher = self.fetcher(uri)?;
         let kernel = fetcher.acquire_file(&kernelpath, None, meter)?;
         self.tmpfiles.push(kernel.clone());

@@ -258,7 +258,7 @@ pub fn argparse_help(cmd: &clap::Command, prog: &str, usage: &str) -> String {
         };
         strings
             .iter()
-            .map(|s| format!("{s} {args}"))
+            .map(|s| format!("{} {}", s, args))
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -600,7 +600,10 @@ pub fn parse_check(checks: &[String]) {
                 continue;
             };
             let Some(val) = raw_on_off_convert(&val) else {
-                fail(format!("{key} must be 'yes' or 'no'"));
+                fail(virtinst_core::trf!(
+                    "%(key)s must be 'yes' or 'no'",
+                    key = key
+                ));
             };
             let mut g = global();
             if key == "all" {
@@ -856,7 +859,7 @@ pub fn validate_disk(conn: &Connection, dev: &DiskCheck, warn_overwrite: bool) {
         if let Some(p) = path {
             if storage::path_definitely_exists(vconn, p, remote) {
                 optional_fail(
-                    &format!("This will overwrite the existing path '{p}'"),
+                    &virtinst_core::trf!("This will overwrite the existing path '%s'", p),
                     "path_exists",
                     true,
                 );
@@ -1261,8 +1264,13 @@ pub fn get_domain_and_guest(
             Err(e)
         }
     });
-    let domain = lookup
-        .unwrap_or_else(|e| fail(format!("Could not find domain '{domstr}': {}", e.message())));
+    let domain = lookup.unwrap_or_else(|e| {
+        fail(virtinst_core::trf!(
+            "Could not find domain '%(domain)s': %(error)s",
+            domain = domstr,
+            error = e.message()
+        ))
+    });
     let state = domain.get_state().unwrap_or_else(|e| fail(e.message())).0;
     let parse =
         |xml: &str| XmlObject::parse(&virtinst_core::guest::GUEST, xml).unwrap_or_else(|e| fail(e));
@@ -1328,15 +1336,22 @@ pub fn parse_osinfo(optstr: Option<&str>) -> OsInfoData {
     };
     let db = || virtinst_core::osinfo::OsDb::load_default().unwrap_or_else(|e| fail(e));
     if let Some(id) = &data.id {
-        let os = db()
-            .os(id)
-            .unwrap_or_else(|| fail(format!("{prefix}Unknown libosinfo ID '{id}'")));
+        let os = db().os(id).unwrap_or_else(|| {
+            fail(format!(
+                "{prefix}{}",
+                virtinst_core::trf!("Unknown libosinfo ID '%s'", id)
+            ))
+        });
         data.name = Some(os.short_id());
     } else if let Some(name) = &data.name {
         if name != "generic" {
             let os = db().lookup_os(name).unwrap_or_else(|| {
                 fail(format!(
-                    "{prefix}Unknown OS name '{name}'. See `--osinfo list` for valid values."
+                    "{prefix}{}",
+                    virtinst_core::trf!(
+                        "Unknown OS name '%s'. See `--osinfo list` for valid values.",
+                        name
+                    )
                 ))
             });
             data.name = Some(os.short_id());
@@ -1398,7 +1413,10 @@ pub fn check_osinfo_list(osinfo: Option<&str>) -> bool {
         println!("{}", names.join(", "));
     }
     println!();
-    println!("You can see additional information with:\n\n  osinfo-query os\n");
+    println!(
+        "{}",
+        virtinst_core::tr!("You can see additional information with:\n\n  osinfo-query os\n")
+    );
     true
 }
 

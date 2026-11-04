@@ -102,7 +102,7 @@ pub fn build_storage(vi: &VolInstall, conn: &virt::connect::Connect) -> Result<(
     use virtinst_core::progress::Meter;
     let mut meter = crate::cli::get_meter();
     meter.start(
-        &format!("Allocating '{}'", vi.name),
+        &virtinst_core::trf!("Allocating '%(filename)s'", filename = vi.name),
         Some(vi.capacity as u64),
     );
     vi.install(conn)?;
@@ -229,7 +229,10 @@ fn disk_parse(ctx: &mut ParseCtx) -> Result<Option<Vec<XmlObject>>, Error> {
     }
     if let Some(Some(v)) = ctx.stash.get("vol") {
         if !v.is_empty() && v.matches('/').count() != 1 {
-            return Err("Storage volume must be specified as vol=poolname/volname".into());
+            return Err(virtinst_core::tr!(
+                "Storage volume must be specified as vol=poolname/volname"
+            )
+            .into());
         }
     }
     Ok(None)
@@ -319,8 +322,9 @@ fn disk_post_parse(ctx: &mut ParseCtx, inst: &mut XmlObject) -> Result<(), Error
         };
         // `DeviceDisk.build_vol_install`
         let Some(size) = size else {
-            return Err(format!(
-                "Size must be specified for non existent volume '{newvolname}'"
+            return Err(virtinst_core::trf!(
+                "Size must be specified for non existent volume '%s'",
+                newvolname
             ));
         };
         let Some(poolobj) = poolobj else {
@@ -383,7 +387,10 @@ pub fn validate(inst: &XmlObject) -> Result<(), Error> {
                 "file" | "block" | "dir" | "volume" | "network"
             );
         if !can_be_empty {
-            return Err(format!("Device type '{device}' requires a path"));
+            return Err(virtinst_core::trf!(
+                "Device type '%s' requires a path",
+                device
+            ));
         }
         return Ok(());
     };
@@ -392,8 +399,9 @@ pub fn validate(inst: &XmlObject) -> Result<(), Error> {
         return Ok(());
     };
     if !b.exists() && !b.will_create_storage() {
-        return Err(format!(
-            "Must specify storage creation parameters for non-existent path '{path}'."
+        return Err(virtinst_core::trf!(
+            "Must specify storage creation parameters for non-existent path '%s'.",
+            path
         ));
     }
     // `_storage_backend.validate()`

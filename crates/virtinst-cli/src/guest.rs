@@ -228,7 +228,10 @@ pub fn set_os_name(guest: &mut XmlObject, name: &str) -> Result<(), String> {
     } else {
         let db = OsDb::load_default().map_err(|e| e.to_string())?;
         let os = db.lookup_os(name).ok_or_else(|| {
-            format!("Unknown OS name '{name}'. See `--osinfo list` for valid values.")
+            virtinst_core::trf!(
+                "Unknown OS name '%s'. See `--osinfo list` for valid values.",
+                name
+            )
         })?;
         log::debug!("Setting Guest osinfo name {}", os.short_id());
         Some(os.id())
@@ -252,7 +255,10 @@ pub fn validate_name(conn: &Connection, name: &str) -> Result<(), String> {
         ));
     }
     if virt::domain::Domain::lookup_by_name(conn.as_connect(), name).is_ok() {
-        return Err(format!("Guest name '{name}' is already in use."));
+        return Err(virtinst_core::trf!(
+            "Guest name '%s' is already in use.",
+            name
+        ));
     }
     Ok(())
 }
@@ -392,13 +398,7 @@ fn topology_defaults_from_vcpus(topology: &mut XmlObject, vcpus: i64) -> Result<
             Some(Value::Int(v)) => v,
             _ => 0,
         };
-        return Err(format!(
-            "Total CPUs implied by topology (sockets={} * dies={} * cores={} * threads={} == {total}) does not match vCPU count {vcpus}",
-            get("sockets"),
-            get("dies"),
-            get("cores"),
-            get("threads"),
-        ));
+        return Err(virtinst_core::trf!("Total CPUs implied by topology (sockets=%(sockets)d * dies=%(dies)d * cores=%(cores)d * threads=%(threads)d == %(total)d) does not match vCPU count %(vcpus)d", sockets = get("sockets"), dies = get("dies"), cores = get("cores"), threads = get("threads"), total = total, vcpus = vcpus));
     }
     Ok(())
 }

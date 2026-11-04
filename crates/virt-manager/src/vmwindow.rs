@@ -897,11 +897,7 @@ impl VmmVMWindow {
             address = conn_desc
         );
         if let Some(grabmsg) = self.0.console.vmwindow_get_title_message() {
-            title = virtinst_core::trf!(
-                "%(input_bus)s %(input_type)s",
-                input_bus = grabmsg,
-                input_type = title
-            );
+            title = format!("{} {}", grabmsg, title);
         }
         self.0.window.set_title(Some(&title));
     }

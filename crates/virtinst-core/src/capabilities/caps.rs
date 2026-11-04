@@ -532,16 +532,12 @@ impl Capabilities {
         let guest = self
             .guest_for_os_type(os_type, arch)
             .ok_or_else(|| match (arch, os_type) {
-                (Some(a), Some(o)) => format!(
-                    "Host does not support virtualization type '{o}' for architecture '{a}'"
-                ),
+                (Some(a), Some(o)) => crate::trf!("Host does not support virtualization type '%(virttype)s' for architecture '%(arch)s'", virttype = o, arch = a),
                 (Some(a), None) => {
-                    format!(
-                        "Host does not support any virtualization options for architecture '{a}'"
-                    )
+                    crate::trf!("Host does not support any virtualization options for architecture '%(arch)s'", arch = a)
                 }
-                (None, Some(o)) => format!("Host does not support virtualization type '{o}'"),
-                (None, None) => "Host does not support any virtualization options".to_string(),
+                (None, Some(o)) => crate::trf!("Host does not support virtualization type '%(virttype)s'", virttype = o),
+                (None, None) => crate::tr!("Host does not support any virtualization options").to_string(),
             })?;
 
         let domain = self.best_domain_type(guest, typ, machine).ok_or_else(|| {

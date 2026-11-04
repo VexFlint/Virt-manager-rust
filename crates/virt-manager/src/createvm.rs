@@ -3404,8 +3404,8 @@ impl VmmCreateVM {
         let i = &self.0;
         eprintln!(
             "Starting OS detection thread for cdrom={} location={}",
-            cdrom.as_deref().unwrap_or(virtinst_core::tr!("None")),
-            location.as_deref().unwrap_or(virtinst_core::tr!("None"))
+            cdrom.as_deref().unwrap_or("None"),
+            location.as_deref().unwrap_or("None")
         );
         i.detect_os_in_progress.set(true);
         i.forward.set_sensitive(false);
@@ -3490,7 +3490,7 @@ impl VmmCreateVM {
         i.inst.detect_os_spinner.stop();
         eprintln!(
             "Finished UI OS detection. distro={}",
-            distro.as_deref().unwrap_or(virtinst_core::tr!("None"))
+            distro.as_deref().unwrap_or("None")
         );
         i.forward.set_sensitive(true);
         i.os_already_detected_for_media.set(true);

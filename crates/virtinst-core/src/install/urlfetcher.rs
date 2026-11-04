@@ -382,7 +382,11 @@ impl Fetcher {
                 match res {
                     Ok(ftp) => self.ftp = Some(ftp),
                     Err(e) => {
-                        return Err(format!("Opening URL {} failed: {e}", self.location));
+                        return Err(crate::trf!(
+                            "Opening URL %(url)s failed: %(error)s",
+                            url = self.location,
+                            error = e
+                        ));
                     }
                 }
             }
@@ -523,11 +527,18 @@ impl Fetcher {
             Some(u) => u.to_string(),
             None => self.make_full_url(filename),
         };
-        let (mut urlobj, size) = self
-            .grabber(&url)
-            .map_err(|e| format!("Couldn't acquire file {url}: {e}"))?;
+        let (mut urlobj, size) = self.grabber(&url).map_err(|e| {
+            crate::trf!(
+                "Couldn't acquire file %(url)s: %(error)s",
+                url = url,
+                error = e
+            )
+        })?;
         log::debug!("Fetching URI: {url}");
-        meter.start(&format!("Retrieving '{}'", basename(filename)), size);
+        meter.start(
+            &crate::trf!("Retrieving '%(filename)s'", filename = basename(filename)),
+            size,
+        );
         let mut total = 0u64;
         let mut buf = vec![0u8; BLOCK_SIZE];
         loop {

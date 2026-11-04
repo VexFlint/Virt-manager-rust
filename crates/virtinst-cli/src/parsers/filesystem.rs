@@ -122,8 +122,9 @@ fn validate_post_parse(ctx: &mut ParseCtx, inst: &mut XmlObject) -> Result<(), E
         return Ok(());
     }
     if !target.starts_with('/') {
-        return Err(format!(
-            "Filesystem target '{target}' must be an absolute path"
+        return Err(virtinst_core::trf!(
+            "Filesystem target '%s' must be an absolute path",
+            target
         ));
     }
     Ok(())

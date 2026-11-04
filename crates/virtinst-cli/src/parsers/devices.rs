@@ -62,7 +62,10 @@ fn controller_address_cb(
         }
         return Ok(());
     }
-    Err(format!("Expected PCI format string for '{addrstr}'"))
+    Err(virtinst_core::trf!(
+        "Expected PCI format string for '%s'",
+        addrstr
+    ))
 }
 
 /// `VirtCLIParser.noset_cb`.

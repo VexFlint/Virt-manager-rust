@@ -196,8 +196,8 @@ fn set_hostdev_cb(
         inst.set("managed", Some(true.into()))?;
     }
     if nodedev.device_type.as_deref() != Some("pci") {
-        return Err(format!(
-            "Unsupported node device type '{}'",
+        return Err(virtinst_core::trf!(
+            "Unsupported node device type '%s'",
             nodedev.device_type.as_deref().unwrap_or("None")
         ));
     }

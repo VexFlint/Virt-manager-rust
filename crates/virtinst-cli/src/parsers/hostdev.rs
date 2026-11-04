@@ -90,12 +90,16 @@ pub(crate) fn lookup_nodedev(all: &[NodeDevice], idstring: &str) -> Result<NodeD
     let hostdev = address_string_to_hostdev(idstring)?;
     let found: Vec<&NodeDevice> = all.iter().filter(|d| compare(d, &hostdev)).collect();
     if found.len() > 1 {
-        return Err(format!("{idstring} corresponds to multiple node devices"));
+        return Err(virtinst_core::trf!(
+            "%s corresponds to multiple node devices",
+            idstring
+        ));
     }
     match found.first() {
         Some(dev) => Ok((*dev).clone()),
-        None => Err(format!(
-            "Did not find a matching node device for '{idstring}'"
+        None => Err(virtinst_core::trf!(
+            "Did not find a matching node device for '%s'",
+            idstring
         )),
     }
 }

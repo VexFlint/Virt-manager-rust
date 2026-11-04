@@ -125,7 +125,7 @@ impl DataStream {
         }
         eprintln!(
             "Opening console stream for alias={}",
-            alias.unwrap_or(virtinst_core::tr!("None"))
+            alias.unwrap_or("None")
         );
         // libxl doesn't set aliases, their open_console just defaults
         // to opening the first console device, so don't force presence
@@ -464,7 +464,7 @@ impl SerialConsole {
             eprintln!(
                 "Serial console '{}' path changed to {}",
                 self.0.target_port,
-                path.as_deref().unwrap_or(virtinst_core::tr!("None"))
+                path.as_deref().unwrap_or("None")
             );
         }
         self.0.lastpath.replace(path);

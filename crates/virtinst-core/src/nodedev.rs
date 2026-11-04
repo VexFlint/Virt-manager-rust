@@ -230,14 +230,16 @@ fn usb_pretty_name(dev: &NodeDevice) -> String {
         parse_int(dev.bus.as_deref()),
         parse_int(dev.device.as_deref())
     );
-    format!("{busstr} {vendor} {product}")
+    format!("{} {} {}", busstr, vendor, product)
 }
 
 /// `vmmNodeDevice.pretty_name`; `all` is the host's node devices, for
 /// a DRM device's parent.
 pub fn pretty_name(dev: &NodeDevice, all: &[NodeDevice]) -> String {
     match dev.device_type.as_deref() {
-        Some("net") => format!("Interface {}", dev.interface.as_deref().unwrap_or_default()),
+        Some("net") => {
+            crate::trf!("Interface %s", dev.interface.as_deref().unwrap_or_default())
+        }
         Some("pci") => format!(
             "{:04X}:{:02X}:{:02X}:{:X} {} {}",
             parse_int(dev.domain.as_deref()),

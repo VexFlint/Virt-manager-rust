@@ -61,8 +61,9 @@ use super::edit::set_attr;
 /// `_validate_port`.
 fn validate_port(name: &str, val: Option<i64>) -> Result<Option<i64>, String> {
     match val {
-        Some(v) if v < 5900 && v != -1 => Err(format!(
-            "{name} must be above 5900, or -1 for auto allocation"
+        Some(v) if v < 5900 && v != -1 => Err(crate::trf!(
+            "%s must be above 5900, or -1 for auto allocation",
+            name
         )),
         _ => Ok(val),
     }
@@ -245,8 +246,9 @@ fn validate_port_value(name: &str, val: Option<Value>) -> Result<Option<Value>, 
             .map_err(|_| format!("invalid literal for int() with base 10: '{s}'"))?,
     };
     if n < 5900 && n != -1 {
-        return Err(format!(
-            "{name} must be above 5900, or -1 for auto allocation"
+        return Err(crate::trf!(
+            "%s must be above 5900, or -1 for auto allocation",
+            name
         ));
     }
     Ok(Some(Value::Int(n)))

@@ -26,7 +26,7 @@ const INSTALL_METHODS: &str =
 #[command(
     name = "virt-install",
     override_usage = "virt-install OPTIONS",
-    about = "Create a new virtual machine from specified install media.",
+    about = virtinst_core::tr!("Create a new virtual machine from specified install media."),
     after_help = "Use '--option=?' or '--option help' to see available suboptions\n\
                   See man page for examples and full option syntax.",
     disable_version_flag = true,
@@ -101,7 +101,7 @@ struct Args {
     /// CD-ROM installation media
     #[arg(
         long,
-        help_heading = "Installation Method Options",
+        help_heading = virtinst_core::tr!("Installation Method Options"),
         verbatim_doc_comment
     )]
     cdrom: Option<String>,
@@ -110,7 +110,7 @@ struct Args {
     #[arg(
         short,
         long,
-        help_heading = "Installation Method Options",
+        help_heading = virtinst_core::tr!("Installation Method Options"),
         verbatim_doc_comment
     )]
     location: Option<String>,
@@ -118,7 +118,7 @@ struct Args {
     /// Boot from the network using the PXE protocol
     #[arg(
         long,
-        help_heading = "Installation Method Options",
+        help_heading = virtinst_core::tr!("Installation Method Options"),
         verbatim_doc_comment
     )]
     pxe: bool,
@@ -126,7 +126,7 @@ struct Args {
     /// Build guest around an existing disk image
     #[arg(
         long = "import",
-        help_heading = "Installation Method Options",
+        help_heading = virtinst_core::tr!("Installation Method Options"),
         verbatim_doc_comment
     )]
     import_install: bool,
@@ -138,7 +138,7 @@ struct Args {
     #[arg(
         short = 'x',
         long,
-        help_heading = "Installation Method Options",
+        help_heading = virtinst_core::tr!("Installation Method Options"),
         verbatim_doc_comment
     )]
     extra_args: Vec<String>,
@@ -146,7 +146,7 @@ struct Args {
     /// Add given file to root of initrd from --location
     #[arg(
         long,
-        help_heading = "Installation Method Options",
+        help_heading = virtinst_core::tr!("Installation Method Options"),
         verbatim_doc_comment
     )]
     initrd_inject: Vec<String>,
@@ -158,7 +158,7 @@ struct Args {
     /// Specify fine grained install options
     #[arg(
         long,
-        help_heading = "Installation Method Options",
+        help_heading = virtinst_core::tr!("Installation Method Options"),
         verbatim_doc_comment
     )]
     install: Option<String>,
@@ -167,7 +167,7 @@ struct Args {
     #[arg(
         long,
         value_name = "DOMAIN",
-        help_heading = "Installation Method Options",
+        help_heading = virtinst_core::tr!("Installation Method Options"),
         verbatim_doc_comment
     )]
     reinstall: Option<String>,
@@ -187,7 +187,7 @@ struct Args {
     /// --boot init=/sbin/init (for containers)
     #[arg(
         long,
-        help_heading = "Installation Method Options",
+        help_heading = virtinst_core::tr!("Installation Method Options"),
         verbatim_doc_comment
     )]
     boot: Vec<String>,
@@ -196,7 +196,7 @@ struct Args {
     /// --idmap uid.start=0,uid.target=1000,uid.count=10
     #[arg(
         long,
-        help_heading = "Installation Method Options",
+        help_heading = virtinst_core::tr!("Installation Method Options"),
         verbatim_doc_comment
     )]
     idmap: Vec<String>,
@@ -212,7 +212,7 @@ struct Args {
     #[arg(
         long,
         visible_alias = "os-variant",
-        help_heading = "OS options",
+        help_heading = virtinst_core::tr!("OS options"),
         verbatim_doc_comment
     )]
     osinfo: Option<String>,
@@ -238,7 +238,7 @@ struct Args {
     #[arg(
         short = 'w',
         long,
-        help_heading = "Device Options",
+        help_heading = virtinst_core::tr!("Device Options"),
         verbatim_doc_comment
     )]
     network: Vec<String>,
@@ -282,14 +282,14 @@ struct Args {
     #[arg(
         long,
         alias = "host-device",
-        help_heading = "Device Options",
+        help_heading = virtinst_core::tr!("Device Options"),
         verbatim_doc_comment
     )]
     hostdev: Vec<String>,
 
     #[arg(
         long,
-        help_heading = "Device Options",
+        help_heading = virtinst_core::tr!("Device Options"),
         help = "Pass host directory to the guest. Ex: \n\
                 --filesystem /my/source/dir,/dir/in/guest\n\
                 --filesystem template_name,/,type=template"
@@ -303,7 +303,7 @@ struct Args {
         num_args = 0..=1,
         default_missing_value = "default",
         action = ArgAction::Append,
-        help_heading = "Device Options",
+        help_heading = virtinst_core::tr!("Device Options"),
         verbatim_doc_comment
     )]
     sound: Vec<String>,
@@ -421,7 +421,7 @@ struct Args {
     /// Set domain <iothreads> and <iothreadids> configuration.
     #[arg(
         long,
-        help_heading = "Guest Configuration Options",
+        help_heading = virtinst_core::tr!("Guest Configuration Options"),
         verbatim_doc_comment
     )]
     iothreads: Vec<String>,
@@ -430,7 +430,7 @@ struct Args {
     #[arg(
         long,
         visible_alias = "security",
-        help_heading = "Guest Configuration Options",
+        help_heading = virtinst_core::tr!("Guest Configuration Options"),
         verbatim_doc_comment
     )]
     seclabel: Vec<String>,
@@ -438,7 +438,7 @@ struct Args {
     /// Set guest to perform the S390 cryptographic key management operations.
     #[arg(
         long,
-        help_heading = "Guest Configuration Options",
+        help_heading = virtinst_core::tr!("Guest Configuration Options"),
         verbatim_doc_comment
     )]
     keywrap: Vec<String>,
@@ -446,7 +446,7 @@ struct Args {
     /// Tune CPU parameters for the domain process.
     #[arg(
         long,
-        help_heading = "Guest Configuration Options",
+        help_heading = virtinst_core::tr!("Guest Configuration Options"),
         verbatim_doc_comment
     )]
     cputune: Vec<String>,
@@ -454,7 +454,7 @@ struct Args {
     /// Tune NUMA policy for the domain process.
     #[arg(
         long,
-        help_heading = "Guest Configuration Options",
+        help_heading = virtinst_core::tr!("Guest Configuration Options"),
         verbatim_doc_comment
     )]
     numatune: Vec<String>,
@@ -462,7 +462,7 @@ struct Args {
     /// Tune memory policy for the domain process.
     #[arg(
         long,
-        help_heading = "Guest Configuration Options",
+        help_heading = virtinst_core::tr!("Guest Configuration Options"),
         verbatim_doc_comment
     )]
     memtune: Vec<String>,
@@ -470,7 +470,7 @@ struct Args {
     /// Tune blkio policy for the domain process.
     #[arg(
         long,
-        help_heading = "Guest Configuration Options",
+        help_heading = virtinst_core::tr!("Guest Configuration Options"),
         verbatim_doc_comment
     )]
     blkiotune: Vec<String>,
@@ -479,7 +479,7 @@ struct Args {
     /// --memorybacking hugepages=on
     #[arg(
         long,
-        help_heading = "Guest Configuration Options",
+        help_heading = virtinst_core::tr!("Guest Configuration Options"),
         verbatim_doc_comment
     )]
     memorybacking: Vec<String>,
@@ -489,7 +489,7 @@ struct Args {
     /// --features apic=on,apic.eoi=on
     #[arg(
         long,
-        help_heading = "Guest Configuration Options",
+        help_heading = virtinst_core::tr!("Guest Configuration Options"),
         verbatim_doc_comment
     )]
     features: Vec<String>,
@@ -498,7 +498,7 @@ struct Args {
     /// --clock offset=localtime,rtc_tickpolicy=catchup
     #[arg(
         long,
-        help_heading = "Guest Configuration Options",
+        help_heading = virtinst_core::tr!("Guest Configuration Options"),
         verbatim_doc_comment
     )]
     clock: Vec<String>,
@@ -506,7 +506,7 @@ struct Args {
     /// Configure VM power management features
     #[arg(
         long,
-        help_heading = "Guest Configuration Options",
+        help_heading = virtinst_core::tr!("Guest Configuration Options"),
         verbatim_doc_comment
     )]
     pm: Vec<String>,
@@ -514,7 +514,7 @@ struct Args {
     /// Configure VM lifecycle management policy
     #[arg(
         long,
-        help_heading = "Guest Configuration Options",
+        help_heading = virtinst_core::tr!("Guest Configuration Options"),
         verbatim_doc_comment
     )]
     events: Vec<String>,
@@ -522,7 +522,7 @@ struct Args {
     /// Configure VM resource partitioning (cgroups)
     #[arg(
         long,
-        help_heading = "Guest Configuration Options",
+        help_heading = virtinst_core::tr!("Guest Configuration Options"),
         verbatim_doc_comment
     )]
     resource: Vec<String>,
@@ -532,7 +532,7 @@ struct Args {
     /// --sysinfo bios.vendor=MyVendor,bios.version=1.2.3,...
     #[arg(
         long,
-        help_heading = "Guest Configuration Options",
+        help_heading = virtinst_core::tr!("Guest Configuration Options"),
         verbatim_doc_comment
     )]
     sysinfo: Vec<String>,
@@ -542,7 +542,7 @@ struct Args {
     /// --qemu-commandline env=DISPLAY=:0.1
     #[arg(
         long,
-        help_heading = "Guest Configuration Options",
+        help_heading = virtinst_core::tr!("Guest Configuration Options"),
         verbatim_doc_comment
     )]
     qemu_commandline: Vec<String>,
@@ -553,7 +553,7 @@ struct Args {
         long = "launchSecurity",
         value_name = "LAUNCHSECURITY",
         visible_alias = "launchsecurity",
-        help_heading = "Guest Configuration Options",
+        help_heading = virtinst_core::tr!("Guest Configuration Options"),
         verbatim_doc_comment
     )]
     launch_security: Vec<String>,
@@ -567,7 +567,7 @@ struct Args {
     #[arg(
         short = 'p',
         long,
-        help_heading = "Virtualization Platform Options",
+        help_heading = virtinst_core::tr!("Virtualization Platform Options"),
         conflicts_with = "container",
         verbatim_doc_comment
     )]
@@ -576,7 +576,7 @@ struct Args {
     /// This guest should be a container guest
     #[arg(
         long,
-        help_heading = "Virtualization Platform Options",
+        help_heading = virtinst_core::tr!("Virtualization Platform Options"),
         verbatim_doc_comment
     )]
     container: bool,
@@ -584,7 +584,7 @@ struct Args {
     /// Hypervisor name to use (kvm, qemu, xen, ...)
     #[arg(
         long,
-        help_heading = "Virtualization Platform Options",
+        help_heading = virtinst_core::tr!("Virtualization Platform Options"),
         verbatim_doc_comment
     )]
     virt_type: Option<String>,
@@ -592,7 +592,7 @@ struct Args {
     /// The CPU architecture to simulate
     #[arg(
         long,
-        help_heading = "Virtualization Platform Options",
+        help_heading = virtinst_core::tr!("Virtualization Platform Options"),
         verbatim_doc_comment
     )]
     arch: Option<String>,
@@ -600,7 +600,7 @@ struct Args {
     /// The machine type to emulate
     #[arg(
         long,
-        help_heading = "Virtualization Platform Options",
+        help_heading = virtinst_core::tr!("Virtualization Platform Options"),
         verbatim_doc_comment
     )]
     machine: Option<String>,
@@ -633,7 +633,7 @@ struct Args {
         num_args = 0..=1,
         default_missing_value = "-1",
         allow_negative_numbers = true,
-        help_heading = "Miscellaneous Options",
+        help_heading = virtinst_core::tr!("Miscellaneous Options"),
         verbatim_doc_comment
     )]
     wait: Option<i64>,
@@ -665,7 +665,7 @@ struct Args {
         value_name = "XMLONLY",
         num_args = 0..=1,
         default_missing_value = "all",
-        help_heading = "Miscellaneous Options",
+        help_heading = virtinst_core::tr!("Miscellaneous Options"),
         verbatim_doc_comment
     )]
     xmlonly: Option<String>,
@@ -676,7 +676,7 @@ struct Args {
     /// Run through install process, but do not create devices or define the guest.
     #[arg(
         long = "dry-run",
-        help_heading = "Miscellaneous Options",
+        help_heading = virtinst_core::tr!("Miscellaneous Options"),
         verbatim_doc_comment
     )]
     dry: bool,
@@ -691,7 +691,7 @@ struct Args {
     #[arg(
         short,
         long,
-        help_heading = "Miscellaneous Options",
+        help_heading = virtinst_core::tr!("Miscellaneous Options"),
         verbatim_doc_comment
     )]
     quiet: bool,
@@ -700,7 +700,7 @@ struct Args {
     #[arg(
         short,
         long,
-        help_heading = "Miscellaneous Options",
+        help_heading = virtinst_core::tr!("Miscellaneous Options"),
         verbatim_doc_comment
     )]
     debug: bool,
@@ -787,7 +787,11 @@ fn virt_parsers(args: &Args) -> Vec<(&'static ParserDef, Vec<String>)> {
 }
 
 fn fail_conflicting(opt1: &str, opt2: &str) -> ! {
-    fail(format!("Cannot use {opt1} and {opt2} at the same time"))
+    fail(virtinst_core::trf!(
+        "Cannot use %(option1)s and %(option2)s at the same time",
+        option1 = opt1,
+        option2 = opt2
+    ))
 }
 
 // Back compat option conversion
@@ -832,7 +836,9 @@ fn convert_old_disks(args: &mut Args) {
     if args.nodisks
         && (!args.file_paths.is_empty() || !args.disk.is_empty() || !args.disksize.is_empty())
     {
-        fail("Cannot specify storage and use --nodisks");
+        fail(virtinst_core::tr!(
+            "Cannot specify storage and use --nodisks"
+        ));
     }
     if (!args.file_paths.is_empty() || !args.disksize.is_empty() || args.nonsparse)
         && !args.disk.is_empty()
@@ -970,14 +976,18 @@ fn convert_old_graphics(args: &mut Args) {
             || args.vncport.is_some()
             || args.vnclisten.is_some())
     {
-        fail("Cannot mix --graphics and old style graphical options");
+        fail(virtinst_core::tr!(
+            "Cannot mix --graphics and old style graphical options"
+        ));
     }
     let optnum = [vnc, nographics, sdl, graphics]
         .iter()
         .filter(|b| **b)
         .count();
     if optnum > 1 {
-        fail("Can't specify more than one of VNC, SDL, --graphics or --nographics");
+        fail(virtinst_core::tr!(
+            "Can't specify more than one of VNC, SDL, --graphics or --nographics"
+        ));
     }
     if graphics || optnum == 0 {
         return;
@@ -1359,10 +1369,12 @@ fn parse_cloud_init(optstr: &str) -> Option<CloudInitData> {
         };
         let v = v.unwrap_or_default();
         let onoff = || {
-            Some(
-                cli::raw_on_off_convert(&v)
-                    .unwrap_or_else(|| fail(format!("{key} must be 'yes' or 'no'"))),
-            )
+            Some(cli::raw_on_off_convert(&v).unwrap_or_else(|| {
+                fail(virtinst_core::trf!(
+                    "%(key)s must be 'yes' or 'no'",
+                    key = key
+                ))
+            }))
         };
         match key.as_str() {
             "root-password-generate" => ret.root_password_generate = onoff(),
@@ -1444,7 +1456,10 @@ fn print_cloudinit_passwd(installer: &mut Installer) {
         watch_stdin = false;
         timeout_ms = 0;
     }
-    print!("Installation will continue in 10 seconds (press Enter to skip)...");
+    print!(
+        "{}",
+        virtinst_core::tr!("Installation will continue in 10 seconds (press Enter to skip)...")
+    );
     let _ = std::io::stdout().flush();
     if watch_stdin {
         let mut fds = libc::pollfd {
@@ -1461,8 +1476,9 @@ fn print_cloudinit_passwd(installer: &mut Installer) {
 fn get_location_for_os(guest: &XmlObject, osname: &str, profile: Option<&str>) -> String {
     let db = OsDb::load_default().unwrap_or_else(|e| fail(e));
     let osinfo = db.lookup_os(osname).unwrap_or_else(|| {
-        fail(format!(
-            "Unknown OS name '{osname}'. See `--osinfo list` for valid values."
+        fail(virtinst_core::trf!(
+            "Unknown OS name '%s'. See `--osinfo list` for valid values.",
+            osname
         ))
     });
     let arch = guest.child("os").get_str("arch").unwrap_or_default();
@@ -1685,9 +1701,12 @@ fn installer_detect_distro(
     }
 
     // This also validates the install location
-    let autodistro = installer
-        .detect_distro(guest, conn)
-        .unwrap_or_else(|e| fail(format!("Error validating install location: {e}")));
+    let autodistro = installer.detect_distro(guest, conn).unwrap_or_else(|e| {
+        fail(virtinst_core::trf!(
+            "Error validating install location: %s",
+            e
+        ))
+    });
     if osdata.detect {
         if let Some(d) = autodistro {
             os_set = true;
@@ -1701,7 +1720,9 @@ fn installer_detect_distro(
         }
     }
 
-    let msg = "--osinfo/--os-variant OS name is required, but no value was\nset or detected.";
+    let msg = virtinst_core::tr!(
+        "--osinfo/--os-variant OS name is required, but no value was\nset or detected."
+    );
     if os_set {
         return;
     }
@@ -1914,7 +1935,10 @@ struct AutoconsoleData {
 impl AutoconsoleData {
     fn new(autoconsole: &str, guest: &XmlObject, installer: &Installer) -> AutoconsoleData {
         if !["none", "default", "text", "graphical"].contains(&autoconsole) {
-            fail(format!("Unknown autoconsole type '{autoconsole}'"));
+            fail(virtinst_core::trf!(
+                "Unknown autoconsole type '%s'",
+                autoconsole
+            ));
         }
         let is_default = autoconsole == "default";
         let mut autoconsole = autoconsole.to_string();
@@ -2030,7 +2054,10 @@ fn launch_console(
         if info.has_gl || has_listen_none {
             args.push("--attach".into());
         }
-        return run_console("Running graphical console command: %(command)s", args);
+        return run_console(
+            virtinst_core::tr!("Running graphical console command: %(command)s"),
+            args,
+        );
     }
     if autoconsole.is_text() {
         let args = vec![
@@ -2040,7 +2067,10 @@ fn launch_console(
             "console".into(),
             name,
         ];
-        return run_console("Running text console command: %(command)s", args);
+        return run_console(
+            virtinst_core::tr!("Running text console command: %(command)s"),
+            args,
+        );
     }
     None
 }
@@ -2074,7 +2104,7 @@ impl WaitHandler {
 
     fn get_time_string(&self) -> String {
         if self.wait_forever() {
-            return "Waiting for the installation to complete.".into();
+            return virtinst_core::tr!("Waiting for the installation to complete.").into();
         }
         let unit = if self.wait_mins == 1 {
             "minute"
@@ -2139,7 +2169,7 @@ impl InstalledDomain {
         match self.domain.get_info() {
             Ok(info) => {
                 if info.state == virt::sys::VIR_DOMAIN_CRASHED {
-                    fail("Domain has crashed.");
+                    fail(virtinst_core::tr!("Domain has crashed."));
                 }
                 !self.domain.is_active().unwrap_or(false)
             }
@@ -2151,7 +2181,10 @@ impl InstalledDomain {
                     log::debug!("transient VM shutdown and disappeared.");
                     return true;
                 }
-                fail(format!("VM disappeared unexpectedly: {}", e.message()));
+                fail(virtinst_core::trf!(
+                    "VM disappeared unexpectedly: %s",
+                    e.message()
+                ));
             }
         }
     }
@@ -2222,12 +2255,17 @@ fn wait_for_domain(
     // Wait loop
     loop {
         if instdomain.check_inactive() {
-            print_stdout("Domain has shutdown. Continuing.", false);
+            print_stdout(
+                virtinst_core::tr!("Domain has shutdown. Continuing."),
+                false,
+            );
             break;
         }
         if waithandler.wait() {
             print_stdout(
-                "Installation has exceeded specified time limit. Exiting application.",
+                virtinst_core::tr!(
+                    "Installation has exceeded specified time limit. Exiting application."
+                ),
                 false,
             );
             std::process::exit(1);
@@ -2265,7 +2303,7 @@ fn process_domain(
         let _ = instdomain.domain.destroy();
     }
     wait_for_domain(installer, &instdomain, autoconsole, waithandler);
-    print_stdout("Domain creation completed.", false);
+    print_stdout(virtinst_core::tr!("Domain creation completed."), false);
 
     let domain = &instdomain.domain;
     if args.transient || domain.is_active().unwrap_or(false) {
@@ -2273,8 +2311,8 @@ fn process_domain(
     }
     if args.noreboot || !installer.requires_postboot_xml_changes() {
         print_stdout(
-            &format!(
-                "You can restart your domain by running:\n  {}",
+            &virtinst_core::trf!(
+                "You can restart your domain by running:\n  %s",
                 virsh_start_cmd(guest, conn)
             ),
             false,
@@ -2282,10 +2320,13 @@ fn process_domain(
         return instdomain.domain;
     }
     if instdomain.domain_was_destroyed() && !args.destroy_on_exit {
-        print_stdout("User stopped the VM. Not rebooting.", false);
+        print_stdout(
+            virtinst_core::tr!("User stopped the VM. Not rebooting."),
+            false,
+        );
         return instdomain.domain;
     }
-    print_stdout("Restarting guest.", false);
+    print_stdout(virtinst_core::tr!("Restarting guest."), false);
     if let Err(e) = domain.create() {
         fail(e.message());
     }
@@ -2327,7 +2368,7 @@ fn start_install(b: &mut Built, args: &mut Args, conn: &Connection) {
     let waithandler = WaitHandler::new(args.wait);
 
     // we've got everything -- try to start the install
-    print_stdout("\nStarting install...", false);
+    print_stdout(virtinst_core::tr!("\nStarting install..."), false);
     print_cloudinit_passwd(&mut b.installer);
 
     let vols = std::mem::take(&mut b.vol_installs);
@@ -2412,22 +2453,25 @@ fn xml_to_print(b: &mut Built, args: &Args, conn: &Connection) -> Option<String>
     };
 
     if args.dry && args.xmlonly.is_none() {
-        print_stdout("Dry run completed successfully", false);
+        print_stdout(virtinst_core::tr!("Dry run completed successfully"), false);
         return None;
     }
     let xmlonly = args.xmlonly.as_deref().unwrap_or("all");
     if !["1", "2", "all"].contains(&xmlonly) {
-        fail(format!(
-            "Unknown XML step request '{xmlonly}', must be 1, 2, or all"
+        fail(virtinst_core::trf!(
+            "Unknown XML step request '%s', must be 1, 2, or all",
+            xmlonly
         ));
     }
     if xmlonly == "1" {
         return Some(start_xml);
     }
     if xmlonly == "2" {
-        return Some(
-            final_xml.unwrap_or_else(|| fail("Requested installation does not have XML step 2")),
-        );
+        return Some(final_xml.unwrap_or_else(|| {
+            fail(virtinst_core::tr!(
+                "Requested installation does not have XML step 2"
+            ))
+        }));
     }
     // "all" case
     Some(start_xml + &final_xml.unwrap_or_default())

@@ -473,7 +473,7 @@ impl Viewer {
             let nick = spice::channel_event_nick(event);
             eprintln!(
                 "Spice channel event={nick} message={}",
-                error.as_deref().unwrap_or(virtinst_core::tr!("None"))
+                error.as_deref().unwrap_or("None")
             );
             let mut msg = format!("Encountered SPICE {nick}");
             if let Some(error) = error {
@@ -613,8 +613,8 @@ impl Viewer {
         let session = self.create_spice_session();
         eprintln!(
             "Spice connecting to host={host} port={} tlsport={}",
-            port.as_deref().unwrap_or(virtinst_core::tr!("None")),
-            tlsport.as_deref().unwrap_or(virtinst_core::tr!("None"))
+            port.as_deref().unwrap_or("None"),
+            tlsport.as_deref().unwrap_or("None")
         );
         let obj = session.object();
         obj.set_property("host", host.as_str());

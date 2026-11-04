@@ -34,7 +34,10 @@ fn set_os_name_cb(
     } else {
         let db = OsDb::load_default().map_err(|e| e.to_string())?;
         db.lookup_os(&name).map(|o| Some(o.id())).ok_or_else(|| {
-            format!("Unknown OS name '{name}'. See `--osinfo list` for valid values.")
+            virtinst_core::trf!(
+                "Unknown OS name '%s'. See `--osinfo list` for valid values.",
+                name
+            )
         })?
     };
     set_os_id(inst, full_id)
@@ -51,7 +54,7 @@ fn set_os_full_id_cb(
     let db = OsDb::load_default().map_err(|e| e.to_string())?;
     let os = db
         .os(&full_id)
-        .ok_or_else(|| format!("Unknown libosinfo ID '{full_id}'"))?;
+        .ok_or_else(|| virtinst_core::trf!("Unknown libosinfo ID '%s'", full_id))?;
     set_os_id(inst, Some(os.id()))
 }
 

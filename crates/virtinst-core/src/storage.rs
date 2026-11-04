@@ -94,17 +94,17 @@ impl PoolXml {
 /// `POOL_TYPE_DESCS`/`vmmStoragePool.pretty_type`.
 pub fn pretty_pool_type(pool_type: &str) -> String {
     let desc = match pool_type {
-        "dir" => "Filesystem Directory",
-        "fs" => "Pre-Formatted Block Device",
-        "netfs" => "Network Exported Directory",
-        "logical" => "LVM Volume Group",
-        "disk" => "Physical Disk Device",
-        "iscsi" => "iSCSI Target",
-        "scsi" => "SCSI Host Adapter",
-        "mpath" => "Multipath Device Enumerator",
-        "gluster" => "Gluster Filesystem",
-        "rbd" => "RADOS Block Device/Ceph",
-        "zfs" => "ZFS Pool",
+        "dir" => crate::tr!("Filesystem Directory"),
+        "fs" => crate::tr!("Pre-Formatted Block Device"),
+        "netfs" => crate::tr!("Network Exported Directory"),
+        "logical" => crate::tr!("LVM Volume Group"),
+        "disk" => crate::tr!("Physical Disk Device"),
+        "iscsi" => crate::tr!("iSCSI Target"),
+        "scsi" => crate::tr!("SCSI Host Adapter"),
+        "mpath" => crate::tr!("Multipath Device Enumerator"),
+        "gluster" => crate::tr!("Gluster Filesystem"),
+        "rbd" => crate::tr!("RADOS Block Device/Ceph"),
+        "zfs" => crate::tr!("ZFS Pool"),
         _ => return format!("{pool_type} pool"),
     };
     desc.to_string()
@@ -278,7 +278,13 @@ pub fn build_default_pool(conn: &Connect, is_session: bool) -> Result<Pool, Stri
                 .find(|p| p.xml.name == "default")
                 .ok_or_else(|| "pool 'default' not found".to_string())
         })
-        .map_err(|e| format!("Couldn't create default storage pool '{path}': {e}"))
+        .map_err(|e| {
+            crate::trf!(
+                "Couldn't create default storage pool '%(path)s': %(error)s",
+                path = path,
+                error = e
+            )
+        })
 }
 
 /// `StoragePool.lookup_pool_by_path`.
@@ -397,7 +403,11 @@ pub(crate) fn check_if_path_managed(
                 .flatten()
         }),
         Err(e) => {
-            return Err(format!("Cannot use storage {path}: {e}"));
+            return Err(crate::trf!(
+                "Cannot use storage %(path)s: %(err)s",
+                path = path,
+                err = e
+            ));
         }
     };
     Ok((vol, Some(pool)))
@@ -590,7 +600,9 @@ impl VolInstall {
         };
         if let Some(fmt) = fmt {
             if !vol.supports_format() {
-                return Err("Format attribute not supported for this volume type".into());
+                return Err(
+                    crate::tr!("Format attribute not supported for this volume type").into(),
+                );
             }
             vol.format = Some(fmt.into());
         }
@@ -642,11 +654,11 @@ impl VolInstall {
     /// `is_size_conflict` against the pool's free space. A capacity
     /// that only fits sparse is a warning, logged.
     pub fn validate(&self, conn: &Connect) -> Result<(), String> {
-        validate_generic_name("Storage object", &self.name)?;
+        validate_generic_name(crate::tr!("Storage object"), &self.name)?;
         let pool = StoragePool::lookup_by_name(conn, &self.pool_name).map_err(|e| e.to_string())?;
         if StorageVol::lookup_by_name(&pool, &self.name).is_ok() {
-            return Err(format!(
-                "Name '{}' already in use by another volume.",
+            return Err(crate::trf!(
+                "Name '%s' already in use by another volume.",
                 self.name
             ));
         }
@@ -828,10 +840,10 @@ impl NewPool {
 
     /// `validate`: the name, then the defaults for what's unset.
     pub fn validate(&mut self, conn: &Connect, is_session: bool) -> Result<(), String> {
-        validate_generic_name("Storage object", &self.name)?;
+        validate_generic_name(crate::tr!("Storage object"), &self.name)?;
         if StoragePool::lookup_by_name(conn, &self.name).is_ok() {
-            return Err(format!(
-                "Name '{}' already in use by another pool.",
+            return Err(crate::trf!(
+                "Name '%s' already in use by another pool.",
                 self.name
             ));
         }
@@ -938,7 +950,10 @@ pub fn pool_list_from_sources(conn: &Connect, pool_type: &str) -> Vec<String> {
 /// matching QEMU.
 pub fn validate_generic_name(name_label: &str, val: &str) -> Result<(), String> {
     if val.is_empty() {
-        return Err(format!("A name must be specified for the {name_label}"));
+        return Err(crate::trf!(
+            "A name must be specified for the %s",
+            name_label
+        ));
     }
     if val.contains('/') {
         return Err(format!(
@@ -1271,9 +1286,12 @@ pub fn pool_xml_to_define(xml: &str) -> Result<String, String> {
 pub fn validate_pool(conn: &Connect, obj: &mut XmlObject, is_session: bool) -> Result<(), String> {
     let name = obj.get_str("name").unwrap_or_default();
     // `validate_name`
-    validate_generic_name("Storage object", &name)?;
+    validate_generic_name(crate::tr!("Storage object"), &name)?;
     if StoragePool::lookup_by_name(conn, &name).is_ok() {
-        return Err(format!("Name '{name}' already in use by another pool."));
+        return Err(crate::trf!(
+            "Name '%s' already in use by another pool.",
+            name
+        ));
     }
 
     let stub = NewPool {
@@ -1311,25 +1329,25 @@ pub fn validate_pool(conn: &Connect, obj: &mut XmlObject, is_session: bool) -> R
 /// again.
 pub fn install_pool(conn: &Connect, xml: &str, build: bool) -> Result<(), String> {
     let pool = StoragePool::define_xml(conn, xml, 0)
-        .map_err(|e| format!("Could not define storage pool: {e}"))?;
+        .map_err(|e| crate::trf!("Could not define storage pool: %s", e))?;
     let mut res = Ok(());
     if build {
         res = pool
             .build(sys::VIR_STORAGE_POOL_BUILD_NEW)
             .map(|_| ())
-            .map_err(|e| format!("Could not build storage pool: {e}"));
+            .map_err(|e| crate::trf!("Could not build storage pool: %s", e));
     }
     if res.is_ok() {
         res = pool
             .create(0)
             .map(|_| ())
-            .map_err(|e| format!("Could not start storage pool: {e}"));
+            .map_err(|e| crate::trf!("Could not start storage pool: %s", e));
     }
     if res.is_ok() {
         res = pool
             .set_autostart(true)
             .map(|_| ())
-            .map_err(|e| format!("Could not set pool autostart flag: {e}"));
+            .map_err(|e| crate::trf!("Could not set pool autostart flag: %s", e));
     }
     if res.is_err() {
         // Try and clean up the leftover pool
@@ -1412,9 +1430,12 @@ pub fn validate_volume(
 ) -> Result<(), String> {
     let name = vol.get_str("name").unwrap_or_default();
     // `validate_name`
-    validate_generic_name("Storage object", &name)?;
+    validate_generic_name(crate::tr!("Storage object"), &name)?;
     if StorageVol::lookup_by_name(pool, &name).is_ok() {
-        return Err(format!("Name '{name}' already in use by another volume."));
+        return Err(crate::trf!(
+            "Name '%s' already in use by another volume.",
+            name
+        ));
     }
     let pool_xml = pool_xml_of(pool)?;
 

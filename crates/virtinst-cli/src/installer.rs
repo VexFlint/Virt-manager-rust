@@ -77,7 +77,11 @@ pub fn validate_path(conn: &Connection, path: &str) -> Result<String, String> {
                     "NFS URL installs are no longer supported. Access your install media over an alternate transport like HTTP, or manually mount the NFS share and install from the local directory mount point."
                 );
             }
-            Err(format!("Validating install media '{path}' failed: {e}"))
+            Err(virtinst_core::trf!(
+                "Validating install media '%(media)s' failed: %(error)s",
+                media = path,
+                error = e
+            ))
         }
     }
 }
@@ -921,12 +925,15 @@ impl Installer {
     ) -> Result<virt::domain::Domain, String> {
         use virtinst_core::progress::Meter;
         let mut meter = crate::cli::get_meter();
-        meter.start("Creating domain...", None);
+        meter.start(virtinst_core::tr!("Creating domain..."), None);
         let needs_boot = doboot || initial_xml.is_some();
 
         let domain = if guest.get_str("type").as_deref() == Some("vz") && !self.is_reinstall {
             if transient {
-                return Err("Domain type 'vz' doesn't support transient installs.".into());
+                return Err(virtinst_core::tr!(
+                    "Domain type 'vz' doesn't support transient installs."
+                )
+                .into());
             }
             Self::manual_transient_create(conn, initial_xml, final_xml, needs_boot)?
         } else {
