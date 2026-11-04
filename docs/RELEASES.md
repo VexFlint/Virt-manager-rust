@@ -1,6 +1,6 @@
 # Plano de releases (GitHub Releases)
 
-Status: **plano, nada implementado**. Nenhum item começa sem o Vex escolher.
+Status: **em andamento** (R1 feito). Nenhum item começa sem o Vex escolher.
 Reserve o item como no `docs/ROADMAP.md` (seção 2) antes de começar.
 
 Modelo visual: a página de release do
@@ -97,7 +97,7 @@ Complexidade: P = pequeno, M = médio, G = grande.
 
 | # | PR | Tam. |
 |---|---|---|
-| R1 | Arquivos de instalação: `.desktop`, metainfo AppStream, ícones hicolor, schema, layout `/usr` (copiados do upstream `data/`) | M |
+| R1 | ✅ Arquivos de instalação: `.desktop`, metainfo AppStream, ícones hicolor, schema, layout `/usr` (copiados do upstream `data/`; `packaging/install.sh`) | M |
 | R2 | Versão: `--version` nos 4 binários, `CHANGELOG.md`, `.github/release.yml` (categorias) | P |
 | R3 | `release.yml`: gatilho na tag, checagem de versão, tarball, `SHA256SUMS`, atestação, release rascunho com o modelo | M |
 | R4 | `.deb` Ubuntu 24.04 + Debian 13 (`cargo-deb`) + smoke test | M |
