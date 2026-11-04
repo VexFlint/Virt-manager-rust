@@ -4,6 +4,8 @@
 # o SHA256SUMS e a atestação de origem, e cria a release como RASCUNHO.
 # workflow_dispatch e PRs que mexem no empacotamento: o mesmo, mas só guarda
 # os pacotes como artefato do run, sem atestação e sem release (para testar).
+# workflow_dispatch com notes_tag (ex.: v1.0.0): só refaz o topo das notas
+# dessa release a partir do CHANGELOG, sem compilar nada (job notes).
 name: Release
 
 on:
@@ -14,6 +16,11 @@ on:
       - .github/workflows/release.yml
       - packaging/**
   workflow_dispatch:
+    inputs:
+      notes_tag:
+        description: "Só refazer as notas da release desta tag (ex.: v1.0.0)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -23,6 +30,7 @@ env:
 
 jobs:
   check:
+    if: github.event_name != 'workflow_dispatch' || inputs.notes_tag == ''
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -279,3 +287,31 @@ jobs:
           path: |
             dist/*
             notes.md
+
+  # Refaz o topo das notas de uma release já publicada com o
+  # packaging/release-notes.sh atual (destaques do CHANGELOG) e mantém o
+  # "What's Changed" que o GitHub gerou.
+  notes:
+    if: github.event_name == 'workflow_dispatch' && inputs.notes_tag != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Notas
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.notes_tag }}
+        run: |
+          gh release view "$TAG" --json body,assets > release.json
+          # O script só precisa dos nomes dos arquivos para a tabela.
+          mkdir dist
+          jq -r '.assets[].name' release.json | while read -r name; do
+              : > "dist/$name"
+          done
+          sh packaging/release-notes.sh "${TAG#v}" dist > notes.md
+          jq -r .body release.json | sed -n '/^<!-- Release notes generated/,$p' > generated.md
+          test -s generated.md
+          printf '\n\n' >> notes.md
+          cat generated.md >> notes.md
+          gh release edit "$TAG" --notes-file notes.md

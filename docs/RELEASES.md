@@ -73,7 +73,7 @@ tabela (gerado por `packaging/release-notes.sh`).
 1:1 port of virt-manager 5.1.0 to Rust + GTK4.
 
 ### Highlights
-- (3 to 5 lines, what users will notice)
+(seção "## [X.Y.Z]" do CHANGELOG.md; o script falha se ela não existir)
 
 ### Install
 | System | File | Command |
@@ -92,7 +92,7 @@ Verify: `sha256sum -c SHA256SUMS` and
 <summary>Português (Brasil)</summary>
 
 Porte 1:1 do virt-manager 5.1.0 para Rust + GTK4.
-**Destaques** (os mesmos de cima, em português), como instalar e verificar.
+**Destaques** (seção "## [X.Y.Z]" do CHANGELOG.pt-BR.md), como instalar e verificar.
 </details>
 
 ### What's Changed
@@ -102,6 +102,10 @@ Porte 1:1 do virt-manager 5.1.0 para Rust + GTK4.
 ```
 
 Nomes de arquivo sempre com versão, distro e arquitetura, como no RustDesk.
+
+Para refazer as notas de uma release já publicada (ex.: corrigir o texto do
+CHANGELOG depois): Actions > Release > Run workflow com `notes_tag` = a tag.
+Só o topo muda; o "What's Changed" do GitHub fica.
 
 ## 5. PRs (em ordem)
 

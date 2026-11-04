@@ -4,12 +4,35 @@
 # arquivos que estão em <pasta>. O "O que mudou" vem do --generate-notes do
 # GitHub, por isso termina aqui.
 #
+# Os destaques vêm da seção "## [<versão>]" do CHANGELOG.md (inglês) e do
+# CHANGELOG.pt-BR.md (português), sem a linha "Based on"/"Baseado no", que
+# já está no parágrafo de cima. Sem seção para a versão, o script falha:
+# a release estável sai publicada direto, sem ninguém revisar o texto.
+#
 # Uso: sh packaging/release-notes.sh <versão> <pasta com os pacotes>
 set -eu
 
 v=$1
 dist=$2
 repo=${GITHUB_REPOSITORY:-VexFlint/Virt-manager-rust}
+top=$(dirname "$0")/..
+
+# Corpo da seção "## [<versão>]" de um CHANGELOG, com "### X" virando
+# "#### X" para ficar abaixo de "### Highlights".
+changes() {
+    awk -v v="$v" '
+        index($0, "## [" v "]") == 1 { on = 1; next }
+        on && /^## \[/ { exit }
+        on && /^(Based on|Baseado no) / { next }
+        on { sub(/^### /, "#### "); print }
+    ' "$1" | sed -e '/./,$!d' | awk 'NF { for (; blank; blank--) print ""; print; next } { blank++ }'
+}
+en=$(changes "$top/CHANGELOG.md")
+pt=$(changes "$top/CHANGELOG.pt-BR.md")
+if [ -z "$en" ] || [ -z "$pt" ]; then
+    echo "release-notes.sh: falta a seção [$v] no CHANGELOG.md ou no CHANGELOG.pt-BR.md" >&2
+    exit 1
+fi
 
 # Uma linha da tabela por arquivo que existe (glob sem casamento é ignorado).
 row() {
@@ -26,7 +49,7 @@ cat <<NOTES
 \`virt-manager\`/\`virtinst\` packages (same paths and same settings).
 
 ### Highlights
-- (edit before publishing: 3 to 5 lines, what users will notice)
+$en
 
 ### Install
 | System | File | Command |
@@ -50,7 +73,7 @@ Porte 1:1 do virt-manager 5.1.0 para Rust + GTK4. Substitui os pacotes
 \`virt-manager\`/\`virtinst\` da distro (mesmos caminhos e mesmas configurações).
 
 **Destaques**
-- (editar antes de publicar: os mesmos destaques acima, em português)
+$pt
 
 **Instalar:** baixe o arquivo do seu sistema na tabela acima e rode o
 comando dela. Em outras distros, use o tarball e siga o \`INSTALL\`.
