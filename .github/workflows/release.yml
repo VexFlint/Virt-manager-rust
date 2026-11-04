@@ -139,8 +139,48 @@ jobs:
           test -f /usr/share/glib-2.0/schemas/gschemas.compiled
           dpkg -L virt-manager-rust | grep -q '^/usr/share/man/man1/virt-install.1.gz$'
 
+  # .rpm compilado no container do Fedora (docs/RELEASES.md, R5).
+  # Requires de bibliotecas sai do gerador automático do rpm.
+  rpm:
+    needs: [check, ci]
+    runs-on: ubuntu-24.04
+    container: fedora:latest
+    steps:
+      - name: Install system dependencies
+        run: dnf install -y git gcc rpm-build clang-devel pkgconf-pkg-config libvirt-devel libosinfo-devel gtk4-devel gvnc-devel spice-glib-devel vte291-gtk4-devel gtksourceview5-devel python3-docutils
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release --workspace --locked
+      - name: .rpm
+        run: sh packaging/rpm/build.sh "${{ needs.check.outputs.version }}" dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-rpm
+          path: dist/*
+
+  rpm-smoke:
+    needs: rpm
+    runs-on: ubuntu-24.04
+    container: fedora:latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pkg-rpm
+      - name: Instalar
+        run: dnf install -y ./*.rpm
+      - name: Smoke
+        run: |
+          for tool in virt-manager virt-install virt-clone virt-xml; do
+              test "$($tool --version)" = 5.1.0
+          done
+          virt-xml --help >/dev/null
+          virt-clone --help >/dev/null
+          test -f /usr/share/glib-2.0/schemas/gschemas.compiled
+          rpm -ql virt-manager-rust | grep -q '^/usr/share/man/man1/virt-install.1'
+
   publish:
-    needs: [check, tarball, deb-smoke]
+    needs: [check, tarball, deb-smoke, rpm-smoke]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

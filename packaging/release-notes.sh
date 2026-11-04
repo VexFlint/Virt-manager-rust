@@ -22,6 +22,7 @@ Porte 1:1 do virt-manager 5.1.0 para Rust + GTK4. Substitui os pacotes
 |---|---|---|
 | Ubuntu 24.04 | \`virt-manager-rust_${v}_ubuntu24.04_amd64.deb\` | \`sudo apt install ./arquivo.deb\` |
 | Debian 13 | \`virt-manager-rust_${v}_debian13_amd64.deb\` | \`sudo apt install ./arquivo.deb\` |
+| Fedora | \`virt-manager-rust-$v-1.fcNN.x86_64.rpm\` | \`sudo dnf install ./arquivo.rpm\` |
 | Outras | \`virt-manager-rust-$v-x86_64-linux.tar.gz\` | ver \`INSTALL\` no tarball |
 | Windows | em breve (Fase 2) | |
 
