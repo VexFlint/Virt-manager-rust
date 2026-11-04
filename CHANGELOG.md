@@ -9,7 +9,7 @@ A versão do pacote vem do `Cargo.toml` da raiz. O `--version` dos quatro
 programas imprime a versão do upstream em que o porte se baseia (`5.1.0`),
 igual ao virt-manager Python; a versão do pacote aparece no "Sobre".
 
-## [Não lançado]
+## [0.9.0] - 2026-11-04
 
 Baseado no virt-manager 5.1.0.
 
