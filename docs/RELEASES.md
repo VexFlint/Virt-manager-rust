@@ -1,6 +1,6 @@
 # Plano de releases (GitHub Releases)
 
-Status: **em andamento** (R1 e R2 feitos). Nenhum item começa sem o Vex escolher.
+Status: **em andamento** (R1 a R3 feitos). Nenhum item começa sem o Vex escolher.
 Reserve o item como no `docs/ROADMAP.md` (seção 2) antes de começar.
 
 Modelo visual: a página de release do
@@ -99,7 +99,7 @@ Complexidade: P = pequeno, M = médio, G = grande.
 |---|---|---|
 | R1 | ✅ Arquivos de instalação: `.desktop`, metainfo AppStream, ícones hicolor, schema, layout `/usr` (copiados do upstream `data/`; `packaging/install.sh`) | M |
 | R2 | ✅ Versão: `--version` nos 4 binários (imprime `5.1.0`, como o upstream), `CHANGELOG.md`, `.github/release.yml` (categorias por label: GUI, CLI, bug, Infra) | P |
-| R3 | `release.yml`: gatilho na tag, checagem de versão, tarball, `SHA256SUMS`, atestação, release rascunho com o modelo | M |
+| R3 | ✅ `release.yml`: gatilho na tag, checagem de versão, tarball, `SHA256SUMS`, atestação, release rascunho com o modelo | M |
 | R4 | `.deb` Ubuntu 24.04 + Debian 13 (`cargo-deb`) + smoke test | M |
 | R5 | `.rpm` Fedora (`cargo-generate-rpm`) + smoke test | M |
 | R6 | Arch: `PKGBUILD` no repo + `.pkg.tar.zst` na release (AUR depois, precisa de chave SSH em secret) | M |
