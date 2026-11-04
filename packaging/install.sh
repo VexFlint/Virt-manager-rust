@@ -10,7 +10,7 @@
 #   DESTDIR=/tmp/raiz sh packaging/install.sh      # pacote: não roda os caches
 #
 # Variáveis: PREFIX (padrão /usr), DESTDIR (padrão vazio), BINDIR com os
-# binários compilados (padrão target/release).
+# binários compilados (padrão target/release). Precisa do msgfmt (gettext).
 #
 # Os ícones que não são "apps" o upstream põe em /usr/share/virt-manager/icons;
 # aqui eles já vão embutidos no binário (GResource), então só os ícones do
@@ -59,6 +59,16 @@ trap 'rm -rf "$mandir"' EXIT
 sh "$root/man/build.sh" "$mandir" >/dev/null
 for page in "$mandir"/*.1; do
     inst 0644 "$page" "$datadir/man/man1/$(basename "$page")"
+done
+
+# Traduções (po/meson.build): po/<língua>.po de cada língua do po/LINGUAS
+# vira /usr/share/locale/<língua>/LC_MESSAGES/virt-manager-rust.mo, que é
+# onde o build de release procura (virtinst_core::i18n::localedir).
+for lang in $(grep -v '^#' "$root/po/LINGUAS"); do
+    mo=$datadir/locale/$lang/LC_MESSAGES/virt-manager-rust.mo
+    mkdir -p "$(dirname "$mo")"
+    msgfmt --check -o "$mo" "$root/po/$lang.po"
+    chmod 0644 "$mo"
 done
 
 # Autocompletar (data/meson.build instala o de bash; zsh e fish são nossos).

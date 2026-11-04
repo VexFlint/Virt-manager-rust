@@ -52,7 +52,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libvirt-dev libosinfo-1.0-dev libclang-dev pkg-config libgtk-4-dev libgvnc-1.0-dev libspice-client-glib-2.0-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev python3-docutils
+          sudo apt-get install -y libvirt-dev libosinfo-1.0-dev libclang-dev pkg-config libgtk-4-dev libgvnc-1.0-dev libspice-client-glib-2.0-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev python3-docutils gettext
       - uses: dtolnay/rust-toolchain@stable
       - name: Build
         run: cargo build --release --workspace --locked
@@ -93,7 +93,7 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl git build-essential dpkg-dev libvirt-dev libosinfo-1.0-dev libclang-dev clang pkg-config libgtk-4-dev libgvnc-1.0-dev libspice-client-glib-2.0-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev python3-docutils
+          apt-get install -y --no-install-recommends ca-certificates curl git build-essential dpkg-dev libvirt-dev libosinfo-1.0-dev libclang-dev clang pkg-config libgtk-4-dev libgvnc-1.0-dev libspice-client-glib-2.0-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev python3-docutils gettext
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Build
@@ -147,7 +147,7 @@ jobs:
     container: fedora:latest
     steps:
       - name: Install system dependencies
-        run: dnf install -y git gcc rpm-build clang-devel pkgconf-pkg-config libvirt-devel libosinfo-devel gtk4-devel gvnc-devel spice-glib-devel vte291-gtk4-devel gtksourceview5-devel python3-docutils
+        run: dnf install -y git gcc rpm-build clang-devel pkgconf-pkg-config libvirt-devel libosinfo-devel gtk4-devel gvnc-devel spice-glib-devel vte291-gtk4-devel gtksourceview5-devel python3-docutils gettext
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Build

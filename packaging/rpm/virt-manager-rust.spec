@@ -44,3 +44,4 @@ install -D -m 0644 %{_sourcedir}/CHANGELOG.md %{buildroot}%{_docdir}/%{name}/CHA
 %{_datadir}/bash-completion/completions/virt-*
 %{_datadir}/zsh/site-functions/_virt-*
 %{_datadir}/fish/vendor_completions.d/virt-*.fish
+%{_datadir}/locale/*/LC_MESSAGES/virt-manager-rust.mo

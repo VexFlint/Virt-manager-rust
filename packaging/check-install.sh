@@ -31,7 +31,8 @@ for f in \
     usr/share/man/man1/virt-clone.1 usr/share/man/man1/virt-xml.1 \
     usr/share/bash-completion/completions/virt-install \
     usr/share/zsh/site-functions/_virt-xml \
-    usr/share/fish/vendor_completions.d/virt-clone.fish; do
+    usr/share/fish/vendor_completions.d/virt-clone.fish \
+    usr/share/locale/pt_BR/LC_MESSAGES/virt-manager-rust.mo; do
     if [ ! -e "$dest/$f" ]; then
         echo "faltou instalar /$f" >&2
         exit 1
@@ -50,6 +51,16 @@ for tool in virt-manager virt-install virt-clone virt-xml; do
     test "$("$dest/usr/bin/$tool" --version)" = 5.1.0
 done
 "$dest/usr/bin/virt-xml" --help >/dev/null
+# O .mo instalado traduz (o binário de release procura em /usr/share/locale;
+# aqui ele está no DESTDIR, então aponta a pasta à mão).
+if locale -a 2>/dev/null | grep -qi '^pt_BR.utf-\?8$'; then
+    out=$(VIRT_MANAGER_LOCALEDIR=$share/locale LC_ALL=pt_BR.UTF-8 LANGUAGE= \
+        "$dest/usr/bin/virt-install" --help)
+    case $out in
+    *"Criar uma nova máquina virtual"*) ;;
+    *) echo "a tradução pt_BR instalada não funcionou" >&2; exit 1 ;;
+    esac
+fi
 "$dest/usr/bin/virt-clone" --help >/dev/null
 
 echo "layout de instalação OK"
