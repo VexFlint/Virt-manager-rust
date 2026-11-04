@@ -2277,7 +2277,7 @@ dependencies = [
 
 [[package]]
 name = "virt-manager"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "clap",
  "futures-channel",
@@ -2305,7 +2305,7 @@ dependencies = [
 
 [[package]]
 name = "virtinst-cli"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "clap",
  "libc",
@@ -2317,7 +2317,7 @@ dependencies = [
 
 [[package]]
 name = "virtinst-core"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "bindgen",
  "gio-sys",
@@ -2336,7 +2336,7 @@ dependencies = [
 
 [[package]]
 name = "virtinst-xml"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "edit-xml",
  "virtinst-xml-derive",
@@ -2344,7 +2344,7 @@ dependencies = [
 
 [[package]]
 name = "virtinst-xml-derive"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "proc-macro2",
  "quote",

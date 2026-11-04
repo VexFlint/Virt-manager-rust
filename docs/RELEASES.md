@@ -1,6 +1,6 @@
 # Plano de releases (GitHub Releases)
 
-Status: **em andamento** (R1 a R6 feitos). Nenhum item começa sem o Vex escolher.
+Status: **em andamento** (R1 a R7 feitos). Nenhum item começa sem o Vex escolher.
 Reserve o item como no `docs/ROADMAP.md` (seção 2) antes de começar.
 
 Modelo visual: a página de release do
@@ -103,7 +103,7 @@ Complexidade: P = pequeno, M = médio, G = grande.
 | R4 | ✅ `.deb` Ubuntu 24.04 + Debian 13 (`dpkg-deb` + `dpkg-shlibdeps` sobre a árvore do `install.sh`, sem `cargo-deb`) + smoke test | M |
 | R5 | ✅ `.rpm` Fedora (`rpmbuild` sobre a árvore do `install.sh`) + smoke test | M |
 | R6 | ✅ Arch: `PKGBUILD` no repo + `.pkg.tar.zst` na release (AUR depois, precisa de chave SSH em secret) | M |
-| R7 | Primeira release `v0.9.0` (pre-release) | P |
+| R7 | ✅ Primeira release `v0.9.0` (pre-release) | P |
 | R8 | Flatpak (opcional, manifesto + permissões de libvirt) | G |
 | W1 | Windows `.msi` (Fase 2, depois do F2-1 do ROADMAP) | G |
 
