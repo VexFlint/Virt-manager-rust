@@ -51,6 +51,10 @@ cargo run -p virt-manager -- --connect test:///default
 
 ## Install
 
+Ready-made packages (Ubuntu 24.04, Debian 13, Fedora, Arch and a generic
+tarball) are on the [Releases page](https://github.com/VexFlint/Virt-manager-rust/releases).
+To build and install from source:
+
 `packaging/install.sh` installs everything in upstream's `/usr` layout
 (binaries, `.desktop`, AppStream metainfo, hicolor icon, GSettings schema,
 man pages, shell completion). It replaces a distro `virt-manager`/`virtinst`
