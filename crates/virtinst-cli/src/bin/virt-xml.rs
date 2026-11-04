@@ -1003,6 +1003,7 @@ fn defined_xml_is_unchanged(domain: &Domain, original_xml: &str) -> bool {
 }
 
 fn main() {
+    virtinst_core::i18n::init();
     cli::autocomplete(Args::command());
     cli::handle_version_flag();
     let mut args: Args = cli::argparse_parse("virt-xml", "[options]");

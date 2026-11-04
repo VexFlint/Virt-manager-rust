@@ -30,12 +30,16 @@ jobs:
       # upstream's) runs for --location ISO trees, --initrd-inject and
       # the cloud-init/unattended ISOs.
       # python3-docutils gives rst2man for the man pages (man/build.sh).
+      # gettext gives msgfmt, which compiles and checks po/*.po (the
+      # virtinst-core build.rs); the pt_BR.UTF-8 locale lets the i18n
+      # test see the translation (glibc ignores catalogs under C).
       # desktop-file-utils and appstream validate the installed .desktop
       # and metainfo (packaging/check-install.sh).
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libvirt-dev libosinfo-1.0-dev libclang-dev pkg-config libxml2-utils libgtk-4-dev libgvnc-1.0-dev libspice-client-glib-2.0-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev python3-libvirt python3-libxml2 python3-requests cpio xorriso genisoimage python3-docutils desktop-file-utils appstream
+          sudo apt-get install -y libvirt-dev libosinfo-1.0-dev libclang-dev pkg-config libxml2-utils libgtk-4-dev libgvnc-1.0-dev libspice-client-glib-2.0-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev python3-libvirt python3-libxml2 python3-requests cpio xorriso genisoimage python3-docutils desktop-file-utils appstream gettext
+          sudo localedef -i pt_BR -f UTF-8 pt_BR.UTF-8
 
       - uses: dtolnay/rust-toolchain@stable
         with:

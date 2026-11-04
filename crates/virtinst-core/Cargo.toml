@@ -33,6 +33,10 @@ gobject-sys = "0.22"
 gio-sys = "0.22"
 ureq = "2"
 regex = "1"
+# Translations (docs/ROADMAP.md, item T1): the same gettext catalogs as
+# upstream's `po/`, through the system libintl (glibc) instead of a
+# bundled copy.
+gettext-rs = { version = "0.7", features = ["gettext-system"] }
 #
 # gir-generated, not yet vendored/generated (ticket 09):
 #   - libvirt-glib event-loop + Connection/Domain signals

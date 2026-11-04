@@ -19,6 +19,7 @@
 //!   of definitions for the same C structs.
 
 fn main() {
+    compile_translations();
     let libosinfo = pkg_config::Config::new()
         .atleast_version("1.0")
         .probe("libosinfo-1.0")
@@ -78,4 +79,36 @@ fn main() {
     bindings
         .write_to_file(out_path.join("osinfo_bindings.rs"))
         .expect("failed to write osinfo_bindings.rs");
+}
+
+/// Compiles `po/<lang>.po` for every language in `po/LINGUAS` into
+/// `$OUT_DIR/locale/<lang>/LC_MESSAGES/virt-manager-rust.mo`, the
+/// catalog dev builds and the tests read (see `src/i18n.rs`).
+/// `msgfmt --check` also validates every catalog, so a broken `.po`
+/// (bad syntax, `%s` count differing from the msgid) fails the build.
+fn compile_translations() {
+    let po_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../po");
+    println!("cargo:rerun-if-changed={}", po_dir.display());
+    let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("locale");
+    let linguas = std::fs::read_to_string(po_dir.join("LINGUAS")).expect("po/LINGUAS");
+    for lang in linguas.split_whitespace().filter(|l| !l.starts_with('#')) {
+        let po = po_dir.join(format!("{lang}.po"));
+        let dir = out.join(lang).join("LC_MESSAGES");
+        std::fs::create_dir_all(&dir).unwrap();
+        let status = std::process::Command::new("msgfmt")
+            .arg("--check")
+            .arg("-o")
+            .arg(dir.join("virt-manager-rust.mo"))
+            .arg(&po)
+            .status();
+        match status {
+            Ok(s) if s.success() => {}
+            Ok(_) => panic!("msgfmt --check failed for {}", po.display()),
+            // No gettext tools: build without catalogs (English only).
+            Err(e) => {
+                println!("cargo:warning=msgfmt not found ({e}); building without translations");
+                return;
+            }
+        }
+    }
 }

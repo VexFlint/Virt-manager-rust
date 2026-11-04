@@ -26,6 +26,7 @@ pub mod storage;
 pub mod xmlbuilder;
 
 pub mod guest;
+pub mod i18n;
 pub use guest::Guest;
 
 #[cfg(test)]

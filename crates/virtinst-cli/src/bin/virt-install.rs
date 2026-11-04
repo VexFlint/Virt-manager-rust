@@ -2434,6 +2434,7 @@ fn xml_to_print(b: &mut Built, args: &Args, conn: &Connection) -> Option<String>
 }
 
 fn main() {
+    virtinst_core::i18n::init();
     cli::autocomplete(Args::command());
     cli::handle_version_flag();
     let mut args: Args = cli::argparse_parse("virt-install", "OPTIONS");
