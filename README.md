@@ -1,3 +1,16 @@
+> **Aviso:** este programa foi reconstruído com IA, principalmente como teste
+> e prova de conceito do potencial de um modelo de fronteira (Claude, da
+> Anthropic) e do seu harness para migrar um programa escrito em Python para
+> Rust. Temos todo o respeito pelos desenvolvedores do
+> [virt-manager original](https://github.com/virt-manager/virt-manager) e
+> pelo esforço deles em desenvolver o projeto.
+>
+> **Disclaimer:** this program was rebuilt with AI, mainly as a test and proof
+> of concept of how well a frontier model (Claude, by Anthropic) and its
+> harness can migrate a Python program to Rust. We have the utmost respect for
+> the developers of the [original virt-manager](https://github.com/virt-manager/virt-manager)
+> and their effort in building the project.
+
 # virt-manager, in Rust
 
 A from-scratch Rust rewrite of [virt-manager](https://github.com/virt-manager/virt-manager)
