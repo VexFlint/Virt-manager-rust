@@ -62,31 +62,41 @@ Notas automáticas: `.github/release.yml` com categorias por label
 
 ## 4. Modelo das notas de release
 
+Bilíngue: inglês primeiro, português num bloco `<details>` logo depois da
+tabela (gerado por `packaging/release-notes.sh`).
+
 ```markdown
 ## virt-manager-rust vX.Y.Z
 
-Porte 1:1 do virt-manager 5.1.0 para Rust + GTK4.
+1:1 port of virt-manager 5.1.0 to Rust + GTK4.
 
-### Destaques
-- (3 a 5 linhas, o que o usuário percebe)
+### Highlights
+- (3 to 5 lines, what users will notice)
 
-### Instalar
-| Sistema | Arquivo | Comando |
+### Install
+| System | File | Command |
 |---|---|---|
-| Ubuntu 24.04 | `virt-manager-rust_X.Y.Z_ubuntu24.04_amd64.deb` | `sudo apt install ./arquivo.deb` |
-| Debian 13 | `virt-manager-rust_X.Y.Z_debian13_amd64.deb` | `sudo apt install ./arquivo.deb` |
-| Fedora | `virt-manager-rust-X.Y.Z-1.fcNN.x86_64.rpm` | `sudo dnf install ./arquivo.rpm` |
-| Arch | AUR `virt-manager-rust` ou `.pkg.tar.zst` | `sudo pacman -U arquivo.pkg.tar.zst` |
-| Outras | `virt-manager-rust-X.Y.Z-x86_64-linux.tar.gz` | ver `INSTALL` no tarball |
-| Windows | em breve (Fase 2) | |
+| Ubuntu 24.04 | `virt-manager-rust_X.Y.Z_ubuntu24.04_amd64.deb` | `sudo apt install ./file.deb` |
+| Debian 13 | `virt-manager-rust_X.Y.Z_debian13_amd64.deb` | `sudo apt install ./file.deb` |
+| Fedora | `virt-manager-rust-X.Y.Z-1.fcNN.x86_64.rpm` | `sudo dnf install ./file.rpm` |
+| Arch | AUR `virt-manager-rust` or `.pkg.tar.zst` | `sudo pacman -U file.pkg.tar.zst` |
+| Other | `virt-manager-rust-X.Y.Z-x86_64-linux.tar.gz` | see `INSTALL` in the tarball |
+| Windows | coming later (phase 2) | |
 
-Verificar: `sha256sum -c SHA256SUMS` e
-`gh attestation verify arquivo --repo VexFlint/Virt-manager-rust`.
+Verify: `sha256sum -c SHA256SUMS` and
+`gh attestation verify file --repo VexFlint/Virt-manager-rust`.
 
-### O que mudou
+<details>
+<summary>Português (Brasil)</summary>
+
+Porte 1:1 do virt-manager 5.1.0 para Rust + GTK4.
+**Destaques** (os mesmos de cima, em português), como instalar e verificar.
+</details>
+
+### What's Changed
 (gerado pelo GitHub a partir dos PRs)
 
-**Changelog completo:** vA.B.C...vX.Y.Z
+**Full Changelog:** vA.B.C...vX.Y.Z
 ```
 
 Nomes de arquivo sempre com versão, distro e arquitetura, como no RustDesk.

@@ -1,16 +1,19 @@
-# Como contribuir
+**English** · [Português (Brasil)](CONTRIBUTING.pt-BR.md)
 
-Guia rápido para humanos. As regras completas (para pessoas e para IAs) estão
-no [`AGENTS.md`](AGENTS.md); o que falta fazer está no
-[`docs/ROADMAP.md`](docs/ROADMAP.md).
+# Contributing
 
-## O objetivo em uma frase
+Quick guide for humans. The full rules (for people and for AIs) are in
+[`AGENTS.md`](AGENTS.md); what's left to do is in
+[`docs/ROADMAP.md`](docs/ROADMAP.md). Both are written in Portuguese, the
+maintainers' language. Commit messages and PR titles are in Portuguese too.
 
-Uma cópia 1:1 do [virt-manager v5.1.0](https://github.com/virt-manager/virt-manager/tree/v5.1.0)
-em Rust: mesmas telas, textos, menus e comportamento. Bibliotecas modernas
-sim, UX nova não.
+## The goal in one sentence
 
-## 1. Preparar a máquina (Ubuntu 24.04)
+A 1:1 copy of [virt-manager v5.1.0](https://github.com/virt-manager/virt-manager/tree/v5.1.0)
+in Rust: same screens, texts, menus and behavior. Modern libraries yes, new
+UX no.
+
+## 1. Set up the machine (Ubuntu 24.04)
 
 ```sh
 sudo apt-get update
@@ -20,17 +23,17 @@ sudo apt-get install -y libvirt-dev libosinfo-1.0-dev libclang-dev pkg-config \
   cpio xorriso genisoimage python3-docutils
 ```
 
-E o Rust estável com `rustfmt` e `clippy` (`rustup component add rustfmt clippy`).
+Plus stable Rust with `rustfmt` and `clippy` (`rustup component add rustfmt clippy`).
 
-## 2. Compilar e rodar
+## 2. Build and run
 
 ```sh
 cargo build --workspace
-cargo run -p virt-manager -- --connect test:///default   # GUI sem daemon
+cargo run -p virt-manager -- --connect test:///default   # GUI, no daemon
 cargo run -p virtinst-cli --bin virt-install -- --help    # CLI
 ```
 
-## 3. Testar (o mesmo que a CI)
+## 3. Test (same as CI)
 
 ```sh
 cargo fmt --all --check
@@ -38,36 +41,35 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo build --workspace
 cargo test --workspace --no-fail-fast
 
-# harness: compara nossa CLI com a do upstream, byte a byte
+# harness: compares our CLI with upstream's, byte for byte
 git clone --depth 1 --branch v5.1.0 https://github.com/virt-manager/virt-manager /tmp/virt-manager-upstream
 UPSTREAM_REF=/tmp/virt-manager-upstream bash .scratch/rust-conversion/harness/run.sh
 ```
 
-## 4. Abrir um PR
+## 4. Open a PR
 
-1. Escolha um item **livre** no [`docs/ROADMAP.md`](docs/ROADMAP.md) e
-   reserve-o (PR draft ou issue com `[#N]` no título). Veja a seção 2 de lá.
-2. Branch nova a partir do `master`:
-   `git fetch origin master && git checkout -b minha-branch origin/master`.
-3. Um PR pequeno por tela (ou pedaço de tela). Se mexer em tela, coloque
-   prints na descrição.
-4. Rode o passo 3 localmente, faça push e abra o PR.
-5. Quando o check **`build-test`** ficar verde e não houver revisão
-   bloqueante, faça **squash merge**. Marque o item como ✅ no roadmap no
-   mesmo PR.
+1. Pick a **free** item in [`docs/ROADMAP.md`](docs/ROADMAP.md) and claim it
+   (draft PR or issue with `[#N]` in the title). See section 2 there.
+2. New branch from `master`:
+   `git fetch origin master && git checkout -b my-branch origin/master`.
+3. One small PR per screen (or piece of a screen). If it touches a screen,
+   put screenshots in the description.
+4. Run step 3 locally, push and open the PR.
+5. When the **`build-test`** check is green and there is no blocking review,
+   **squash merge**. Mark the item as ✅ in the roadmap in the same PR.
 
-O `master` é protegido: só entra por PR, com `build-test` verde, sem force
-push.
+`master` is protected: changes only land through PRs, with `build-test`
+green, no force push.
 
-## Onde está cada coisa
+## Where things are
 
-- `crates/virtinst-core`: lógica sem GUI (XML, defaults, storage, instalação),
-  espelha o `virtinst/` do upstream.
-- `crates/virtinst-cli`: `virt-install`, `virt-xml`, `virt-clone` e os parsers
-  das opções.
-- `crates/virtinst-xml` e `crates/virtinst-xml-derive`: base de modelagem
-  do XML (traits e o derive `XmlBound`).
-- `crates/virt-manager`: a GUI em GTK4; cada `.rs` tem o nome do módulo
-  equivalente do upstream (`createvm.rs` ↔ `virtManager/createvm.py`).
-- `.scratch/rust-conversion/`: decisões de arquitetura (`map.md`, `issues/`),
-  o harness e o handoff da CLI.
+- `crates/virtinst-core`: logic without GUI (XML, defaults, storage,
+  install), mirrors upstream's `virtinst/`.
+- `crates/virtinst-cli`: `virt-install`, `virt-xml`, `virt-clone` and the
+  option parsers.
+- `crates/virtinst-xml` and `crates/virtinst-xml-derive`: XML modeling base
+  (traits and the `XmlBound` derive).
+- `crates/virt-manager`: the GTK4 GUI; each `.rs` is named after the
+  equivalent upstream module (`createvm.rs` ↔ `virtManager/createvm.py`).
+- `.scratch/rust-conversion/`: architecture decisions (`map.md`, `issues/`),
+  the harness and the CLI handoff.

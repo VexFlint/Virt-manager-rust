@@ -6,9 +6,9 @@ changelog:
       labels: [GUI]
     - title: CLI
       labels: [CLI]
-    - title: Correções
+    - title: Fixes
       labels: [bug]
     - title: Infra
       labels: [Infra, documentation]
-    - title: Outros
+    - title: Other
       labels: ["*"]

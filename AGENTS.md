@@ -5,7 +5,7 @@ Gemini...) e para humanos que trabalham neste repositório. É curto de
 propósito: leia tudo antes de começar.
 
 Mais contexto:
-- [`CONTRIBUTING.md`](CONTRIBUTING.md): compilar, testar e abrir PR, passo a passo.
+- [`CONTRIBUTING.pt-BR.md`](CONTRIBUTING.pt-BR.md): compilar, testar e abrir PR, passo a passo.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md): o que falta, em ordem, e como dividir
   o trabalho sem duplicar.
 
@@ -25,6 +25,12 @@ Mais contexto:
 4. **Antes de começar um item do roadmap, reserve-o** (seção 2 do
    [`docs/ROADMAP.md`](docs/ROADMAP.md)) para não duplicar trabalho.
 5. Nunca desative, pule ou apague um teste para deixar a CI verde.
+6. **Documentos para o público são bilíngues:** inglês no arquivo principal
+   (`README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, notas de release,
+   `INSTALL` do tarball) e português no `*.pt-BR.md` ao lado (ou na seção em
+   português do mesmo arquivo). Mudou um, mude o outro no mesmo PR. Os
+   documentos internos (`AGENTS.md`, `docs/ROADMAP.md`, `docs/RELEASES.md`)
+   ficam só em português.
 
 ## 2. Fluxo de PR
 

@@ -1,3 +1,11 @@
+**English** · [Português (Brasil)](README.pt-BR.md)
+
+> **Disclaimer:** this program was rebuilt with AI, mainly as a test and proof
+> of concept of how well a frontier model (Claude, by Anthropic) and its
+> harness can migrate a Python program to Rust. We have the utmost respect for
+> the developers of the [original virt-manager](https://github.com/virt-manager/virt-manager)
+> and their effort in building the project.
+
 # virt-manager, in Rust
 
 A from-scratch Rust rewrite of [virt-manager](https://github.com/virt-manager/virt-manager)
@@ -51,6 +59,10 @@ cargo run -p virt-manager -- --connect test:///default
 
 ## Install
 
+Ready-made packages (Ubuntu 24.04, Debian 13, Fedora, Arch and a generic
+tarball) are on the [Releases page](https://github.com/VexFlint/Virt-manager-rust/releases).
+To build and install from source:
+
 `packaging/install.sh` installs everything in upstream's `/usr` layout
 (binaries, `.desktop`, AppStream metainfo, hicolor icon, GSettings schema,
 man pages, shell completion). It replaces a distro `virt-manager`/`virtinst`
@@ -95,6 +107,11 @@ for the full reasoning behind each one.
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) (build, tests, PRs),
 [`AGENTS.md`](AGENTS.md) (project rules, also read by AI agents) and
 [`docs/ROADMAP.md`](docs/ROADMAP.md) (what's left and how to claim an item).
+The project rules and planning docs (`AGENTS.md`, `docs/ROADMAP.md`,
+`docs/RELEASES.md`) are written in Portuguese, the maintainers' language.
+
+The program's interface is in English, with upstream's own strings. It has no
+translations yet (upstream's gettext catalogs are not wired in).
 
 ## License
 
