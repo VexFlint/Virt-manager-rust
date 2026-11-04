@@ -180,7 +180,10 @@ impl Cli {
 }
 
 fn main() -> gtk::glib::ExitCode {
-    virtinst_core::i18n::init();
+    virtinst_core::i18n::init_gui();
+    // The locale is already set up above (including the language chosen
+    // in Preferences); stop gtk_init from resetting it with setlocale().
+    gtk::disable_setlocale();
     let cli = Cli::parse();
     if cli.version {
         // argparse's `action="version"`: `BuildConfig.version` alone.

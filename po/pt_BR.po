@@ -7711,3 +7711,12 @@ msgstr ""
 
 #~ msgid "%s:%s"
 #~ msgstr "%s:%s"
+
+# virt-manager-rust: textos que não existem no upstream.
+#: crates/virt-manager/src/preferences.rs
+msgid "_Language:"
+msgstr "_Idioma:"
+
+#: crates/virt-manager/src/preferences.rs
+msgid "Restart virt-manager for the language change to take effect."
+msgstr "Reinicie o virt-manager para que a troca de idioma tenha efeito."

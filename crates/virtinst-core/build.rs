@@ -91,6 +91,7 @@ fn compile_translations() {
     println!("cargo:rerun-if-changed={}", po_dir.display());
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("locale");
     let linguas = std::fs::read_to_string(po_dir.join("LINGUAS")).expect("po/LINGUAS");
+    write_language_list(&po_dir, &linguas);
     for lang in linguas.split_whitespace().filter(|l| !l.starts_with('#')) {
         let po = po_dir.join(format!("{lang}.po"));
         let dir = out.join(lang).join("LC_MESSAGES");
@@ -111,4 +112,31 @@ fn compile_translations() {
             }
         }
     }
+}
+
+/// `$OUT_DIR/languages.rs`: every language in `po/LINGUAS` with the
+/// English name from its `.po` header (`Language-Team: Portuguese
+/// (Brazil) <...>`), for the language chooser in Preferences. A language
+/// added to `po/LINGUAS` shows up there with no code change.
+fn write_language_list(po_dir: &std::path::Path, linguas: &str) {
+    let mut out = String::from("pub const LANGUAGES: &[(&str, &str)] = &[\n");
+    for lang in linguas.split_whitespace().filter(|l| !l.starts_with('#')) {
+        let po = std::fs::read_to_string(po_dir.join(format!("{lang}.po"))).unwrap_or_default();
+        let name = po
+            .lines()
+            .find_map(|l| l.strip_prefix("\"Language-Team: "))
+            .map(|t| {
+                t.split(" <")
+                    .next()
+                    .unwrap_or(t)
+                    .trim_end_matches("\\n\"")
+                    .trim()
+            })
+            .filter(|t| !t.is_empty())
+            .unwrap_or(lang);
+        out += &format!("    ({lang:?}, {name:?}),\n");
+    }
+    out += "];\n";
+    let path = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("languages.rs");
+    std::fs::write(path, out).unwrap();
 }

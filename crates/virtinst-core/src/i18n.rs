@@ -39,6 +39,72 @@ pub fn localedir() -> String {
     "/usr/share/locale".to_string()
 }
 
+include!(concat!(env!("OUT_DIR"), "/languages.rs"));
+
+/// Where the GUI keeps the language chosen in Preferences:
+/// `$XDG_CONFIG_HOME/virt-manager-rust/language` (one code, e.g. `pt_BR`).
+/// A file of our own, not a GSettings key: the schema is upstream's,
+/// shared with the Python virt-manager, and stays 1:1.
+pub fn language_file() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".config")))?;
+    Some(base.join("virt-manager-rust").join("language"))
+}
+
+/// The language chosen in Preferences, if it is still in [`LANGUAGES`].
+/// `None` is "System default".
+pub fn saved_language() -> Option<String> {
+    let code = std::fs::read_to_string(language_file()?).ok()?;
+    let code = code.trim();
+    LANGUAGES
+        .iter()
+        .any(|(c, _)| *c == code)
+        .then(|| code.to_string())
+}
+
+/// Saves (or, with `None`, clears) the Preferences choice. It applies at
+/// the next start, because gettext binds once in [`init_gui`].
+pub fn save_language(code: Option<&str>) -> std::io::Result<()> {
+    let Some(path) = language_file() else {
+        return Ok(());
+    };
+    match code {
+        Some(code) => {
+            std::fs::create_dir_all(path.parent().unwrap())?;
+            std::fs::write(&path, format!("{code}\n"))
+        }
+        None => match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        },
+    }
+}
+
+/// [`init`] for the GUI: the Preferences choice, if any, goes into
+/// `LANGUAGE` first. glibc ignores `LANGUAGE` under the C locale, so
+/// `LC_MESSAGES` also tries `<code>.UTF-8` (works when that locale is
+/// installed; otherwise the system language stays).
+pub fn init_gui() {
+    let saved = saved_language();
+    if let Some(code) = &saved {
+        std::env::set_var("LANGUAGE", code);
+    }
+    init();
+    if let Some(code) = saved {
+        let current = gettextrs::setlocale(gettextrs::LocaleCategory::LcMessages, Vec::<u8>::new())
+            .map(|v| String::from_utf8_lossy(&v).into_owned())
+            .unwrap_or_default();
+        if current == "C" || current == "POSIX" || current.starts_with("C.") {
+            gettextrs::setlocale(
+                gettextrs::LocaleCategory::LcMessages,
+                format!("{code}.UTF-8"),
+            );
+        }
+    }
+}
+
 /// Call first thing in `main`: `setlocale(LC_ALL, "")` and binds
 /// [`DOMAIN`]. Failures are ignored, as upstream does: the text just
 /// stays in English.
@@ -195,6 +261,14 @@ mod tests {
         assert_eq!(format("%(nope)s", &[], &[]), "%(nope)s");
         assert_eq!(format("50% %.1f", &[], &[]), "50% %.1f");
         assert_eq!(format("ação %s", &[&"é"], &[]), "ação é");
+    }
+
+    #[test]
+    fn language_list_comes_from_linguas() {
+        assert!(
+            LANGUAGES.contains(&("pt_BR", "Portuguese (Brazil)")),
+            "{LANGUAGES:?}"
+        );
     }
 
     #[test]
