@@ -161,8 +161,10 @@ fn parse_device_xml(xml: &str, expected: &str) -> Result<(Document, Element), St
     let root = doc.root_element().ok_or("XML has no root element")?;
     let found = root.full_name(&doc);
     if found != expected {
-        return Err(format!(
-            "XML did not have expected root element name '{expected}', found '{found}'"
+        return Err(virtinst_core::trf!(
+            "XML did not have expected root element name '%(expectname)s', found '%(foundname)s'",
+            expectname = expected,
+            foundname = found
         ));
     }
     Ok((doc, root))
@@ -246,7 +248,11 @@ fn hostdev_rows(devtype: &str, devs: &[(NodeDevice, bool)]) -> Vec<HostdevRow> {
             if devtype == "mdev" && prettyname.chars().count() <= 41 {
                 for parentdev in &all {
                     if dev.parent.as_ref() == Some(&parentdev.name) {
-                        prettyname = format!("{} {prettyname}", pretty(parentdev));
+                        prettyname = virtinst_core::trf!(
+                            "%(input_bus)s %(input_type)s",
+                            input_bus = pretty(parentdev),
+                            input_type = prettyname
+                        );
                     }
                 }
             }
@@ -261,7 +267,12 @@ fn hostdev_rows(devtype: &str, devs: &[(NodeDevice, bool)]) -> Vec<HostdevRow> {
         .collect();
     rows.sort_by(|a, b| a.1.cmp(&b.1));
     if rows.is_empty() {
-        rows.push((None, "No Devices Available".into(), false, None));
+        rows.push((
+            None,
+            virtinst_core::tr!("No Devices Available").into(),
+            false,
+            None,
+        ));
     }
     rows
 }
@@ -438,7 +449,7 @@ impl AddHardware {
         let guest = guest_info(vm);
 
         let window = gtk::Window::builder()
-            .title("Add New Virtual Hardware")
+            .title(virtinst_core::tr!("Add New Virtual Hardware"))
             .hide_on_close(true)
             .build();
         window.set_size_request(500, 400);
@@ -446,7 +457,9 @@ impl AddHardware {
         // hw-list
         let hw_list = gtk::ListBox::new();
         hw_list.set_selection_mode(gtk::SelectionMode::Browse);
-        hw_list.update_property(&[gtk::accessible::Property::Label("Hardware")]);
+        hw_list.update_property(&[gtk::accessible::Property::Label(virtinst_core::tr!(
+            "Hardware"
+        ))]);
         let hw_scroll = gtk::ScrolledWindow::builder()
             .child(&hw_list)
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -459,7 +472,12 @@ impl AddHardware {
         let controller_type = SimpleCombo::new(
             CONTROLLER_TYPES
                 .iter()
-                .map(|(v, l)| (Some(v.to_string()), l.to_string()))
+                .map(|(v, l)| {
+                    (
+                        Some(v.to_string()),
+                        virtinst_core::i18n::gettext_static(l).to_string(),
+                    )
+                })
                 .collect(),
             str::to_string,
         );
@@ -471,9 +489,9 @@ impl AddHardware {
         ctype_box.append(&controller_type.widget);
         ctype_box.append(&controller_tooltip);
         let mut g = Grid::new();
-        let row = g.row("_Type:", &ctype_box);
+        let row = g.row(virtinst_core::tr!("_Type:"), &ctype_box);
         row.set_mnemonic(&controller_type.widget);
-        let controller_model_row = g.row("_Model:", &controller_model.widget);
+        let controller_model_row = g.row(virtinst_core::tr!("_Model:"), &controller_model.widget);
         let controller_page = page_box(&g.into_grid());
 
         // Storage
@@ -486,14 +504,14 @@ impl AddHardware {
         let storage_devtype = icon_dropdown(
             &disk_devices
                 .iter()
-                .map(|(_, icon, label)| (*icon, *label))
+                .map(|(_, icon, label)| (*icon, virtinst_core::i18n::gettext_static(label)))
                 .collect::<Vec<_>>(),
         );
         let storage_devtypes: Vec<&'static str> = disk_devices.iter().map(|(d, _, _)| *d).collect();
         let storage_bustype = SimpleCombo::unsorted(vec![], crate::details::disk_pretty_bus);
         let mut g = Grid::new();
-        g.row("_Device type:", &storage_devtype);
-        g.row("_Bus type:", &storage_bustype.widget);
+        g.row(virtinst_core::tr!("_Device type:"), &storage_devtype);
+        g.row(virtinst_core::tr!("_Bus type:"), &storage_bustype.widget);
         let disk_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
         disk_page.append(&addstorage.top_box);
         disk_page.append(&g.into_grid());
@@ -505,7 +523,7 @@ impl AddHardware {
         mac_address.update_property(&[gtk::accessible::Property::Label("mac-address-enable")]);
         let create_mac_address = gtk::Entry::new();
         create_mac_address.set_max_length(17);
-        create_mac_address.set_text("aa:bb:cc:dd:ee:ff");
+        create_mac_address.set_text(virtinst_core::tr!("aa:bb:cc:dd:ee:ff"));
         create_mac_address
             .update_property(&[gtk::accessible::Property::Label("MAC Address Field")]);
         let net_model = SimpleCombo::unsorted(vec![], str::to_string);
@@ -518,12 +536,12 @@ impl AddHardware {
         let mac_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         mac_box.append(&mac_address);
         mac_box.append(&create_mac_address);
-        let mac_label = gtk::Label::with_mnemonic("_MAC address:");
+        let mac_label = gtk::Label::with_mnemonic(virtinst_core::tr!("_MAC address:"));
         mac_label.set_halign(gtk::Align::End);
         mac_label.set_mnemonic_widget(Some(&create_mac_address));
         net_grid.attach(&mac_label, 0, 1, 1, 1);
         net_grid.attach(&mac_box, 1, 1, 1, 1);
-        let model_label = gtk::Label::with_mnemonic("Device mode_l:");
+        let model_label = gtk::Label::with_mnemonic(virtinst_core::tr!("Device mode_l:"));
         model_label.set_halign(gtk::Align::End);
         model_label.set_mnemonic_widget(Some(&net_model.widget));
         net_grid.attach(&model_label, 0, 2, 1, 1);
@@ -543,7 +561,7 @@ impl AddHardware {
             .vexpand(true)
             .hexpand(true)
             .build();
-        let mut values = vec![(None, "Hypervisor default".to_string())];
+        let mut values = vec![(None, virtinst_core::tr!("Hypervisor default").to_string())];
         values.extend(
             virtinst_core::devices::hostdev::STARTUP_POLICIES
                 .iter()
@@ -552,14 +570,14 @@ impl AddHardware {
         let hostdev_usb_startup_policy = SimpleCombo::unsorted(values, str::to_string);
         hostdev_usb_startup_policy.set(None);
         let hostdev_usb_startup_policy_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        let policy_label = gtk::Label::new(Some("Startup Policy:"));
+        let policy_label = gtk::Label::new(Some(virtinst_core::tr!("Startup Policy:")));
         hostdev_usb_startup_policy_row.append(&policy_label);
         hostdev_usb_startup_policy_row.append(&hostdev_usb_startup_policy.widget);
         let host_grid = gtk::Grid::builder()
             .row_spacing(6)
             .column_spacing(6)
             .build();
-        let host_label = gtk::Label::with_mnemonic("Host _Device:");
+        let host_label = gtk::Label::with_mnemonic(virtinst_core::tr!("Host _Device:"));
         host_label.set_halign(gtk::Align::Start);
         host_label.set_mnemonic_widget(Some(&host_device));
         host_grid.attach(&host_label, 0, 0, 1, 1);
@@ -578,7 +596,7 @@ impl AddHardware {
         );
         input_type.widget.set_selected(0);
         let mut g = Grid::new();
-        g.row("_Type:", &input_type.widget);
+        g.row(virtinst_core::tr!("_Type:"), &input_type.widget);
         let input_page = page_box(&g.into_grid());
 
         // Graphics
@@ -595,7 +613,7 @@ impl AddHardware {
         );
         sound_model.set(Some(guest.default_sound_model()));
         let mut g = Grid::new();
-        g.row("_Model:", &sound_model.widget);
+        g.row(virtinst_core::tr!("_Model:"), &sound_model.widget);
         let sound_page = page_box(&g.into_grid());
 
         // Char
@@ -609,9 +627,9 @@ impl AddHardware {
         let char_device_type = SimpleCombo::new(vec![], str::to_string);
         let char_target_type = SimpleCombo::new(
             if is_qemu {
-                vec![(Some("virtio".into()), "VirtIO".into())]
+                vec![(Some("virtio".into()), virtinst_core::tr!("VirtIO").into())]
             } else {
-                vec![(None, "Hypervisor default".into())]
+                vec![(None, virtinst_core::tr!("Hypervisor default").into())]
             },
             str::to_string,
         );
@@ -622,14 +640,17 @@ impl AddHardware {
         let char_channel = gtk::Entry::new();
         let char_clipboard = gtk::CheckButton::new();
         let mut g = Grid::new();
-        let char_target_name_row = g.row("_Name:", &char_target_name.top);
+        let char_target_name_row = g.row(virtinst_core::tr!("_Name:"), &char_target_name.top);
         char_target_name_row.set_mnemonic(&char_target_name.entry);
-        g.row("Device _Type:", &char_device_type.widget);
-        let char_target_type_row = g.row("T_ype:", &char_target_type.widget);
-        let char_auto_socket_row = g.row("_Auto socket:", &char_auto_socket);
-        let char_path_row = g.row("_Path:", &char_path);
-        let char_channel_row = g.row("_Channel:", &char_channel);
-        let char_clipboard_row = g.row("_Share Clipboard:", &char_clipboard);
+        g.row(
+            virtinst_core::tr!("Device _Type:"),
+            &char_device_type.widget,
+        );
+        let char_target_type_row = g.row(virtinst_core::tr!("T_ype:"), &char_target_type.widget);
+        let char_auto_socket_row = g.row(virtinst_core::tr!("_Auto socket:"), &char_auto_socket);
+        let char_path_row = g.row(virtinst_core::tr!("_Path:"), &char_path);
+        let char_channel_row = g.row(virtinst_core::tr!("_Channel:"), &char_channel);
+        let char_clipboard_row = g.row(virtinst_core::tr!("_Share Clipboard:"), &char_clipboard);
         let char_page = page_box(&g.into_grid());
 
         // Video
@@ -639,12 +660,12 @@ impl AddHardware {
                 .map(|m| (Some(m.to_string()), crate::details::video_pretty_model(m)))
                 .collect();
         if values.is_empty() {
-            values.push((None, "Hypervisor default".into()));
+            values.push((None, virtinst_core::tr!("Hypervisor default").into()));
         }
         let video_model = SimpleCombo::new(values, crate::details::video_pretty_model);
         video_model.set(guest.default_video_model(None, is_qemu));
         let mut g = Grid::new();
-        g.row("_Model:", &video_model.widget);
+        g.row(virtinst_core::tr!("_Model:"), &video_model.widget);
         let video_page = page_box(&g.into_grid());
 
         // Watchdog
@@ -666,8 +687,8 @@ impl AddHardware {
         );
         watchdog_action.set(Some("reset"));
         let mut g = Grid::new();
-        g.row("_Model:", &watchdog_model.widget);
-        g.row("Ac_tion:", &watchdog_action.widget);
+        g.row(virtinst_core::tr!("_Model:"), &watchdog_model.widget);
+        g.row(virtinst_core::tr!("Ac_tion:"), &watchdog_action.widget);
         let watchdog_page = page_box(&g.into_grid());
 
         // Filesystem
@@ -677,24 +698,30 @@ impl AddHardware {
         // Smartcard
         let smartcard_mode = SimpleCombo::new(
             vec![
-                (Some("passthrough".into()), "Passthrough".into()),
-                (Some("host".into()), "Host".into()),
+                (
+                    Some("passthrough".into()),
+                    virtinst_core::tr!("Passthrough").into(),
+                ),
+                (Some("host".into()), virtinst_core::tr!("Host").into()),
             ],
             str::to_string,
         );
         smartcard_mode.widget.set_selected(0);
         let mut g = Grid::new();
-        g.row("_Mode:", &smartcard_mode.widget);
+        g.row(virtinst_core::tr!("_Mode:"), &smartcard_mode.widget);
         let smartcard_page = page_box(&g.into_grid());
 
         // USB redirection
         let usbredir_type = SimpleCombo::new(
-            vec![(Some("spicevmc".into()), "Spice channel".into())],
+            vec![(
+                Some("spicevmc".into()),
+                virtinst_core::tr!("Spice channel").into(),
+            )],
             str::to_string,
         );
         usbredir_type.widget.set_selected(0);
         let mut g = Grid::new();
-        g.row("_Type:", &usbredir_type.widget);
+        g.row(virtinst_core::tr!("_Type:"), &usbredir_type.widget);
         let usbredir_page = page_box(&g.into_grid());
 
         // TPM
@@ -705,15 +732,17 @@ impl AddHardware {
         let rng_device = gtk::Entry::new();
         rng_device.set_hexpand(true);
         let mut g = Grid::new();
-        g.row("Host _Device:", &rng_device);
+        g.row(virtinst_core::tr!("Host _Device:"), &rng_device);
         let rng_page = page_box(&g.into_grid());
 
         // Panic
-        let panic_model =
-            SimpleCombo::new(vec![(None, "Hypervisor default".into())], str::to_string);
+        let panic_model = SimpleCombo::new(
+            vec![(None, virtinst_core::tr!("Hypervisor default").into())],
+            str::to_string,
+        );
         panic_model.set(None);
         let mut g = Grid::new();
-        g.row("_Model:", &panic_model.widget);
+        g.row(virtinst_core::tr!("_Model:"), &panic_model.widget);
         let panic_page = page_box(&g.into_grid());
 
         // VSOCK
@@ -776,8 +805,8 @@ impl AddHardware {
         mainhbox.append(&hw_scroll);
         mainhbox.append(&top_pages);
 
-        let cancel = gtk::Button::with_mnemonic("_Cancel");
-        let finish = gtk::Button::with_mnemonic("_Finish");
+        let cancel = gtk::Button::with_mnemonic(virtinst_core::tr!("_Cancel"));
+        let finish = gtk::Button::with_mnemonic(virtinst_core::tr!("_Finish"));
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         buttons.set_halign(gtk::Align::End);
         buttons.append(&cancel);
@@ -935,7 +964,7 @@ impl AddHardware {
             let guest = guest_info(&i.vm);
             let is_qemu = i.vm.conn().is_some_and(|c| c.is_qemu());
 
-            let mut values = vec![(None, "Hypervisor default".to_string())];
+            let mut values = vec![(None, virtinst_core::tr!("Hypervisor default").to_string())];
             values.extend(
                 build::supported_panic_models(caps)
                     .into_iter()
@@ -1210,7 +1239,7 @@ impl AddHardware {
         let i = &self.0;
         let guest = guest_info(&i.vm);
         let is_qemu = i.vm.conn().is_some_and(|c| c.is_qemu());
-        let mut values = vec![(None, "Hypervisor default".to_string())];
+        let mut values = vec![(None, virtinst_core::tr!("Hypervisor default").to_string())];
         values.extend(
             virtinst_core::devices::network::recommended_models(
                 guest.domain_type.as_deref().unwrap_or_default(),
@@ -1371,8 +1400,11 @@ impl AddHardware {
             let xml = match xml {
                 Some(Ok(xml)) => xml,
                 Some(Err(e)) => {
-                    this.show_err(&format!("Error building device XML: {e}"), None)
-                        .await;
+                    this.show_err(
+                        &virtinst_core::trf!("Error building device XML: %s", e),
+                        None,
+                    )
+                    .await;
                     String::new()
                 }
                 None => String::new(),
@@ -1384,21 +1416,21 @@ impl AddHardware {
     /// `_dev_to_title`.
     fn dev_to_title(&self, page: Page) -> String {
         match page {
-            Page::Disk => "Storage".into(),
-            Page::Controller => "Controller".into(),
-            Page::Network => "Network".into(),
-            Page::Input => "Input".into(),
-            Page::Graphics => "Graphics".into(),
-            Page::Sound => "Sound".into(),
-            Page::Video => "Video Device".into(),
-            Page::Watchdog => "Watchdog Device".into(),
-            Page::Filesystem => "Filesystem Passthrough".into(),
-            Page::Smartcard => "Smartcard".into(),
-            Page::Usbredir => "USB Redirection".into(),
-            Page::Tpm => "TPM".into(),
-            Page::Rng => "Random Number Generator".into(),
-            Page::Panic => "Panic Notifier".into(),
-            Page::Vsock => "VM Sockets".into(),
+            Page::Disk => virtinst_core::tr!("Storage").into(),
+            Page::Controller => virtinst_core::tr!("Controller").into(),
+            Page::Network => virtinst_core::tr!("Network").into(),
+            Page::Input => virtinst_core::tr!("Input").into(),
+            Page::Graphics => virtinst_core::tr!("Graphics").into(),
+            Page::Sound => virtinst_core::tr!("Sound").into(),
+            Page::Video => virtinst_core::tr!("Video Device").into(),
+            Page::Watchdog => virtinst_core::tr!("Watchdog Device").into(),
+            Page::Filesystem => virtinst_core::tr!("Filesystem Passthrough").into(),
+            Page::Smartcard => virtinst_core::tr!("Smartcard").into(),
+            Page::Usbredir => virtinst_core::tr!("USB Redirection").into(),
+            Page::Tpm => virtinst_core::tr!("TPM").into(),
+            Page::Rng => virtinst_core::tr!("Random Number Generator").into(),
+            Page::Panic => virtinst_core::tr!("Panic Notifier").into(),
+            Page::Vsock => virtinst_core::tr!("VM Sockets").into(),
             Page::Char => {
                 let tag = self.get_char_class();
                 let mut c = tag.chars();
@@ -1406,12 +1438,12 @@ impl AddHardware {
                     .next()
                     .map(|f| f.to_uppercase().chain(c).collect())
                     .unwrap_or_default();
-                format!("{cap} Device")
+                virtinst_core::trf!("%s Device", cap)
             }
             Page::Hostdev => match self.get_hw_selection().and_then(|o| o.devtype) {
-                Some("pci") => "PCI Device".into(),
-                Some("mdev") => "MDEV Device".into(),
-                _ => "USB Device".into(),
+                Some("pci") => virtinst_core::tr!("PCI Device").into(),
+                Some("mdev") => virtinst_core::tr!("MDEV Device").into(),
+                _ => virtinst_core::tr!("USB Device").into(),
             },
         }
     }
@@ -1851,8 +1883,11 @@ impl AddHardware {
         match dev {
             Ok(dev) => Some(dev),
             Err(e) => {
-                self.show_err(&format!("Error building device XML: {e}"), None)
-                    .await;
+                self.show_err(
+                    &virtinst_core::trf!("Error building device XML: %s", e),
+                    None,
+                )
+                .await;
                 None
             }
         }
@@ -1871,8 +1906,11 @@ impl AddHardware {
             Ok(true) => (),
             Ok(false) => return,
             Err(e) => {
-                self.show_err(&format!("Error validating device parameters: {e}"), None)
-                    .await;
+                self.show_err(
+                    &virtinst_core::trf!("Error validating device parameters: %s", e),
+                    None,
+                )
+                .await;
                 return;
             }
         }
@@ -1883,8 +1921,8 @@ impl AddHardware {
         let handle = i.vm.conn().and_then(|c| c.handle());
         let err = crate::asyncjob::run(
             Some(&i.window),
-            "Creating device",
-            "Depending on the device, this may take a few minutes to complete.",
+            virtinst_core::tr!("Creating device"),
+            virtinst_core::tr!("Depending on the device, this may take a few minutes to complete."),
             true,
             // `_setup_device`: only disks have work, `build_storage`.
             move |_| {
@@ -1914,7 +1952,7 @@ impl AddHardware {
         if error.is_none() {
             match self.add_device(&dev).await {
                 Ok(f) => failure = f,
-                Err(e) => error = Some((format!("Unable to add device: {e}"), None)),
+                Err(e) => error = Some((virtinst_core::trf!("Unable to add device: %s", e), None)),
             }
         }
         if let Some((e, details)) = error {
@@ -1957,11 +1995,11 @@ impl AddHardware {
                 if !names.is_empty() {
                     let res = error::yes_no(
                         Some(&i.window),
-                        &format!(
-                            "The device is already in use by other guests {}",
+                        &virtinst_core::trf!(
+                            "The device is already in use by other guests %s",
                             py_list(&names)
                         ),
-                        Some("Do you really want to use the device?"),
+                        Some(virtinst_core::tr!("Do you really want to use the device?")),
                     )
                     .await;
                     if !res {
@@ -1973,7 +2011,11 @@ impl AddHardware {
         if let Validate::Disk(path, device, shareable, readonly) = &dev.validate {
             // `vmmAddStorage.validate_device`
             if path.is_none() && matches!(device.as_str(), "disk" | "lun") {
-                error::val_err(Some(&i.window), "A storage path must be specified.").await;
+                error::val_err(
+                    Some(&i.window),
+                    virtinst_core::tr!("A storage path must be specified."),
+                )
+                .await;
                 return Ok(false);
             }
             // `disk.validate()`
@@ -1984,14 +2026,15 @@ impl AddHardware {
                     i.vm.path_in_use_by(path.clone(), *shareable, *readonly)
                         .await?;
                 if !names.is_empty() {
-                    let msg = format!(
-                        "Disk '{path}' is already in use by other guests {}",
-                        py_list(&names)
+                    let msg = virtinst_core::trf!(
+                        "Disk '%(path)s' is already in use by other guests %(names)s",
+                        path = path,
+                        names = py_list(&names)
                     );
                     if !error::yes_no(
                         Some(&i.window),
                         &msg,
-                        Some("Do you really want to use the disk?"),
+                        Some(virtinst_core::tr!("Do you really want to use the disk?")),
                     )
                     .await
                     {
@@ -2079,7 +2122,7 @@ impl AddHardware {
             if let Err(e) = res {
                 error::show_err(
                     parent.map(|w| w.upcast_ref()),
-                    &format!("Error changing VM configuration: {e}"),
+                    &virtinst_core::trf!("Error changing VM configuration: %s", e),
                     None,
                     "",
                 )
@@ -2087,7 +2130,9 @@ impl AddHardware {
             } else if vm.is_active() {
                 error::show_notice(
                     parent.map(|w| w.upcast_ref()),
-                    "These changes will take effect after the next guest shutdown.",
+                    virtinst_core::tr!(
+                        "These changes will take effect after the next guest shutdown."
+                    ),
                     None,
                 )
                 .await;
@@ -2123,7 +2168,7 @@ impl AddHardware {
                 error::DialogSpec {
                     kind: error::MessageType::Warning,
                     buttons: error::Buttons::YesNo,
-                    text1: "Are you sure you want to add this device?",
+                    text1: virtinst_core::tr!("Are you sure you want to add this device?"),
                     text2: Some(
                         "This device could not be attached to the running machine. \
                          Would you like to make the device available after the next \
@@ -2223,15 +2268,19 @@ fn generate_mac(conn: &crate::connection::VmmConnection) -> Option<String> {
 /// `_set_initial_state`'s `add_hw_option` rows.
 fn hw_options(guest: &GuestInfo) -> Vec<HwOption> {
     let is_hvm = guest.is_hvm();
-    let not_hvm = Some("Not supported for this guest type.");
+    let not_hvm = Some(virtinst_core::tr!("Not supported for this guest type."));
     // Every libvirt we support has `conn_nodedev`.
-    let nodedev_err = Some("Connection does not support host device enumeration");
+    let nodedev_err = Some(virtinst_core::tr!(
+        "Connection does not support host device enumeration"
+    ));
     let pci_err = if guest.is_container() {
-        Some("Not supported for containers")
+        Some(virtinst_core::tr!("Not supported for containers"))
     } else {
         nodedev_err
     };
-    let vsock_err = Some("Not supported for this hypervisor/libvirt/arch combination.");
+    let vsock_err = Some(virtinst_core::tr!(
+        "Not supported for this hypervisor/libvirt/arch combination."
+    ));
     let opt = |name, icon, page, sensitive: bool, errortxt: Option<&str>, devtype| HwOption {
         name,
         icon,
@@ -2241,28 +2290,56 @@ fn hw_options(guest: &GuestInfo) -> Vec<HwOption> {
         devtype,
     };
     vec![
-        opt("Storage", "drive-harddisk", Page::Disk, true, None, None),
         opt(
-            "Controller",
+            virtinst_core::tr!("Storage"),
+            "drive-harddisk",
+            Page::Disk,
+            true,
+            None,
+            None,
+        ),
+        opt(
+            virtinst_core::tr!("Controller"),
             "device_pci",
             Page::Controller,
             true,
             None,
             None,
         ),
-        opt("Network", "network-idle", Page::Network, true, None, None),
-        opt("Input", "input-mouse", Page::Input, is_hvm, not_hvm, None),
         opt(
-            "Graphics",
+            virtinst_core::tr!("Network"),
+            "network-idle",
+            Page::Network,
+            true,
+            None,
+            None,
+        ),
+        opt(
+            virtinst_core::tr!("Input"),
+            "input-mouse",
+            Page::Input,
+            is_hvm,
+            not_hvm,
+            None,
+        ),
+        opt(
+            virtinst_core::tr!("Graphics"),
             "video-display",
             Page::Graphics,
             true,
             None,
             None,
         ),
-        opt("Sound", "audio-card", Page::Sound, is_hvm, not_hvm, None),
         opt(
-            "Serial",
+            virtinst_core::tr!("Sound"),
+            "audio-card",
+            Page::Sound,
+            is_hvm,
+            not_hvm,
+            None,
+        ),
+        opt(
+            virtinst_core::tr!("Serial"),
             "device_serial",
             Page::Char,
             is_hvm,
@@ -2270,7 +2347,7 @@ fn hw_options(guest: &GuestInfo) -> Vec<HwOption> {
             Some("serial"),
         ),
         opt(
-            "Parallel",
+            virtinst_core::tr!("Parallel"),
             "device_serial",
             Page::Char,
             is_hvm,
@@ -2278,7 +2355,7 @@ fn hw_options(guest: &GuestInfo) -> Vec<HwOption> {
             Some("parallel"),
         ),
         opt(
-            "Console",
+            virtinst_core::tr!("Console"),
             "device_serial",
             Page::Char,
             true,
@@ -2286,7 +2363,7 @@ fn hw_options(guest: &GuestInfo) -> Vec<HwOption> {
             Some("console"),
         ),
         opt(
-            "Channel",
+            virtinst_core::tr!("Channel"),
             "device_serial",
             Page::Char,
             is_hvm,
@@ -2294,7 +2371,7 @@ fn hw_options(guest: &GuestInfo) -> Vec<HwOption> {
             Some("channel"),
         ),
         opt(
-            "USB Host Device",
+            virtinst_core::tr!("USB Host Device"),
             "device_usb",
             Page::Hostdev,
             true,
@@ -2302,7 +2379,7 @@ fn hw_options(guest: &GuestInfo) -> Vec<HwOption> {
             Some("usb"),
         ),
         opt(
-            "PCI Host Device",
+            virtinst_core::tr!("PCI Host Device"),
             "device_pci",
             Page::Hostdev,
             !guest.is_container(),
@@ -2310,25 +2387,39 @@ fn hw_options(guest: &GuestInfo) -> Vec<HwOption> {
             Some("pci"),
         ),
         opt(
-            "MDEV Host Device",
+            virtinst_core::tr!("MDEV Host Device"),
             "device_pci",
             Page::Hostdev,
             true,
             nodedev_err,
             Some("mdev"),
         ),
-        opt("Video", "video-display", Page::Video, true, None, None),
         opt(
-            "Watchdog",
+            virtinst_core::tr!("Video"),
+            "video-display",
+            Page::Video,
+            true,
+            None,
+            None,
+        ),
+        opt(
+            virtinst_core::tr!("Watchdog"),
             "device_pci",
             Page::Watchdog,
             is_hvm,
             not_hvm,
             None,
         ),
-        opt("Filesystem", "folder", Page::Filesystem, true, None, None),
         opt(
-            "Smartcard",
+            virtinst_core::tr!("Filesystem"),
+            "folder",
+            Page::Filesystem,
+            true,
+            None,
+            None,
+        ),
+        opt(
+            virtinst_core::tr!("Smartcard"),
             "device_serial",
             Page::Smartcard,
             true,
@@ -2336,17 +2427,31 @@ fn hw_options(guest: &GuestInfo) -> Vec<HwOption> {
             None,
         ),
         opt(
-            "USB Redirection",
+            virtinst_core::tr!("USB Redirection"),
             "device_usb",
             Page::Usbredir,
             true,
             None,
             None,
         ),
-        opt("TPM", "device_cpu", Page::Tpm, true, None, None),
-        opt("RNG", "system-run", Page::Rng, true, None, None),
         opt(
-            "Panic Notifier",
+            virtinst_core::tr!("TPM"),
+            "device_cpu",
+            Page::Tpm,
+            true,
+            None,
+            None,
+        ),
+        opt(
+            virtinst_core::tr!("RNG"),
+            "system-run",
+            Page::Rng,
+            true,
+            None,
+            None,
+        ),
+        opt(
+            virtinst_core::tr!("Panic Notifier"),
             "system-run",
             Page::Panic,
             true,
@@ -2354,7 +2459,7 @@ fn hw_options(guest: &GuestInfo) -> Vec<HwOption> {
             None,
         ),
         opt(
-            "VirtIO VSOCK",
+            virtinst_core::tr!("VirtIO VSOCK"),
             "network-idle",
             Page::Vsock,
             is_hvm,

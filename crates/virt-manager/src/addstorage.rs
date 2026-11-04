@@ -43,7 +43,7 @@ fn pretty_storage(size: f64) -> String {
 }
 
 fn mode_combo(modes: &[&str]) -> SimpleCombo {
-    let mut values = vec![(None, "Hypervisor default".to_string())];
+    let mut values = vec![(None, virtinst_core::tr!("Hypervisor default").to_string())];
     values.extend(modes.iter().map(|m| (Some(m.to_string()), m.to_string())));
     let combo = SimpleCombo::unsorted(values, str::to_string);
     combo.set(None);
@@ -91,13 +91,13 @@ impl AddStorage {
 
         // storage-box
         let storage_create = gtk::CheckButton::new();
-        storage_create.set_child(Some(&mnemonic(
-            "C_reate a disk image for the virtual machine",
-        )));
+        storage_create.set_child(Some(&mnemonic(virtinst_core::tr!(
+            "C_reate a disk image for the virtual machine"
+        ))));
         let adjustment = gtk::Adjustment::new(20.0, 0.0, 1_000_000.0, 0.1, 10.0, 0.0);
         let storage_size = gtk::SpinButton::new(Some(&adjustment), 1.0, 1);
         storage_size.update_property(&[gtk::accessible::Property::Label("storage-size")]);
-        let gib = gtk::Label::with_mnemonic("_GiB");
+        let gib = gtk::Label::with_mnemonic(virtinst_core::tr!("_GiB"));
         gib.set_mnemonic_widget(Some(&storage_size));
         let size_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         size_box.append(&storage_size);
@@ -113,9 +113,11 @@ impl AddStorage {
         storage_create_box.append(&create_vbox);
 
         let storage_select = gtk::CheckButton::new();
-        storage_select.set_child(Some(&mnemonic("_Select or create custom storage")));
+        storage_select.set_child(Some(&mnemonic(virtinst_core::tr!(
+            "_Select or create custom storage"
+        ))));
         storage_select.set_group(Some(&storage_create));
-        let storage_browse = gtk::Button::with_mnemonic("_Manage...");
+        let storage_browse = gtk::Button::with_mnemonic(virtinst_core::tr!("_Manage..."));
         let storage_entry = gtk::Entry::new();
         storage_entry.set_hexpand(true);
         storage_entry.update_property(&[gtk::accessible::Property::Label("storage-entry")]);
@@ -153,13 +155,20 @@ impl AddStorage {
             row += 1;
             l
         };
-        add("R_eadonly:", readonly.upcast_ref());
-        add("Sharea_ble:", shareable.upcast_ref());
-        let removable_label = add("Removab_le:", removable.upcast_ref());
-        add("Seria_l:", serial.upcast_ref());
-        add("Cac_he mode:", cache.widget.upcast_ref());
-        add("Discard mod_e:", discard.widget.upcast_ref());
-        let storage_advanced = gtk::Expander::with_mnemonic("Advanced _options");
+        add(virtinst_core::tr!("R_eadonly:"), readonly.upcast_ref());
+        add(virtinst_core::tr!("Sharea_ble:"), shareable.upcast_ref());
+        let removable_label = add(virtinst_core::tr!("Removab_le:"), removable.upcast_ref());
+        add(virtinst_core::tr!("Seria_l:"), serial.upcast_ref());
+        add(
+            virtinst_core::tr!("Cac_he mode:"),
+            cache.widget.upcast_ref(),
+        );
+        add(
+            virtinst_core::tr!("Discard mod_e:"),
+            discard.widget.upcast_ref(),
+        );
+        let storage_advanced =
+            gtk::Expander::with_mnemonic(virtinst_core::tr!("Advanced _options"));
         storage_advanced.set_child(Some(&grid));
         let advanced_top_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         advanced_top_box.append(&storage_advanced);
@@ -258,7 +267,8 @@ impl AddStorage {
     fn update_host_space(&self) {
         let label = self.phys_hd_label.clone();
         let set = |label: &gtk::Label, size: f64| {
-            let text = format!("{} available in the default location", pretty_storage(size));
+            let text =
+                virtinst_core::trf!("%s available in the default location", pretty_storage(size));
             label.set_markup(&format!("<span>{}</span>", glib::markup_escape_text(&text)));
         };
         set(&label, -1.0);
@@ -327,12 +337,12 @@ impl AddStorage {
         );
         let (resp, chkres) = error::warn_chkbox(
             parent,
-            &format!(
-                "The emulator may not have search permissions for the path '{}'.",
-                path.unwrap_or("None")
+            &virtinst_core::trf!(
+                "The emulator may not have search permissions for the path '%s'.",
+                path.unwrap_or(virtinst_core::tr!("None"))
             ),
-            Some("Do you want to correct this now?"),
-            "Don't ask about these directories again.",
+            Some(virtinst_core::tr!("Do you want to correct this now?")),
+            virtinst_core::tr!("Don't ask about these directories again."),
             error::Buttons::YesNo,
         )
         .await;
@@ -352,7 +362,9 @@ impl AddStorage {
             return;
         }
 
-        let errmsg = "Errors were encountered changing permissions for the following directories:";
+        let errmsg = virtinst_core::tr!(
+            "Errors were encountered changing permissions for the following directories:"
+        );
         let mut details = String::new();
         for (p, error) in &errors {
             if broken_paths.contains(p) {
@@ -367,7 +379,7 @@ impl AddStorage {
             parent,
             errmsg,
             Some(&details),
-            "Don't ask about these directories again.",
+            virtinst_core::tr!("Don't ask about these directories again."),
             error::Buttons::Ok,
         )
         .await;
@@ -619,8 +631,9 @@ pub(crate) fn validate_disk(
         let backend =
             virtinst_core::diskbackend::StorageBackend::for_path(conn, Some(path), remote)?;
         if !backend.exists() {
-            return Err(format!(
-                "Must specify storage creation parameters for non-existent path '{path}'."
+            return Err(virtinst_core::trf!(
+                "Must specify storage creation parameters for non-existent path '%s'.",
+                path
             ));
         }
         return Ok(());

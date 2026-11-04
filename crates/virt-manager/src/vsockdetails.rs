@@ -32,7 +32,7 @@ impl VsockDetails {
         cid_box.append(&auto);
         cid_box.append(&cid);
         let mut g = Grid::new();
-        let row = g.row("Guest C_ID:", &cid_box);
+        let row = g.row(virtinst_core::tr!("Guest C_ID:"), &cid_box);
         row.set_mnemonic(&cid);
         let top_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
         top_box.append(&g.into_grid());

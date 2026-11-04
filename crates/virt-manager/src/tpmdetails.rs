@@ -16,9 +16,9 @@ use crate::devpages::{Grid, GridRow, SimpleCombo};
 /// `_tpm_pretty_model`.
 fn tpm_pretty_model(val: &str) -> String {
     match val {
-        MODEL_TIS => "TIS".into(),
-        MODEL_CRB => "CRB".into(),
-        MODEL_SPAPR => "SPAPR".into(),
+        MODEL_TIS => virtinst_core::tr!("TIS").into(),
+        MODEL_CRB => virtinst_core::tr!("CRB").into(),
+        MODEL_SPAPR => virtinst_core::tr!("SPAPR").into(),
         _ => val.into(),
     }
 }
@@ -78,33 +78,39 @@ impl TpmDetails {
     pub fn new() -> Rc<TpmDetails> {
         let ttype = SimpleCombo::unsorted(
             vec![
-                (Some(TYPE_EMULATOR.into()), "Emulated".into()),
-                (Some(TYPE_PASSTHROUGH.into()), "Passthrough".into()),
+                (
+                    Some(TYPE_EMULATOR.into()),
+                    virtinst_core::tr!("Emulated").into(),
+                ),
+                (
+                    Some(TYPE_PASSTHROUGH.into()),
+                    virtinst_core::tr!("Passthrough").into(),
+                ),
             ],
             str::to_string,
         );
         let device_path = gtk::Entry::new();
         device_path.set_hexpand(true);
         let mut g = Grid::new();
-        g.row("_Type:", &ttype.widget);
-        let device_path_row = g.row("Device _Path:", &device_path);
+        g.row(virtinst_core::tr!("_Type:"), &ttype.widget);
+        let device_path_row = g.row(virtinst_core::tr!("Device _Path:"), &device_path);
 
         let model = SimpleCombo::unsorted(vec![], tpm_pretty_model);
         let version = SimpleCombo::unsorted(
             vec![
-                (None, "Hypervisor default".into()),
+                (None, virtinst_core::tr!("Hypervisor default").into()),
                 (Some(VERSION_2_0.into()), VERSION_2_0.into()),
                 (Some(VERSION_1_2.into()), VERSION_1_2.into()),
             ],
             str::to_string,
         );
         let mut adv = Grid::new();
-        adv.row("_Model:", &model.widget);
-        let version_row = adv.row("_Version:", &version.widget);
+        adv.row(virtinst_core::tr!("_Model:"), &model.widget);
+        let version_row = adv.row(virtinst_core::tr!("_Version:"), &version.widget);
         let adv = adv.into_grid();
         adv.set_margin_start(12);
         adv.set_margin_top(6);
-        let expander = gtk::Expander::with_mnemonic("Adva_nced options");
+        let expander = gtk::Expander::with_mnemonic(virtinst_core::tr!("Adva_nced options"));
         expander.set_child(Some(&adv));
 
         let top_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -135,7 +141,7 @@ impl TpmDetails {
     pub fn set_models(&self, domcaps_models: Option<Vec<String>>) {
         let values =
             domcaps_models.unwrap_or_else(|| vec![MODEL_CRB.to_string(), MODEL_TIS.to_string()]);
-        let mut rows = vec![(None, "Hypervisor default".to_string())];
+        let mut rows = vec![(None, virtinst_core::tr!("Hypervisor default").to_string())];
         rows.extend(values.into_iter().map(|v| {
             let label = tpm_pretty_model(&v);
             (Some(v), label)
