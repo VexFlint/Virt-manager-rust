@@ -1677,41 +1677,48 @@ mod tests {
         assert!(qemu_mac.chars().all(|c| c.is_ascii_hexdigit() || c == ':'));
     }
 
-    /// Removes both env vars this module reads for predictable mode
-    /// (ignoring "wasn't set" — the harness-facing contract is "unset
-    /// means off", not "must have been set by this same test") and
-    /// resets `MAC_COUNTER` directly. The counter needs its own reset,
-    /// not just the increment var's removal: `testsuite_mac` only
-    /// resets it to 0 as a side effect of a *call* made without that
-    /// var set (matching upstream's own `_MAC_COUNTER` exactly) — a
-    /// test that sets the increment var and never makes a further call
-    /// after clearing it would otherwise leave a nonzero counter for
-    /// whichever test runs next (found empirically: the increment test
-    /// below did exactly this, and its leftover counter=3 broke two
-    /// unrelated tests' expected `"...:55"` first digit).
-    fn clear_predictable_env() {
-        // SAFETY: caller holds `PREDICTABLE_TEST_LOCK`, so no other
-        // thread in this process is reading or writing these two vars
-        // (or `MAC_COUNTER`) concurrently.
-        unsafe {
-            std::env::remove_var("VIRTINST_TEST_PREDICTABLE");
-            std::env::remove_var("VIRTINST_TEST_SUITE_INCREMENT_MACADDR");
+    /// Re-runs the calling test in a child process with predictable mode
+    /// on (and `increment` adding the MAC increment var), and returns
+    /// `true` only inside that child, where the assertions run.
+    ///
+    /// A child process, not a lock: both env vars and `MAC_COUNTER` are
+    /// process-wide, and every other test that builds a NIC (the
+    /// `install/*.rs` ones, the clone end-to-end test) calls
+    /// [`generate_mac`] without taking any lock. Setting the vars in
+    /// this process let those calls bump the counter mid-test, and a
+    /// failed assertion left the vars set for the next test (seen on
+    /// CI: "got 00:11:22:33:44:57" in the OUI test).
+    fn in_predictable_child(test: &str, increment: bool) -> bool {
+        if std::env::var_os("VIRTINST_PREDICTABLE_CHILD").is_some() {
+            return true;
         }
-        MAC_COUNTER.store(0, std::sync::atomic::Ordering::SeqCst);
+        let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+        cmd.args(["--exact", test, "--nocapture", "--test-threads=1"])
+            .env("VIRTINST_PREDICTABLE_CHILD", "1")
+            .env("VIRTINST_TEST_PREDICTABLE", "1")
+            .env_remove("VIRTINST_TEST_SUITE_INCREMENT_MACADDR");
+        if increment {
+            cmd.env("VIRTINST_TEST_SUITE_INCREMENT_MACADDR", "1");
+        }
+        let out = cmd.output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.contains("1 passed"),
+            "{test} failed in its child process:\n{stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        false
     }
 
     #[test]
     fn generate_uuid_is_fixed_under_predictable_mode() {
-        let _guard = PREDICTABLE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        clear_predictable_env();
-        // SAFETY: lock held, see `clear_predictable_env`.
-        unsafe {
-            std::env::set_var("VIRTINST_TEST_PREDICTABLE", "1");
+        if !in_predictable_child(
+            "cloner::tests::generate_uuid_is_fixed_under_predictable_mode",
+            false,
+        ) {
+            return;
         }
         assert_eq!(generate_uuid(), "00000000-1111-2222-3333-444444444444");
-        clear_predictable_env();
     }
 
     /// Without the increment var, every call in one process returns the
@@ -1720,17 +1727,14 @@ mod tests {
     /// generating two MACs where one shared value was intended).
     #[test]
     fn generate_mac_is_fixed_and_repeats_under_predictable_mode_alone() {
-        let _guard = PREDICTABLE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        clear_predictable_env();
-        // SAFETY: lock held, see `clear_predictable_env`.
-        unsafe {
-            std::env::set_var("VIRTINST_TEST_PREDICTABLE", "1");
+        if !in_predictable_child(
+            "cloner::tests::generate_mac_is_fixed_and_repeats_under_predictable_mode_alone",
+            false,
+        ) {
+            return;
         }
         assert_eq!(generate_mac(true), "00:11:22:33:44:55");
         assert_eq!(generate_mac(true), "00:11:22:33:44:55");
-        clear_predictable_env();
     }
 
     /// With both vars set, successive calls in one process increment —
@@ -1738,19 +1742,15 @@ mod tests {
     /// design, for fixtures that need genuinely distinct MACs.
     #[test]
     fn generate_mac_increments_when_the_increment_var_is_also_set() {
-        let _guard = PREDICTABLE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        clear_predictable_env();
-        // SAFETY: lock held, see `clear_predictable_env`.
-        unsafe {
-            std::env::set_var("VIRTINST_TEST_PREDICTABLE", "1");
-            std::env::set_var("VIRTINST_TEST_SUITE_INCREMENT_MACADDR", "1");
+        if !in_predictable_child(
+            "cloner::tests::generate_mac_increments_when_the_increment_var_is_also_set",
+            true,
+        ) {
+            return;
         }
         assert_eq!(generate_mac(true), "00:11:22:33:44:55");
         assert_eq!(generate_mac(true), "00:11:22:33:44:56");
         assert_eq!(generate_mac(true), "00:11:22:33:44:57");
-        clear_predictable_env();
     }
 
     /// Real end-to-end proof against `test:///default`'s `"test"`
