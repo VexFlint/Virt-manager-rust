@@ -179,8 +179,62 @@ jobs:
           test -f /usr/share/glib-2.0/schemas/gschemas.compiled
           rpm -ql virt-manager-rust | grep -q '^/usr/share/man/man1/virt-install.1'
 
+  # Pacote do Arch com o PKGBUILD do repo (docs/RELEASES.md, R6), a partir
+  # de um 'git archive' do commit no lugar do tarball da tag.
+  arch:
+    needs: [check, ci]
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    steps:
+      - name: Install system dependencies
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git
+      - uses: actions/checkout@v4
+      - name: Pacote
+        shell: bash
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          pkgver=$(echo "$VERSION" | tr - _)
+          git config --global --add safe.directory "$PWD"
+          build=$(mktemp -d)
+          sed "s/^pkgver=.*/pkgver=$pkgver/" packaging/arch/PKGBUILD > "$build/PKGBUILD"
+          git archive --prefix="Virt-manager-rust-$pkgver/" -o "$build/virt-manager-rust-$pkgver.tar.gz" HEAD
+          # As dependências do PKGBUILD, instaladas como root (o makepkg não roda como root).
+          . "$build/PKGBUILD"
+          pacman -S --noconfirm --needed "${depends[@]}" "${makedepends[@]}"
+          useradd -m builder
+          chown -R builder "$build"
+          su builder -c "cd $build && makepkg -f --skipchecksums"
+          mkdir -p dist
+          cp "$build"/*.pkg.tar.zst dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-arch
+          path: dist/*
+
+  arch-smoke:
+    needs: arch
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pkg-arch
+      - name: Instalar
+        run: pacman -Syu --noconfirm && pacman -U --noconfirm ./*.pkg.tar.zst
+      - name: Smoke
+        run: |
+          for tool in virt-manager virt-install virt-clone virt-xml; do
+              test "$($tool --version)" = 5.1.0
+          done
+          virt-xml --help >/dev/null
+          virt-clone --help >/dev/null
+          test -f /usr/share/glib-2.0/schemas/gschemas.compiled
+          pacman -Ql virt-manager-rust | grep -q ' /usr/share/man/man1/virt-install.1'
+
   publish:
-    needs: [check, tarball, deb-smoke, rpm-smoke]
+    needs: [check, tarball, deb-smoke, rpm-smoke, arch-smoke]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -197,7 +251,7 @@ jobs:
         working-directory: dist
         run: sha256sum -- * > SHA256SUMS && cat SHA256SUMS
       - name: Notas (modelo do docs/RELEASES.md, seção 4)
-        run: sh packaging/release-notes.sh "${{ needs.check.outputs.version }}" > notes.md
+        run: sh packaging/release-notes.sh "${{ needs.check.outputs.version }}" dist > notes.md
       - if: github.ref_type == 'tag'
         uses: actions/attest-build-provenance@v2
         with:
