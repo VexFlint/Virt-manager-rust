@@ -73,8 +73,74 @@ jobs:
           name: pkg-tarball
           path: dist/*
 
+  # .deb compilado no container de cada distro, contra as libs dela
+  # (docs/RELEASES.md, R4). Depends sai do dpkg-shlibdeps.
+  deb:
+    needs: [check, ci]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:24.04
+            distro: ubuntu24.04
+          - image: debian:trixie
+            distro: debian13
+    container: ${{ matrix.image }}
+    steps:
+      - name: Install system dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git build-essential dpkg-dev libvirt-dev libosinfo-1.0-dev libclang-dev clang pkg-config libgtk-4-dev libgvnc-1.0-dev libspice-client-glib-2.0-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev python3-docutils
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release --workspace --locked
+      - name: .deb
+        run: sh packaging/deb/build.sh "${{ needs.check.outputs.version }}" "${{ matrix.distro }}" dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-deb-${{ matrix.distro }}
+          path: dist/*
+
+  # Instala o .deb num container limpo da mesma distro e roda os binários.
+  deb-smoke:
+    needs: deb
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:24.04
+            distro: ubuntu24.04
+          - image: debian:trixie
+            distro: debian13
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pkg-deb-${{ matrix.distro }}
+      - name: Instalar
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y ./*.deb
+      - name: Smoke
+        run: |
+          for tool in virt-manager virt-install virt-clone virt-xml; do
+              test "$($tool --version)" = 5.1.0
+          done
+          virt-xml --help >/dev/null
+          virt-clone --help >/dev/null
+          # O gatilho do glib compilou o schema na instalação.
+          test -f /usr/share/glib-2.0/schemas/gschemas.compiled
+          dpkg -L virt-manager-rust | grep -q '^/usr/share/man/man1/virt-install.1.gz$'
+
   publish:
-    needs: [check, tarball]
+    needs: [check, tarball, deb-smoke]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
