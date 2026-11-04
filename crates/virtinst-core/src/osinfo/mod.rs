@@ -58,6 +58,7 @@
 mod ffi;
 pub mod installscript;
 
+use std::cell::OnceCell;
 use std::ffi::{CStr, CString};
 use std::fmt;
 use std::ptr;
@@ -140,7 +141,26 @@ impl OsDb {
     /// (`osinfo_loader_process_default_path`) — the actual OS
     /// definitions live in `osinfo-db`, a separately-versioned distro
     /// package (ticket 04's own finding), not vendored by this crate.
+    ///
+    /// Loaded once per thread, like upstream's module-level `OSDB`:
+    /// parsing the whole `osinfo-db` costs ~0.5 s, and one
+    /// `virt-install` run asks for it from many call sites. Each call
+    /// hands back a new reference to the same `OsinfoDb`. A failed load
+    /// isn't cached, so the next call retries.
     pub fn load_default() -> Result<OsDb, OsInfoError> {
+        thread_local! {
+            static CACHED: OnceCell<OsDb> = const { OnceCell::new() };
+        }
+        CACHED.with(|c| {
+            if let Some(db) = c.get() {
+                return Ok(db.clone());
+            }
+            let db = Self::load_uncached()?;
+            Ok(c.get_or_init(|| db).clone())
+        })
+    }
+
+    fn load_uncached() -> Result<OsDb, OsInfoError> {
         unsafe {
             let loader = ffi::osinfo_loader_new();
             assert!(!loader.is_null(), "osinfo_loader_new returned NULL");
@@ -644,6 +664,13 @@ impl OsVariant {
     /// oslist.py's `_always_show`.
     pub fn always_show(&self) -> bool {
         self.is_generic() || self.is_linux_generic()
+    }
+}
+
+impl Clone for OsDb {
+    fn clone(&self) -> Self {
+        unsafe { gobject_sys::g_object_ref(self.ptr as *mut gobject_sys::GObject) };
+        OsDb { ptr: self.ptr }
     }
 }
 

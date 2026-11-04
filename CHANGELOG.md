@@ -11,6 +11,12 @@ The package version comes from the root `Cargo.toml`. The `--version` of all
 four programs prints the upstream version the port is based on (`5.1.0`),
 just like the Python virt-manager; the package version shows in "About".
 
+## [Unreleased]
+
+### Fixed
+- `virt-install` loads the libosinfo database once per run instead of at
+  every lookup: `--print-xml` for an imported guest went from 3.4 s to 0.35 s.
+
 ## [1.0.0] - 2026-11-04
 
 Based on virt-manager 5.1.0. First stable release.
