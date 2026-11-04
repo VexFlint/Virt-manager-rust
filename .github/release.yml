@@ -1,0 +1,14 @@
+# Categorias do "Gerar notas" do GitHub (docs/RELEASES.md, seção 3).
+# Cada PR entra na primeira categoria cujo label ele tiver.
+changelog:
+  categories:
+    - title: GUI
+      labels: [GUI]
+    - title: CLI
+      labels: [CLI]
+    - title: Correções
+      labels: [bug]
+    - title: Infra
+      labels: [Infra, documentation]
+    - title: Outros
+      labels: ["*"]
