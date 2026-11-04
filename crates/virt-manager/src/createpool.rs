@@ -67,7 +67,7 @@ pub struct CreatePool(Rc<Inner>);
 impl CreatePool {
     pub fn new(conn: &VmmConnection) -> CreatePool {
         let window = gtk::Window::builder()
-            .title("Add a New Storage Pool")
+            .title(virtinst_core::tr!("Add a New Storage Pool"))
             .hide_on_close(true)
             .width_request(400)
             .height_request(400)
@@ -77,7 +77,9 @@ impl CreatePool {
         let icon = gtk::Image::from_icon_name("document-new");
         icon.set_pixel_size(48);
         let header_label = gtk::Label::new(None);
-        header_label.set_markup("<span size='large'>Create storage pool</span>");
+        header_label.set_markup(virtinst_core::tr!(
+            "<span size='large'>Create storage pool</span>"
+        ));
         header_label.set_xalign(0.0);
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         header.set_margin_start(6);
@@ -106,7 +108,7 @@ impl CreatePool {
         pool_name.update_property(&[gtk::accessible::Property::Label("pool-name")]);
         let pool_target_path = gtk::Entry::new();
         pool_target_path.set_hexpand(true);
-        let pool_target_button = gtk::Button::with_mnemonic("B_rowse");
+        let pool_target_button = gtk::Button::with_mnemonic(virtinst_core::tr!("B_rowse"));
         let pool_format = EntryCombo::new(vec![(Some("auto".into()), "auto".into())]);
         pool_format.entry.set_width_chars(10);
         let pool_hostname = gtk::Entry::new();
@@ -114,7 +116,7 @@ impl CreatePool {
         let pool_source_name = EntryCombo::new(vec![]);
         let pool_source_path = EntryCombo::new(vec![]);
         pool_source_path.entry.set_width_chars(25);
-        let pool_source_button = gtk::Button::with_mnemonic("Bro_wse");
+        let pool_source_button = gtk::Button::with_mnemonic(virtinst_core::tr!("Bro_wse"));
         let pool_iqn_chk = gtk::CheckButton::new();
         let pool_iqn = gtk::Entry::new();
         pool_iqn.set_width_chars(25);
@@ -127,38 +129,51 @@ impl CreatePool {
         grid.set_valign(gtk::Align::Start);
         grid.set_row_spacing(4);
         grid.set_column_spacing(6);
-        grid.attach(&row_label("_Name:", &pool_name), 0, 0, 1, 1);
+        grid.attach(
+            &row_label(virtinst_core::tr!("_Name:"), &pool_name),
+            0,
+            0,
+            1,
+            1,
+        );
         grid.attach(&pool_name, 1, 0, 1, 1);
-        grid.attach(&row_label("_Type:", &pool_type.widget), 0, 1, 1, 1);
+        grid.attach(
+            &row_label(virtinst_core::tr!("_Type:"), &pool_type.widget),
+            0,
+            1,
+            1,
+            1,
+        );
         grid.attach(&pool_type.widget, 1, 1, 1, 1);
         grid.attach(&gtk::Label::new(Some(" ")), 0, 2, 1, 1);
         let separator = gtk::Separator::new(gtk::Orientation::Horizontal);
         separator.set_valign(gtk::Align::Center);
         grid.attach(&separator, 1, 2, 2, 1);
 
-        let target_label = row_label("Tar_get Path:", &pool_target_path);
+        let target_label = row_label(virtinst_core::tr!("Tar_get Path:"), &pool_target_path);
         grid.attach(&target_label, 0, 3, 1, 1);
         grid.attach(&pool_target_path, 1, 3, 1, 1);
         grid.attach(&pool_target_button, 2, 3, 1, 1);
-        let format_label = row_label("F_ormat:", &pool_format.entry);
+        let format_label = row_label(virtinst_core::tr!("F_ormat:"), &pool_format.entry);
         grid.attach(&format_label, 0, 4, 1, 1);
         grid.attach(&pool_format.top, 1, 4, 1, 1);
-        let hostname_label = row_label("Host Na_me:", &pool_hostname);
+        let hostname_label = row_label(virtinst_core::tr!("Host Na_me:"), &pool_hostname);
         grid.attach(&hostname_label, 0, 5, 1, 1);
         grid.attach(&pool_hostname, 1, 5, 1, 1);
-        let source_name_label = row_label("Sou_rce Name:", &pool_source_name.entry);
+        let source_name_label =
+            row_label(virtinst_core::tr!("Sou_rce Name:"), &pool_source_name.entry);
         grid.attach(&source_name_label, 0, 6, 1, 1);
         grid.attach(&pool_source_name.top, 1, 6, 1, 1);
-        let source_label = row_label("_Source Path:", &pool_source_path.entry);
+        let source_label = row_label(virtinst_core::tr!("_Source Path:"), &pool_source_path.entry);
         grid.attach(&source_label, 0, 7, 1, 1);
         grid.attach(&pool_source_path.top, 1, 7, 1, 1);
         grid.attach(&pool_source_button, 2, 7, 1, 1);
-        let iqn_label = row_label("Initiator _IQN:", &pool_iqn);
+        let iqn_label = row_label(virtinst_core::tr!("Initiator _IQN:"), &pool_iqn);
         grid.attach(&iqn_label, 0, 8, 1, 1);
         grid.attach(&iqn_box, 1, 8, 1, 1);
 
-        let pool_cancel = gtk::Button::with_mnemonic("_Cancel");
-        let pool_finish = gtk::Button::with_mnemonic("_Finish");
+        let pool_cancel = gtk::Button::with_mnemonic(virtinst_core::tr!("_Cancel"));
+        let pool_finish = gtk::Button::with_mnemonic(virtinst_core::tr!("_Finish"));
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         buttons.set_halign(gtk::Align::End);
         buttons.append(&pool_cancel);
@@ -404,16 +419,16 @@ impl CreatePool {
         i.source_name_row.set_visible(src_name);
 
         i.source_name_row.label.set_text_with_mnemonic(if is_lvm {
-            "Volg_roup Name:"
+            virtinst_core::tr!("Volg_roup Name:")
         } else {
-            "Sou_rce Name:"
+            virtinst_core::tr!("Sou_rce Name:")
         });
         let src_label = if iqn {
-            "_Source IQN:"
+            virtinst_core::tr!("_Source IQN:")
         } else if is_scsi {
-            "_Source Adapter:"
+            virtinst_core::tr!("_Source Adapter:")
         } else {
-            "_Source Path:"
+            virtinst_core::tr!("_Source Path:")
         };
         i.source_row.label.set_text_with_mnemonic(src_label);
 
@@ -480,7 +495,7 @@ impl CreatePool {
             Err(e) => {
                 error::show_err(
                     Some(&self.0.window),
-                    &format!("Error building XML: {e}"),
+                    &virtinst_core::trf!("Error building XML: %s", e),
                     None,
                     "",
                 )
@@ -517,7 +532,7 @@ impl CreatePool {
             Err(e) => {
                 error::show_err(
                     Some(&i.window),
-                    &format!("Error validating pool: {e}"),
+                    &virtinst_core::trf!("Error validating pool: %s", e),
                     None,
                     "",
                 )
@@ -535,8 +550,8 @@ impl CreatePool {
         eprintln!("Creating storage pool '{name}' with xml:\n{xml}");
         let err = asyncjob::run(
             Some(&i.window),
-            "Creating storage pool...",
-            "Creating the storage pool may take a while...",
+            virtinst_core::tr!("Creating storage pool..."),
+            virtinst_core::tr!("Creating the storage pool may take a while..."),
             true,
             move |_job| {
                 eprintln!("Starting background pool creation.");
@@ -549,7 +564,7 @@ impl CreatePool {
         if let Some((error, details)) = err {
             error::show_err(
                 Some(&i.window),
-                &format!("Error creating pool: {error}"),
+                &virtinst_core::trf!("Error creating pool: %s", error),
                 Some(&details),
                 "",
             )
@@ -574,7 +589,7 @@ impl CreatePool {
     /// `_browse_source_cb`.
     async fn browse_source(&self) {
         let dialog = gtk::FileDialog::builder()
-            .title("Choose source path")
+            .title(virtinst_core::tr!("Choose source path"))
             .modal(true)
             .initial_folder(&gio::File::for_path("/dev"))
             .build();
@@ -594,7 +609,7 @@ impl CreatePool {
     /// `_browse_target_cb`.
     async fn browse_target(&self) {
         let dialog = gtk::FileDialog::builder()
-            .title("Choose target directory")
+            .title(virtinst_core::tr!("Choose target directory"))
             .modal(true)
             .build();
         let current = self.0.pool_target_path.text();

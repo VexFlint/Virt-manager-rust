@@ -221,7 +221,8 @@ pub async fn snapshots_supported(vm: &VmmDomain) -> Option<String> {
     })
     .await
     .unwrap_or(true);
-    (!supported).then(|| "Libvirt connection does not support snapshots.".to_string())
+    (!supported)
+        .then(|| virtinst_core::tr!("Libvirt connection does not support snapshots.").to_string())
 }
 
 const CHANNEL_NAME_QEMUGA: &str = "org.qemu.guest_agent.0";
@@ -540,7 +541,7 @@ fn build_new_snapshot(
         newsnap.memory_file = mempath;
     }
     newsnap.get_xml()?;
-    crate::domain::validate_generic_name("Snapshot", name)?;
+    crate::domain::validate_generic_name(virtinst_core::tr!("Snapshot"), name)?;
     Ok(newsnap)
 }
 
@@ -550,12 +551,20 @@ fn list_row_label(name: &str, state: &str, external: bool) -> (String, String) {
     let state_esc = glib::markup_escape_text(state);
     if external {
         (
-            format!("{name_esc}\n<span size='small'>VM State: {state_esc} (External)</span>"),
+            virtinst_core::trf!(
+                "%(vm)s\n<span size='small'>VM State: %(state)s (External)</span>",
+                vm = name_esc,
+                state = state_esc
+            ),
             format!("3{name}"),
         )
     } else {
         (
-            format!("{name_esc}\n<span size='small'>VM State: {state_esc}</span>"),
+            virtinst_core::trf!(
+                "%(vm)s\n<span size='small'>VM State: %(state)s</span>",
+                vm = name_esc,
+                state = state_esc
+            ),
             format!("1{name}"),
         )
     }
@@ -575,11 +584,11 @@ fn external_mode_label(xmlobj: &DomainSnapshot) -> &'static str {
     let is_mem = xmlobj.memory_type.as_deref() == Some("external");
     let is_disk = !xmlobj.disks.is_empty();
     if is_mem && is_disk {
-        "External disk and memory"
+        virtinst_core::tr!("External disk and memory")
     } else if is_mem {
-        "External memory only"
+        virtinst_core::tr!("External memory only")
     } else {
-        "External disk only"
+        virtinst_core::tr!("External disk only")
     }
 }
 
@@ -673,7 +682,7 @@ impl std::ops::Deref for SnapshotNew {
 impl SnapshotNew {
     pub fn new(vm: &VmmDomain) -> SnapshotNew {
         let window = gtk::Window::builder()
-            .title("Create snapshot")
+            .title(virtinst_core::tr!("Create snapshot"))
             .hide_on_close(true)
             .build();
 
@@ -681,7 +690,9 @@ impl SnapshotNew {
         let image = gtk::Image::from_icon_name("document-new");
         image.set_pixel_size(48);
         let title = gtk::Label::new(None);
-        title.set_markup("<span size='large'>Create snapshot</span>");
+        title.set_markup(virtinst_core::tr!(
+            "<span size='large'>Create snapshot</span>"
+        ));
         title.set_halign(gtk::Align::Start);
         title.set_hexpand(true);
         title.add_css_class("vmm-header-text");
@@ -698,11 +709,11 @@ impl SnapshotNew {
 
         // snapshot-new-box
         let name = gtk::Entry::new();
-        let name_label = grid_label("_Name:");
+        let name_label = grid_label(virtinst_core::tr!("_Name:"));
         name_label.set_mnemonic_widget(Some(&name));
 
         let status_icon = gtk::Image::new();
-        let status_text = gtk::Label::new(Some("Shut down"));
+        let status_text = gtk::Label::new(Some(virtinst_core::tr!("Shut down")));
         status_text.set_halign(gtk::Align::Start);
         let status_box = gtk::Box::new(gtk::Orientation::Horizontal, 3);
         status_box.append(&status_icon);
@@ -719,7 +730,7 @@ impl SnapshotNew {
         mode_box.set_halign(gtk::Align::Start);
         mode_box.append(&mode_external);
         mode_box.append(&mode_internal);
-        let mode_label = grid_label("Snapshot _Mode:");
+        let mode_label = grid_label(virtinst_core::tr!("Snapshot _Mode:"));
 
         let memory_auto = gtk::CheckButton::with_mnemonic("_auto");
         // `_init_memory_path`
@@ -730,7 +741,7 @@ impl SnapshotNew {
         let memory_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         memory_box.append(&memory_auto);
         memory_box.append(&memory_path.top);
-        let memory_label = grid_label("Memory _State:");
+        let memory_label = grid_label(virtinst_core::tr!("Memory _State:"));
 
         // `_init_ui`: a fresh buffer
         let description = gtk::TextView::new();
@@ -740,7 +751,7 @@ impl SnapshotNew {
             .width_request(300)
             .height_request(125)
             .build();
-        let desc_label = grid_label("_Description:");
+        let desc_label = grid_label(virtinst_core::tr!("_Description:"));
         desc_label.set_valign(gtk::Align::Start);
         desc_label.set_mnemonic_widget(Some(&description));
 
@@ -749,7 +760,7 @@ impl SnapshotNew {
         grid.set_column_spacing(6);
         grid.attach(&name_label, 0, 0, 1, 1);
         grid.attach(&name, 1, 0, 1, 1);
-        grid.attach(&grid_label("Status:"), 0, 1, 1, 1);
+        grid.attach(&grid_label(virtinst_core::tr!("Status:")), 0, 1, 1, 1);
         grid.attach(&status_box, 1, 1, 1, 1);
         grid.attach(&mode_label, 0, 2, 1, 1);
         grid.attach(&mode_box, 1, 2, 1, 1);
@@ -761,8 +772,8 @@ impl SnapshotNew {
         box_align.set_vexpand(true);
         box_align.append(&grid);
 
-        let cancel = gtk::Button::with_mnemonic("_Cancel");
-        let ok = gtk::Button::with_mnemonic("_Finish");
+        let cancel = gtk::Button::with_mnemonic(virtinst_core::tr!("_Cancel"));
+        let ok = gtk::Button::with_mnemonic(virtinst_core::tr!("_Finish"));
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         buttons.set_halign(gtk::Align::End);
         buttons.append(&cancel);
@@ -888,9 +899,9 @@ impl SnapshotNew {
         };
         if !supported {
             self.mode_external.set_sensitive(false);
-            self.mode_external.set_tooltip_text(Some(
-                "external snapshots not supported with this libvirt connection",
-            ));
+            self.mode_external.set_tooltip_text(Some(virtinst_core::tr!(
+                "external snapshots not supported with this libvirt connection"
+            )));
         }
     }
 
@@ -1023,7 +1034,7 @@ impl SnapshotNew {
             Err(e) => {
                 error::val_err(
                     Some(&self.window),
-                    &format!("Error validating snapshot: {e}"),
+                    &virtinst_core::trf!("Error validating snapshot: %s", e),
                 )
                 .await;
                 None
@@ -1083,8 +1094,8 @@ impl SnapshotNew {
         let jobname = name.clone();
         let err = asyncjob::run(
             Some(&self.window),
-            "Creating snapshot",
-            "Creating virtual machine snapshot",
+            virtinst_core::tr!("Creating snapshot"),
+            virtinst_core::tr!("Creating virtual machine snapshot"),
             true,
             move |_job| {
                 let dom =
@@ -1100,7 +1111,7 @@ impl SnapshotNew {
         if let Some((error, details)) = err {
             error::show_err(
                 Some(&self.window),
-                &format!("Error creating snapshot: {error}"),
+                &virtinst_core::trf!("Error creating snapshot: %s", error),
                 Some(&details),
                 "",
             )
@@ -1203,20 +1214,21 @@ impl VmmSnapshotPage {
         current_icon.set_pixel_size(16);
         let current_label = gtk::Label::new(None);
         current_label.set_halign(gtk::Align::Start);
-        current_label
-            .set_markup("<small><i>This was the most recently applied snapshot.</i></small>");
+        current_label.set_markup(virtinst_core::tr!(
+            "<small><i>This was the most recently applied snapshot.</i></small>"
+        ));
         let is_current = gtk::Box::new(gtk::Orientation::Horizontal, 3);
         is_current.append(&current_icon);
         is_current.append(&current_label);
         let timestamp = gtk::Label::new(Some("label"));
         timestamp.set_halign(gtk::Align::Start);
         let status_icon = gtk::Image::from_icon_name("image-missing");
-        let status_text = gtk::Label::new(Some("Shut down"));
+        let status_text = gtk::Label::new(Some(virtinst_core::tr!("Shut down")));
         status_text.set_halign(gtk::Align::Start);
         let status_box = gtk::Box::new(gtk::Orientation::Horizontal, 3);
         status_box.append(&status_icon);
         status_box.append(&status_text);
-        let mode_label = grid_label("Snapshot Mode:");
+        let mode_label = grid_label(virtinst_core::tr!("Snapshot Mode:"));
         let mode = gtk::Label::new(Some("label"));
         mode.set_halign(gtk::Align::Start);
         let description = gtk::TextView::new();
@@ -1229,17 +1241,17 @@ impl VmmSnapshotPage {
             .height_request(80)
             .hexpand(true)
             .build();
-        let desc_label = grid_label("Description:");
+        let desc_label = grid_label(virtinst_core::tr!("Description:"));
         desc_label.set_valign(gtk::Align::Start);
         let screenshot = gtk::Picture::new();
         screenshot.set_can_shrink(false);
         screenshot.set_halign(gtk::Align::Start);
         screenshot.set_valign(gtk::Align::Start);
-        let screenshot_label = gtk::Label::new(Some("No screenshot available"));
+        let screenshot_label = gtk::Label::new(Some(virtinst_core::tr!("No screenshot available")));
         let box5 = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         box5.append(&screenshot);
         box5.append(&screenshot_label);
-        let screenshot_title = grid_label("Screenshot:");
+        let screenshot_title = grid_label(virtinst_core::tr!("Screenshot:"));
         screenshot_title.set_valign(gtk::Align::Start);
 
         let grid = gtk::Grid::new();
@@ -1247,9 +1259,9 @@ impl VmmSnapshotPage {
         grid.set_column_spacing(6);
         grid.attach(&title, 0, 0, 2, 1);
         grid.attach(&is_current, 0, 1, 2, 1);
-        grid.attach(&grid_label("Timestamp:"), 0, 2, 1, 1);
+        grid.attach(&grid_label(virtinst_core::tr!("Timestamp:")), 0, 2, 1, 1);
         grid.attach(&timestamp, 1, 2, 1, 1);
-        grid.attach(&grid_label("VM State:"), 0, 3, 1, 1);
+        grid.attach(&grid_label(virtinst_core::tr!("VM State:")), 0, 3, 1, 1);
         grid.attach(&status_box, 1, 3, 1, 1);
         grid.attach(&mode_label, 0, 4, 1, 1);
         grid.attach(&mode, 1, 4, 1, 1);
@@ -1279,21 +1291,33 @@ impl VmmSnapshotPage {
         pane.set_vexpand(true);
 
         // box2: the snapshot buttons, then Apply
-        let add = page_button("list-add", "Create new snapshot", "snapshot-add");
+        let add = page_button(
+            "list-add",
+            virtinst_core::tr!("Create new snapshot"),
+            "snapshot-add",
+        );
         let start = page_button(
             "media-playback-start",
-            "Run selected snapshot",
+            virtinst_core::tr!("Run selected snapshot"),
             "snapshot-start",
         );
-        let refresh = page_button("view-refresh", "Refresh snapshot list", "snapshot-refresh");
-        let delete = page_button("edit-delete", "Delete selected snapshot", "snapshot-delete");
+        let refresh = page_button(
+            "view-refresh",
+            virtinst_core::tr!("Refresh snapshot list"),
+            "snapshot-refresh",
+        );
+        let delete = page_button(
+            "edit-delete",
+            virtinst_core::tr!("Delete selected snapshot"),
+            "snapshot-delete",
+        );
         let hbox10 = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         hbox10.set_hexpand(true);
         for b in [&add, &start, &refresh, &delete] {
             hbox10.append(b);
         }
-        let apply = gtk::Button::with_mnemonic("_Apply");
-        apply.set_tooltip_text(Some("Save updated snapshot metadata"));
+        let apply = gtk::Button::with_mnemonic(virtinst_core::tr!("_Apply"));
+        apply.set_tooltip_text(Some(virtinst_core::tr!("Save updated snapshot metadata")));
         apply.update_property(&[gtk::accessible::Property::Label("snapshot-apply")]);
         let buttonbox1 = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         buttonbox1.set_halign(gtk::Align::End);
@@ -1315,8 +1339,14 @@ impl VmmSnapshotPage {
         // Snapshot popup menu. Not parented to the list itself, which
         // treats every child as a row.
         let menu_model = gio::Menu::new();
-        menu_model.append(Some("_Start snapshot"), Some("snapshot.start"));
-        menu_model.append(Some("_Delete snapshot"), Some("snapshot.delete"));
+        menu_model.append(
+            Some(virtinst_core::tr!("_Start snapshot")),
+            Some("snapshot.start"),
+        );
+        menu_model.append(
+            Some(virtinst_core::tr!("_Delete snapshot")),
+            Some("snapshot.delete"),
+        );
         let menu = gtk::PopoverMenu::from_model(Some(&menu_model));
         menu.set_parent(&top_box);
         menu.set_has_arrow(false);
@@ -1533,7 +1563,10 @@ impl VmmSnapshotPage {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("{e}");
-                self.set_error_page(&format!("Error refreshing snapshot list: {e}"));
+                self.set_error_page(&virtinst_core::trf!(
+                    "Error refreshing snapshot list: %s",
+                    e
+                ));
                 return;
             }
         };
@@ -1631,7 +1664,10 @@ impl VmmSnapshotPage {
         let title = if name.is_empty() {
             String::new()
         } else {
-            format!("<b>Snapshot '{}':</b>", glib::markup_escape_text(&name))
+            virtinst_core::trf!(
+                "<b>Snapshot '%(name)s':</b>",
+                name = glib::markup_escape_text(&name)
+            )
         };
 
         // `uiutil.set_grid_row_visible(snapshot-is-current)`
@@ -1723,11 +1759,11 @@ impl VmmSnapshotPage {
         }
 
         if snaps.is_empty() {
-            self.set_error_page("No snapshot selected.");
+            self.set_error_page(virtinst_core::tr!("No snapshot selected."));
             return;
         }
         if snaps.len() > 1 {
-            self.set_error_page("Multiple snapshots selected.");
+            self.set_error_page(virtinst_core::tr!("Multiple snapshots selected."));
             self.start.set_sensitive(false);
             self.apply.set_sensitive(false);
             self.delete.set_sensitive(true);
@@ -1789,7 +1825,7 @@ impl VmmSnapshotPage {
         if self.vm.has_managed_save() {
             let result = error::ok_cancel(
                 Some(&self.topwin),
-                "Saved memory state will not be part of the snapshot",
+                virtinst_core::tr!("Saved memory state will not be part of the snapshot"),
                 Some(
                     "The domain is currently saved. Due to technical \
                      limitations that saved memory state will not become part \
@@ -1869,7 +1905,7 @@ impl VmmSnapshotPage {
         if self.vm.has_managed_save() && !snap.has_run_state() {
             let result = error::ok_cancel(
                 Some(&self.topwin),
-                "Saved state will be removed to avoid filesystem corruption",
+                virtinst_core::tr!("Saved state will be removed to avoid filesystem corruption"),
                 Some(&format!(
                     "Snapshot '{name}' contains only disk and no memory state. \
                      Restoring the snapshot would leave the existing saved state \
@@ -1901,9 +1937,9 @@ impl VmmSnapshotPage {
         let uuid = self.vm.get_uuid();
         let revert_name = name.clone();
         self.simple_async(
-            "Running snapshot",
-            &format!("Running snapshot '{name}'"),
-            &format!("Error running snapshot '{name}'"),
+            virtinst_core::tr!("Running snapshot"),
+            &virtinst_core::trf!("Running snapshot '%s'", name),
+            &virtinst_core::trf!("Error running snapshot '%s'", name),
             move |_, dom| {
                 revert_to_snapshot(dom, &revert_name)?;
                 // looking at the domain state after revert will always
@@ -1931,7 +1967,9 @@ impl VmmSnapshotPage {
         }
         let result = error::yes_no(
             Some(&self.topwin),
-            "Are you sure you want to permanently delete the selected snapshots?",
+            virtinst_core::tr!(
+                "Are you sure you want to permanently delete the selected snapshots?"
+            ),
             None,
         )
         .await;
@@ -1943,9 +1981,9 @@ impl VmmSnapshotPage {
             eprintln!("Deleting snapshot '{name}'");
             let delname = name.clone();
             self.simple_async(
-                "Deleting snapshot",
-                &format!("Deleting snapshot '{name}'"),
-                &format!("Error deleting snapshot '{name}'"),
+                virtinst_core::tr!("Deleting snapshot"),
+                &virtinst_core::trf!("Deleting snapshot '%s'", name),
+                &virtinst_core::trf!("Error deleting snapshot '%s'", name),
                 move |_, dom| delete_snapshot(dom, &delname),
             )
             .await;

@@ -52,7 +52,7 @@ byte; use `tr!`, `trf!` (placeholders `%s`/`%(nome)s`) e `ntr!` de
 | T3 | GUI: Detalhes da VM | `details.rs`, `devpages.rs`, janela da VM e console | G | T1 | ✅ |
 | T4 | GUI: Adicionar hardware | `addhardware.rs` e afins | M | T1 | ✅ |
 | T5 | GUI: Nova VM + Personalizar | `createvm.rs` | M | T1 | ✅ |
-| T6 | GUI: telas restantes | storage, host, snapshots, clonar, migrar, preferências, console | M | T1 | |
+| T6 | GUI: telas restantes | storage, host, snapshots, clonar, migrar, preferências, console | M | T1 | ✅ |
 | T7 | CLI | mensagens e `--help` de virt-install/virt-xml/virt-clone | M | T1 | |
 | T8 | Pacotes | `.mo` em `/usr/share/locale/*/LC_MESSAGES/virt-manager-rust.mo` nos .deb/.rpm/Arch/tarball, `check-install.sh` confere | P | T1 | |
 

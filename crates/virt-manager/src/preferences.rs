@@ -92,7 +92,7 @@ fn frame(title: &str, child: &impl IsA<gtk::Widget>) -> gtk::Box {
     vbox.set_margin_start(6);
     vbox.set_margin_end(6);
     let label = gtk::Label::new(None);
-    label.set_markup(&format!("<b>{title}</b>"));
+    label.set_markup(&virtinst_core::i18n::bold(title));
     label.set_xalign(0.0);
     vbox.append(&label);
     child.set_margin_start(12);
@@ -165,16 +165,19 @@ impl VmmPreferences {
 
     fn new() -> VmmPreferences {
         let window = gtk::Window::builder()
-            .title("Preferences")
+            .title(virtinst_core::tr!("Preferences"))
             .resizable(false)
             .hide_on_close(true)
             .build();
 
         // General
-        let system_tray = gtk::CheckButton::with_mnemonic("Enable _system tray icon");
+        let system_tray =
+            gtk::CheckButton::with_mnemonic(virtinst_core::tr!("Enable _system tray icon"));
         let (system_tray_warn_box, system_tray_warn_label) = warn_box("");
-        let xmleditor = gtk::CheckButton::with_mnemonic("Enable _XML editing");
-        let libguestfs = gtk::CheckButton::with_mnemonic("Enable libgues_tfs VM introspection");
+        let xmleditor = gtk::CheckButton::with_mnemonic(virtinst_core::tr!("Enable _XML editing"));
+        let libguestfs = gtk::CheckButton::with_mnemonic(virtinst_core::tr!(
+            "Enable libgues_tfs VM introspection"
+        ));
         let (libguestfs_warn_box, _) = warn_box(
             "<small>You must restart the application for this change to take effect</small>",
         );
@@ -199,21 +202,39 @@ impl VmmPreferences {
         interval_box.append(&gtk::Label::new(Some("seconds")));
         let polling = new_grid();
         polling.attach(
-            &grid_label("_Update status every", &update_interval),
+            &grid_label(virtinst_core::tr!("_Update status every"), &update_interval),
             0,
             0,
             1,
             1,
         );
         polling.attach(&interval_box, 1, 0, 1, 1);
-        polling.attach(&grid_label("Poll C_PU usage", &enable_cpu), 0, 1, 1, 1);
+        polling.attach(
+            &grid_label(virtinst_core::tr!("Poll C_PU usage"), &enable_cpu),
+            0,
+            1,
+            1,
+            1,
+        );
         polling.attach(&enable_cpu, 1, 1, 1, 1);
-        polling.attach(&grid_label("Poll _Disk I/O", &enable_disk), 0, 2, 1, 1);
+        polling.attach(
+            &grid_label(virtinst_core::tr!("Poll _Disk I/O"), &enable_disk),
+            0,
+            2,
+            1,
+            1,
+        );
         polling.attach(&enable_disk, 1, 2, 1, 1);
-        polling.attach(&grid_label("Poll _Network I/O", &enable_net), 0, 3, 1, 1);
+        polling.attach(
+            &grid_label(virtinst_core::tr!("Poll _Network I/O"), &enable_net),
+            0,
+            3,
+            1,
+            1,
+        );
         polling.attach(&enable_net, 1, 3, 1, 1);
         polling.attach(
-            &grid_label("Poll _Memory stats", &enable_memory),
+            &grid_label(virtinst_core::tr!("Poll _Memory stats"), &enable_memory),
             0,
             4,
             1,
@@ -225,7 +246,7 @@ impl VmmPreferences {
         let graphics_type = Combo::new(vec![
             (
                 "system".to_string(),
-                format!("System default ({DEFAULT_GRAPHICS_FROM_CONFIG})"),
+                virtinst_core::trf!("System default (%s)", DEFAULT_GRAPHICS_FROM_CONFIG),
             ),
             ("vnc".to_string(), "VNC".to_string()),
             ("spice".to_string(), "Spice".to_string()),
@@ -233,16 +254,19 @@ impl VmmPreferences {
         let storage_format = Combo::new(vec![
             (
                 "default".to_string(),
-                format!("System default ({DEFAULT_STORAGE_FORMAT_FROM_CONFIG})"),
+                virtinst_core::trf!("System default (%s)", DEFAULT_STORAGE_FORMAT_FROM_CONFIG),
             ),
             ("raw".to_string(), "Raw".to_string()),
             ("qcow2".to_string(), "QCOW2".to_string()),
         ]);
         let cpu_default = Combo::new(
             [
-                ("default", "Application default"),
-                ("hv-default", "Hypervisor default"),
-                ("host-model-only", "Nearest host CPU model"),
+                ("default", virtinst_core::tr!("Application default")),
+                ("hv-default", virtinst_core::tr!("Hypervisor default")),
+                (
+                    "host-model-only",
+                    virtinst_core::tr!("Nearest host CPU model"),
+                ),
                 ("host-model", "host-model"),
                 ("host-passthrough", "host-passthrough"),
                 ("maximum", "maximum"),
@@ -251,33 +275,46 @@ impl VmmPreferences {
             .to_vec(),
         );
         let firmware_default = Combo::new(vec![
-            ("default".to_string(), "System default".to_string()),
-            ("uefi".to_string(), "UEFI".to_string()),
+            (
+                "default".to_string(),
+                virtinst_core::tr!("System default").to_string(),
+            ),
+            ("uefi".to_string(), virtinst_core::tr!("UEFI").to_string()),
         ]);
-        let storage_tip = "Default storage format for new disk images.";
+        let storage_tip = virtinst_core::tr!("Default storage format for new disk images.");
         storage_format.dropdown.set_tooltip_text(Some(storage_tip));
         let cpu_tip = "Default CPU setting for new VMs. This is typically a tradeoff \
                        between performance and migration compatibility";
-        let fw_tip = "Default Firmware for new VMs. Boot using either BIOS or UEFI.";
+        let fw_tip =
+            virtinst_core::tr!("Default Firmware for new VMs. Boot using either BIOS or UEFI.");
         let newvm = new_grid();
         newvm.attach(
-            &grid_label("Gra_phics type:", &graphics_type.dropdown),
+            &grid_label(
+                virtinst_core::tr!("Gra_phics type:"),
+                &graphics_type.dropdown,
+            ),
             0,
             0,
             1,
             1,
         );
         newvm.attach(&graphics_type.dropdown, 1, 0, 1, 1);
-        let l = grid_label("_Storage format:", &storage_format.dropdown);
+        let l = grid_label(
+            virtinst_core::tr!("_Storage format:"),
+            &storage_format.dropdown,
+        );
         l.set_tooltip_text(Some(storage_tip));
         newvm.attach(&l, 0, 1, 1, 1);
         newvm.attach(&storage_format.dropdown, 1, 1, 1, 1);
-        let l = grid_label("CPU _default:", &cpu_default.dropdown);
+        let l = grid_label(virtinst_core::tr!("CPU _default:"), &cpu_default.dropdown);
         l.set_tooltip_text(Some(cpu_tip));
         cpu_default.dropdown.set_tooltip_text(Some(cpu_tip));
         newvm.attach(&l, 0, 2, 1, 1);
         newvm.attach(&cpu_default.dropdown, 1, 2, 1, 1);
-        let l = grid_label("x86 _Firmware:", &firmware_default.dropdown);
+        let l = grid_label(
+            virtinst_core::tr!("x86 _Firmware:"),
+            &firmware_default.dropdown,
+        );
         l.set_tooltip_text(Some(fw_tip));
         firmware_default.dropdown.set_tooltip_text(Some(fw_tip));
         newvm.attach(&l, 0, 3, 1, 1);
@@ -285,26 +322,42 @@ impl VmmPreferences {
 
         // Console
         let console_scaling = Combo::new(
-            [(0, "Never"), (1, "Fullscreen only"), (2, "Always")]
-                .map(|(v, l)| (v, l.to_string()))
-                .to_vec(),
+            [
+                (0, virtinst_core::tr!("Never")),
+                (1, virtinst_core::tr!("Fullscreen only")),
+                (2, virtinst_core::tr!("Always")),
+            ]
+            .map(|(v, l)| (v, l.to_string()))
+            .to_vec(),
         );
-        let resize_vals = [(0, "Off"), (1, "On")];
+        let resize_vals = [
+            (0, virtinst_core::tr!("Off")),
+            (1, virtinst_core::tr!("On")),
+        ];
         let default_resize = resize_vals
             .iter()
             .find(|(v, _)| *v == DEFAULT_CONSOLE_RESIZEGUEST)
             .map(|(_, l)| *l)
-            .unwrap_or("Off");
-        let mut resize_rows = vec![(-1, format!("System default ({default_resize})"))];
+            .unwrap_or(virtinst_core::tr!("Off"));
+        let mut resize_rows = vec![(
+            -1,
+            virtinst_core::trf!("System default (%s)", default_resize),
+        )];
         resize_rows.extend(resize_vals.map(|(v, l)| (v, l.to_string())));
         let console_resizeguest = Combo::new(resize_rows);
         let console_autoredir = Combo::new(vec![
-            (false, "Manual redirect only".to_string()),
-            (true, "Auto redirect on USB attach".to_string()),
+            (
+                false,
+                virtinst_core::tr!("Manual redirect only").to_string(),
+            ),
+            (
+                true,
+                virtinst_core::tr!("Auto redirect on USB attach").to_string(),
+            ),
         ]);
         let console_autoconnect = gtk::CheckButton::new();
-        let keys_grab_sequence = gtk::Label::new(Some("Not supported"));
-        let keys_grab_changebtn = gtk::Button::with_label("Change...");
+        let keys_grab_sequence = gtk::Label::new(Some(virtinst_core::tr!("Not supported")));
+        let keys_grab_changebtn = gtk::Button::with_label(virtinst_core::tr!("Change..."));
         let resize_tip = "Change guest resolution when the guest window size is changed. \
                           Only works with properly configured guest using spice and the \
                           desktop agent.";
@@ -312,31 +365,46 @@ impl VmmPreferences {
                                to the running VM graphical console.";
         let console = new_grid();
         console.attach(
-            &grid_label("Graphical console _scaling:", &console_scaling.dropdown),
+            &grid_label(
+                virtinst_core::tr!("Graphical console _scaling:"),
+                &console_scaling.dropdown,
+            ),
             0,
             0,
             1,
             1,
         );
         console.attach(&console_scaling.dropdown, 1, 0, 1, 1);
-        let l = grid_label("_Resize guest with window:", &console_resizeguest.dropdown);
+        let l = grid_label(
+            virtinst_core::tr!("_Resize guest with window:"),
+            &console_resizeguest.dropdown,
+        );
         l.set_tooltip_text(Some(resize_tip));
         console.attach(&l, 0, 1, 1, 1);
         console.attach(&console_resizeguest.dropdown, 1, 1, 1, 1);
         let keys_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        keys_box.append(&grid_label("Gr_ab keys:", &keys_grab_changebtn));
+        keys_box.append(&grid_label(
+            virtinst_core::tr!("Gr_ab keys:"),
+            &keys_grab_changebtn,
+        ));
         keys_box.append(&keys_grab_sequence);
         console.attach(&keys_box, 0, 2, 1, 1);
         console.attach(&keys_grab_changebtn, 1, 2, 1, 1);
         console.attach(
-            &grid_label("SPICE _USB Redirection:", &console_autoredir.dropdown),
+            &grid_label(
+                virtinst_core::tr!("SPICE _USB Redirection:"),
+                &console_autoredir.dropdown,
+            ),
             0,
             3,
             1,
             1,
         );
         console.attach(&console_autoredir.dropdown, 1, 3, 1, 1);
-        let l = grid_label("Console autoconnec_t:", &console_autoconnect);
+        let l = grid_label(
+            virtinst_core::tr!("Console autoconnec_t:"),
+            &console_autoconnect,
+        );
         l.set_tooltip_text(Some(autoconnect_tip));
         console.attach(&l, 0, 4, 1, 1);
         console.attach(&console_autoconnect, 1, 4, 1, 1);
@@ -350,12 +418,24 @@ impl VmmPreferences {
         let confirm_delstorage = gtk::CheckButton::new();
         let feedback = new_grid();
         for (row, (text, check)) in [
-            ("_Force Poweroff:", &confirm_forcepoweroff),
-            ("Poweroff/_Reboot/Save:", &confirm_poweroff),
-            ("_Pause:", &confirm_pause),
-            ("Device re_moval:", &confirm_removedev),
-            ("_Unapplied changes:", &confirm_unapplied),
-            ("_Deleting storage:", &confirm_delstorage),
+            (
+                virtinst_core::tr!("_Force Poweroff:"),
+                &confirm_forcepoweroff,
+            ),
+            (
+                virtinst_core::tr!("Poweroff/_Reboot/Save:"),
+                &confirm_poweroff,
+            ),
+            (virtinst_core::tr!("_Pause:"), &confirm_pause),
+            (virtinst_core::tr!("Device re_moval:"), &confirm_removedev),
+            (
+                virtinst_core::tr!("_Unapplied changes:"),
+                &confirm_unapplied,
+            ),
+            (
+                virtinst_core::tr!("_Deleting storage:"),
+                &confirm_delstorage,
+            ),
         ]
         .into_iter()
         .enumerate()
@@ -366,16 +446,20 @@ impl VmmPreferences {
 
         let notebook = gtk::Notebook::new();
         for (tab, title, page) in [
-            ("_General", "General", general),
-            ("P_olling", "Stats Options", polling),
-            ("N_ew VM", "New VM Defaults", newvm),
-            ("Conso_le", "Graphical Consoles", console),
-            ("Feed_back", "Confirmations", feedback),
+            (virtinst_core::tr!("_General"), "General", general),
+            (virtinst_core::tr!("P_olling"), "Stats Options", polling),
+            (virtinst_core::tr!("N_ew VM"), "New VM Defaults", newvm),
+            (
+                virtinst_core::tr!("Conso_le"),
+                "Graphical Consoles",
+                console,
+            ),
+            (virtinst_core::tr!("Feed_back"), "Confirmations", feedback),
         ] {
             notebook.append_page(&frame(title, &page), Some(&gtk::Label::with_mnemonic(tab)));
         }
 
-        let close = gtk::Button::with_mnemonic("_Close");
+        let close = gtk::Button::with_mnemonic(virtinst_core::tr!("_Close"));
         close.set_halign(gtk::Align::End);
         let vbox = gtk::Box::new(gtk::Orientation::Vertical, 12);
         vbox.set_margin_top(12);
@@ -621,7 +705,7 @@ impl VmmPreferences {
     /// down when OK is clicked.
     async fn change_grab_keys(&self) {
         let dialog = gtk::Window::builder()
-            .title("Configure grab key combination")
+            .title(virtinst_core::tr!("Configure grab key combination"))
             .transient_for(&self.0.window)
             .modal(true)
             .destroy_with_parent(true)
@@ -634,7 +718,9 @@ impl VmmPreferences {
              To confirm your selection please click OK button\n\
              while you have desired keys pressed.",
         ));
-        let keylabel = gtk::Label::new(Some("Please press desired grab key combination"));
+        let keylabel = gtk::Label::new(Some(virtinst_core::tr!(
+            "Please press desired grab key combination"
+        )));
         let vbox = gtk::Box::new(gtk::Orientation::Vertical, 12);
         vbox.set_margin_top(6);
         vbox.set_margin_bottom(6);
@@ -647,8 +733,8 @@ impl VmmPreferences {
         vbox.append(&spacer);
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         buttons.set_halign(gtk::Align::End);
-        let cancel = gtk::Button::with_mnemonic("_Cancel");
-        let ok = gtk::Button::with_mnemonic("_OK");
+        let cancel = gtk::Button::with_mnemonic(virtinst_core::tr!("_Cancel"));
+        let ok = gtk::Button::with_mnemonic(virtinst_core::tr!("_OK"));
         buttons.append(&cancel);
         buttons.append(&ok);
         vbox.append(&buttons);

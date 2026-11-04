@@ -53,30 +53,30 @@ impl BrowseReasonMetadata {
         match reason {
             Some(BrowseReason::Image) => {
                 data.enable_create = true;
-                data.local_title = Some("Locate existing storage");
-                data.storage_title = "Locate or create storage volume";
+                data.local_title = Some(virtinst_core::tr!("Locate existing storage"));
+                data.storage_title = virtinst_core::tr!("Locate or create storage volume");
                 data.dialog_type = DialogType::Save;
-                data.choose_label = Some("_Open");
+                data.choose_label = Some(virtinst_core::tr!("_Open"));
                 data.gsettings_key = Some("image");
             }
             Some(BrowseReason::IsoMedia) => {
-                data.local_title = Some("Locate ISO media");
-                data.storage_title = "Locate ISO media volume";
+                data.local_title = Some(virtinst_core::tr!("Locate ISO media"));
+                data.storage_title = virtinst_core::tr!("Locate ISO media volume");
                 data.gsettings_key = Some("media");
             }
             Some(BrowseReason::FloppyMedia) => {
-                data.local_title = Some("Locate floppy media");
-                data.storage_title = "Locate floppy media volume";
+                data.local_title = Some(virtinst_core::tr!("Locate floppy media"));
+                data.storage_title = virtinst_core::tr!("Locate floppy media volume");
                 data.gsettings_key = Some("media");
             }
             Some(BrowseReason::Fs) => {
-                data.local_title = Some("Locate directory volume");
-                data.storage_title = "Locate directory volume";
+                data.local_title = Some(virtinst_core::tr!("Locate directory volume"));
+                data.storage_title = virtinst_core::tr!("Locate directory volume");
                 data.dialog_type = DialogType::SelectFolder;
             }
             None => {
                 data.enable_create = true;
-                data.storage_title = "Choose Storage Volume";
+                data.storage_title = virtinst_core::tr!("Choose Storage Volume");
             }
         }
         data
@@ -183,9 +183,10 @@ impl StorageBrowser {
         let sl = &i.storagelist;
         let is_remote = i.conn.is_remote();
         sl.browse_local.set_sensitive(!is_remote);
-        sl.browse_local.set_tooltip_text(
-            is_remote.then_some("Cannot use local storage on remote connection."),
-        );
+        sl.browse_local
+            .set_tooltip_text(is_remote.then_some(virtinst_core::tr!(
+                "Cannot use local storage on remote connection."
+            )));
 
         for w in [
             sl.pool_autostart_label.upcast_ref::<gtk::Widget>(),

@@ -117,7 +117,7 @@ pub struct CreateNetwork(Rc<Inner>);
 impl CreateNetwork {
     pub fn new(conn: &VmmConnection) -> CreateNetwork {
         let window = gtk::Window::builder()
-            .title("Create a new virtual network")
+            .title(virtinst_core::tr!("Create a new virtual network"))
             .hide_on_close(true)
             .build();
         window.set_size_request(400, 400);
@@ -126,7 +126,9 @@ impl CreateNetwork {
         let icon = gtk::Image::from_icon_name("network-idle");
         icon.set_pixel_size(48);
         let header_label = gtk::Label::new(None);
-        header_label.set_markup("<span size='large'>Create virtual network</span>");
+        header_label.set_markup(virtinst_core::tr!(
+            "<span size='large'>Create virtual network</span>"
+        ));
         header_label.set_halign(gtk::Align::Start);
         header_label.add_css_class("vmm-header-text");
         let vbox3 = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -153,7 +155,13 @@ impl CreateNetwork {
         net_forward_mode.set_halign(gtk::Align::Start);
         net_forward_mode.update_property(&[gtk::accessible::Property::Label("net-mode")]);
         // [ show_manual, label ]
-        let net_forward_device = combo(&["Any physical device", "Physical device..."], false);
+        let net_forward_device = combo(
+            &[
+                virtinst_core::tr!("Any physical device"),
+                virtinst_core::tr!("Physical device..."),
+            ],
+            false,
+        );
         net_forward_device.update_property(&[gtk::accessible::Property::Label("net-forward")]);
         let net_forward_manual = gtk::Entry::new();
         net_forward_manual.update_property(&[gtk::accessible::Property::Label("net-device")]);
@@ -162,20 +170,20 @@ impl CreateNetwork {
         net_hostdevs.set_halign(gtk::Align::Start);
         net_hostdevs.update_property(&[gtk::accessible::Property::Label("net-devicelist")]);
 
-        let name_label = end_label("_Name:");
+        let name_label = end_label(virtinst_core::tr!("_Name:"));
         name_label.set_mnemonic_widget(Some(&net_name));
-        let forward_label = end_label("Fo_rward to:");
+        let forward_label = end_label(virtinst_core::tr!("Fo_rward to:"));
         forward_label.set_mnemonic_widget(Some(&net_forward_device));
-        let manual_label = end_label("De_vice:");
+        let manual_label = end_label(virtinst_core::tr!("De_vice:"));
         manual_label.set_mnemonic_widget(Some(&net_forward_manual));
-        let hostdevs_label = end_label("Device _List:");
+        let hostdevs_label = end_label(virtinst_core::tr!("Device _List:"));
         hostdevs_label.set_mnemonic_widget(Some(&net_forward_device));
         let grid = gtk::Grid::new();
         grid.set_row_spacing(6);
         grid.set_column_spacing(6);
         grid.attach(&name_label, 0, 0, 1, 1);
         grid.attach(&net_name, 1, 0, 1, 1);
-        grid.attach(&end_label("_Mode:"), 0, 1, 1, 1);
+        grid.attach(&end_label(virtinst_core::tr!("_Mode:")), 0, 1, 1, 1);
         grid.attach(&net_forward_mode, 1, 1, 1, 1);
         grid.attach(&forward_label, 0, 2, 1, 1);
         grid.attach(&net_forward_device, 1, 2, 1, 1);
@@ -200,7 +208,7 @@ impl CreateNetwork {
             network.set_width_chars(25);
             network.update_property(&[gtk::accessible::Property::Label(names[0])]);
             let box6 = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-            box6.append(&end_label("_Network:"));
+            box6.append(&end_label(virtinst_core::tr!("_Network:")));
             box6.append(&network);
             let box5 = gtk::Box::new(gtk::Orientation::Vertical, 3);
             box5.append(&box6);
@@ -215,7 +223,7 @@ impl CreateNetwork {
             let end = gtk::Entry::new();
             end.set_max_length(dhcp_max_length);
             end.update_property(&[gtk::accessible::Property::Label(names[2])]);
-            let end_label_w = gtk::Label::new(Some("End:"));
+            let end_label_w = gtk::Label::new(Some(virtinst_core::tr!("End:")));
             end_label_w.set_halign(if end_text_start {
                 gtk::Align::Start
             } else {
@@ -225,7 +233,7 @@ impl CreateNetwork {
             table.set_row_spacing(3);
             table.set_column_spacing(6);
             table.attach(&dhcp_enable, 0, 0, 2, 1);
-            table.attach(&end_label("Start:"), 0, 1, 1, 1);
+            table.attach(&end_label(virtinst_core::tr!("Start:")), 0, 1, 1, 1);
             table.attach(&start, 1, 1, 1, 1);
             table.attach(&end_label_w, 0, 2, 1, 1);
             table.attach(&end, 1, 2, 1, 1);
@@ -248,14 +256,17 @@ impl CreateNetwork {
             net_dhcpv4_start,
             net_dhcpv4_end,
         ) = ip_section(
-            "_Enable IPv4",
-            "Enable DHCPv4",
+            virtinst_core::tr!("_Enable IPv4"),
+            virtinst_core::tr!("Enable DHCPv4"),
             20,
             15,
             false,
             ["ipv4-network", "ipv4-start", "ipv4-end"],
         );
-        let net_ipv4_expander = expander("<b>IPv_4 configuration</b>", &ipv4_content);
+        let net_ipv4_expander = expander(
+            virtinst_core::tr!("<b>IPv_4 configuration</b>"),
+            &ipv4_content,
+        );
         let (
             ipv6_content,
             net_ipv6_enable,
@@ -265,19 +276,23 @@ impl CreateNetwork {
             net_dhcpv6_start,
             net_dhcpv6_end,
         ) = ip_section(
-            "_Enable IPv6",
-            "Enable DHCPv6",
+            virtinst_core::tr!("_Enable IPv6"),
+            virtinst_core::tr!("Enable DHCPv6"),
             40,
             40,
             true,
             ["ipv6-network", "ipv6-start", "ipv6-end"],
         );
-        let net_ipv6_expander = expander("<b>IPv_6 configuration</b>", &ipv6_content);
+        let net_ipv6_expander = expander(
+            virtinst_core::tr!("<b>IPv_6 configuration</b>"),
+            &ipv6_content,
+        );
 
         // DNS domain name
-        let net_dns_use_netname = gtk::CheckButton::with_mnemonic("Use net_work name");
+        let net_dns_use_netname =
+            gtk::CheckButton::with_mnemonic(virtinst_core::tr!("Use net_work name"));
         net_dns_use_netname.set_halign(gtk::Align::Start);
-        let net_dns_use_custom = gtk::CheckButton::with_mnemonic("Cust_om");
+        let net_dns_use_custom = gtk::CheckButton::with_mnemonic(virtinst_core::tr!("Cust_om"));
         net_dns_use_netname.set_group(Some(&net_dns_use_custom));
         net_dns_use_netname.set_active(true);
         let net_domain_name = gtk::Entry::new();
@@ -292,7 +307,7 @@ impl CreateNetwork {
         dns_grid.attach(&net_domain_name, 1, 1, 1, 1);
         let net_dns_expander = gtk::Expander::new(None);
         let dns_label = gtk::Label::new(None);
-        dns_label.set_markup("<b>DNS domain name</b>");
+        dns_label.set_markup(virtinst_core::tr!("<b>DNS domain name</b>"));
         net_dns_expander.set_label_widget(Some(&dns_label));
         net_dns_expander.set_child(Some(&dns_grid));
 
@@ -304,8 +319,8 @@ impl CreateNetwork {
         let xmleditor = XmlEditor::new(&net_details);
         xmleditor.widget().set_vexpand(true);
 
-        let create_cancel = gtk::Button::with_mnemonic("_Cancel");
-        let create_finish = gtk::Button::with_mnemonic("_Finish");
+        let create_cancel = gtk::Button::with_mnemonic(virtinst_core::tr!("_Cancel"));
+        let create_finish = gtk::Button::with_mnemonic(virtinst_core::tr!("_Finish"));
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         buttons.set_halign(gtk::Align::End);
         buttons.append(&create_cancel);
@@ -523,7 +538,7 @@ impl CreateNetwork {
 
     fn set_hostdevs(&self, mut rows: Vec<(Option<String>, String)>) {
         if rows.is_empty() {
-            rows.push((None, "No available device".into()));
+            rows.push((None, virtinst_core::tr!("No available device").into()));
         }
         let labels: Vec<&str> = rows.iter().map(|(_, l)| l.as_str()).collect();
         self.0
@@ -781,7 +796,7 @@ impl CreateNetwork {
             Err(e) => {
                 error::show_err(
                     Some(&self.0.window),
-                    &format!("Error building XML: {e}"),
+                    &virtinst_core::trf!("Error building XML: %s", e),
                     None,
                     "",
                 )
@@ -808,7 +823,7 @@ impl CreateNetwork {
         if let Err(e) = validated {
             error::show_err(
                 Some(&i.window),
-                &format!("Error validating network: {e}"),
+                &virtinst_core::trf!("Error validating network: %s", e),
                 None,
                 "",
             )
@@ -824,8 +839,8 @@ impl CreateNetwork {
         i.window.set_cursor_from_name(Some("progress"));
         let err = asyncjob::run(
             Some(&i.window),
-            "Creating virtual network...",
-            "Creating the virtual network may take a while...",
+            virtinst_core::tr!("Creating virtual network..."),
+            virtinst_core::tr!("Creating the virtual network may take a while..."),
             true,
             move |_job| {
                 // `_async_net_create`
@@ -840,7 +855,7 @@ impl CreateNetwork {
         if let Some((error, details)) = err {
             error::show_err(
                 Some(&i.window),
-                &format!("Error creating virtual network: {error}"),
+                &virtinst_core::trf!("Error creating virtual network: %s", error),
                 Some(&details),
                 "",
             )

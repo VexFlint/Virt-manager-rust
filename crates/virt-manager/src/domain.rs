@@ -194,7 +194,10 @@ impl XmlToDefine {
 /// minus the collision check, which needs the connection.
 pub fn validate_generic_name(name_label: &str, val: &str) -> Result<(), String> {
     if val.is_empty() {
-        return Err(format!("A name must be specified for the {name_label}"));
+        return Err(virtinst_core::trf!(
+            "A name must be specified for the %s",
+            name_label
+        ));
     }
     if val.contains('/') {
         return Err(format!(
@@ -1283,7 +1286,12 @@ impl VmmDomain {
         if !x.guest.cpu.cells.is_empty() {
             return (
                 false,
-                Some("Can not change shared memory setting when <numa> is configured.".into()),
+                Some(
+                    virtinst_core::tr!(
+                        "Can not change shared memory setting when <numa> is configured."
+                    )
+                    .into(),
+                ),
             );
         }
         let supported = domcaps
@@ -1291,7 +1299,7 @@ impl VmmDomain {
         if !supported {
             return (
                 false,
-                Some("Libvirt may not be new enough to support memfd.".into()),
+                Some(virtinst_core::tr!("Libvirt may not be new enough to support memfd.").into()),
             );
         }
         (
@@ -1946,10 +1954,13 @@ impl VmmDomain {
         if new_name == self.get_name() {
             return Ok(());
         }
-        validate_generic_name("Guest", new_name)?;
+        validate_generic_name(virtinst_core::tr!("Guest"), new_name)?;
         let name = new_name.to_string();
         self.with_conn(move |conn| match Domain::lookup_by_name(conn, &name) {
-            Ok(_) => Err(format!("Guest name '{name}' is already in use.")),
+            Ok(_) => Err(virtinst_core::trf!(
+                "Guest name '%s' is already in use.",
+                name
+            )),
             Err(_) => Ok(()),
         })
         .await?;

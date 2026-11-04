@@ -84,7 +84,7 @@ pub fn pretty_desc(uri: &str) -> String {
         "qemu" => "QEMU/KVM",
         "vbox" => "Virtualbox",
         "vmware" => "VMWare",
-        "xen" => "Xen",
+        "xen" => virtinst_core::tr!("Xen"),
         other => other,
     };
     let mut ret = hv.to_string();
@@ -313,18 +313,18 @@ impl NetInfo {
     pub fn pretty_forward_mode(&self) -> String {
         let dev = self.forward_dev.as_deref();
         match (self.forward_mode.as_deref(), dev) {
-            (None, _) => "Isolated network".into(),
-            (Some("nat"), Some(dev)) => format!("NAT to {dev}"),
-            (Some("nat"), None) => "NAT".into(),
-            (Some("route"), Some(dev)) => format!("Route to {dev}"),
-            (Some("route"), None) => "Routed network".into(),
+            (None, _) => virtinst_core::tr!("Isolated network").into(),
+            (Some("nat"), Some(dev)) => virtinst_core::trf!("NAT to %s", dev),
+            (Some("nat"), None) => virtinst_core::tr!("NAT").into(),
+            (Some("route"), Some(dev)) => virtinst_core::trf!("Route to %s", dev),
+            (Some("route"), None) => virtinst_core::tr!("Routed network").into(),
             (Some(mode), _) => {
                 let mut c = mode.chars();
                 let cap: String = c
                     .next()
                     .map(|f| f.to_uppercase().chain(c).collect())
                     .unwrap_or_default();
-                format!("{cap} network")
+                virtinst_core::trf!("%s network", cap)
             }
         }
     }
@@ -361,9 +361,9 @@ impl VmmConnection {
 
     pub fn get_state_text(&self) -> &'static str {
         match self.state() {
-            ConnState::Disconnected => "Disconnected",
-            ConnState::Connecting => "Connecting",
-            ConnState::Active => "Active",
+            ConnState::Disconnected => virtinst_core::tr!("Disconnected"),
+            ConnState::Connecting => virtinst_core::tr!("Connecting"),
+            ConnState::Active => virtinst_core::tr!("Active"),
         }
     }
 

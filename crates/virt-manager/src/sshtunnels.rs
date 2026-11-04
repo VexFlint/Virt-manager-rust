@@ -149,7 +149,12 @@ impl ConnectionInfo {
             );
         }
         if self.need_tunnel() && self.gtlsport.is_some() && self.gport.is_none() {
-            return Some("Guest is configured for TLS only which does not work over SSH.".into());
+            return Some(
+                virtinst_core::tr!(
+                    "Guest is configured for TLS only which does not work over SSH."
+                )
+                .into(),
+            );
         }
         if !self.need_tunnel()
             && !self.transport.is_empty()
@@ -218,10 +223,10 @@ pub fn make_ssh_command(ginfo: &ConnectionInfo) -> Option<Vec<String>> {
     // (Debian/SUSE) or does so by default (Fedora).
     let nc_params = match &ginfo.gsocket {
         Some(sock) => format!("-U {sock}"),
-        None => format!(
-            "{} {}",
-            ginfo.gaddr,
-            ginfo.gport.as_deref().unwrap_or_default()
+        None => virtinst_core::trf!(
+            "%(input_bus)s %(input_type)s",
+            input_bus = ginfo.gaddr,
+            input_type = ginfo.gport.as_deref().unwrap_or_default()
         ),
     };
     let nc_cmd = format!(

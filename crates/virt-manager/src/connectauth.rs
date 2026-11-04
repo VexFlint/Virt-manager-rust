@@ -119,7 +119,7 @@ struct VmmConnectAuth {
 impl VmmConnectAuth {
     fn new(creds: &[Credential]) -> Result<Rc<VmmConnectAuth>, String> {
         let window = gtk::Window::builder()
-            .title("Authentication required")
+            .title(virtinst_core::tr!("Authentication required"))
             .modal(true)
             .resizable(false)
             .deletable(false)
@@ -152,8 +152,8 @@ impl VmmConnectAuth {
         grid.attach(&label2, 0, 1, 1, 1);
         grid.attach(&entry2, 1, 1, 1, 1);
 
-        let cancel = gtk::Button::with_mnemonic("_Cancel");
-        let ok = gtk::Button::with_mnemonic("_OK");
+        let cancel = gtk::Button::with_mnemonic(virtinst_core::tr!("_Cancel"));
+        let ok = gtk::Button::with_mnemonic(virtinst_core::tr!("_OK"));
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         buttons.set_homogeneous(true);
         buttons.set_halign(gtk::Align::End);
@@ -416,9 +416,9 @@ pub fn connect_error(uri: &str, errmsg: &str, tb: &str, warnconsole: bool) -> Co
 
     if is_remote {
         if mentions_netcat_u(tb) {
-            hint.push_str(
-                "The remote host requires a version of netcat/nc which supports the -U option.",
-            );
+            hint.push_str(virtinst_core::tr!(
+                "The remote host requires a version of netcat/nc which supports the -U option."
+            ));
             show_errmsg = false;
         } else if transport == "ssh" && tb.contains("askpass") {
             hint.push_str(
@@ -427,9 +427,9 @@ pub fn connect_error(uri: &str, errmsg: &str, tb: &str, warnconsole: bool) -> Co
             );
             show_errmsg = false;
         } else {
-            hint.push_str(
-                "Verify that an appropriate libvirt daemon is running on the remote host.",
-            );
+            hint.push_str(virtinst_core::tr!(
+                "Verify that an appropriate libvirt daemon is running on the remote host."
+            ));
         }
     } else if is_xen {
         hint.push_str(
@@ -446,11 +446,13 @@ pub fn connect_error(uri: &str, errmsg: &str, tb: &str, warnconsole: bool) -> Co
         );
         show_errmsg = false;
     } else if mentions_virt_socket(tb) {
-        hint.push_str("Verify that an appropriate libvirt daemon is running.");
+        hint.push_str(virtinst_core::tr!(
+            "Verify that an appropriate libvirt daemon is running."
+        ));
         show_errmsg = false;
     }
 
-    let mut msg = format!("Unable to connect to libvirt {uri}.");
+    let mut msg = virtinst_core::trf!("Unable to connect to libvirt %s.", uri);
     if show_errmsg {
         msg.push_str(&format!("\n\n{errmsg}"));
     }
@@ -462,7 +464,7 @@ pub fn connect_error(uri: &str, errmsg: &str, tb: &str, warnconsole: bool) -> Co
     ConnectError {
         msg,
         details,
-        title: "Virtual Machine Manager Connection Failure".into(),
+        title: virtinst_core::tr!("Virtual Machine Manager Connection Failure").into(),
     }
 }
 
