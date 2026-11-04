@@ -45,7 +45,10 @@ appstreamcli validate --no-net --override=cid-desktopapp-is-not-rdns=info \
 glib-compile-schemas --strict --dry-run "$share/glib-2.0/schemas"
 
 # Os binários instalados rodam.
-"$dest/usr/bin/virt-install" --version
+# --version imprime a versão do upstream (5.1.0), como o argparse dele.
+for tool in virt-manager virt-install virt-clone virt-xml; do
+    test "$("$dest/usr/bin/$tool" --version)" = 5.1.0
+done
 "$dest/usr/bin/virt-xml" --help >/dev/null
 "$dest/usr/bin/virt-clone" --help >/dev/null
 

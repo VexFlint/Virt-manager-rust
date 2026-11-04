@@ -73,11 +73,24 @@ mod xmleditor;
 
 use clap::Parser;
 
+/// `BuildConfig.version`: the upstream release this is a port of, which
+/// is what upstream's `--version` prints (the CLI tools print the same).
+/// Our own release version is `CARGO_PKG_VERSION`, shown in About.
+const UPSTREAM_VERSION: &str = "5.1.0";
+
 /// Upstream's argparse options (`parse_commandline`), minus the hidden
 /// `--trace-libvirt` and `--test-options`.
 #[derive(Parser, Debug)]
-#[command(name = "virt-manager", version, about = "Virtual Machine Manager")]
+#[command(
+    name = "virt-manager",
+    about = "Virtual Machine Manager",
+    disable_version_flag = true
+)]
 struct Cli {
+    /// show program's version number and exit
+    #[arg(long = "version")]
+    version: bool,
+
     /// Connect to hypervisor at URI
     #[arg(short = 'c', long = "connect", value_name = "URI")]
     uri: Option<String>,
@@ -168,6 +181,11 @@ impl Cli {
 
 fn main() -> gtk::glib::ExitCode {
     let cli = Cli::parse();
+    if cli.version {
+        // argparse's `action="version"`: `BuildConfig.version` alone.
+        println!("{UPSTREAM_VERSION}");
+        return gtk::glib::ExitCode::SUCCESS;
+    }
     // Forking into the background isn't ported: the process always stays
     // in the foreground, which is what `--no-fork`/`--debug` ask for.
     let _ = (cli.debug, cli.no_fork, cli.fork);

@@ -601,7 +601,7 @@ clone_argcomplete "virt-clone --check d" "disk_size"
 echo
 echo "=== --version ==="
 UPSTREAM_VERSION="$(sed -n "s/^  version: '\(.*\)',$/\1/p" "$UPSTREAM_REF/meson.build" | head -1)"
-for tool in virt-install virt-clone virt-xml; do
+for tool in virt-install virt-clone virt-xml virt-manager; do
     actual="$("$REPO_ROOT/target/debug/$tool" --connect test:///default --version 2>&1)"
     if [[ "$actual" == "$UPSTREAM_VERSION" ]]; then
         echo "  PASS: $tool --version"
