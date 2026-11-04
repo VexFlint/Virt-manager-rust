@@ -23,13 +23,13 @@ pub const GROUP: &str = "vm";
 pub fn shutdown_menu() -> gio::Menu {
     let menu = gio::Menu::new();
     let main = gio::Menu::new();
-    main.append(Some("_Reboot"), Some("vm.reboot"));
-    main.append(Some("_Shut Down"), Some("vm.shutdown"));
-    main.append(Some("F_orce Reset"), Some("vm.reset"));
-    main.append(Some("_Force Off"), Some("vm.destroy"));
+    main.append(Some(virtinst_core::tr!("_Reboot")), Some("vm.reboot"));
+    main.append(Some(virtinst_core::tr!("_Shut Down")), Some("vm.shutdown"));
+    main.append(Some(virtinst_core::tr!("F_orce Reset")), Some("vm.reset"));
+    main.append(Some(virtinst_core::tr!("_Force Off")), Some("vm.destroy"));
     menu.append_section(None, &main);
     let save = gio::Menu::new();
-    save.append(Some("Sa_ve"), Some("vm.save"));
+    save.append(Some(virtinst_core::tr!("Sa_ve")), Some("vm.save"));
     menu.append_section(None, &save);
     menu
 }
@@ -42,26 +42,30 @@ pub fn action_menu(vm: Option<&VmmDomain>, show_open: bool) -> gio::Menu {
     let power = gio::Menu::new();
     let can_restore = vm.is_some_and(|vm| vm.has_managed_save());
     power.append(
-        Some(if can_restore { "_Restore" } else { "_Run" }),
+        Some(if can_restore {
+            virtinst_core::tr!("_Restore")
+        } else {
+            virtinst_core::tr!("_Run")
+        }),
         Some("vm.run"),
     );
     if vm.is_some_and(|vm| vm.is_paused()) {
-        power.append(Some("R_esume"), Some("vm.resume"));
+        power.append(Some(virtinst_core::tr!("R_esume")), Some("vm.resume"));
     } else {
-        power.append(Some("_Pause"), Some("vm.suspend"));
+        power.append(Some(virtinst_core::tr!("_Pause")), Some("vm.suspend"));
     }
-    power.append_submenu(Some("_Shut Down"), &shutdown_menu());
+    power.append_submenu(Some(virtinst_core::tr!("_Shut Down")), &shutdown_menu());
     menu.append_section(None, &power);
 
     let manage = gio::Menu::new();
-    manage.append(Some("Clone..."), Some("vm.clone"));
-    manage.append(Some("Migrate..."), Some("vm.migrate"));
-    manage.append(Some("_Delete"), Some("vm.delete"));
+    manage.append(Some(virtinst_core::tr!("Clone...")), Some("vm.clone"));
+    manage.append(Some(virtinst_core::tr!("Migrate...")), Some("vm.migrate"));
+    manage.append(Some(virtinst_core::tr!("_Delete")), Some("vm.delete"));
     menu.append_section(None, &manage);
 
     if show_open {
         let open = gio::Menu::new();
-        open.append(Some("_Open"), Some("vm.show"));
+        open.append(Some(virtinst_core::tr!("_Open")), Some("vm.show"));
         menu.append_section(None, &open);
     }
     menu
@@ -160,7 +164,13 @@ async fn simple_async_noshow(
 
 pub async fn run(parent: &gtk::Window, vm: &VmmDomain) {
     if !vm.has_managed_save() {
-        simple_async_noshow(parent, vm, DomainAction::Startup, "Error starting domain").await;
+        simple_async_noshow(
+            parent,
+            vm,
+            DomainAction::Startup,
+            virtinst_core::tr!("Error starting domain"),
+        )
+        .await;
         return;
     }
     // Restoring a saved image: offer a regular boot if restore fails.
@@ -172,7 +182,7 @@ pub async fn run(parent: &gtk::Window, vm: &VmmDomain) {
         error::DialogSpec {
             kind: error::MessageType::Warning,
             buttons: error::Buttons::YesNo,
-            text1: &format!("Error restoring domain: {e}"),
+            text1: &virtinst_core::trf!("Error restoring domain: %s", e),
             text2: Some(
                 "The domain could not be restored. Would you like\n\
                  to remove the saved state and perform a regular\n\
@@ -190,14 +200,20 @@ pub async fn run(parent: &gtk::Window, vm: &VmmDomain) {
     if let Err(e) = vm.run_action(DomainAction::RemoveSavedImage).await {
         error::show_err(
             Some(parent),
-            &format!("Error removing domain state: {e}"),
+            &virtinst_core::trf!("Error removing domain state: %s", e),
             None,
             "",
         )
         .await;
         return;
     }
-    simple_async_noshow(parent, vm, DomainAction::Startup, "Error starting domain").await;
+    simple_async_noshow(
+        parent,
+        vm,
+        DomainAction::Startup,
+        virtinst_core::tr!("Error starting domain"),
+    )
+    .await;
 }
 
 pub async fn suspend(parent: &gtk::Window, vm: &VmmDomain) {
@@ -206,17 +222,29 @@ pub async fn suspend(parent: &gtk::Window, vm: &VmmDomain) {
         Some(parent),
         || config.get_confirm_pause(),
         |v| config.set_confirm_pause(v),
-        &format!("Are you sure you want to pause '{}'?", vm.get_name()),
+        &virtinst_core::trf!("Are you sure you want to pause '%s'?", vm.get_name()),
         None,
     )
     .await;
     if ok {
-        simple_async_noshow(parent, vm, DomainAction::Suspend, "Error pausing domain").await;
+        simple_async_noshow(
+            parent,
+            vm,
+            DomainAction::Suspend,
+            virtinst_core::tr!("Error pausing domain"),
+        )
+        .await;
     }
 }
 
 pub async fn resume(parent: &gtk::Window, vm: &VmmDomain) {
-    simple_async_noshow(parent, vm, DomainAction::Resume, "Error unpausing domain").await;
+    simple_async_noshow(
+        parent,
+        vm,
+        DomainAction::Resume,
+        virtinst_core::tr!("Error unpausing domain"),
+    )
+    .await;
 }
 
 async fn confirm_poweroff(parent: &gtk::Window, text1: String) -> bool {
@@ -244,37 +272,49 @@ async fn confirm_forcepoweroff(parent: &gtk::Window, text1: String, text2: &str)
 }
 
 pub async fn shutdown(parent: &gtk::Window, vm: &VmmDomain) {
-    let text = format!("Are you sure you want to poweroff '{}'?", vm.get_name());
+    let text = virtinst_core::trf!("Are you sure you want to poweroff '%s'?", vm.get_name());
     if confirm_poweroff(parent, text).await {
         simple_async_noshow(
             parent,
             vm,
             DomainAction::Shutdown,
-            "Error shutting down domain",
+            virtinst_core::tr!("Error shutting down domain"),
         )
         .await;
     }
 }
 
 pub async fn reboot(parent: &gtk::Window, vm: &VmmDomain) {
-    let text = format!("Are you sure you want to reboot '{}'?", vm.get_name());
+    let text = virtinst_core::trf!("Are you sure you want to reboot '%s'?", vm.get_name());
     if confirm_poweroff(parent, text).await {
-        simple_async_noshow(parent, vm, DomainAction::Reboot, "Error rebooting domain").await;
+        simple_async_noshow(
+            parent,
+            vm,
+            DomainAction::Reboot,
+            virtinst_core::tr!("Error rebooting domain"),
+        )
+        .await;
     }
 }
 
 pub async fn reset(parent: &gtk::Window, vm: &VmmDomain) {
-    let text = format!("Are you sure you want to force reset '{}'?", vm.get_name());
+    let text = virtinst_core::trf!("Are you sure you want to force reset '%s'?", vm.get_name());
     let text2 = "This will immediately reset the VM without \
                  shutting down the OS and may cause data loss.";
     if confirm_forcepoweroff(parent, text, text2).await {
-        simple_async_noshow(parent, vm, DomainAction::Reset, "Error resetting domain").await;
+        simple_async_noshow(
+            parent,
+            vm,
+            DomainAction::Reset,
+            virtinst_core::tr!("Error resetting domain"),
+        )
+        .await;
     }
 }
 
 pub async fn destroy(parent: &gtk::Window, vm: &VmmDomain) {
-    let text = format!(
-        "Are you sure you want to force poweroff '{}'?",
+    let text = virtinst_core::trf!(
+        "Are you sure you want to force poweroff '%s'?",
         vm.get_name()
     );
     let text2 = "This will immediately poweroff the VM without \
@@ -284,7 +324,7 @@ pub async fn destroy(parent: &gtk::Window, vm: &VmmDomain) {
             parent,
             vm,
             DomainAction::Destroy,
-            "Error shutting down domain",
+            virtinst_core::tr!("Error shutting down domain"),
         )
         .await;
     }
@@ -294,7 +334,7 @@ pub async fn destroy(parent: &gtk::Window, vm: &VmmDomain) {
 /// Machine") via `vmmAsyncJob`; that window arrives with the asyncjob
 /// port, until then the save runs like the other actions.
 pub async fn save(parent: &gtk::Window, vm: &VmmDomain) {
-    let text = format!("Are you sure you want to save '{}'?", vm.get_name());
+    let text = virtinst_core::trf!("Are you sure you want to save '%s'?", vm.get_name());
     if confirm_poweroff(parent, text).await {
         simple_async_noshow(parent, vm, DomainAction::Save, "Error saving domain").await;
     }

@@ -119,13 +119,22 @@ impl VmmCreateConn {
 
     fn new() -> VmmCreateConn {
         let window = gtk::Window::builder()
-            .title("Add Connection")
+            .title(virtinst_core::tr!("Add Connection"))
             .modal(true)
             .resizable(false)
             .hide_on_close(true)
             .build();
 
-        let names: Vec<&str> = HVS.iter().map(|(_, n)| *n).collect();
+        // `"QEMU/KVM " + _("user session")` and `_("Custom URI...")`.
+        let names: Vec<String> = HVS
+            .iter()
+            .map(|(h, n)| match h {
+                Hv::QemuSession => format!("QEMU/KVM {}", virtinst_core::tr!("user session")),
+                Hv::Custom => virtinst_core::tr!("Custom URI...").to_string(),
+                _ => n.to_string(),
+            })
+            .collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
         let hypervisor = gtk::DropDown::from_strings(&names);
         hypervisor.update_property(&[gtk::accessible::Property::Label("Hypervisor")]);
 
@@ -142,7 +151,8 @@ impl VmmCreateConn {
         session_warning.append(&warn_icon);
         session_warning.append(&warn);
 
-        let connect_remote = gtk::CheckButton::with_mnemonic("Connect to _remote host over SSH");
+        let connect_remote =
+            gtk::CheckButton::with_mnemonic(virtinst_core::tr!("Connect to _remote host over SSH"));
         let username = gtk::Entry::new();
         let hostname = gtk::Entry::new();
         hostname.set_hexpand(true);
@@ -158,13 +168,13 @@ impl VmmCreateConn {
             .row_spacing(6)
             .column_spacing(6)
             .build();
-        let hv_label = grid_label("_Hypervisor:", &hypervisor);
-        let username_label = grid_label("_Username:", &username);
-        let hostname_label = grid_label("H_ostname:", &hostname);
-        let autoconnect_label = grid_label("_Autoconnect:", &autoconnect);
-        let uri_generated_label = gtk::Label::new(Some("Generated URI:"));
+        let hv_label = grid_label(virtinst_core::tr!("_Hypervisor:"), &hypervisor);
+        let username_label = grid_label(virtinst_core::tr!("_Username:"), &username);
+        let hostname_label = grid_label(virtinst_core::tr!("H_ostname:"), &hostname);
+        let autoconnect_label = grid_label(virtinst_core::tr!("_Autoconnect:"), &autoconnect);
+        let uri_generated_label = gtk::Label::new(Some(virtinst_core::tr!("Generated URI:")));
         uri_generated_label.set_xalign(1.0);
-        let uri_custom_label = grid_label("Cu_stom URI:", &uri_entry);
+        let uri_custom_label = grid_label(virtinst_core::tr!("Cu_stom URI:"), &uri_entry);
 
         grid.attach(&hv_label, 0, 0, 1, 1);
         grid.attach(&hypervisor, 1, 0, 1, 1);
@@ -188,8 +198,8 @@ impl VmmCreateConn {
         grid.attach(&uri_custom_label, 0, 8, 1, 1);
         grid.attach(&uri_entry, 1, 8, 1, 1);
 
-        let cancel = gtk::Button::with_mnemonic("_Cancel");
-        let connect = gtk::Button::with_mnemonic("Co_nnect");
+        let cancel = gtk::Button::with_mnemonic(virtinst_core::tr!("_Cancel"));
+        let connect = gtk::Button::with_mnemonic(virtinst_core::tr!("Co_nnect"));
         connect.add_css_class("suggested-action");
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         buttons.set_halign(gtk::Align::End);
@@ -344,7 +354,11 @@ impl VmmCreateConn {
         if self.is_remote() && w.hostname.text().is_empty() {
             let win = w.window.clone();
             glib::spawn_future_local(async move {
-                error::val_err(Some(&win), "A hostname is required for remote connections.").await;
+                error::val_err(
+                    Some(&win),
+                    virtinst_core::tr!("A hostname is required for remote connections."),
+                )
+                .await;
             });
             return;
         }
@@ -382,8 +396,9 @@ impl VmmCreateConn {
         let uri = conn.get_uri();
         glib::spawn_future_local(async move {
             let msg = format!(
-                "{}\n\nWould you still like to remember this connection?",
-                err.msg
+                "{}\n\n{}",
+                err.msg,
+                virtinst_core::tr!("Would you still like to remember this connection?")
             );
             let (remember, _) = error::run_dialog(
                 Some(&this.0.window),

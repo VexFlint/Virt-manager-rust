@@ -107,23 +107,25 @@ fn can_delete(
                 root.attribute(&doc, "type").map(str::to_string)
             });
         return match pool_type.as_deref() {
-            Some("iscsi") => Some("Cannot delete iSCSI share."),
-            Some("scsi") => Some("Cannot delete SCSI device."),
+            Some("iscsi") => Some(virtinst_core::tr!("Cannot delete iSCSI share.")),
+            Some("scsi") => Some(virtinst_core::tr!("Cannot delete SCSI device.")),
             _ => None,
         };
     }
     let p = std::path::Path::new(path);
     if is_remote {
-        Some("Cannot delete unmanaged remote storage.")
+        Some(virtinst_core::tr!(
+            "Cannot delete unmanaged remote storage."
+        ))
     } else if !p.exists() {
-        Some("Path does not exist.")
+        Some(virtinst_core::tr!("Path does not exist."))
     } else if !access_ok(p.parent().unwrap_or(p), W_OK) {
-        Some("No write access to parent directory.")
+        Some(virtinst_core::tr!("No write access to parent directory."))
     } else if std::fs::metadata(p).is_ok_and(|m| {
         use std::os::unix::fs::FileTypeExt;
         m.file_type().is_block_device()
     }) {
-        Some("Cannot delete unmanaged block device.")
+        Some(virtinst_core::tr!("Cannot delete unmanaged block device."))
     } else {
         None
     }
@@ -139,28 +141,29 @@ fn do_we_default(
 ) -> Option<String> {
     let mut info = vec![];
     if diskdata.ro {
-        info.push("Storage is read-only.".to_string());
+        info.push(virtinst_core::tr!("Storage is read-only.").to_string());
     } else if !has_vol && !access_ok(std::path::Path::new(path), W_OK) {
-        info.push("No write access to path.".to_string());
+        info.push(virtinst_core::tr!("No write access to path.").to_string());
     }
     if diskdata.shared {
-        info.push("Storage is marked as shareable.".to_string());
+        info.push(virtinst_core::tr!("Storage is marked as shareable.").to_string());
     }
     if info.is_empty() && diskdata.is_media {
-        info.push("Storage is a media device.".to_string());
+        info.push(virtinst_core::tr!("Storage is a media device.").to_string());
     }
     match crate::domain::path_in_use_by(conn, path, false, false) {
         Ok(mut names) if names.len() > 1 => {
             names.retain(|n| n != vm_name);
             info.push(format!(
-                "Storage is in use by the following virtual machines\n- {}",
+                "{}\n- {}",
+                virtinst_core::tr!("Storage is in use by the following virtual machines"),
                 names.join("\n- ")
             ));
         }
         Ok(_) => {}
         Err(e) => {
             eprintln!("Failed checking disk conflict: {e}");
-            info.push("Failed to check disk usage conflict.".to_string());
+            info.push(virtinst_core::tr!("Failed to check disk usage conflict.").to_string());
         }
     }
     (!info.is_empty()).then(|| info.join("\n"))
@@ -217,7 +220,13 @@ pub async fn remove_devobj_internal(
 
     // Define the change
     if let Err(e) = vm.remove_device(id).await {
-        crate::error::show_err(parent, &format!("Error Removing Device: {e}"), None, "").await;
+        crate::error::show_err(
+            parent,
+            &virtinst_core::trf!("Error Removing Device: %s", e),
+            None,
+            "",
+        )
+        .await;
         return false;
     }
 
@@ -226,13 +235,15 @@ pub async fn remove_devobj_internal(
         return true;
     };
     glib::g_debug!("virt-manager", "Device could not be hotUNplugged: {e}");
-    let mut msg = "This change will take effect after the next guest shutdown.".to_string();
+    let mut msg = virtinst_core::tr!("This change will take effect after the next guest shutdown.")
+        .to_string();
     if deleting_storage {
-        msg += " Storage will not be deleted.";
+        msg += " ";
+        msg += virtinst_core::tr!("Storage will not be deleted.");
     }
     crate::error::show_info(
         parent,
-        "Device could not be removed from the running machine",
+        virtinst_core::tr!("Device could not be removed from the running machine"),
         Some(&format!("{msg}\n\n{e}")),
         None,
         crate::error::Buttons::Ok,
@@ -269,8 +280,8 @@ impl DeleteDialog {
     /// `show`.
     pub fn show(parent: Option<&gtk::Window>, vm: &VmmDomain, kind: DeleteKind) {
         let title = match &kind {
-            DeleteKind::Vm => "Delete Virtual Machine",
-            DeleteKind::Disk { .. } => "Remove Disk Device",
+            DeleteKind::Vm => virtinst_core::tr!("Delete Virtual Machine"),
+            DeleteKind::Disk { .. } => virtinst_core::tr!("Remove Disk Device"),
         };
         let win = gtk::Window::builder()
             .title(title)
@@ -294,14 +305,15 @@ impl DeleteDialog {
         let warn_icon = gtk::Image::from_icon_name("dialog-warning");
         let warn_label = gtk::Label::new(None);
         warn_label.set_markup(
-            "<small>This VM is currently running and will be forced off before being deleted</small>",
+            virtinst_core::tr!("<small>This VM is currently running and will be forced off before being deleted</small>"),
         );
         warn_label.set_xalign(0.0);
         let warn_box = gtk::Box::new(gtk::Orientation::Horizontal, 3);
         warn_box.append(&warn_icon);
         warn_box.append(&warn_label);
 
-        let remove_storage = gtk::CheckButton::with_mnemonic("Delete _associated storage files");
+        let remove_storage =
+            gtk::CheckButton::with_mnemonic(virtinst_core::tr!("Delete _associated storage files"));
         let store = gio::ListStore::new::<glib::BoxedAnyObject>();
         let list = gtk::ColumnView::new(Some(gtk::NoSelection::new(Some(store.clone()))));
         build_columns(&list);
@@ -318,8 +330,8 @@ impl DeleteDialog {
         grid.append(&storage_scroll);
         grid.set_vexpand(true);
 
-        let cancel = gtk::Button::with_mnemonic("_Cancel");
-        let ok = gtk::Button::with_mnemonic("_Delete");
+        let cancel = gtk::Button::with_mnemonic(virtinst_core::tr!("_Cancel"));
+        let ok = gtk::Button::with_mnemonic(virtinst_core::tr!("_Delete"));
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         buttons.set_halign(gtk::Align::End);
         buttons.append(&cancel);
@@ -495,9 +507,9 @@ impl DeleteDialog {
                 parent.as_ref(),
                 || config.get_confirm_delstorage(),
                 |v| config.set_confirm_delstorage(v),
-                "Are you sure you want to delete the storage?",
-                Some(&format!(
-                    "The following paths will be deleted:\n\n{}",
+                virtinst_core::tr!("Are you sure you want to delete the storage?"),
+                Some(&virtinst_core::trf!(
+                    "The following paths will be deleted:\n\n%s",
                     paths.join("\n")
                 )),
             )
@@ -533,14 +545,18 @@ impl DeleteDialog {
             DeleteKind::Disk { disk, .. } => Some(disk.label.clone()),
         };
         let title = match (&label, paths.is_empty()) {
-            (None, false) => format!(
-                "Deleting virtual machine '{name}' and selected storage (this may take a while)"
+            (None, false) => virtinst_core::trf!(
+                "Deleting virtual machine '%s' and selected storage (this may take a while)",
+                name
             ),
-            (None, true) => format!("Deleting virtual machine '{name}'"),
+            (None, true) => virtinst_core::trf!("Deleting virtual machine '%s'", name),
             (Some(l), false) => {
-                format!("Removing disk device '{l}' and selected storage (this may take a while)")
+                virtinst_core::trf!(
+                    "Removing disk device '%s' and selected storage (this may take a while)",
+                    l
+                )
             }
-            (Some(l), true) => format!("Removing disk device '{l}'"),
+            (Some(l), true) => virtinst_core::trf!("Removing disk device '%s'", l),
         };
         let is_vm = label.is_none();
         let uuid = i.vm.get_uuid();
@@ -551,74 +567,74 @@ impl DeleteDialog {
                 || os.firmware.as_deref() == Some("efi")
                 || os.nvram.is_some()
         });
-        let err = crate::asyncjob::run(
-            Some(&i.win),
-            &title,
-            &title,
-            true,
-            move |job| {
-                let conn = handle.connect();
-                let res = (|| -> Result<Vec<(String, String)>, String> {
-                    let dom = virt::domain::Domain::lookup_by_uuid_string(conn, &uuid)
-                        .map_err(|e| e.message().to_string());
-                    // `_destroy_vm`
-                    if is_vm {
-                        let dom = dom.as_ref().map_err(Clone::clone)?;
-                        if dom.is_active().unwrap_or(false) {
-                            eprintln!("Forcing VM '{name}' power off.");
-                            dom.destroy().map_err(|e| e.message().to_string())?;
-                        }
+        let err = crate::asyncjob::run(Some(&i.win), &title, &title, true, move |job| {
+            let conn = handle.connect();
+            let res = (|| -> Result<Vec<(String, String)>, String> {
+                let dom = virt::domain::Domain::lookup_by_uuid_string(conn, &uuid)
+                    .map_err(|e| e.message().to_string());
+                // `_destroy_vm`
+                if is_vm {
+                    let dom = dom.as_ref().map_err(Clone::clone)?;
+                    if dom.is_active().unwrap_or(false) {
+                        eprintln!("Forcing VM '{name}' power off.");
+                        dom.destroy().map_err(|e| e.message().to_string())?;
                     }
-                    // `_async_delete_paths`
-                    let mut meter = job.meter();
-                    let mut storage_errors = vec![];
-                    for path in &paths {
-                        eprintln!("Deleting path: {path}");
-                        meter.start(&format!("Deleting path '{path}'"), None);
-                        if let Err(e) = delete_path(conn, path) {
-                            storage_errors.push((e, String::new()));
-                        }
-                        meter.end();
-                    }
-                    // `_delete_vm`
-                    if is_vm {
-                        let dom = dom.as_ref().map_err(Clone::clone)?;
-                        if dom.is_persistent().unwrap_or(false) {
-                            eprintln!("Removing VM '{name}'");
-                            crate::domain::delete_domain(dom, has_nvram)?;
-                        }
-                    }
-                    Ok(storage_errors)
-                })();
-
-                let (errdata, storage_errors) = match res {
-                    Ok(errs) => (None, errs),
-                    Err(e) => (
-                        Some(format!("Error deleting virtual machine '{name}': {e}")),
-                        vec![],
-                    ),
-                };
-                if errdata.is_none() && storage_errors.is_empty() {
-                    return Ok(());
                 }
-                let storage_errstr: String = storage_errors
-                    .iter()
-                    .map(|(e, d)| format!("{e}\n{d}\n"))
-                    .collect();
-                Err(match errdata {
-                    Some(error) => (
-                        error.clone(),
-                        format!(
-                            "{error}\n\nAdditionally, there were errors removing certain storage devices: \n{storage_errstr}"
-                        ),
+                // `_async_delete_paths`
+                let mut meter = job.meter();
+                let mut storage_errors = vec![];
+                for path in &paths {
+                    eprintln!("Deleting path: {path}");
+                    meter.start(&virtinst_core::trf!("Deleting path '%s'", path), None);
+                    if let Err(e) = delete_path(conn, path) {
+                        storage_errors.push((e, String::new()));
+                    }
+                    meter.end();
+                }
+                // `_delete_vm`
+                if is_vm {
+                    let dom = dom.as_ref().map_err(Clone::clone)?;
+                    if dom.is_persistent().unwrap_or(false) {
+                        eprintln!("Removing VM '{name}'");
+                        crate::domain::delete_domain(dom, has_nvram)?;
+                    }
+                }
+                Ok(storage_errors)
+            })();
+
+            let (errdata, storage_errors) = match res {
+                Ok(errs) => (None, errs),
+                Err(e) => (
+                    Some(format!("Error deleting virtual machine '{name}': {e}")),
+                    vec![],
+                ),
+            };
+            if errdata.is_none() && storage_errors.is_empty() {
+                return Ok(());
+            }
+            let storage_errstr: String = storage_errors
+                .iter()
+                .map(|(e, d)| format!("{e}\n{d}\n"))
+                .collect();
+            Err(match errdata {
+                Some(error) => (
+                    error.clone(),
+                    format!(
+                        "{error}\n\n{}{storage_errstr}",
+                        virtinst_core::tr!(
+                            "Additionally, there were errors removing certain storage devices: \n"
+                        )
                     ),
-                    None => (
-                        "Errors encountered while removing certain storage devices.".into(),
-                        storage_errstr,
-                    ),
-                })
-            },
-        )
+                ),
+                None => (
+                    virtinst_core::tr!(
+                        "Errors encountered while removing certain storage devices."
+                    )
+                    .into(),
+                    storage_errstr,
+                ),
+            })
+        })
         .await;
         if let Some(conn) = i.vm.conn() {
             conn.tick();
@@ -698,7 +714,7 @@ fn build_columns(list: &gtk::ColumnView) {
     );
     column(
         list,
-        Some("Storage Path"),
+        Some(virtinst_core::tr!("Storage Path")),
         true,
         || {
             let l = gtk::Label::new(None);
@@ -715,7 +731,7 @@ fn build_columns(list: &gtk::ColumnView) {
     );
     column(
         list,
-        Some("Target"),
+        Some(virtinst_core::tr!("Target")),
         false,
         || {
             let l = gtk::Label::new(None);

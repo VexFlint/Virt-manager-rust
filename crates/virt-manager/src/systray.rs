@@ -243,31 +243,31 @@ impl TrayMainMenu {
             )
         };
         let shutdown = vec![
-            item("_Reboot", "reboot", true),
-            item("_Shut Down", "shutdown", true),
-            item("F_orce Reset", "reset", true),
-            item("_Force Off", "destroy", true),
+            item(virtinst_core::tr!("_Reboot"), "reboot", true),
+            item(virtinst_core::tr!("_Shut Down"), "shutdown", true),
+            item(virtinst_core::tr!("F_orce Reset"), "reset", true),
+            item(virtinst_core::tr!("_Force Off"), "destroy", true),
             MenuNode::Separator,
-            item("Sa_ve", "save", true),
+            item(virtinst_core::tr!("Sa_ve"), "save", true),
         ];
         MenuNode::Submenu {
             label: escape_label(&vm.label),
             enabled: true,
             children: vec![
-                item("_Run", "run", true),
-                item("_Pause", "suspend", !vm.paused),
-                item("R_esume", "resume", vm.paused),
+                item(virtinst_core::tr!("_Run"), "run", true),
+                item(virtinst_core::tr!("_Pause"), "suspend", !vm.paused),
+                item(virtinst_core::tr!("R_esume"), "resume", vm.paused),
                 MenuNode::Submenu {
-                    label: "_Shut Down".into(),
+                    label: virtinst_core::tr!("_Shut Down").into(),
                     enabled: vm.is_enabled("shutdown"),
                     children: shutdown,
                 },
                 MenuNode::Separator,
-                item("Clone...", "clone", true),
-                item("Migrate...", "migrate", true),
-                item("_Delete", "delete", true),
+                item(virtinst_core::tr!("Clone..."), "clone", true),
+                item(virtinst_core::tr!("Migrate..."), "migrate", true),
+                item(virtinst_core::tr!("_Delete"), "delete", true),
                 MenuNode::Separator,
-                item("_Open", "show", true),
+                item(virtinst_core::tr!("_Open"), "show", true),
             ],
         }
     }
@@ -307,12 +307,17 @@ impl TrayMainMenu {
             .collect();
         menu.push(MenuNode::Separator);
         menu.push(MenuNode::item(
-            "_Show Virtual Machine Manager",
+            virtinst_core::tr!("_Show Virtual Machine Manager"),
             true,
             true,
             TrayAction::ToggleManager,
         ));
-        menu.push(MenuNode::stock("_Quit", "gtk-quit", true, TrayAction::Exit));
+        menu.push(MenuNode::stock(
+            virtinst_core::tr!("_Quit"),
+            "gtk-quit",
+            true,
+            TrayAction::Exit,
+        ));
         menu
     }
 }
@@ -454,7 +459,7 @@ impl ksni::Tray for TrayIcon {
 
     fn tool_tip(&self) -> ksni::ToolTip {
         ksni::ToolTip {
-            title: "Virtual Machine Manager".into(),
+            title: virtinst_core::tr!("Virtual Machine Manager").into(),
             ..Default::default()
         }
     }
@@ -545,7 +550,9 @@ pub fn systray_disabled_message() -> Option<&'static str> {
     if using_appindicator() {
         return None;
     }
-    Some("AppIndicator not installed or usable, system tray icon not available on Wayland")
+    Some(virtinst_core::tr!(
+        "AppIndicator not installed or usable, system tray icon not available on Wayland"
+    ))
 }
 
 /// `_toggle_manager`.

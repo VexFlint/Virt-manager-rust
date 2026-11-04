@@ -154,7 +154,7 @@ async fn run_dialog_with(
     }
 
     if let Some(details) = spec.details.filter(|d| *d != spec.text1) {
-        let expander = gtk::Expander::new(Some("Details"));
+        let expander = gtk::Expander::new(Some(virtinst_core::tr!("Details")));
         let buffer = gtk::TextBuffer::new(None);
         buffer.set_text(details);
         let view = gtk::TextView::with_buffer(&buffer);
@@ -173,10 +173,13 @@ async fn run_dialog_with(
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     row.set_halign(gtk::Align::End);
     let labels: &[(&str, bool)] = match spec.buttons {
-        Buttons::Ok => &[("_OK", true)],
-        Buttons::Close => &[("_Close", false)],
+        Buttons::Ok => &[(virtinst_core::tr!("_OK"), true)],
+        Buttons::Close => &[(virtinst_core::tr!("_Close"), false)],
         Buttons::YesNo => &[("_No", false), ("_Yes", true)],
-        Buttons::OkCancel => &[("_Cancel", false), ("_OK", true)],
+        Buttons::OkCancel => &[
+            (virtinst_core::tr!("_Cancel"), false),
+            (virtinst_core::tr!("_OK"), true),
+        ],
     };
     let mut last = None;
     for (label, affirmative) in labels.iter().copied() {
@@ -291,7 +294,7 @@ pub async fn val_err_text2(parent: Option<&gtk::Window>, text1: &str, text2: Opt
             buttons: Buttons::Ok,
             text1,
             text2,
-            title: "Input Error",
+            title: virtinst_core::tr!("Input Error"),
             details: None,
             chktext: None,
         },
@@ -401,7 +404,7 @@ pub async fn chkbox_helper(
         text1,
         text2,
         true,
-        "Don't ask me again",
+        virtinst_core::tr!("Don't ask me again"),
     )
     .await
 }
@@ -433,10 +436,10 @@ pub async fn confirm_unapplied_changes(parent: Option<&gtk::Window>) -> bool {
         parent,
         || config.get_confirm_unapplied(),
         |v| config.set_confirm_unapplied(v),
-        "There are unapplied changes. Would you like to apply them now?",
+        virtinst_core::tr!("There are unapplied changes. Would you like to apply them now?"),
         None,
         false,
-        "Don't warn me again.",
+        virtinst_core::tr!("Don't warn me again."),
     )
     .await
 }

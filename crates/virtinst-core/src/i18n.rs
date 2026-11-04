@@ -59,6 +59,24 @@ pub fn gettext(msgid: &str) -> String {
     gettextrs::dgettext(DOMAIN, msgid)
 }
 
+/// `_()` for a literal msgid, as a `&'static str` so [`tr!`] drops in
+/// wherever the English literal was. The language never changes while
+/// running, so each msgid is looked up and leaked once.
+pub fn gettext_static(msgid: &'static str) -> &'static str {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<&'static str, &'static str>>> = OnceLock::new();
+    let mut cache = CACHE.get_or_init(Default::default).lock().unwrap();
+    cache.entry(msgid).or_insert_with(|| {
+        let s = gettext(msgid);
+        if s == msgid {
+            msgid
+        } else {
+            Box::leak(s.into_boxed_str())
+        }
+    })
+}
+
 /// `ngettext()`.
 pub fn ngettext(singular: &str, plural: &str, n: u32) -> String {
     gettextrs::dngettext(DOMAIN, singular, plural, n)
@@ -116,11 +134,11 @@ pub fn format(template: &str, args: &[&dyn Display], named: &[(&str, &dyn Displa
     out
 }
 
-/// `_("text")`.
+/// `_("text")`: a `&'static str`, a drop-in for the English literal.
 #[macro_export]
 macro_rules! tr {
-    ($msgid:expr) => {
-        $crate::i18n::gettext($msgid)
+    ($msgid:literal) => {
+        $crate::i18n::gettext_static($msgid)
     };
 }
 
