@@ -351,8 +351,10 @@ impl DeleteDialog {
 
         // `_reset_state`
         let text = match &kind {
-            DeleteKind::Vm => format!("Delete '{}'", vm.get_name()),
-            DeleteKind::Disk { disk, .. } => format!("Remove disk device '{}'", disk.label),
+            DeleteKind::Vm => virtinst_core::trf!("Delete '%(vmname)s'", vmname = vm.get_name()),
+            DeleteKind::Disk { disk, .. } => {
+                virtinst_core::trf!("Remove disk device '%(target)s'", target = disk.label)
+            }
         };
         header_label.set_markup(&format!(
             "<span size='large'>{}</span>",
@@ -605,7 +607,11 @@ impl DeleteDialog {
             let (errdata, storage_errors) = match res {
                 Ok(errs) => (None, errs),
                 Err(e) => (
-                    Some(format!("Error deleting virtual machine '{name}': {e}")),
+                    Some(virtinst_core::trf!(
+                        "Error deleting virtual machine '%(vm)s': %(error)s",
+                        vm = name,
+                        error = e
+                    )),
                     vec![],
                 ),
             };

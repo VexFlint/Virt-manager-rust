@@ -41,14 +41,14 @@ fn capitalize(s: &str) -> String {
 /// `_pretty_network_desc`.
 fn pretty_network_desc(nettype: &str, source: Option<&str>, netobj: Option<&NetInfo>) -> String {
     if nettype == "user" {
-        return "Usermode networking".into();
+        return virtinst_core::tr!("Usermode networking").into();
     }
     let mut extra = None;
     let mut ret = if nettype == "network" {
         if let Some(net) = netobj {
             extra = Some(format!(": {}", net.pretty_forward_mode()));
         }
-        "Virtual network".to_string()
+        virtinst_core::tr!("Virtual network").to_string()
     } else {
         capitalize(nettype)
     };
@@ -121,9 +121,15 @@ fn build_rows(
         rows.push(row);
     }
     let bridgeidx = rows.len();
-    rows.push(NetRow::manual("bridge", "Bridge device..."));
-    rows.push(NetRow::manual("direct", "Macvtap device..."));
-    rows.push(NetRow::manual("vdpa", "vDPA device..."));
+    rows.push(NetRow::manual(
+        "bridge",
+        virtinst_core::tr!("Bridge device..."),
+    ));
+    rows.push(NetRow::manual(
+        "direct",
+        virtinst_core::tr!("Macvtap device..."),
+    ));
+    rows.push(NetRow::manual("vdpa", virtinst_core::tr!("vDPA device...")));
 
     let default_bridge = default_bridge.filter(|_| !unprivileged);
     if default_bridge.is_some() {
@@ -199,8 +205,9 @@ pub fn check_mac_in_use(conn: &VmmConnection, searchmac: &str) -> Result<(), Str
         })
     });
     if in_use {
-        return Err(format!(
-            "The MAC address '{searchmac}' is in use by another virtual machine."
+        return Err(virtinst_core::trf!(
+            "The MAC address '%s' is in use by another virtual machine.",
+            searchmac
         ));
     }
     Ok(())
@@ -260,7 +267,7 @@ fn warn_box(text: &str) -> gtk::Box {
 
 impl NetList {
     pub fn new(conn: Option<VmmConnection>) -> Rc<NetList> {
-        let top_label = gtk::Label::with_mnemonic("_Network source:");
+        let top_label = gtk::Label::with_mnemonic(virtinst_core::tr!("_Network source:"));
         top_label.set_halign(gtk::Align::End);
         top_label.set_valign(gtk::Align::Start);
         top_label.set_margin_top(6);
@@ -269,12 +276,12 @@ impl NetList {
         source.set_halign(gtk::Align::Start);
         source.update_property(&[gtk::accessible::Property::Label("net-source")]);
         top_label.set_mnemonic_widget(Some(&source));
-        let manual_label = gtk::Label::with_mnemonic("De_vice name:");
+        let manual_label = gtk::Label::with_mnemonic(virtinst_core::tr!("De_vice name:"));
         manual_label.set_halign(gtk::Align::Start);
         let manual_source = gtk::Entry::new();
         manual_source.set_halign(gtk::Align::Start);
         manual_label.set_mnemonic_widget(Some(&manual_source));
-        let portgroup_label = gtk::Label::with_mnemonic("_Portgroup:");
+        let portgroup_label = gtk::Label::with_mnemonic(virtinst_core::tr!("_Portgroup:"));
         portgroup_label.set_halign(gtk::Align::Start);
         let portgroup = gtk::DropDown::from_strings(&[]);
         portgroup.set_halign(gtk::Align::Start);
@@ -498,7 +505,7 @@ impl NetList {
         if let (true, Some(devname), Some(conn)) = (inactive, source, &self.conn) {
             let res = crate::error::yes_no(
                 Some(parent),
-                "Virtual Network is not active.",
+                virtinst_core::tr!("Virtual Network is not active."),
                 Some(&format!(
                     "Virtual Network '{devname}' is not active. \
                      Would you like to start the network now?"
@@ -511,7 +518,11 @@ impl NetList {
                     Err(e) => {
                         crate::error::show_err(
                             Some(parent),
-                            &format!("Could not start virtual network '{devname}': {e}"),
+                            &virtinst_core::trf!(
+                                "Could not start virtual network '%(device)s': %(error)s",
+                                device = devname,
+                                error = e
+                            ),
                             None,
                             "",
                         )

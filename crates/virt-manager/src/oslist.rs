@@ -75,7 +75,7 @@ pub struct OsList {
 impl OsList {
     pub fn new() -> Rc<OsList> {
         let search_entry = gtk::SearchEntry::new();
-        search_entry.set_placeholder_text(Some("Type to start searching..."));
+        search_entry.set_placeholder_text(Some(virtinst_core::tr!("Type to start searching...")));
         search_entry.set_hexpand(true);
         search_entry.update_property(&[gtk::accessible::Property::Label("os-name")]);
 
@@ -109,7 +109,9 @@ impl OsList {
             .vexpand(true)
             .build();
 
-        let include_eol = gtk::CheckButton::with_label("Include end of life operating systems");
+        let include_eol = gtk::CheckButton::with_label(virtinst_core::tr!(
+            "Include end of life operating systems"
+        ));
         include_eol.set_halign(gtk::Align::Start);
         include_eol.update_property(&[gtk::accessible::Property::Label("include-eol")]);
 

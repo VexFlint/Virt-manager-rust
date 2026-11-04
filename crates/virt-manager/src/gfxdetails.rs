@@ -101,26 +101,38 @@ impl GraphicsDetails {
         // `_init_ui`
         let gtype = SimpleCombo::unsorted(
             vec![
-                (Some("spice".into()), "Spice server".into()),
-                (Some("vnc".into()), "VNC server".into()),
+                (
+                    Some("spice".into()),
+                    virtinst_core::tr!("Spice server").into(),
+                ),
+                (Some("vnc".into()), virtinst_core::tr!("VNC server").into()),
             ],
             str::to_string,
         );
         let listen_type = SimpleCombo::unsorted(
             vec![
-                (Some("address".into()), "Address".into()),
-                (Some("none".into()), "None".into()),
+                (Some("address".into()), virtinst_core::tr!("Address").into()),
+                (Some("none".into()), virtinst_core::tr!("None").into()),
             ],
             str::to_string,
         );
         let address = EntryCombo::new(vec![
-            (None, "Hypervisor default".into()),
-            (Some("127.0.0.1".into()), "Localhost only".into()),
-            (Some("0.0.0.0".into()), "All interfaces".into()),
+            (None, virtinst_core::tr!("Hypervisor default").into()),
+            (
+                Some("127.0.0.1".into()),
+                virtinst_core::tr!("Localhost only").into(),
+            ),
+            (
+                Some("0.0.0.0".into()),
+                virtinst_core::tr!("All interfaces").into(),
+            ),
         ]);
-        let rendernode = SimpleCombo::unsorted(vec![(None, "Auto".into())], str::to_string);
+        let rendernode = SimpleCombo::unsorted(
+            vec![(None, virtinst_core::tr!("Auto").into())],
+            str::to_string,
+        );
 
-        let port_auto = gtk::CheckButton::with_mnemonic("A_uto");
+        let port_auto = gtk::CheckButton::with_mnemonic(virtinst_core::tr!("A_uto"));
         let port = gtk::SpinButton::with_range(5900.0, 50000.0, 1.0);
         let port_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         port_box.append(&port_auto);
@@ -130,7 +142,7 @@ impl GraphicsDetails {
         let password = gtk::Entry::new();
         password.set_visibility(false);
         password.update_property(&[gtk::accessible::Property::Label("Password")]);
-        let visibility_chk = gtk::CheckButton::with_mnemonic("Show passwor_d");
+        let visibility_chk = gtk::CheckButton::with_mnemonic(virtinst_core::tr!("Show passwor_d"));
         let password_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         password_box.append(&password_chk);
         let inner = gtk::Box::new(gtk::Orientation::Vertical, 3);
@@ -139,9 +151,12 @@ impl GraphicsDetails {
         password_box.append(&inner);
 
         let opengl = gtk::CheckButton::new();
-        let warn_virtio =
-            warn_row("OpenGL only works with 'virtio' graphics with '3D acceleration' enabled");
-        let warn_listen = warn_row("OpenGL only works with 'Listen type' value 'none'");
+        let warn_virtio = warn_row(virtinst_core::tr!(
+            "OpenGL only works with 'virtio' graphics with '3D acceleration' enabled"
+        ));
+        let warn_listen = warn_row(virtinst_core::tr!(
+            "OpenGL only works with 'Listen type' value 'none'"
+        ));
         let subopts = gtk::Grid::builder()
             .row_spacing(6)
             .column_spacing(6)
@@ -156,15 +171,15 @@ impl GraphicsDetails {
         subopts.attach(&warn_listen.1, 1, 2, 1, 1);
 
         let mut g = crate::devpages::Grid::new();
-        g.row("_Type:", &gtype.widget);
-        let listen_row = g.row("L_isten type:", &listen_type.widget);
-        let address_row = g.row("Addr_ess:", &address.top);
+        g.row(virtinst_core::tr!("_Type:"), &gtype.widget);
+        let listen_row = g.row(virtinst_core::tr!("L_isten type:"), &listen_type.widget);
+        let address_row = g.row(virtinst_core::tr!("Addr_ess:"), &address.top);
         address_row.set_mnemonic(&address.entry);
-        let port_row = g.row("_Port:", &port_box);
+        let port_row = g.row(virtinst_core::tr!("_Port:"), &port_box);
         port_row.set_mnemonic(&port);
-        let password_row = g.row("Pa_ssword:", &password_box);
+        let password_row = g.row(virtinst_core::tr!("Pa_ssword:"), &password_box);
         password_row.set_mnemonic(&password);
-        let opengl_row = g.row("Open_GL:", &opengl);
+        let opengl_row = g.row(virtinst_core::tr!("Open_GL:"), &opengl);
         let subopts_row = g.row("", &subopts);
 
         let this = Rc::new(GraphicsDetails {
@@ -262,7 +277,7 @@ impl GraphicsDetails {
             let Some(this) = weak.upgrade() else {
                 return;
             };
-            let mut rows = vec![(None, "Auto".to_string())];
+            let mut rows = vec![(None, virtinst_core::tr!("Auto").to_string())];
             for dev in devs.iter().filter(|d| d.is_drm_render()) {
                 if let Some(node) = dev.get_devnode() {
                     rows.push((
@@ -346,10 +361,10 @@ impl GraphicsDetails {
         let portval: Option<i64> = attr("port").and_then(|p| p.parse().ok());
         let autoport = attr("autoport").as_deref() == Some("yes");
 
-        let mut portautolabel = "A_uto".to_string();
+        let mut portautolabel = virtinst_core::tr!("A_uto").to_string();
         let portauto = if portval == Some(-1) || autoport {
             if let Some(p) = portval.filter(|p| *p != -1 && *p != 0) {
-                portautolabel = format!("A_uto (Port {p})");
+                portautolabel = virtinst_core::trf!("A_uto (Port %(port)d)", port = p);
             }
             Some(true)
         } else if portval.is_none() {

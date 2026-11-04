@@ -70,9 +70,9 @@ fn parse_drive(xml: &str) -> Option<Drive> {
     let media_available = sub("media_available").is_some_and(|v| v.trim() == "1");
     let mut media_label = sub("media_label")
         .filter(|l| !l.is_empty())
-        .unwrap_or_else(|| "Media Unknown".into());
+        .unwrap_or_else(|| virtinst_core::tr!("Media Unknown").into());
     if !media_available {
-        media_label = "No media detected".into();
+        media_label = virtinst_core::tr!("No media detected").into();
     }
     Some(Drive {
         drive_type,
@@ -107,7 +107,7 @@ pub struct MediaCombo {
 impl MediaCombo {
     pub fn new(conn: Option<VmmConnection>) -> Rc<MediaCombo> {
         let entry = gtk::Entry::new();
-        entry.set_placeholder_text(Some("No media selected"));
+        entry.set_placeholder_text(Some(virtinst_core::tr!("No media selected")));
         entry.set_hexpand(true);
         entry.update_property(&[gtk::accessible::Property::Label("media-entry")]);
         let list = gtk::ListBox::new();

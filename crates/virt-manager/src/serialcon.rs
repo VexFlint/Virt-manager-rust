@@ -125,7 +125,7 @@ impl DataStream {
         }
         eprintln!(
             "Opening console stream for alias={}",
-            alias.unwrap_or("None")
+            alias.unwrap_or(virtinst_core::tr!("None"))
         );
         // libxl doesn't set aliases, their open_console just defaults
         // to opening the first console device, so don't force presence
@@ -265,7 +265,7 @@ fn install_css(widget: &impl IsA<gtk::Widget>) {
 pub fn can_connect(ctype: &str) -> Option<String> {
     let usable_types = ["pty"];
     (!usable_types.contains(&ctype))
-        .then(|| format!("Console for device type '{ctype}' is not supported"))
+        .then(|| virtinst_core::trf!("Console for device type '%s' is not supported", ctype))
 }
 
 struct Inner {
@@ -399,8 +399,8 @@ impl SerialConsole {
         terminal.insert_action_group("serial", Some(&actions));
 
         let menu = gtk::gio::Menu::new();
-        menu.append(Some("_Copy"), Some("serial.copy"));
-        menu.append(Some("_Paste"), Some("serial.paste"));
+        menu.append(Some(virtinst_core::tr!("_Copy")), Some("serial.copy"));
+        menu.append(Some(virtinst_core::tr!("_Paste")), Some("serial.paste"));
         let popup = gtk::PopoverMenu::from_model(Some(&menu));
         popup.set_parent(terminal);
         popup.set_has_arrow(false);
@@ -464,7 +464,7 @@ impl SerialConsole {
             eprintln!(
                 "Serial console '{}' path changed to {}",
                 self.0.target_port,
-                path.as_deref().unwrap_or("None")
+                path.as_deref().unwrap_or(virtinst_core::tr!("None"))
             );
         }
         self.0.lastpath.replace(path);
@@ -494,7 +494,10 @@ impl SerialConsole {
             }
             Err(e) => {
                 eprintln!("Error opening serial console: {e}");
-                self.show_error(&format!("Error connecting to text console: {e}"));
+                self.show_error(&virtinst_core::trf!(
+                    "Error connecting to text console: %s",
+                    e
+                ));
                 self.0.datastream.close();
                 false
             }
