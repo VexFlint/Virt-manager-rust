@@ -1,0 +1,119 @@
+# Release no GitHub (docs/RELEASES.md, seções 3 e 4).
+#
+# Tag vX.Y.Z (ou vX.Y.Z-rc.N): confere a versão, roda a CI, gera os pacotes,
+# o SHA256SUMS e a atestação de origem, e cria a release como RASCUNHO.
+# workflow_dispatch e PRs que mexem no empacotamento: o mesmo, mas só guarda
+# os pacotes como artefato do run, sem atestação e sem release (para testar).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - packaging/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Tag == versão do Cargo.toml
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+              echo "::error::a tag $GITHUB_REF_NAME não bate com a versão $version do Cargo.toml"
+              exit 1
+          fi
+
+  ci:
+    needs: check
+    uses: ./.github/workflows/ci.yml
+
+  # Tarball genérico, compilado no Ubuntu 24.04 (o mesmo runner da CI).
+  tarball:
+    needs: [check, ci]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # As libs de build da CI (ci.yml) + rst2man para as man pages.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvirt-dev libosinfo-1.0-dev libclang-dev pkg-config libgtk-4-dev libgvnc-1.0-dev libspice-client-glib-2.0-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev python3-docutils
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release --workspace --locked
+      - name: Tarball
+        run: sh packaging/tarball/build.sh "${{ needs.check.outputs.version }}" dist
+      - name: Smoke
+        run: |
+          tar -C "$RUNNER_TEMP" -xzf dist/*.tar.gz
+          root=$(echo "$RUNNER_TEMP"/virt-manager-rust-*-x86_64-linux)
+          for tool in virt-manager virt-install virt-clone virt-xml; do
+              test "$("$root/usr/bin/$tool" --version)" = 5.1.0
+          done
+          "$root/usr/bin/virt-xml" --help >/dev/null
+          "$root/usr/bin/virt-clone" --help >/dev/null
+          glib-compile-schemas --strict --dry-run "$root/usr/share/glib-2.0/schemas"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-tarball
+          path: dist/*
+
+  publish:
+    needs: [check, tarball]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pkg-*
+          path: dist
+          merge-multiple: true
+      - name: SHA256SUMS
+        working-directory: dist
+        run: sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+      - name: Notas (modelo do docs/RELEASES.md, seção 4)
+        run: sh packaging/release-notes.sh "${{ needs.check.outputs.version }}" > notes.md
+      - if: github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
+      - if: github.ref_type == 'tag'
+        name: Release rascunho
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          # 0.x e -rc.N saem como pre-release (docs/RELEASES.md, seção 2).
+          case "$VERSION" in
+              0.*|*-rc.*) pre=--prerelease ;;
+              *) pre= ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" dist/* --draft $pre \
+              --title "virt-manager-rust $VERSION" \
+              --notes-file notes.md --generate-notes
+      - if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ needs.check.outputs.version }}
+          path: |
+            dist/*
+            notes.md

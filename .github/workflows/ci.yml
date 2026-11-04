@@ -4,6 +4,8 @@ on:
   push:
     branches: [master]
   pull_request:
+  # release.yml roda os mesmos passos antes de empacotar.
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
