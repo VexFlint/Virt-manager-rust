@@ -63,7 +63,7 @@ impl InstallPage {
 
 /// `_pretty_memory`, from KiB.
 fn pretty_memory(mem: u64) -> String {
-    format!("{} MiB", mem / 1024)
+    virtinst_core::trf!("%d MiB", mem / 1024)
 }
 
 /// `_pretty_arch`.
@@ -200,9 +200,10 @@ impl InstallWidgets {
     fn new() -> InstallWidgets {
         // ISO
         let mediacombo = MediaCombo::new(None);
-        let iso_browse = gtk::Button::with_mnemonic("Bro_wse...");
+        let iso_browse = gtk::Button::with_mnemonic(virtinst_core::tr!("Bro_wse..."));
         iso_browse.update_property(&[gtk::accessible::Property::Label("install-iso-browse")]);
-        let iso_label = gtk::Label::with_mnemonic("Choose _ISO or CDROM install media:");
+        let iso_label =
+            gtk::Label::with_mnemonic(virtinst_core::tr!("Choose _ISO or CDROM install media:"));
         iso_label.set_halign(gtk::Align::Start);
         mediacombo.set_mnemonic_label(&iso_label);
         let hbox4 = gtk::Box::new(gtk::Orientation::Horizontal, 5);
@@ -228,12 +229,12 @@ impl InstallWidgets {
             .column_spacing(6)
             .margin_start(12)
             .build();
-        let label26 = gtk::Label::with_mnemonic("Kerne_l options:");
+        let label26 = gtk::Label::with_mnemonic(virtinst_core::tr!("Kerne_l options:"));
         label26.set_halign(gtk::Align::End);
         label26.set_mnemonic_widget(Some(&urlopts_entry));
         table7.attach(&label26, 0, 0, 1, 1);
         table7.attach(&urlopts_entry, 1, 0, 1, 1);
-        let url_options = gtk::Expander::with_mnemonic("URL _Options");
+        let url_options = gtk::Expander::with_mnemonic(virtinst_core::tr!("URL _Options"));
         url_options.set_child(Some(&table7));
         let table2 = gtk::Grid::builder()
             .row_spacing(4)
@@ -243,13 +244,13 @@ impl InstallWidgets {
         table2.attach(&url_options, 0, 1, 1, 1);
         let page_url = gtk::Box::new(gtk::Orientation::Vertical, 6);
         page_url.append(&start_label(
-            "Provide the operating system install U_RL:",
+            virtinst_core::tr!("Provide the operating system install U_RL:"),
             &url_combo.entry,
         ));
         page_url.append(&table2);
 
         // Import
-        let (hbox1, import_entry, import_browse) = entry_browse("B_rowse...");
+        let (hbox1, import_entry, import_browse) = entry_browse(virtinst_core::tr!("B_rowse..."));
         import_entry.update_property(&[gtk::accessible::Property::Label("install-import-entry")]);
         let kernel_info_box = small_note(
             "dialog-information",
@@ -258,20 +259,24 @@ impl InstallWidgets {
         );
         let page_import = gtk::Box::new(gtk::Orientation::Vertical, 6);
         page_import.append(&start_label(
-            "Provide the existing stora_ge path:",
+            virtinst_core::tr!("Provide the existing stora_ge path:"),
             &import_entry,
         ));
         page_import.append(&hbox1);
         page_import.append(&kernel_info_box);
 
         // Application container
-        let (hbox15, app_entry, app_browse) = entry_browse("B_rowse...");
+        let (hbox15, app_entry, app_browse) = entry_browse(virtinst_core::tr!("B_rowse..."));
         let page_app = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        page_app.append(&start_label("Provide the _application path:", &app_entry));
+        page_app.append(&start_label(
+            virtinst_core::tr!("Provide the _application path:"),
+            &app_entry,
+        ));
         page_app.append(&hbox15);
 
         // OS container
-        let (hbox17, oscontainer_fs, oscontainer_browse) = entry_browse("B_rowse...");
+        let (hbox17, oscontainer_fs, oscontainer_browse) =
+            entry_browse(virtinst_core::tr!("B_rowse..."));
         let oscontainer_notsupport = small_note(
             "dialog-warning",
             "<small>The OS directory tree must already exist. To enable OS directory \
@@ -283,8 +288,9 @@ impl InstallWidgets {
             "<small>The OS directory tree must already exist. Creating an OS directory \
              tree for remote\nconnections is not yet supported.</small>",
         );
-        let oscontainer_bootstrap =
-            gtk::CheckButton::with_label("Create OS directory tree from container image");
+        let oscontainer_bootstrap = gtk::CheckButton::with_label(virtinst_core::tr!(
+            "Create OS directory tree from container image"
+        ));
         let oscontainer_source_url = EntryCombo::new(vec![]);
         oscontainer_source_url.top.set_halign(gtk::Align::Fill);
         oscontainer_source_url.top.set_hexpand(true);
@@ -293,10 +299,17 @@ impl InstallWidgets {
             .row_spacing(4)
             .column_spacing(6)
             .build();
-        src_grid.attach(&gtk::Label::new(Some("Source URI:")), 0, 0, 1, 1);
+        src_grid.attach(
+            &gtk::Label::new(Some(virtinst_core::tr!("Source URI:"))),
+            0,
+            0,
+            1,
+            1,
+        );
         src_grid.attach(&oscontainer_source_url.top, 1, 0, 1, 1);
-        let oscontainer_source_insecure =
-            gtk::CheckButton::with_label("Do not verify TLS certificates of registry");
+        let oscontainer_source_insecure = gtk::CheckButton::with_label(virtinst_core::tr!(
+            "Do not verify TLS certificates of registry"
+        ));
         let oscontainer_source_user = gtk::Entry::new();
         let oscontainer_source_passwd = gtk::PasswordEntry::new();
         let auth_grid = gtk::Grid::builder()
@@ -304,16 +317,17 @@ impl InstallWidgets {
             .column_spacing(6)
             .margin_start(12)
             .build();
-        let user_label = gtk::Label::new(Some("Username:"));
+        let user_label = gtk::Label::new(Some(virtinst_core::tr!("Username:")));
         user_label.set_halign(gtk::Align::End);
-        let passwd_label = gtk::Label::new(Some("Password:"));
+        let passwd_label = gtk::Label::new(Some(virtinst_core::tr!("Password:")));
         passwd_label.set_halign(gtk::Align::End);
         auth_grid.attach(&user_label, 0, 0, 1, 1);
         auth_grid.attach(&passwd_label, 0, 1, 1, 1);
         auth_grid.attach(&oscontainer_source_user, 1, 0, 1, 1);
         auth_grid.attach(&oscontainer_source_passwd, 1, 1, 1, 1);
-        let oscontainer_auth_options =
-            gtk::Expander::new(Some("Credentials for accessing the source registry"));
+        let oscontainer_auth_options = gtk::Expander::new(Some(virtinst_core::tr!(
+            "Credentials for accessing the source registry"
+        )));
         oscontainer_auth_options.set_child(Some(&auth_grid));
         let oscontainer_source = gtk::Box::new(gtk::Orientation::Vertical, 10);
         oscontainer_source.set_sensitive(false);
@@ -328,7 +342,7 @@ impl InstallWidgets {
         oscontainer_rootpw.set_hexpand(true);
         let oscontainer_rootpw_box = gtk::Box::new(gtk::Orientation::Horizontal, 3);
         oscontainer_rootpw_box.set_sensitive(false);
-        oscontainer_rootpw_box.append(&gtk::Label::new(Some("Root password:")));
+        oscontainer_rootpw_box.append(&gtk::Label::new(Some(virtinst_core::tr!("Root password:"))));
         oscontainer_rootpw_box.append(&oscontainer_rootpw);
         let vbox21 = gtk::Box::new(gtk::Orientation::Vertical, 12);
         vbox21.append(&hbox17);
@@ -339,7 +353,7 @@ impl InstallWidgets {
         vbox21.append(&oscontainer_rootpw_box);
         let page_oscontainer = gtk::Box::new(gtk::Orientation::Vertical, 6);
         page_oscontainer.append(&start_label(
-            "Provide the existing OS root _directory:",
+            virtinst_core::tr!("Provide the existing OS root _directory:"),
             &oscontainer_fs,
         ));
         page_oscontainer.append(&vbox21);
@@ -349,7 +363,7 @@ impl InstallWidgets {
         container_template.set_hexpand(true);
         let page_vz = gtk::Box::new(gtk::Orientation::Vertical, 6);
         page_vz.append(&start_label(
-            "Select _container template:",
+            virtinst_core::tr!("Select _container template:"),
             &container_template,
         ));
         page_vz.append(&container_template);
@@ -373,9 +387,9 @@ impl InstallWidgets {
 
         // The OS
         let os_list = OsList::new();
-        let detect_os = gtk::CheckButton::with_mnemonic(
-            "A_utomatically detect from the installation media / source",
-        );
+        let detect_os = gtk::CheckButton::with_mnemonic(virtinst_core::tr!(
+            "A_utomatically detect from the installation media / source"
+        ));
         detect_os.set_active(true);
         let detect_os_spinner = gtk::Spinner::new();
         let detect_os_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -383,7 +397,7 @@ impl InstallWidgets {
         detect_os_box.append(&detect_os_spinner);
         let os_distro_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
         os_distro_box.append(&start_label(
-            "C_hoose the operating system you are installing:",
+            virtinst_core::tr!("C_hoose the operating system you are installing:"),
             &os_list.search_entry,
         ));
         os_distro_box.append(&os_list.search_entry);
@@ -444,7 +458,7 @@ impl MemWidgets {
         mem.set_halign(gtk::Align::Start);
         mem.set_width_chars(7);
         mem.update_property(&[gtk::accessible::Property::Label("mem")]);
-        let phys_mem_label = gtk::Label::new(Some("(Insert host mem)"));
+        let phys_mem_label = gtk::Label::new(Some(virtinst_core::tr!("(Insert host mem)")));
         phys_mem_label.set_halign(gtk::Align::Start);
         phys_mem_label.set_hexpand(true);
         let cpus = gtk::SpinButton::with_range(0.0, 128.0, 1.0);
@@ -460,8 +474,8 @@ impl MemWidgets {
             .column_spacing(6)
             .build();
         for (row, (text, spin, label)) in [
-            ("_Memory:", &mem, &phys_mem_label),
-            ("C_PUs:", &cpus, &phys_cpu_label),
+            (virtinst_core::tr!("_Memory:"), &mem, &phys_mem_label),
+            (virtinst_core::tr!("C_PUs:"), &cpus, &phys_cpu_label),
         ]
         .into_iter()
         .enumerate()
@@ -477,7 +491,7 @@ impl MemWidgets {
             table3.attach(&l, 0, row as i32, 1, 1);
             table3.attach(&b, 1, row as i32, 1, 1);
         }
-        let label15 = gtk::Label::new(Some("Choose Memory and CPU settings:"));
+        let label15 = gtk::Label::new(Some(virtinst_core::tr!("Choose Memory and CPU settings:")));
         label15.set_halign(gtk::Align::Start);
         let vbox12 = gtk::Box::new(gtk::Orientation::Vertical, 12);
         vbox12.append(&label15);
@@ -512,7 +526,7 @@ struct FinishWidgets {
 impl FinishWidgets {
     fn new() -> FinishWidgets {
         let summary_title = gtk::Label::new(None);
-        summary_title.set_markup("Ready to begin the installation");
+        summary_title.set_markup(virtinst_core::tr!("Ready to begin the installation"));
         summary_title.set_halign(gtk::Align::Start);
 
         let name = gtk::Entry::new();
@@ -536,7 +550,9 @@ impl FinishWidgets {
         let box3 = gtk::Box::new(gtk::Orientation::Horizontal, 3);
         box3.append(&summary_storage);
         box3.append(&summary_storage_path);
-        let customize = gtk::CheckButton::with_mnemonic("C_ustomize configuration before install");
+        let customize = gtk::CheckButton::with_mnemonic(virtinst_core::tr!(
+            "C_ustomize configuration before install"
+        ));
         customize.set_valign(gtk::Align::Start);
 
         let table4 = gtk::Grid::builder()
@@ -545,12 +561,12 @@ impl FinishWidgets {
             .column_spacing(6)
             .build();
         let rows: [(&str, &gtk::Widget); 6] = [
-            ("_Name:", name.upcast_ref()),
-            ("OS:", summary_os.upcast_ref()),
-            ("Install:", summary_install.upcast_ref()),
-            ("Memory:", summary_mem.upcast_ref()),
-            ("CPUs:", summary_cpu.upcast_ref()),
-            ("Storage:", box3.upcast_ref()),
+            (virtinst_core::tr!("_Name:"), name.upcast_ref()),
+            (virtinst_core::tr!("OS:"), summary_os.upcast_ref()),
+            (virtinst_core::tr!("Install:"), summary_install.upcast_ref()),
+            (virtinst_core::tr!("Memory:"), summary_mem.upcast_ref()),
+            (virtinst_core::tr!("CPUs:"), summary_cpu.upcast_ref()),
+            (virtinst_core::tr!("Storage:"), box3.upcast_ref()),
         ];
         for (row, (text, widget)) in rows.into_iter().enumerate() {
             let l = gtk::Label::with_mnemonic(text);
@@ -575,7 +591,8 @@ impl FinishWidgets {
             .row_spacing(6)
             .build();
         grid17.attach(&netdev_ui_align, 0, 0, 1, 1);
-        let advanced_expander = gtk::Expander::with_mnemonic("N_etwork selection");
+        let advanced_expander =
+            gtk::Expander::with_mnemonic(virtinst_core::tr!("N_etwork selection"));
         advanced_expander.set_child(Some(&grid17));
 
         let top = gtk::Box::new(gtk::Orientation::Vertical, 15);
@@ -744,13 +761,16 @@ fn create_domain(
     );
     eprintln!("Generated final_xml: \n{}", xml.final_xml);
     if let Some(vol) = &vol_install {
-        meter.start(&format!("Allocating '{}'", vol.name), None);
+        meter.start(
+            &virtinst_core::trf!("Allocating '%(filename)s'", filename = vol.name),
+            None,
+        );
         vol.install(conn).map_err(|e| (e.clone(), e))?;
         created.store(true, Ordering::SeqCst);
         meter.end();
     }
     // `_create_guest`
-    meter.start("Creating domain...", None);
+    meter.start(virtinst_core::tr!("Creating domain..."), None);
     let verr = |e: virt::error::Error| {
         let msg = e.message().to_string();
         (msg.clone(), msg)
@@ -874,8 +894,13 @@ fn watch_install_status(vm: &crate::domain::VmmDomain) {
             let vm2 = vm.clone();
             glib::spawn_future_local(async move {
                 if let Err(e) = vm2.run_action(crate::domain::DomainAction::Startup).await {
-                    error::show_err(None, &format!("Error continuing install: {e}"), None, "")
-                        .await;
+                    error::show_err(
+                        None,
+                        &virtinst_core::trf!("Error continuing install: %s", e),
+                        None,
+                        "",
+                    )
+                    .await;
                 }
             });
             true
@@ -1005,7 +1030,7 @@ impl VmmCreateVM {
 
     fn new() -> VmmCreateVM {
         let window = gtk::Window::builder()
-            .title("New VM")
+            .title(virtinst_core::tr!("New VM"))
             .resizable(false)
             .hide_on_close(true)
             .build();
@@ -1016,7 +1041,9 @@ impl VmmCreateVM {
         let image = gtk::Image::from_icon_name("vm_new_wizard");
         image.set_pixel_size(48);
         let title = gtk::Label::new(None);
-        title.set_markup("<span size='large'>Create a new virtual machine</span>");
+        title.set_markup(virtinst_core::tr!(
+            "<span size='large'>Create a new virtual machine</span>"
+        ));
         title.set_halign(gtk::Align::Start);
         title.add_css_class("vmm-header-text");
         let header_pagenum = gtk::Label::new(Some("Step foo of bar"));
@@ -1046,7 +1073,7 @@ impl VmmCreateVM {
         conn_label.set_halign(gtk::Align::Start);
         conn_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
         conn_label.set_max_width_chars(25);
-        let label77 = gtk::Label::with_mnemonic("C_onnection:");
+        let label77 = gtk::Label::with_mnemonic(virtinst_core::tr!("C_onnection:"));
         label77.set_halign(gtk::Align::End);
         label77.set_mnemonic_widget(Some(&conn_combo));
         let hbox3 = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -1062,27 +1089,36 @@ impl VmmCreateVM {
         let (startup_error_box, startup_error) = warning_box();
 
         // Install method
-        let vz_virt_type_hvm = radio("_Virtual machine", None);
-        let vz_virt_type_exe = radio("_Container", Some(&vz_virt_type_hvm));
+        let vz_virt_type_hvm = radio(virtinst_core::tr!("_Virtual machine"), None);
+        let vz_virt_type_exe = radio(virtinst_core::tr!("_Container"), Some(&vz_virt_type_hvm));
         let vz_install_box = method_box(
-            "Choose virtualization type",
+            virtinst_core::tr!("Choose virtualization type"),
             &[&vz_virt_type_hvm, &vz_virt_type_exe],
         );
-        let method_local = radio("_Local install media (ISO image or CDROM)", None);
+        let method_local = radio(
+            virtinst_core::tr!("_Local install media (ISO image or CDROM)"),
+            None,
+        );
         let method_tree = radio(
-            "Network _Install (HTTP, HTTPS, or FTP)",
+            virtinst_core::tr!("Network _Install (HTTP, HTTPS, or FTP)"),
             Some(&method_local),
         );
-        let method_import = radio("Import _existing disk image", Some(&method_local));
-        let method_manual = radio("Ma_nual install", Some(&method_local));
+        let method_import = radio(
+            virtinst_core::tr!("Import _existing disk image"),
+            Some(&method_local),
+        );
+        let method_manual = radio(virtinst_core::tr!("Ma_nual install"), Some(&method_local));
         let virt_install_box = method_box(
-            "Choose how you would like to install the operating system",
+            virtinst_core::tr!("Choose how you would like to install the operating system"),
             &[&method_local, &method_tree, &method_import, &method_manual],
         );
-        let method_container_app = radio("_Application container", None);
-        let method_container_os = radio("O_perating system container", Some(&method_container_app));
+        let method_container_app = radio(virtinst_core::tr!("_Application container"), None);
+        let method_container_os = radio(
+            virtinst_core::tr!("O_perating system container"),
+            Some(&method_container_app),
+        );
         let container_install_box = method_box(
-            "Choose the container type",
+            virtinst_core::tr!("Choose the container type"),
             &[&method_container_app, &method_container_os],
         );
         let install_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -1098,10 +1134,10 @@ impl VmmCreateVM {
         let arch = SimpleCombo::unsorted(vec![], pretty_arch);
         let machine = SimpleCombo::unsorted(vec![], |v| v.to_string());
         let mut grid = Grid::new();
-        let xen_type_row = grid.row("_Xen Type:", &xen_type.widget);
-        let virt_type_row = grid.row("_Virt Type:", &virt_type.widget);
-        let arch_row = grid.row("_Architecture:", &arch.widget);
-        let machine_row = grid.row("_Machine Type:", &machine.widget);
+        let xen_type_row = grid.row(virtinst_core::tr!("_Xen Type:"), &xen_type.widget);
+        let virt_type_row = grid.row(virtinst_core::tr!("_Virt Type:"), &virt_type.widget);
+        let arch_row = grid.row(virtinst_core::tr!("_Architecture:"), &arch.widget);
+        let machine_row = grid.row(virtinst_core::tr!("_Machine Type:"), &machine.widget);
         let table6 = grid.into_grid();
         table6.set_column_spacing(6);
         table6.set_margin_start(12);
@@ -1109,7 +1145,7 @@ impl VmmCreateVM {
         for row in [&xen_type_row, &virt_type_row, &arch_row, &machine_row] {
             row.label.set_halign(gtk::Align::Start);
         }
-        let arch_expander = gtk::Expander::new(Some("Architecture options"));
+        let arch_expander = gtk::Expander::new(Some(virtinst_core::tr!("Architecture options")));
         arch_expander.set_valign(gtk::Align::Start);
         arch_expander.set_vexpand(true);
         arch_expander.set_child(Some(&table6));
@@ -1131,8 +1167,9 @@ impl VmmCreateVM {
         pages.add_named(&inst.top, Some(&PAGE_INSTALL.to_string()));
         pages.add_named(&memw.top, Some(&PAGE_MEM.to_string()));
         // Step 4: storage
-        let enable_storage =
-            gtk::CheckButton::with_mnemonic("_Enable storage for this virtual machine");
+        let enable_storage = gtk::CheckButton::with_mnemonic(virtinst_core::tr!(
+            "_Enable storage for this virtual machine"
+        ));
         enable_storage.set_active(true);
         let addstorage = AddStorage::new(None);
         let storage_align = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -1147,11 +1184,11 @@ impl VmmCreateVM {
         pages.set_vhomogeneous(false);
         pages.set_hhomogeneous(false);
 
-        let cancel = gtk::Button::with_mnemonic("_Cancel");
-        let back = gtk::Button::with_mnemonic("_Back");
+        let cancel = gtk::Button::with_mnemonic(virtinst_core::tr!("_Cancel"));
+        let back = gtk::Button::with_mnemonic(virtinst_core::tr!("_Back"));
         back.set_sensitive(false);
-        let forward = gtk::Button::with_mnemonic("_Forward");
-        let finish = gtk::Button::with_mnemonic("_Finish");
+        let forward = gtk::Button::with_mnemonic(virtinst_core::tr!("_Forward"));
+        let finish = gtk::Button::with_mnemonic(virtinst_core::tr!("_Finish"));
         finish.set_visible(false);
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         buttons.set_halign(gtk::Align::End);
@@ -1439,8 +1476,8 @@ impl VmmCreateVM {
         glib::spawn_future_local(async move {
             let err = asyncjob::run(
                 Some(&this.0.window),
-                "Removing disk images",
-                "Removing disk images we created for this virtual machine.",
+                virtinst_core::tr!("Removing disk images"),
+                virtinst_core::tr!("Removing disk images we created for this virtual machine."),
                 true,
                 move |job| {
                     // `Installer.cleanup_created_disks`
@@ -1449,7 +1486,7 @@ impl VmmCreateVM {
                     };
                     let name = path.rsplit('/').next().unwrap_or_default().to_string();
                     let mut meter = job.meter();
-                    meter.start(&format!("Removing disk '{name}'"), None);
+                    meter.start(&virtinst_core::trf!("Removing disk '%s'", name), None);
                     match virt::storage_vol::StorageVol::lookup_by_path(handle.connect(), &path)
                         .and_then(|vol| vol.delete(0))
                     {
@@ -1477,21 +1514,22 @@ impl VmmCreateVM {
             i.install_box.set_visible(false);
             i.arch_expander.set_visible(false);
         }
-        i.startup_error.set_text(&format!("Error: {error}"));
+        i.startup_error
+            .set_text(&virtinst_core::trf!("Error: %s", error));
     }
 
     fn show_startup_warning(&self, error: &str) {
         self.0.startup_error_box.set_visible(true);
-        self.0.startup_error.set_markup(&format!(
-            "<span size='small'>Warning: {}</span>",
+        self.0.startup_error.set_markup(&virtinst_core::trf!(
+            "<span size='small'>Warning: %s</span>",
             glib::markup_escape_text(error)
         ));
     }
 
     fn show_arch_warning(&self, error: &str) {
         self.0.arch_warning_box.set_visible(true);
-        self.0.arch_warning.set_markup(&format!(
-            "<span size='small'>Warning: {}</span>",
+        self.0.arch_warning.set_markup(&virtinst_core::trf!(
+            "<span size='small'>Warning: %s</span>",
             glib::markup_escape_text(error)
         ));
     }
@@ -1623,10 +1661,11 @@ impl VmmCreateVM {
                 eprintln!("UEFI found, setting it as default.");
                 true
             } else {
-                let e = "Libvirt version does not support UEFI.";
+                let e = virtinst_core::tr!("Libvirt version does not support UEFI.");
                 eprintln!("Error checking for UEFI default: {e}");
-                this.show_arch_warning(&format!(
-                    "Failed to setup UEFI: {e}\nInstall options are limited."
+                this.show_arch_warning(&virtinst_core::trf!(
+                    "Failed to setup UEFI: %s\nInstall options are limited.",
+                    e
                 ));
                 false
             };
@@ -1664,14 +1703,20 @@ impl VmmCreateVM {
         let mut local_tt = None;
         let mut tree_tt = None;
         if !is_local && !can_remote_url {
-            tree_tt = Some("Libvirt version does not support remote URL installs.".to_string());
+            tree_tt = Some(
+                virtinst_core::tr!("Libvirt version does not support remote URL installs.")
+                    .to_string(),
+            );
         }
         if is_pv {
-            local_tt = Some("CDROM/ISO installs not available for paravirt guests.".to_string());
+            local_tt = Some(
+                virtinst_core::tr!("CDROM/ISO installs not available for paravirt guests.")
+                    .to_string(),
+            );
         }
         if !installable_arch {
-            let msg = format!(
-                "Architecture '{}' is not installable",
+            let msg = virtinst_core::trf!(
+                "Architecture '%s' is not installable",
                 capsinfo.arch.as_deref().unwrap_or_default()
             );
             tree_tt = Some(msg.clone());
@@ -1688,7 +1733,10 @@ impl VmmCreateVM {
         }
 
         if !(is_container_only || virt_methods.iter().any(|w| w.is_sensitive())) {
-            self.show_startup_error("No install methods available for this connection.", false);
+            self.show_startup_error(
+                virtinst_core::tr!("No install methods available for this connection."),
+                false,
+            );
             return;
         }
 
@@ -1743,7 +1791,9 @@ impl VmmCreateVM {
         i.forward.set_sensitive(true);
 
         if !caps.has_install_options() {
-            let mut error = "No hypervisor options were found for this connection.".to_string();
+            let mut error =
+                virtinst_core::tr!("No hypervisor options were found for this connection.")
+                    .to_string();
             if conn.is_qemu() {
                 error += "\n\nThis usually means that QEMU or KVM is not installed on your \
                           machine, or the KVM kernel modules are not loaded.";
@@ -1874,7 +1924,10 @@ impl VmmCreateVM {
         }
 
         let Some(conn) = newconn else {
-            self.show_startup_error("No active connection to install on.", true);
+            self.show_startup_error(
+                virtinst_core::tr!("No active connection to install on."),
+                true,
+            );
             return;
         };
         let weak = Rc::downgrade(&self.0);
@@ -2282,9 +2335,11 @@ impl VmmCreateVM {
             last -= 1;
             cur = cur.min(last);
         }
-        self.0
-            .header_pagenum
-            .set_markup(&format!("Step {cur} of {last}"));
+        self.0.header_pagenum.set_markup(&virtinst_core::trf!(
+            "Step %(current_page)d of %(max_page)d",
+            current_page = cur,
+            max_page = last
+        ));
     }
 
     fn back_clicked(&self) {
@@ -2424,7 +2479,7 @@ impl VmmCreateVM {
                 glib::markup_escape_text(source)
             )
         } else {
-            "None".to_string()
+            virtinst_core::tr!("None").to_string()
         };
         i.fin.summary_storage.set_markup(&storagesize);
         i.fin.summary_storage.set_visible(!storagesize.is_empty());
@@ -2435,13 +2490,13 @@ impl VmmCreateVM {
     fn populate_summary(&self) {
         let i = &self.0;
         let install = match self.get_config_install_page() {
-            InstallPage::Iso => "Local CDROM/ISO",
-            InstallPage::Url => "URL Install Tree",
-            InstallPage::Import => "Import existing OS image",
-            InstallPage::Manual => "Manual install",
-            InstallPage::ContainerApp => "Application container",
-            InstallPage::ContainerOs => "Operating system container",
-            InstallPage::VzTemplate => "Virtuozzo container",
+            InstallPage::Iso => virtinst_core::tr!("Local CDROM/ISO"),
+            InstallPage::Url => virtinst_core::tr!("URL Install Tree"),
+            InstallPage::Import => virtinst_core::tr!("Import existing OS image"),
+            InstallPage::Manual => virtinst_core::tr!("Manual install"),
+            InstallPage::ContainerApp => virtinst_core::tr!("Application container"),
+            InstallPage::ContainerOs => virtinst_core::tr!("Operating system container"),
+            InstallPage::VzTemplate => virtinst_core::tr!("Virtuozzo container"),
         };
         let (os_label, mem, cpu) = {
             let gdata = i.gdata.borrow();
@@ -2485,15 +2540,20 @@ impl VmmCreateVM {
         if Some(&name) != i.gdata.borrow().name.as_ref() {
             // `Guest.validate_name`
             let res =
-                virtinst_core::storage::validate_generic_name("Guest", &name).and_then(|_| {
-                    if conn.list_vms().iter().any(|v| v.get_name() == name) {
-                        Err(format!("Guest name '{name}' is already in use."))
-                    } else {
-                        Ok(())
-                    }
-                });
+                virtinst_core::storage::validate_generic_name(virtinst_core::tr!("Guest"), &name)
+                    .and_then(|_| {
+                        if conn.list_vms().iter().any(|v| v.get_name() == name) {
+                            Err(virtinst_core::trf!(
+                                "Guest name '%s' is already in use.",
+                                name
+                            ))
+                        } else {
+                            Ok(())
+                        }
+                    });
             if let Err(e) = res {
-                error::val_err_text2(parent, "Invalid guest name", Some(&e)).await;
+                error::val_err_text2(parent, virtinst_core::tr!("Invalid guest name"), Some(&e))
+                    .await;
                 return false;
             }
             i.gdata.borrow_mut().name = Some(name);
@@ -2521,7 +2581,7 @@ impl VmmCreateVM {
         {
             error::show_err(
                 parent,
-                &format!("Uncaught error validating install parameters: {e}"),
+                &virtinst_core::trf!("Uncaught error validating install parameters: %s", e),
                 None,
                 "",
             )
@@ -2562,7 +2622,7 @@ impl VmmCreateVM {
                     this.0.window.set_cursor_from_name(None);
                     error::show_err(
                         Some(&this.0.window),
-                        &format!("Error starting installation: {e}"),
+                        &virtinst_core::trf!("Error starting installation: %s", e),
                         None,
                         "",
                     )
@@ -2843,7 +2903,7 @@ impl VmmCreateVM {
         };
         let err = asyncjob::run(
             Some(&parent),
-            "Creating Virtual Machine",
+            virtinst_core::tr!("Creating Virtual Machine"),
             "The virtual machine is now being created. Allocation of disk storage and \
              retrieval of the installation images may take a few minutes to complete.",
             true,
@@ -2851,7 +2911,7 @@ impl VmmCreateVM {
                 let mut meter = job.meter();
                 if let Some(args) = bootstrap {
                     // `_create_directory_tree`
-                    meter.start("Bootstrapping container", None);
+                    meter.start(virtinst_core::tr!("Bootstrapping container"), None);
                     args.run().map_err(|e| {
                         (
                             "virt-bootstrap did not complete successfully".to_string(),
@@ -2912,7 +2972,7 @@ impl VmmCreateVM {
                 glib::timeout_future(std::time::Duration::from_millis(100)).await;
             }
             if foundvm.is_none() {
-                let e = format!("VM '{name}' didn't show up after expected time.");
+                let e = virtinst_core::trf!("VM '%s' didn't show up after expected time.", name);
                 error = Some((e.clone(), e));
             }
         }
@@ -2924,7 +2984,7 @@ impl VmmCreateVM {
                 let (e, details) = error.unwrap_or_default();
                 error::show_err(
                     Some(&parent),
-                    &format!("Unable to complete install: '{e}'"),
+                    &virtinst_core::trf!("Unable to complete install: '%s'", e),
                     Some(&details),
                     "",
                 )
@@ -3002,14 +3062,23 @@ impl VmmCreateVM {
             let plan = match plan {
                 Ok(p) => p,
                 Err(e) => {
-                    error::val_err_text2(parent, "Storage parameter error.", Some(&e)).await;
+                    error::val_err_text2(
+                        parent,
+                        virtinst_core::tr!("Storage parameter error."),
+                        Some(&e),
+                    )
+                    .await;
                     return false;
                 }
             };
 
             // `validate_device`
             let Some(path) = plan.path.clone() else {
-                error::val_err(parent, "A storage path must be specified.").await;
+                error::val_err(
+                    parent,
+                    virtinst_core::tr!("A storage path must be specified."),
+                )
+                .await;
                 return false;
             };
             // `disk.validate()`
@@ -3028,7 +3097,12 @@ impl VmmCreateVM {
                 .await
                 .unwrap_or_else(|_| Err("Worker thread panicked".to_string()));
                 if let Err(e) = res {
-                    error::val_err_text2(parent, "Storage parameter error.", Some(&e)).await;
+                    error::val_err_text2(
+                        parent,
+                        virtinst_core::tr!("Storage parameter error."),
+                        Some(&e),
+                    )
+                    .await;
                     return false;
                 }
             }
@@ -3046,16 +3120,28 @@ impl VmmCreateVM {
             let names = match names {
                 Ok(n) => n,
                 Err(e) => {
-                    error::val_err_text2(parent, "Storage parameter error.", Some(&e)).await;
+                    error::val_err_text2(
+                        parent,
+                        virtinst_core::tr!("Storage parameter error."),
+                        Some(&e),
+                    )
+                    .await;
                     return false;
                 }
             };
             if !names.is_empty() {
-                let msg = format!(
-                    "Disk '{path}' is already in use by other guests {}",
-                    crate::addhardware::py_list(&names)
+                let msg = virtinst_core::trf!(
+                    "Disk '%(path)s' is already in use by other guests %(names)s",
+                    path = path,
+                    names = crate::addhardware::py_list(&names)
                 );
-                if !error::yes_no(parent, &msg, Some("Do you really want to use the disk?")).await {
+                if !error::yes_no(
+                    parent,
+                    &msg,
+                    Some(virtinst_core::tr!("Do you really want to use the disk?")),
+                )
+                .await
+                {
                     return false;
                 }
             }
@@ -3130,7 +3216,7 @@ impl VmmCreateVM {
         if !sensitive && os_list.get_selected_os().is_none() {
             os_list
                 .search_entry
-                .set_text("Waiting for install media / source");
+                .set_text(virtinst_core::tr!("Waiting for install media / source"));
         }
     }
 
@@ -3318,12 +3404,15 @@ impl VmmCreateVM {
         let i = &self.0;
         eprintln!(
             "Starting OS detection thread for cdrom={} location={}",
-            cdrom.as_deref().unwrap_or("None"),
-            location.as_deref().unwrap_or("None")
+            cdrom.as_deref().unwrap_or(virtinst_core::tr!("None")),
+            location.as_deref().unwrap_or(virtinst_core::tr!("None"))
         );
         i.detect_os_in_progress.set(true);
         i.forward.set_sensitive(false);
-        i.inst.os_list.search_entry.set_text("Detecting...");
+        i.inst
+            .os_list
+            .search_entry
+            .set_text(virtinst_core::tr!("Detecting..."));
         i.inst.detect_os_spinner.start();
         let seq = i.detect_seq.get() + 1;
         i.detect_seq.set(seq);
@@ -3401,7 +3490,7 @@ impl VmmCreateVM {
         i.inst.detect_os_spinner.stop();
         eprintln!(
             "Finished UI OS detection. distro={}",
-            distro.as_deref().unwrap_or("None")
+            distro.as_deref().unwrap_or(virtinst_core::tr!("None"))
         );
         i.forward.set_sensitive(true);
         i.os_already_detected_for_media.set(true);
@@ -3417,7 +3506,10 @@ impl VmmCreateVM {
             Some(os) => i.inst.os_list.select_os(&os),
             None => {
                 i.inst.os_list.reset_state();
-                i.inst.os_list.search_entry.set_text("None detected");
+                i.inst
+                    .os_list
+                    .search_entry
+                    .set_text(virtinst_core::tr!("None detected"));
             }
         }
         if forward_after_finish {
@@ -3439,7 +3531,7 @@ impl VmmCreateVM {
         let parent = Some(&self.0.window);
         // Check if the source path was provided
         if src_url.is_empty() {
-            error::val_err(parent, "Source URL is required").await;
+            error::val_err(parent, virtinst_core::tr!("Source URL is required")).await;
             return false;
         }
         // Require username and password when authenticate to source
@@ -3447,7 +3539,7 @@ impl VmmCreateVM {
         if !user.is_empty() && passwd.is_empty() {
             error::val_err(
                 parent,
-                "Please specify password for accessing source registry",
+                virtinst_core::tr!("Please specify password for accessing source registry"),
             )
             .await;
             return false;
@@ -3458,7 +3550,11 @@ impl VmmCreateVM {
             return true;
         }
         if !path.is_dir() {
-            error::val_err(parent, &format!("Destination path is not directory: {fs}")).await;
+            error::val_err(
+                parent,
+                &virtinst_core::trf!("Destination path is not directory: %s", fs),
+            )
+            .await;
             return false;
         }
         // `os.access(fs, os.W_OK)`
@@ -3472,7 +3568,7 @@ impl VmmCreateVM {
         if !writable {
             error::val_err(
                 parent,
-                &format!("No write permissions for directory path: {fs}"),
+                &virtinst_core::trf!("No write permissions for directory path: %s", fs),
             )
             .await;
             return false;
@@ -3483,7 +3579,7 @@ impl VmmCreateVM {
         // Show Yes/No dialog if the destination is not empty
         error::yes_no(
             parent,
-            "OS root directory is not empty",
+            virtinst_core::tr!("OS root directory is not empty"),
             Some(
                 "Creating root file system in a non-empty directory might fail due to file \
                  conflicts.\nWould you like to continue?",
@@ -3539,7 +3635,11 @@ impl VmmCreateVM {
             InstallPage::Iso => {
                 let media = i.inst.mediacombo.get_path(false);
                 if media.is_empty() {
-                    error::val_err(parent, "An install media selection is required.").await;
+                    error::val_err(
+                        parent,
+                        virtinst_core::tr!("An install media selection is required."),
+                    )
+                    .await;
                     return false;
                 }
                 cdrom = Some(media);
@@ -3547,7 +3647,8 @@ impl VmmCreateVM {
             InstallPage::Url => {
                 let (media, opts) = self.get_config_url_info(false);
                 if media.is_empty() {
-                    error::val_err(parent, "An install tree is required.").await;
+                    error::val_err(parent, virtinst_core::tr!("An install tree is required."))
+                        .await;
                     return false;
                 }
                 location = Some(media);
@@ -3556,7 +3657,11 @@ impl VmmCreateVM {
             InstallPage::Import => {
                 let import_path = i.inst.import_entry.text().to_string();
                 if import_path.is_empty() {
-                    error::val_err(parent, "A storage path to import is required.").await;
+                    error::val_err(
+                        parent,
+                        virtinst_core::tr!("A storage path to import is required."),
+                    )
+                    .await;
                     return false;
                 }
                 let exists = match conn.handle() {
@@ -3576,15 +3681,22 @@ impl VmmCreateVM {
                     None => false,
                 };
                 if !exists {
-                    error::val_err(parent, "The import path must point to an existing storage.")
-                        .await;
+                    error::val_err(
+                        parent,
+                        virtinst_core::tr!("The import path must point to an existing storage."),
+                    )
+                    .await;
                     return false;
                 }
             }
             InstallPage::ContainerApp => {
                 let text = i.inst.app_entry.text().to_string();
                 if text.is_empty() {
-                    error::val_err(parent, "An application path is required.").await;
+                    error::val_err(
+                        parent,
+                        virtinst_core::tr!("An application path is required."),
+                    )
+                    .await;
                     return false;
                 }
                 init = Some(text);
@@ -3592,7 +3704,11 @@ impl VmmCreateVM {
             InstallPage::ContainerOs => {
                 let text = i.inst.oscontainer_fs.text().to_string();
                 if text.is_empty() {
-                    error::val_err(parent, "An OS directory path is required.").await;
+                    error::val_err(
+                        parent,
+                        virtinst_core::tr!("An OS directory path is required."),
+                    )
+                    .await;
                     return false;
                 }
                 if i.inst.oscontainer_bootstrap.is_active() {
@@ -3611,7 +3727,8 @@ impl VmmCreateVM {
             InstallPage::VzTemplate => {
                 let text = i.inst.container_template.text().to_string();
                 if text.is_empty() {
-                    error::val_err(parent, "A template name is required.").await;
+                    error::val_err(parent, virtinst_core::tr!("A template name is required."))
+                        .await;
                     return false;
                 }
                 template = Some(text);
@@ -3635,7 +3752,9 @@ impl VmmCreateVM {
             .is_some_and(|c| c.os_type.as_deref() == Some("exe"));
         let name = self.generate_name(&os_name, is_container);
         let is_import = instmethod == InstallPage::Import;
-        if let Err(e) = virtinst_core::storage::validate_generic_name("Guest", &name) {
+        if let Err(e) =
+            virtinst_core::storage::validate_generic_name(virtinst_core::tr!("Guest"), &name)
+        {
             error::val_err(parent, &format!("Error setting default name.\n\n{e}")).await;
             return false;
         }
@@ -3644,7 +3763,12 @@ impl VmmCreateVM {
             let uri = virtinst_core::connection::Uri::parse(&conn.get_uri());
             use virtinst_core::install::installertreemedia::TreeMedia;
             if let Err(e) = TreeMedia::new(&uri, Some(loc.clone()), None, None, None, None, None) {
-                error::val_err_text2(parent, "Error setting installer parameters.", Some(&e)).await;
+                error::val_err_text2(
+                    parent,
+                    virtinst_core::tr!("Error setting installer parameters."),
+                    Some(&e),
+                )
+                .await;
                 return false;
             }
         }
@@ -3676,7 +3800,7 @@ impl VmmCreateVM {
                 // `_validate`'s try/except around `_validate_install_page`.
                 error::show_err(
                     parent,
-                    &format!("Uncaught error validating install parameters: {e}"),
+                    &virtinst_core::trf!("Uncaught error validating install parameters: %s", e),
                     None,
                     "",
                 )
