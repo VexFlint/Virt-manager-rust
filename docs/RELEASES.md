@@ -1,6 +1,6 @@
 # Plano de releases (GitHub Releases)
 
-Status: **em andamento** (R1 a R7 feitos). Nenhum item começa sem o Vex escolher.
+Status: **em andamento** (R1 a R7 feitos; `v0.9.0` saiu em 2026-11-04). Nenhum item começa sem o Vex escolher.
 Reserve o item como no `docs/ROADMAP.md` (seção 2) antes de começar.
 
 Modelo visual: a página de release do
