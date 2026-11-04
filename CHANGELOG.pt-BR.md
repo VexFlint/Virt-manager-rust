@@ -11,6 +11,23 @@ A versão do pacote vem do `Cargo.toml` da raiz. O `--version` dos quatro
 programas imprime a versão do upstream em que o porte se baseia (`5.1.0`),
 igual ao virt-manager Python; a versão do pacote aparece no "Sobre".
 
+## [1.0.0] - 2026-11-04
+
+Baseado no virt-manager 5.1.0. Primeira versão estável.
+
+### Adicionado
+- Tradução: GUI e CLI usam gettext com os catálogos do próprio upstream
+  (`po/`), então os textos batem com o virt-manager Python. Inclui português
+  do Brasil (`pt_BR`); uma língua nova só precisa do arquivo `.po`.
+- Seletor de idioma em Preferências > Geral ("Padrão do sistema" ou qualquer
+  língua incluída). Vale ao reiniciar o virt-manager.
+- Documentação em inglês e português (`*.pt-BR.md`).
+- Os pacotes trazem os arquivos de tradução `.mo`.
+
+### Corrigido
+- Testes de clonagem instáveis na CI (geração de endereço MAC).
+- O pacote rpm agora lista os arquivos de tradução.
+
 ## [0.9.0] - 2026-11-04
 
 Baseado no virt-manager 5.1.0.

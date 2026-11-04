@@ -14,7 +14,7 @@ exclude = ["vendor"]
 # boundaries) and ticket 18 (license, distribution, build scope).
 
 [workspace.package]
-version = "0.9.0"
+version = "1.0.0"
 edition = "2021"
 license = "GPL-2.0-or-later"
 rust-version = "1.75"
