@@ -32,7 +32,9 @@ fn simple_rows(values: &[Option<&str>]) -> Vec<(Option<String>, String)> {
     values
         .iter()
         .map(|v| {
-            let label = v.unwrap_or("Hypervisor default").to_string();
+            let label = v
+                .unwrap_or(virtinst_core::tr!("Hypervisor default"))
+                .to_string();
             (v.map(str::to_string), label)
         })
         .collect()
@@ -106,7 +108,7 @@ impl FsDetails {
 
         let source = gtk::Entry::new();
         source.set_hexpand(true);
-        let source_browse = gtk::Button::with_mnemonic("_Browse...");
+        let source_browse = gtk::Button::with_mnemonic(virtinst_core::tr!("_Browse..."));
         let source_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         source_box.append(&source);
         source_box.append(&source_browse);
@@ -116,22 +118,24 @@ impl FsDetails {
         ram_source.set_numeric(true);
         let ram_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         ram_box.append(&ram_source);
-        ram_box.append(&gtk::Label::new(Some("MiB")));
+        ram_box.append(&gtk::Label::new(Some(virtinst_core::tr!("MiB"))));
 
         let target = gtk::Entry::new();
         target.set_hexpand(true);
-        let readonly = gtk::CheckButton::with_mnemonic("E_xport filesystem as readonly mount");
+        let readonly = gtk::CheckButton::with_mnemonic(virtinst_core::tr!(
+            "E_xport filesystem as readonly mount"
+        ));
 
         let mut g = Grid::new();
-        let fstype_row = g.row("_Type:", &fstype.widget);
-        let driver_row = g.row("_Driver:", &driver.widget);
+        let fstype_row = g.row(virtinst_core::tr!("_Type:"), &fstype.widget);
+        let driver_row = g.row(virtinst_core::tr!("_Driver:"), &driver.widget);
         let driver_warn_row = g.row("", &warn_box);
-        let format_row = g.row("_Format:", &format.widget);
-        let source_row = g.row("_Source path:", &source_box);
+        let format_row = g.row(virtinst_core::tr!("_Format:"), &format.widget);
+        let source_row = g.row(virtinst_core::tr!("_Source path:"), &source_box);
         source_row.set_mnemonic(&source);
         let ram_source_row = g.row("_Usage:", &ram_box);
         ram_source_row.set_mnemonic(&ram_source);
-        g.row("Ta_rget path:", &target);
+        g.row(virtinst_core::tr!("Ta_rget path:"), &target);
         let readonly_row = g.row("", &readonly);
         readonly_row.set_visible(show_readonly);
 
@@ -255,9 +259,9 @@ impl FsDetails {
 
         let show_driver_combo = self.is_qemu || fstype.as_deref() == Some(TYPE_FILE);
         let source_text = if fstype.as_deref() == Some(TYPE_TEMPLATE) {
-            "Te_mplate:"
+            virtinst_core::tr!("Te_mplate:")
         } else {
-            "_Source path:"
+            virtinst_core::tr!("_Source path:")
         };
         self.source_row.label.set_text_with_mnemonic(source_text);
         self.fstype_row.set_visible(!self.is_qemu);
@@ -269,9 +273,9 @@ impl FsDetails {
         if show_shared_mem_warn {
             self.driver_warn.set_markup(&format!(
                 "<small>{}</small>",
-                gtk::glib::markup_escape_text(
+                gtk::glib::markup_escape_text(virtinst_core::tr!(
                     "You may need to 'Enable shared memory' on the 'Memory' screen."
-                )
+                ))
             ));
         }
     }
