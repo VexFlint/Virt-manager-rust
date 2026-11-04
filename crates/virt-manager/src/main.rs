@@ -180,6 +180,7 @@ impl Cli {
 }
 
 fn main() -> gtk::glib::ExitCode {
+    virtinst_core::i18n::init();
     let cli = Cli::parse();
     if cli.version {
         // argparse's `action="version"`: `BuildConfig.version` alone.

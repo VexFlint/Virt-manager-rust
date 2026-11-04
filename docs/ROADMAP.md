@@ -38,6 +38,30 @@ Itens sem dependência podem ser feitos em paralelo.
 | 24b | SPICE GL: liga na GUI | usa o 24a no `spicedisplay.rs` quando a VM tem `<gl enable="yes"/>` (virgl), com fallback e prints | M | 24a | ✅ |
 | 24c | SPICE GL: testes e cursor | cursor, redimensionar, escala e teste com virgl real; risco: drivers de GPU | P | 24b | ✅ |
 
+### Tradução da interface
+
+Plano: gettext (`gettext-rs`) com os `po/*.po` do próprio upstream, domínio
+`virt-manager-rust`. O msgid tem que ser o texto inglês do upstream byte a
+byte; use `tr!`, `trf!` (placeholders `%s`/`%(nome)s`) e `ntr!` de
+`virtinst_core::i18n`. Hoje só pt_BR está em `po/LINGUAS`.
+
+| # | PR | Escopo | Custo | Depende de | Status |
+|---|----|--------|-------|------------|--------|
+| T1 | Base de tradução | `gettext-rs`, `i18n.rs` (`tr!`/`trf!`/`ntr!`), `init()` nos 4 binários, `po/pt_BR.po` do upstream, `build.rs` com `msgfmt --check`, teste em pt_BR | P | nada | ✅ |
+| T2 | GUI: janela principal, menus, diálogos comuns | `manager.rs`, about, erros e confirmações; alinhar msgids com o upstream | M | T1 | |
+| T3 | GUI: Detalhes da VM | `details*.rs` | G | T1 | |
+| T4 | GUI: Adicionar hardware | `addhardware.rs` e afins | M | T1 | |
+| T5 | GUI: Nova VM + Personalizar | `createvm.rs` | M | T1 | |
+| T6 | GUI: telas restantes | storage, host, snapshots, clonar, migrar, preferências, console | M | T1 | |
+| T7 | CLI | mensagens e `--help` de virt-install/virt-xml/virt-clone | M | T1 | |
+| T8 | Pacotes | `.mo` em `/usr/share/locale/*/LC_MESSAGES/virt-manager-rust.mo` nos .deb/.rpm/Arch/tarball, `check-install.sh` confere | P | T1 | |
+
+Adicionar uma língua: copie `po/<língua>.po` do upstream v5.1.0, ponha o
+código em `po/LINGUAS` e abra o PR. O `build.rs` roda `msgfmt --check`, então
+a CI falha se o catálogo estiver quebrado. Para testar à mão:
+`LC_ALL=pt_BR.UTF-8 cargo run -p virt-manager` (o build de debug lê os `.mo`
+do `OUT_DIR`; `VIRT_MANAGER_LOCALEDIR` troca a pasta).
+
 ### Fase 2: host Windows nativo (só depois dos Extras)
 
 Objetivo: no Windows, um segundo backend que controla o `qemu.exe` direto

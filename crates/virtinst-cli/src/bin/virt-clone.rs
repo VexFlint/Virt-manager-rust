@@ -194,6 +194,7 @@ fn validate_disks(cloner: &Cloner) {
 }
 
 fn main() {
+    virtinst_core::i18n::init();
     cli::autocomplete(Args::command());
     cli::handle_version_flag();
     let mut args = Args::parse();
