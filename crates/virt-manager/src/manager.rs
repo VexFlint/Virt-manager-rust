@@ -440,6 +440,9 @@ impl VmmManager {
         );
         let shutdown_menu_btn = gtk::MenuButton::new();
         shutdown_menu_btn.set_menu_model(Some(&vmmenu::shutdown_menu()));
+        // Explicit arrow (bundled in our GResource) so it never renders empty
+        // on icon themes without the CSS-provided one.
+        shutdown_menu_btn.set_icon_name("pan-down-symbolic");
         shutdown_menu_btn.add_css_class("flat");
         shutdown_box.append(&shutdown_btn);
         shutdown_box.append(&shutdown_menu_btn);

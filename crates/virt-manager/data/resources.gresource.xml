@@ -36,5 +36,8 @@
     <file>icons/48x48/actions/vm_import_wizard.png</file>
     <file>icons/48x48/actions/vm_new_wizard.png</file>
     <file>icons/48x48/apps/virt-manager.png</file>
+    <!-- Not from upstream: Adwaita's dropdown arrow, bundled so the Shut Down
+         menu arrow is never empty when the user's icon theme lacks it. -->
+    <file>icons/scalable/actions/pan-down-symbolic.svg</file>
   </gresource>
 </gresources>
