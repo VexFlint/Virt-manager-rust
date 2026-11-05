@@ -154,8 +154,11 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) (build, tests, PRs),
 The project rules and planning docs (`AGENTS.md`, `docs/ROADMAP.md`,
 `docs/RELEASES.md`) are written in Portuguese, the maintainers' language.
 
-The program's interface is in English, with upstream's own strings. It has no
-translations yet (upstream's gettext catalogs are not wired in).
+The program uses upstream's own strings and gettext catalogs (`po/`), so the
+GUI and CLI are translated like the Python virt-manager. Brazilian Portuguese
+(`pt_BR`) is included, and Preferences > General has a language selector
+("System default" or any bundled language, applied on restart). A new
+language only needs its `.po` file.
 
 ## License
 
