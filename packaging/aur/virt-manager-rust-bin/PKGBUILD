@@ -1,0 +1,28 @@
+# PKGBUILD do virt-manager-rust-bin (AUR). Não compila nada: extrai o
+# .pkg.tar.zst que a CI do release.yml compilou no container do Arch e
+# publicou na release da tag. O packaging/aur/publish.sh troca o pkgver e
+# os sha256sums a cada release.
+pkgname=virt-manager-rust-bin
+_pkgname=virt-manager-rust
+pkgver=1.0.0
+pkgrel=1
+pkgdesc='Desktop tool for managing virtual machines (Rust port of virt-manager 5.1.0, prebuilt)'
+arch=(x86_64)
+url='https://github.com/VexFlint/Virt-manager-rust'
+license=(GPL-2.0-or-later)
+depends=(libvirt libosinfo gtk4 gtk-vnc spice-gtk vte4 gtksourceview5
+         gsettings-desktop-schemas hicolor-icon-theme glib2 gcc-libs glibc)
+optdepends=('qemu-desktop: run VMs on this host'
+            'dnsmasq: NAT for the default virtual network'
+            'xorriso: cloud-init and unattended install ISOs')
+provides=("$_pkgname=$pkgver" virt-manager virt-install)
+conflicts=("$_pkgname" virt-manager virt-install)
+options=(!strip !debug)
+source=("$url/releases/download/v$pkgver/$_pkgname-$pkgver-1-x86_64.pkg.tar.zst")
+noextract=("$_pkgname-$pkgver-1-x86_64.pkg.tar.zst")
+sha256sums=('SKIP')
+
+package() {
+  bsdtar -xpf "$srcdir/$_pkgname-$pkgver-1-x86_64.pkg.tar.zst" -C "$pkgdir" \
+    --exclude .PKGINFO --exclude .BUILDINFO --exclude .MTREE --exclude .INSTALL
+}
