@@ -6,6 +6,7 @@
 # os pacotes como artefato do run, sem atestação e sem release (para testar).
 # workflow_dispatch com notes_tag (ex.: v1.0.0): só refaz o topo das notas
 # dessa release a partir do CHANGELOG, sem compilar nada (job notes).
+# Job aur: atualiza o AUR na tag estável (ou no workflow_dispatch com aur_push).
 name: Release
 
 on:
@@ -21,6 +22,10 @@ on:
         description: "Só refazer as notas da release desta tag (ex.: v1.0.0)"
         required: false
         default: ""
+      aur_push:
+        description: "Publicar a última release no AUR (precisa do secret AUR_SSH_PRIVATE_KEY)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -287,6 +292,61 @@ jobs:
           path: |
             dist/*
             notes.md
+
+  # AUR (docs/RELEASES.md, R9): gera o PKGBUILD + .SRCINFO do
+  # virt-manager-rust (fonte) e do virt-manager-rust-bin (extrai o
+  # .pkg.tar.zst da release) com os sha256 reais, monta e instala o -bin.
+  # Na tag de versão estável, empurra os dois para o AUR com a chave do
+  # secret AUR_SSH_PRIVATE_KEY (sem o secret, só avisa). Fora da tag, testa
+  # com a última release publicada; workflow_dispatch com aur_push também
+  # empurra essa release.
+  aur:
+    needs: [check, publish]
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    steps:
+      - name: Install system dependencies
+        run: pacman -Syu --noconfirm --needed base-devel git openssh pacman-contrib jq
+      - uses: actions/checkout@v4
+      - id: version
+        name: Versão
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+              echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          else
+              tag=$(curl -fsSL "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/latest" | jq -r .tag_name)
+              echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: PKGBUILD + .SRCINFO
+        run: sh packaging/aur/publish.sh "${{ steps.version.outputs.version }}" "$RUNNER_TEMP/aur"
+      - name: Smoke (-bin)
+        run: |
+          cd "$RUNNER_TEMP/aur/virt-manager-rust-bin"
+          su builder -c "makepkg -f"
+          pacman -U --noconfirm ./*.pkg.tar.zst
+          for tool in virt-manager virt-install virt-clone virt-xml; do
+              test "$($tool --version)" = 5.1.0
+          done
+          test -f /usr/share/glib-2.0/schemas/gschemas.compiled
+      - name: Publicar no AUR
+        if: (github.ref_type == 'tag' && !contains(needs.check.outputs.version, '-') && !startsWith(needs.check.outputs.version, '0.')) || inputs.aur_push
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+              echo "::warning::sem o secret AUR_SSH_PRIVATE_KEY, o AUR não foi atualizado"
+              exit 0
+          fi
+          install -dm700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+          printf 'Host aur.archlinux.org\n  User aur\n  IdentityFile ~/.ssh/aur\n' > ~/.ssh/config
+          git config --global user.name "virt-manager-rust CI"
+          git config --global user.email "noreply@github.com"
+          sh packaging/aur/publish.sh "${{ steps.version.outputs.version }}" "$RUNNER_TEMP/aur-push" --push
 
   # Refaz o topo das notas de uma release já publicada com o
   # packaging/release-notes.sh atual (destaques do CHANGELOG) e mantém o

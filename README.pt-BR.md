@@ -113,6 +113,8 @@ cargo run -p virt-manager -- --connect test:///default
 
 Pacotes prontos (Ubuntu 24.04, Debian 13, Fedora, Arch e um tarball genérico)
 estão na [página de Releases](https://github.com/VexFlint/Virt-manager-rust/releases).
+No Arch, pelo AUR: `yay -S virt-manager-rust-bin` (já compilado) ou
+`yay -S virt-manager-rust` (compila do fonte).
 Para compilar e instalar a partir do código:
 
 O `packaging/install.sh` instala tudo no layout `/usr` do upstream
