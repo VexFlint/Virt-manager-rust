@@ -121,7 +121,7 @@ Complexidade: P = pequeno, M = médio, G = grande.
 | R6 | ✅ Arch: `PKGBUILD` no repo + `.pkg.tar.zst` na release (AUR depois, precisa de chave SSH em secret) | M |
 | R7 | ✅ Primeira release `v0.9.0` (pre-release) | P |
 | R9 | ✅ AUR: `virt-manager-rust` (fonte) e `virt-manager-rust-bin` (extrai o `.pkg.tar.zst` da release); job `aur` do `release.yml` empurra na tag estável com o secret `AUR_SSH_PRIVATE_KEY` (`packaging/aur/publish.sh`) | P |
-| R10 | Repo apt próprio assinado (GPG) no GitHub Pages, atualizado pela CI | M |
+| R10 | ✅ Repo apt próprio assinado (GPG) no GitHub Pages: `packaging/apt/build-repo.sh` + `.github/workflows/apt.yml` (roda depois do Release via `workflow_run`, secret `REPO_GPG_PRIVATE_KEY`, Pages com fonte "GitHub Actions"); suítes `noble` e `trixie` | M |
 | R8 | Flatpak (opcional, manifesto + permissões de libvirt) | G |
 | W1 | Windows `.msi` (Fase 2, depois do F2-1 do ROADMAP) | G |
 

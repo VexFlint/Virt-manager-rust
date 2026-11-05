@@ -105,6 +105,15 @@ cargo run -p virt-manager -- --connect test:///default
 
 Ready-made packages (Ubuntu 24.04, Debian 13, Fedora, Arch and a generic
 tarball) are on the [Releases page](https://github.com/VexFlint/Virt-manager-rust/releases).
+On Ubuntu 24.04 (`noble`) or Debian 13 (use `trixie` instead of `noble`),
+from our signed apt repository, which also brings updates with `apt upgrade`:
+
+```sh
+sudo curl -fsSLo /etc/apt/keyrings/virt-manager-rust.gpg https://vexflint.github.io/Virt-manager-rust/virt-manager-rust.gpg
+echo "deb [signed-by=/etc/apt/keyrings/virt-manager-rust.gpg] https://vexflint.github.io/Virt-manager-rust noble main" | sudo tee /etc/apt/sources.list.d/virt-manager-rust.list
+sudo apt update && sudo apt install virt-manager-rust
+```
+
 On Arch, from the AUR: `yay -S virt-manager-rust-bin` (prebuilt) or
 `yay -S virt-manager-rust` (builds from source).
 To build and install from source:
