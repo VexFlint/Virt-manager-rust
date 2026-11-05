@@ -43,8 +43,11 @@ Rode qualquer binário com `--help` para ver as opções exatas de agora: o text
 de ajuda diz, opção por opção, o que já está implementado e o que o upstream
 faz diferente.
 
-A interface do programa está em inglês, com as strings do próprio upstream.
-Ainda não há traduções (os catálogos gettext do upstream não estão ligados).
+O programa usa as strings e os catálogos gettext do próprio upstream (`po/`),
+então a GUI e a CLI são traduzidas como no virt-manager Python. O português do
+Brasil (`pt_BR`) vem incluído, e Preferências > Geral tem um seletor de idioma
+("Padrão do sistema" ou qualquer idioma incluído, aplicado ao reiniciar). Um
+idioma novo só precisa do seu arquivo `.po`.
 
 ## Desempenho
 
