@@ -1,0 +1,109 @@
+# Repositório apt assinado no GitHub Pages (docs/RELEASES.md, R10).
+#
+# Depois que o workflow Release termina bem numa tag (workflow_run, que roda
+# no master e por isso pode publicar no ambiente github-pages), baixa os .deb
+# da última release estável, monta o repo com o packaging/apt/build-repo.sh,
+# assina com o secret REPO_GPG_PRIVATE_KEY e publica no Pages.
+# workflow_dispatch faz o mesmo na mão. Em PR que mexe nisto, monta com uma
+# chave descartável e testa o apt install num container limpo, sem publicar.
+name: APT
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/apt.yml
+      - packaging/apt/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apt-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-24.04
+    outputs:
+      publish: ${{ steps.key.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y apt-utils
+      - name: .deb da última release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download --repo "$GITHUB_REPOSITORY" --pattern '*.deb' --dir "$RUNNER_TEMP/debs"
+      - id: key
+        name: Chave GPG
+        env:
+          REPO_GPG_PRIVATE_KEY: ${{ secrets.REPO_GPG_PRIVATE_KEY }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ] && [ -n "$REPO_GPG_PRIVATE_KEY" ]; then
+              printf '%s\n' "$REPO_GPG_PRIVATE_KEY" | gpg --batch --import
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+              [ "$GITHUB_EVENT_NAME" = pull_request ] || echo "::warning::sem o secret REPO_GPG_PRIVATE_KEY, o repo apt não foi publicado"
+              gpg --batch --pinentry-mode loopback --passphrase '' --quick-gen-key "virt-manager-rust test" ed25519 sign never
+          fi
+      - name: Repo
+        run: sh packaging/apt/build-repo.sh "$RUNNER_TEMP/debs" site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  # Instala pelo repo (servido de arquivo local) num container limpo de cada
+  # distro, do jeito que o README manda, e roda os binários.
+  smoke:
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:24.04
+            suite: noble
+          - image: debian:trixie
+            suite: trixie
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: github-pages
+      - name: Instalar pelo repo
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          mkdir -p /srv/repo /etc/apt/keyrings
+          tar -C /srv/repo -xf artifact.tar
+          chmod -R a+rX /srv/repo
+          cp /srv/repo/virt-manager-rust.gpg /etc/apt/keyrings/
+          echo "deb [signed-by=/etc/apt/keyrings/virt-manager-rust.gpg] file:///srv/repo ${{ matrix.suite }} main" > /etc/apt/sources.list.d/virt-manager-rust.list
+          apt-get update
+          apt-get install -y virt-manager-rust
+      - name: Smoke
+        run: |
+          for tool in virt-manager virt-install virt-clone virt-xml; do
+              test "$($tool --version)" = 5.1.0
+          done
+
+  deploy:
+    needs: [build, smoke]
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
