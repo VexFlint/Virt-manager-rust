@@ -249,15 +249,13 @@ pub struct NetList {
     changed: RefCell<Option<ChangedCb>>,
 }
 
-fn warn_box(text: &str) -> gtk::Box {
+/// `markup` is the upstream (translated) label, `<small>` included.
+fn warn_box(markup: &str) -> gtk::Box {
     let b = gtk::Box::new(gtk::Orientation::Horizontal, 3);
     b.set_halign(gtk::Align::Start);
     b.append(&gtk::Image::from_icon_name("dialog-warning"));
     let l = gtk::Label::new(None);
-    l.set_markup(&format!(
-        "<small>{}</small>",
-        glib::markup_escape_text(text)
-    ));
+    l.set_markup(markup);
     l.set_halign(gtk::Align::Start);
     l.set_wrap(true);
     b.append(&l);
@@ -286,10 +284,12 @@ impl NetList {
         let portgroup = gtk::DropDown::from_strings(&[]);
         portgroup.set_halign(gtk::Align::Start);
         portgroup_label.set_mnemonic_widget(Some(&portgroup));
-        let default_warn = warn_box("Failed to find a suitable default network.");
-        let macvtap_warn = warn_box(
-            "In most configurations, macvtap does not work for host to guest network communication.",
-        );
+        let default_warn = warn_box(virtinst_core::tr!(
+            "<small>Failed to find a suitable default network.</small>"
+        ));
+        let macvtap_warn = warn_box(virtinst_core::tr!(
+            "<small>In most configurations, macvtap does not work for host to guest network communication.</small>"
+        ));
 
         let top_box = gtk::Grid::builder()
             .row_spacing(6)
