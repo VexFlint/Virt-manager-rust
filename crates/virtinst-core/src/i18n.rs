@@ -122,6 +122,10 @@ pub fn init_with(dir: &str) {
 
 /// `_()`.
 pub fn gettext(msgid: &str) -> String {
+    // gettext("") is the .po header, never a translation.
+    if msgid.is_empty() {
+        return String::new();
+    }
     gettextrs::dgettext(DOMAIN, msgid)
 }
 
@@ -291,10 +295,13 @@ mod tests {
         if std::env::var_os("I18N_CHILD").is_some() {
             init_with(concat!(env!("OUT_DIR"), "/locale"));
             println!(
-                "{}|{}|{}",
+                "{}|{}|{}|{}|[{}]",
                 crate::tr!("New VM"),
                 crate::tr!("_New"),
-                crate::tr!("not in the catalog")
+                crate::tr!("not in the catalog"),
+                crate::tr!("active"),
+                // "" is the .po header in gettext, never a translation.
+                gettext("")
             );
             return;
         }
@@ -321,7 +328,7 @@ mod tests {
         // glibc ignores catalogs under the C locale, so pt_BR.UTF-8 has
         // to exist: `sudo localedef -i pt_BR -f UTF-8 pt_BR.UTF-8`.
         assert!(
-            stdout.contains("Nova VM|_Nova|not in the catalog"),
+            stdout.contains("Nova VM|_Nova|not in the catalog|ativo|[]"),
             "{stdout}\n(is the pt_BR.UTF-8 locale installed? `locale -a`)"
         );
     }

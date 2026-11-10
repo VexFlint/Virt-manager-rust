@@ -21,6 +21,10 @@ igual ao virt-manager Python; a versão do pacote aparece no "Sobre".
 ### Corrigido
 - O `virt-install` carrega o banco do libosinfo uma vez por execução, e não a
   cada consulta: `--print-xml` de um convidado importado caiu de 3,4 s para 0,35 s.
+- Detalhes, página da placa de rede: o ícone da placa (`network-idle`) vai
+  embutido, então não aparece mais como imagem faltando em temas de ícones
+  sem ele (Breeze, Adwaita 46+); "MAC address:", "active" e os avisos de rede
+  são traduzidos, como no upstream.
 
 ## [1.0.0] - 2026-11-04
 

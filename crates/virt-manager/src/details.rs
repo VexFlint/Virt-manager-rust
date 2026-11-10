@@ -1455,7 +1455,7 @@ impl NetworkPage {
         let ip_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         ip_box.append(&ip);
         ip_box.append(&refresh_ip);
-        let link_state = gtk::CheckButton::with_label("active");
+        let link_state = gtk::CheckButton::with_label(virtinst_core::tr!("active"));
         link_state.set_halign(gtk::Align::Start);
 
         let grid = gtk::Grid::builder()
@@ -1469,7 +1469,9 @@ impl NetworkPage {
         grid.attach(&model_label, 0, 1, 1, 1);
         grid.attach(&model.widget, 1, 1, 1, 1);
         // The MAC is only editable in the customize dialog.
-        grid.attach(&right("MAC address:"), 0, 2, 1, 1);
+        let mac_label = right(virtinst_core::tr!("_MAC address:"));
+        mac_label.set_mnemonic_widget(Some(&mac_entry));
+        grid.attach(&mac_label, 0, 2, 1, 1);
         grid.attach(&mac_value, 1, 2, 1, 1);
         let ip_label = right(virtinst_core::tr!("I_P address:"));
         ip_label.set_mnemonic_widget(Some(&refresh_ip));

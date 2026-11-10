@@ -21,6 +21,10 @@ just like the Python virt-manager; the package version shows in "About".
 ### Fixed
 - `virt-install` loads the libosinfo database once per run instead of at
   every lookup: `--print-xml` for an imported guest went from 3.4 s to 0.35 s.
+- Details, NIC page: the NIC icon (`network-idle`) is bundled, so it no
+  longer shows as a missing image on icon themes without it (Breeze,
+  Adwaita 46+); "MAC address:", "active" and the network warnings are
+  translated, as upstream.
 
 ## [1.0.0] - 2026-11-04
 

@@ -39,5 +39,14 @@
     <!-- Not from upstream: Adwaita's dropdown arrow, bundled so the Shut Down
          menu arrow is never empty when the user's icon theme lacks it. -->
     <file>icons/scalable/actions/pan-down-symbolic.svg</file>
+    <!-- Not from upstream: the classic Adwaita "network-idle" (now only in
+         adwaita-icon-theme-legacy, GNOME Project, LGPLv3 / CC-BY-SA 3.0),
+         which upstream uses for NICs; Breeze and Adwaita 46+ lack it, so the
+         NIC row showed image-missing. -->
+    <file>icons/16x16/status/network-idle.png</file>
+    <file>icons/22x22/status/network-idle.png</file>
+    <file>icons/24x24/status/network-idle.png</file>
+    <file>icons/32x32/status/network-idle.png</file>
+    <file>icons/48x48/status/network-idle.png</file>
   </gresource>
 </gresources>
