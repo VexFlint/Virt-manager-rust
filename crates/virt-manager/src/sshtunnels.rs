@@ -229,15 +229,19 @@ pub fn make_ssh_command(ginfo: &ConnectionInfo) -> Option<Vec<String>> {
             ginfo.gport.as_deref().unwrap_or_default()
         ),
     };
-    let nc_cmd = format!(
-        "nc -q 2>&1 | grep \"requires an argument\" >/dev/null;\
-         if [ $? -eq 0 ] ; then\
-            CMD=\"nc -q 0 {nc_params}\";\
-         else\
-            CMD=\"nc {nc_params}\";\
-         fi;\
-         eval \"$CMD\";"
-    );
+    // Concatenated piece by piece like upstream: a `\` line continuation
+    // would also eat the spaces after `then`/`else`, and the remote `sh`
+    // would then reject `thenCMD=...` ("fi" unexpected).
+    let nc_cmd = [
+        "nc -q 2>&1 | grep \"requires an argument\" >/dev/null;".to_string(),
+        "if [ $? -eq 0 ] ; then".to_string(),
+        format!("   CMD=\"nc -q 0 {nc_params}\";"),
+        "else".to_string(),
+        format!("   CMD=\"nc {nc_params}\";"),
+        "fi;".to_string(),
+        "eval \"$CMD\";".to_string(),
+    ]
+    .concat();
     argv.push("sh -c".into());
     argv.push(format!("'{nc_cmd}'"));
     Some(argv)
@@ -446,7 +450,35 @@ mod tests {
         let argv = make_ssh_command(&g).unwrap();
         assert_eq!(&argv[..5], &["-p", "2222", "-l", "root", "example.com"]);
         assert_eq!(argv[5], "sh -c");
-        assert!(argv[6].contains("CMD=\"nc -q 0 127.0.0.1 5901\""));
+        // Byte for byte what upstream's `_make_ssh_command` generates.
+        assert_eq!(
+            argv[6],
+            "'nc -q 2>&1 | grep \"requires an argument\" >/dev/null;\
+             if [ $? -eq 0 ] ; then   CMD=\"nc -q 0 127.0.0.1 5901\";\
+             else   CMD=\"nc 127.0.0.1 5901\";fi;eval \"$CMD\";'"
+        );
+    }
+
+    /// The remote side runs `sh -c '<script>'`: the script must parse.
+    #[test]
+    fn ssh_tunnel_script_is_valid_sh() {
+        let mut d = gdev(None, Some("127.0.0.1"));
+        d.socket = Some("/run/spice.sock".into());
+        for dev in [gdev(Some("5901"), Some("127.0.0.1")), d] {
+            let g = ConnectionInfo::new("qemu+ssh://example.com/system", &dev);
+            let argv = make_ssh_command(&g).unwrap();
+            let script = argv.last().unwrap().trim_matches('\'');
+            assert!(script.contains(" then ") && script.contains("else "));
+            let out = Command::new("sh")
+                .args(["-n", "-c", script])
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
     }
 
     #[test]

@@ -25,6 +25,9 @@ igual ao virt-manager Python; a versão do pacote aparece no "Sobre".
   embutido, então não aparece mais como imagem faltando em temas de ícones
   sem ele (Breeze, Adwaita 46+); "MAC address:", "active" e os avisos de rede
   são traduzidos, como no upstream.
+- Consoles via `qemu+ssh`: o túnel SSH não falha mais com
+  `sh: 1: Syntax error: "fi" unexpected (expecting "then")`; o script do
+  `nc` remoto é montado byte a byte como no upstream.
 
 ## [1.0.0] - 2026-11-04
 
