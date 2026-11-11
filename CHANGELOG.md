@@ -25,6 +25,9 @@ just like the Python virt-manager; the package version shows in "About".
   longer shows as a missing image on icon themes without it (Breeze,
   Adwaita 46+); "MAC address:", "active" and the network warnings are
   translated, as upstream.
+- Consoles over `qemu+ssh`: the SSH tunnel no longer fails with
+  `sh: 1: Syntax error: "fi" unexpected (expecting "then")`; the remote
+  `nc` script is built byte for byte like upstream.
 
 ## [1.0.0] - 2026-11-04
 
